@@ -1,0 +1,5 @@
+{
+  "name": "panopticon",
+  "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
+  "version": "0.1.0"
+}

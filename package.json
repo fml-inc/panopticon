@@ -1,0 +1,24 @@
+{
+  "name": "panopticon",
+  "version": "0.1.0",
+  "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
+  "type": "module",
+  "bin": {
+    "panopticon": "./bin/panopticon"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "protobufjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "tsup": "^8.0.0",
+    "@types/better-sqlite3": "^7.0.0",
+    "@types/node": "^22.0.0"
+  }
+}
