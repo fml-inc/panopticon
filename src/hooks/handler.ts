@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { insertHookEvent } from "../db/store.js";
 import { config, ensureDataDir } from "../config.js";
+import { autoPrune } from "../db/prune.js";
 
 interface HookInput {
   session_id: string;
@@ -53,6 +54,46 @@ function startReceiver(): void {
   child.unref();
 }
 
+function isSyncRunning(): boolean {
+  if (!fs.existsSync(config.syncPidFile)) return false;
+  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim());
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    try { fs.unlinkSync(config.syncPidFile); } catch {}
+    return false;
+  }
+}
+
+function startSyncDaemon(): void {
+  // Only start if sync is configured
+  if (!fs.existsSync(config.syncConfigFile)) return;
+
+  const daemonScript = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "..",
+    "sync",
+    "daemon.js"
+  );
+
+  const child = spawn("node", [daemonScript], {
+    detached: true,
+    stdio: "ignore",
+    env: process.env,
+  });
+
+  child.unref();
+}
+
+function tryAutoPrune(): void {
+  try {
+    autoPrune(config.autoMaxAgeDays, config.autoMaxSizeMb);
+  } catch {
+    // Never fail the hook due to pruning
+  }
+}
+
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
@@ -74,9 +115,11 @@ async function main() {
     const eventType = data.hook_event_name ?? "Unknown";
     const toolName = data.tool_name ?? null;
 
-    // On SessionStart, ensure the OTLP receiver is running
-    if (eventType === "SessionStart" && !isReceiverRunning()) {
-      startReceiver();
+    // On SessionStart, ensure background processes are running
+    if (eventType === "SessionStart") {
+      if (!isReceiverRunning()) startReceiver();
+      if (!isSyncRunning()) startSyncDaemon();
+      tryAutoPrune();
     }
 
     insertHookEvent({

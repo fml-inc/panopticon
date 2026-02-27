@@ -57,13 +57,25 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
   return db.prepare(sql).all(...params);
 }
 
-export function sessionTimeline(opts: { session_id: string; event_types?: string[] }) {
+export function sessionTimeline(opts: {
+  session_id: string;
+  event_types?: string[];
+  limit?: number;
+  offset?: number;
+  full_payloads?: boolean;
+}) {
   const db = getDb();
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+  const truncate = !opts.full_payloads;
+
+  const payloadCol = truncate ? "SUBSTR(payload, 1, 500)" : "payload";
+  const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Hook events
   let hookSql = `
     SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, payload, NULL as body, NULL as attributes, NULL as severity_text
+           tool_name, ${payloadCol} as payload, NULL as body, NULL as attributes, NULL as severity_text
     FROM hook_events
     WHERE session_id = ?
   `;
@@ -78,18 +90,26 @@ export function sessionTimeline(opts: { session_id: string; event_types?: string
   let otelSql = `
     SELECT 'otel' as source, id, session_id, body as event_type,
            CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, NULL as payload, body, attributes, severity_text
+           NULL as tool_name, NULL as payload, body, ${attrsCol} as attributes, severity_text
     FROM otel_logs
     WHERE session_id = ?
   `;
   const otelParams: unknown[] = [opts.session_id];
 
+  // Count query (same WHERE, no LIMIT)
+  const countSql = `
+    SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})
+  `;
+  const total = (db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }).total;
+
   const sql = `
     SELECT * FROM (${hookSql} UNION ALL ${otelSql})
     ORDER BY timestamp_ms ASC
+    LIMIT ? OFFSET ?
   `;
 
-  return db.prepare(sql).all(...hookParams, ...otelParams);
+  const rows = db.prepare(sql).all(...hookParams, ...otelParams, limit, offset);
+  return { total, rows };
 }
 
 export function toolStats(opts: { since?: string; session_id?: string } = {}) {
@@ -176,13 +196,20 @@ export function searchEvents(opts: {
   event_types?: string[];
   since?: string;
   limit?: number;
+  offset?: number;
+  full_payloads?: boolean;
 }) {
   const db = getDb();
   const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
   const sinceMs = parseSince(opts.since);
   const pattern = `%${opts.query}%`;
+  const truncate = !opts.full_payloads;
 
-  // Search hook events
+  const payloadCol = truncate ? "SUBSTR(payload, 1, 500)" : "payload";
+  const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
+
+  // Search hook events — always search full columns, truncate in SELECT
   const hookConditions: string[] = [
     "(payload LIKE ? OR tool_name LIKE ? OR event_type LIKE ?)",
   ];
@@ -199,7 +226,7 @@ export function searchEvents(opts: {
 
   const hookSql = `
     SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, payload
+           tool_name, ${payloadCol} as payload
     FROM hook_events
     WHERE ${hookConditions.join(" AND ")}
   `;
@@ -218,18 +245,129 @@ export function searchEvents(opts: {
   const otelSql = `
     SELECT 'otel' as source, id, session_id, body as event_type,
            CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, attributes as payload
+           NULL as tool_name, ${attrsCol} as payload
     FROM otel_logs
     WHERE ${otelConditions.join(" AND ")}
   `;
 
+  // Count query
+  const countSql = `
+    SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})
+  `;
+  const total = (db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }).total;
+
   const sql = `
     SELECT * FROM (${hookSql} UNION ALL ${otelSql})
     ORDER BY timestamp_ms DESC
-    LIMIT ?
+    LIMIT ? OFFSET ?
   `;
 
-  return db.prepare(sql).all(...hookParams, ...otelParams, limit);
+  const rows = db.prepare(sql).all(...hookParams, ...otelParams, limit, offset);
+  return { total, rows };
+}
+
+export function activitySummary(opts: { since?: string } = {}) {
+  const db = getDb();
+  const sinceMs = parseSince(opts.since ?? "24h") ?? Date.now() - 86400000;
+  const now = Date.now();
+
+  // 1. Sessions with basic stats
+  const sessionsSql = `
+    SELECT session_id,
+           MIN(timestamp_ms) as start_ms,
+           MAX(timestamp_ms) as end_ms,
+           COUNT(*) as event_count
+    FROM hook_events
+    WHERE timestamp_ms >= ?
+    GROUP BY session_id
+    ORDER BY start_ms ASC
+  `;
+  const sessions = db.prepare(sessionsSql).all(sinceMs) as {
+    session_id: string; start_ms: number; end_ms: number; event_count: number;
+  }[];
+
+  const result: {
+    period: { since: string; until: string };
+    sessions: unknown[];
+    totals: { session_count: number; total_cost: number; total_tokens: number; top_tools: { tool: string; count: number }[] };
+  } = {
+    period: {
+      since: new Date(sinceMs).toISOString(),
+      until: new Date(now).toISOString(),
+    },
+    sessions: [],
+    totals: { session_count: sessions.length, total_cost: 0, total_tokens: 0, top_tools: [] },
+  };
+
+  for (const s of sessions) {
+    // User prompts (first 100 chars of each)
+    const prompts = db.prepare(`
+      SELECT SUBSTR(json_extract(payload, '$.user_prompt'), 1, 100) as prompt
+      FROM hook_events
+      WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ?
+      ORDER BY timestamp_ms ASC
+    `).all(s.session_id, sinceMs) as { prompt: string | null }[];
+
+    // Tool usage
+    const tools = db.prepare(`
+      SELECT tool_name, COUNT(*) as count
+      FROM hook_events
+      WHERE session_id = ? AND event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ?
+      GROUP BY tool_name
+      ORDER BY count DESC
+    `).all(s.session_id, sinceMs) as { tool_name: string; count: number }[];
+
+    // Files modified (from Write/Edit tools)
+    const files = db.prepare(`
+      SELECT DISTINCT json_extract(payload, '$.tool_input.file_path') as file_path
+      FROM hook_events
+      WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse' AND timestamp_ms >= ?
+    `).all(s.session_id, sinceMs) as { file_path: string | null }[];
+
+    // Working directory
+    const cwdRow = db.prepare(`
+      SELECT cwd FROM hook_events
+      WHERE session_id = ? AND event_type = 'SessionStart'
+      LIMIT 1
+    `).get(s.session_id) as { cwd: string | null } | undefined;
+
+    // Cost from otel_metrics
+    const costRow = db.prepare(`
+      SELECT SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as tokens,
+             SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as cost
+      FROM otel_metrics
+      WHERE session_id = ?
+    `).get(s.session_id) as { tokens: number; cost: number } | undefined;
+
+    const sessionCost = costRow?.cost ?? 0;
+    const sessionTokens = costRow?.tokens ?? 0;
+    result.totals.total_cost += sessionCost;
+    result.totals.total_tokens += sessionTokens;
+
+    result.sessions.push({
+      session_id: s.session_id,
+      start: new Date(s.start_ms).toISOString(),
+      duration_minutes: Math.round((s.end_ms - s.start_ms) / 60000),
+      working_directory: cwdRow?.cwd ?? null,
+      user_prompts: prompts.map((p) => p.prompt).filter(Boolean),
+      tools_used: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
+      files_modified: files.map((f) => f.file_path).filter(Boolean),
+      total_cost: sessionCost,
+    });
+  }
+
+  // Global top tools
+  const topTools = db.prepare(`
+    SELECT tool_name, COUNT(*) as count
+    FROM hook_events
+    WHERE event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ?
+    GROUP BY tool_name
+    ORDER BY count DESC
+    LIMIT 10
+  `).all(sinceMs) as { tool_name: string; count: number }[];
+  result.totals.top_tools = topTools.map((t) => ({ tool: t.tool_name, count: t.count }));
+
+  return result;
 }
 
 export function rawQuery(sql: string) {
@@ -239,6 +377,11 @@ export function rawQuery(sql: string) {
   const trimmed = sql.trim().toUpperCase();
   if (!trimmed.startsWith("SELECT") && !trimmed.startsWith("WITH") && !trimmed.startsWith("PRAGMA")) {
     throw new Error("Only SELECT, WITH, and PRAGMA statements are allowed");
+  }
+
+  // Safety net: append LIMIT if not already present
+  if (!trimmed.includes("LIMIT")) {
+    sql = sql.trimEnd().replace(/;$/, "") + " LIMIT 1000";
   }
 
   return db.prepare(sql).all();

@@ -51,6 +51,11 @@ CREATE INDEX IF NOT EXISTS idx_hooks_session ON hook_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_hooks_type ON hook_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_hooks_tool ON hook_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_hooks_ts ON hook_events(timestamp_ms);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 let _db: Database.Database | null = null;

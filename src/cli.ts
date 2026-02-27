@@ -4,22 +4,38 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import readline from "node:readline";
 import { config, ensureDataDir } from "./config.js";
 import { getDb, closeDb } from "./db/schema.js";
 import { dbStats } from "./db/query.js";
+import { readWatermark, resetWatermarks } from "./sync/state.js";
+import { resolveGitHubToken } from "./sync/client.js";
+import { pruneEstimate, pruneExecute } from "./db/prune.js";
 
 const command = process.argv[2];
+const subcommand = process.argv[3];
 
 function printUsage() {
   console.log(`
 panopticon - Observability for Claude Code
 
 Usage:
-  panopticon install   Build, register plugin, init DB, configure shell
-  panopticon start     Start the OTLP receiver (background)
-  panopticon stop      Stop the OTLP receiver
-  panopticon status    Show receiver status and database stats
-  panopticon help      Show this help message
+  panopticon install        Build, register plugin, init DB, configure shell
+  panopticon start          Start the OTLP receiver (background)
+  panopticon stop           Stop the OTLP receiver
+  panopticon status         Show receiver status and database stats
+  panopticon sync setup     Configure sync to FML backend
+  panopticon prune          Delete old data from the database
+    --older-than 30d         Max age (default: 30d)
+    --synced-only            Only delete rows already synced
+    --dry-run                Show estimate without deleting
+    --vacuum                 Reclaim disk space after pruning
+    --yes                    Skip confirmation prompt
+  panopticon sync start     Start the sync daemon (background)
+  panopticon sync stop      Stop the sync daemon
+  panopticon sync status    Show sync daemon state and watermarks
+  panopticon sync reset     Reset all sync watermarks to 0
+  panopticon help           Show this help message
 `);
 }
 
@@ -232,26 +248,29 @@ async function stop() {
   }
 }
 
-async function status() {
-  // Check OTLP receiver
-  let receiverRunning = false;
-  let receiverPid: number | null = null;
-
-  if (fs.existsSync(config.pidFile)) {
-    receiverPid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim());
-    try {
-      process.kill(receiverPid, 0);
-      receiverRunning = true;
-    } catch {
-      receiverRunning = false;
-    }
+function isProcessRunning(pidFile: string): { running: boolean; pid: number | null } {
+  if (!fs.existsSync(pidFile)) return { running: false, pid: null };
+  const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim());
+  try {
+    process.kill(pid, 0);
+    return { running: true, pid };
+  } catch {
+    return { running: false, pid };
   }
+}
+
+async function status() {
+  const receiver = isProcessRunning(config.pidFile);
+  const syncDaemon = isProcessRunning(config.syncPidFile);
 
   console.log("Panopticon Status");
   console.log("=================");
   console.log();
   console.log(
-    `OTLP Receiver: ${receiverRunning ? `running (PID ${receiverPid}, port ${config.otlpPort})` : "stopped"}`
+    `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`
+  );
+  console.log(
+    `Sync Daemon:   ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`
   );
   console.log(`Database: ${config.dbPath}`);
 
@@ -266,6 +285,22 @@ async function status() {
       console.log(`  otel_logs:    ${stats.otel_logs}`);
       console.log(`  otel_metrics: ${stats.otel_metrics}`);
       console.log(`  hook_events:  ${stats.hook_events}`);
+
+      // Sync watermarks
+      const hookWm = readWatermark("hook_events_last_id") ?? 0;
+      const logWm = readWatermark("otel_logs_last_id") ?? 0;
+      const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
+
+      const db = getDb();
+      const maxHook = (db.prepare("SELECT MAX(id) as m FROM hook_events").get() as { m: number | null })?.m ?? 0;
+      const maxLog = (db.prepare("SELECT MAX(id) as m FROM otel_logs").get() as { m: number | null })?.m ?? 0;
+      const maxMetric = (db.prepare("SELECT MAX(id) as m FROM otel_metrics").get() as { m: number | null })?.m ?? 0;
+
+      console.log();
+      console.log("Sync watermarks (synced / total):");
+      console.log(`  hook_events:  ${hookWm} / ${maxHook}`);
+      console.log(`  otel_logs:    ${logWm} / ${maxLog}`);
+      console.log(`  otel_metrics: ${metricWm} / ${maxMetric}`);
     } catch {
       console.log("  (could not read database)");
     } finally {
@@ -273,6 +308,304 @@ async function status() {
     }
   } else {
     console.log("Database: not initialized (run 'panopticon setup')");
+  }
+
+  if (fs.existsSync(config.syncConfigFile)) {
+    try {
+      const syncCfg = JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"));
+      console.log();
+      console.log("Sync config:");
+      console.log(`  URLs: ${syncCfg.urls?.join(", ") ?? "none"}`);
+      console.log(`  Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`);
+    } catch {}
+  }
+}
+
+// ============================================================================
+// PRUNE COMMAND
+// ============================================================================
+
+function parseAge(value: string): number {
+  const match = value.match(/^(\d+)\s*(d|h|m)$/);
+  if (!match) {
+    console.error(`Invalid --older-than value: ${value} (use e.g. 30d, 24h, 60m)`);
+    process.exit(1);
+  }
+  const n = parseInt(match[1], 10);
+  const unit = match[2];
+  const multipliers: Record<string, number> = { d: 86400000, h: 3600000, m: 60000 };
+  return n * multipliers[unit];
+}
+
+function hasFlag(flag: string): boolean {
+  return process.argv.includes(flag);
+}
+
+function getFlagValue(flag: string, defaultValue: string): string {
+  const idx = process.argv.indexOf(flag);
+  if (idx === -1 || idx + 1 >= process.argv.length) return defaultValue;
+  return process.argv[idx + 1];
+}
+
+async function prune() {
+  const olderThan = getFlagValue("--older-than", "30d");
+  const syncedOnly = hasFlag("--synced-only");
+  const dryRun = hasFlag("--dry-run");
+  const vacuum = hasFlag("--vacuum");
+  const yes = hasFlag("--yes");
+
+  const ageMs = parseAge(olderThan);
+  const cutoffMs = Date.now() - ageMs;
+  const cutoffDate = new Date(cutoffMs).toISOString();
+
+  console.log(`Pruning rows older than ${olderThan} (before ${cutoffDate})`);
+  if (syncedOnly) console.log("Mode: synced-only (respecting sync watermarks)");
+  console.log();
+
+  try {
+    const estimate = pruneEstimate(cutoffMs, syncedOnly);
+    const total = estimate.otel_logs + estimate.otel_metrics + estimate.hook_events;
+
+    console.log("Rows to delete:");
+    console.log(`  otel_logs:    ${estimate.otel_logs}`);
+    console.log(`  otel_metrics: ${estimate.otel_metrics}`);
+    console.log(`  hook_events:  ${estimate.hook_events}`);
+    console.log(`  total:        ${total}`);
+    console.log();
+
+    if (total === 0) {
+      console.log("Nothing to prune.");
+      return;
+    }
+
+    if (dryRun) {
+      console.log("Dry run — no rows deleted.");
+      return;
+    }
+
+    if (!yes) {
+      const answer = await prompt("Proceed with deletion? [y/N] ");
+      if (answer.toLowerCase() !== "y") {
+        console.log("Aborted.");
+        return;
+      }
+    }
+
+    const result = pruneExecute(cutoffMs, syncedOnly);
+    console.log("Deleted:");
+    console.log(`  otel_logs:    ${result.otel_logs}`);
+    console.log(`  otel_metrics: ${result.otel_metrics}`);
+    console.log(`  hook_events:  ${result.hook_events}`);
+
+    if (vacuum) {
+      console.log("\nReclaiming disk space...");
+      const db = getDb();
+      db.pragma("wal_checkpoint(TRUNCATE)");
+      db.exec("VACUUM");
+      console.log("Done.");
+    }
+  } finally {
+    closeDb();
+  }
+}
+
+// ============================================================================
+// SYNC SUBCOMMANDS
+// ============================================================================
+
+function prompt(question: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+async function syncSetup() {
+  console.log("Panopticon Sync Setup\n");
+
+  const existingConfig = fs.existsSync(config.syncConfigFile)
+    ? JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"))
+    : {};
+
+  const defaultUrl = existingConfig.urls?.[0] ?? "";
+  const urlInput = await prompt(`FML backend URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `);
+  const url = urlInput || defaultUrl;
+  if (!url) {
+    console.error("URL is required.");
+    process.exit(1);
+  }
+
+  const defaultOrgs = existingConfig.allowedOrgs?.join(",") ?? "";
+  const orgsInput = await prompt(`Allowed GitHub orgs (comma-separated)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `);
+  const orgs = (orgsInput || defaultOrgs)
+    .split(",")
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+
+  // Verify GitHub token
+  const token = resolveGitHubToken();
+  if (!token) {
+    console.error("\nNo GitHub token found. Set PANOPTICON_GITHUB_TOKEN or install gh CLI.");
+    process.exit(1);
+  }
+  console.log("\nGitHub token: found");
+
+  const syncConfig = {
+    urls: [url],
+    allowedOrgs: orgs.length > 0 ? orgs : undefined,
+    batchSize: existingConfig.batchSize ?? 20,
+    intervalMs: existingConfig.intervalMs ?? 30000,
+  };
+
+  ensureDataDir();
+  fs.writeFileSync(config.syncConfigFile, JSON.stringify(syncConfig, null, 2) + "\n");
+  console.log(`\nSync config written to ${config.syncConfigFile}`);
+}
+
+async function syncStart() {
+  ensureDataDir();
+
+  if (!fs.existsSync(config.syncConfigFile)) {
+    console.error("No sync config found. Run 'panopticon sync setup' first.");
+    process.exit(1);
+  }
+
+  // Check if already running
+  const { running, pid } = isProcessRunning(config.syncPidFile);
+  if (running) {
+    console.log(`Sync daemon already running (PID ${pid})`);
+    return;
+  }
+  // Clean up stale PID file
+  if (pid !== null) {
+    try { fs.unlinkSync(config.syncPidFile); } catch {}
+  }
+
+  const daemonScript = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "sync",
+    "daemon.js"
+  );
+
+  const child = spawn("node", [daemonScript], {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let stderr = "";
+
+    child.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", (err) => {
+      reject(new Error(`Failed to start sync daemon: ${err.message}`));
+    });
+
+    setTimeout(() => {
+      if (child.pid) {
+        child.unref();
+        console.log(`Sync daemon started (PID ${child.pid})`);
+        resolve();
+      } else {
+        reject(new Error(`Failed to start sync daemon: ${stderr}`));
+      }
+    }, 500);
+  });
+}
+
+async function syncStop() {
+  if (!fs.existsSync(config.syncPidFile)) {
+    console.log("Sync daemon is not running (no PID file)");
+    return;
+  }
+
+  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim());
+  try {
+    process.kill(pid, "SIGTERM");
+    fs.unlinkSync(config.syncPidFile);
+    console.log(`Sync daemon stopped (PID ${pid})`);
+  } catch {
+    fs.unlinkSync(config.syncPidFile);
+    console.log("Sync daemon was not running (stale PID file removed)");
+  }
+}
+
+async function syncStatus() {
+  const { running, pid } = isProcessRunning(config.syncPidFile);
+  console.log(`Sync daemon: ${running ? `running (PID ${pid})` : "stopped"}`);
+
+  if (fs.existsSync(config.syncConfigFile)) {
+    try {
+      const syncCfg = JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"));
+      console.log(`URLs: ${syncCfg.urls?.join(", ") ?? "none"}`);
+      console.log(`Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`);
+      console.log(`Interval: ${syncCfg.intervalMs ?? 30000}ms`);
+    } catch {}
+  } else {
+    console.log("No sync config found. Run 'panopticon sync setup'.");
+    return;
+  }
+
+  if (fs.existsSync(config.dbPath)) {
+    try {
+      const db = getDb();
+      const hookWm = readWatermark("hook_events_last_id") ?? 0;
+      const logWm = readWatermark("otel_logs_last_id") ?? 0;
+      const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
+
+      const maxHook = (db.prepare("SELECT MAX(id) as m FROM hook_events").get() as { m: number | null })?.m ?? 0;
+      const maxLog = (db.prepare("SELECT MAX(id) as m FROM otel_logs").get() as { m: number | null })?.m ?? 0;
+      const maxMetric = (db.prepare("SELECT MAX(id) as m FROM otel_metrics").get() as { m: number | null })?.m ?? 0;
+
+      console.log();
+      console.log("Watermarks (synced / total):");
+      console.log(`  hook_events:  ${hookWm} / ${maxHook} (${maxHook - hookWm} pending)`);
+      console.log(`  otel_logs:    ${logWm} / ${maxLog} (${maxLog - logWm} pending)`);
+      console.log(`  otel_metrics: ${metricWm} / ${maxMetric} (${maxMetric - metricWm} pending)`);
+    } catch {
+      console.log("  (could not read database)");
+    } finally {
+      closeDb();
+    }
+  }
+}
+
+async function syncReset() {
+  try {
+    resetWatermarks();
+    console.log("All sync watermarks reset to 0.");
+  } finally {
+    closeDb();
+  }
+}
+
+async function handleSync() {
+  switch (subcommand) {
+    case "setup":
+      await syncSetup();
+      break;
+    case "start":
+      await syncStart();
+      break;
+    case "stop":
+      await syncStop();
+      break;
+    case "status":
+      await syncStatus();
+      break;
+    case "reset":
+      await syncReset();
+      break;
+    default:
+      console.error(`Unknown sync subcommand: ${subcommand ?? "(none)"}`);
+      console.log("Available: setup, start, stop, status, reset");
+      process.exit(1);
   }
 }
 
@@ -290,6 +623,12 @@ async function main() {
       break;
     case "status":
       await status();
+      break;
+    case "prune":
+      await prune();
+      break;
+    case "sync":
+      await handleSync();
       break;
     case "help":
     case "--help":

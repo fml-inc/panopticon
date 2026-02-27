@@ -9,6 +9,7 @@ import {
   toolStats,
   costBreakdown,
   searchEvents,
+  activitySummary,
   rawQuery,
   dbStats,
 } from "../db/query.js";
@@ -43,21 +44,24 @@ server.tool(
 
 server.tool(
   "panopticon_session_timeline",
-  "Get chronological events for a specific session (hook events + OTel logs merged)",
+  "Get chronological events for a specific session (hook events + OTel logs merged). Payloads are truncated to 500 chars by default — use full_payloads: true for complete data.",
   {
     session_id: z.string().describe("The session ID to query"),
     event_types: z
       .array(z.string())
       .optional()
       .describe("Filter to specific event types"),
+    limit: z.number().optional().describe("Max events to return (default 100)"),
+    offset: z.number().optional().describe("Number of events to skip (for pagination)"),
+    full_payloads: z.boolean().optional().describe("Return full payloads instead of truncated (default false)"),
   },
-  async ({ session_id, event_types }) => {
-    const results = sessionTimeline({ session_id, event_types });
+  async ({ session_id, event_types, limit, offset, full_payloads }) => {
+    const { total, rows } = sessionTimeline({ session_id, event_types, limit, offset, full_payloads });
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify(results, null, 2),
+          text: JSON.stringify({ total, events: rows }, null, 2),
         },
       ],
     };
@@ -114,8 +118,30 @@ server.tool(
 );
 
 server.tool(
+  "panopticon_summary",
+  "Generate a summary of recent Claude Code activity — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates, daily reports, and progress reviews.",
+  {
+    since: z
+      .string()
+      .optional()
+      .describe('Time window (default "24h"). ISO date or relative like "24h", "7d"'),
+  },
+  async ({ since }) => {
+    const summary = activitySummary({ since });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(summary, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
   "panopticon_search",
-  "Search across all events (hook payloads, OTel log bodies/attributes) by text query",
+  "Search across all events (hook payloads, OTel log bodies/attributes) by text query. Payloads are truncated to 500 chars by default — use full_payloads: true for complete data.",
   {
     query: z.string().describe("Text to search for"),
     event_types: z
@@ -127,14 +153,16 @@ server.tool(
       .optional()
       .describe('Time filter: ISO date or relative like "24h", "7d"'),
     limit: z.number().optional().describe("Max results (default 50)"),
+    offset: z.number().optional().describe("Number of results to skip (for pagination)"),
+    full_payloads: z.boolean().optional().describe("Return full payloads instead of truncated (default false)"),
   },
-  async ({ query, event_types, since, limit }) => {
-    const results = searchEvents({ query, event_types, since, limit });
+  async ({ query, event_types, since, limit, offset, full_payloads }) => {
+    const { total, rows } = searchEvents({ query, event_types, since, limit, offset, full_payloads });
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify(results, null, 2),
+          text: JSON.stringify({ total, results: rows }, null, 2),
         },
       ],
     };
