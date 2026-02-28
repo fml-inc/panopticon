@@ -220,7 +220,9 @@ if (
 ) {
   const server = createOtlpServer();
   server.listen(config.otlpPort, config.otlpHost, () => {
-    console.log(`Panopticon OTLP receiver listening on ${config.otlpHost}:${config.otlpPort}`);
+    console.log(
+      `Panopticon OTLP receiver listening on ${config.otlpHost}:${config.otlpPort}`,
+    );
   });
 
   process.on("SIGTERM", () => {
