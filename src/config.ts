@@ -21,6 +21,7 @@ export const config = {
   syncPidFile: path.join(DATA_DIR, "sync.pid"),
   syncConfigFile: path.join(DATA_DIR, "sync.json"),
   otlpPort: parseInt(process.env.PANOPTICON_OTLP_PORT ?? "4318", 10),
+  otlpHost: process.env.PANOPTICON_OTLP_HOST ?? "0.0.0.0",
   claudeDir: CLAUDE_DIR,
   claudeSettingsPath: path.join(CLAUDE_DIR, "settings.json"),
   marketplaceDir: MARKETPLACE_DIR,

@@ -21,6 +21,7 @@ import {
 import { readWatermark, writeWatermark } from "./state.js";
 
 interface SyncConfig {
+  backendType?: "fml" | "otlp";
   urls: string[];
   allowedOrgs?: string[];
   batchSize?: number;
@@ -46,7 +47,8 @@ function isAllowedOrg(
   repository: string | undefined,
   allowedOrgs: string[] | undefined,
 ): boolean {
-  if (!allowedOrgs || allowedOrgs.length === 0) return true;
+  if (!allowedOrgs || allowedOrgs.length === 0) return false;
+  if (allowedOrgs.includes("*")) return true;
   if (!repository) return false;
   const org = repository.split("/")[0];
   return allowedOrgs.includes(org);
@@ -109,6 +111,7 @@ async function syncHookEvents(
 
     for (const batch of batches) {
       for (const baseUrl of syncConfig.urls) {
+        if (syncConfig.backendType === "otlp") continue;
         const url = `${baseUrl.replace(/\/$/, "")}/panopticon/ingest-batch`;
         await postBatch(url, { events: batch }, token);
       }
@@ -160,8 +163,27 @@ async function syncOtelLogs(
 
     for (const batch of batches) {
       for (const baseUrl of syncConfig.urls) {
-        const url = `${baseUrl.replace(/\/$/, "")}/panopticon/ingest-logs`;
-        await postBatch(url, { logs: batch }, token);
+        if (syncConfig.backendType === "otlp") {
+          const url = `${baseUrl.replace(/\/$/, "")}/v1/logs`;
+          const payload = {
+            resourceLogs: [{
+              resource: { attributes: [] },
+              scopeLogs: [{
+                logRecords: batch.map(l => ({
+                  timeUnixNano: (l.timestampMs * 1000000).toString(),
+                  severityText: l.severityText,
+                  body: { stringValue: l.body },
+                  traceId: l.traceId,
+                  spanId: l.spanId
+                }))
+              }]
+            }]
+          };
+          await postBatch(url, payload, token);
+        } else {
+          const url = `${baseUrl.replace(/\/$/, "")}/panopticon/ingest-logs`;
+          await postBatch(url, { logs: batch }, token);
+        }
       }
     }
   }
@@ -210,8 +232,30 @@ async function syncOtelMetrics(
 
     for (const batch of batches) {
       for (const baseUrl of syncConfig.urls) {
-        const url = `${baseUrl.replace(/\/$/, "")}/panopticon/ingest-metrics`;
-        await postBatch(url, { metrics: batch }, token);
+        if (syncConfig.backendType === "otlp") {
+          const url = `${baseUrl.replace(/\/$/, "")}/v1/metrics`;
+          const payload = {
+            resourceMetrics: [{
+              resource: { attributes: [] },
+              scopeMetrics: [{
+                metrics: batch.map(m => ({
+                  name: m.name,
+                  unit: m.unit,
+                  gauge: {
+                    dataPoints: [{
+                      timeUnixNano: (m.timestampMs * 1000000).toString(),
+                      asDouble: m.value
+                    }]
+                  }
+                }))
+              }]
+            }]
+          };
+          await postBatch(url, payload, token);
+        } else {
+          const url = `${baseUrl.replace(/\/$/, "")}/panopticon/ingest-metrics`;
+          await postBatch(url, { metrics: batch }, token);
+        }
       }
     }
   }

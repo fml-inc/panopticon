@@ -79,6 +79,7 @@ export function getDb(): Database.Database {
 
   ensureDataDir();
   _db = new Database(config.dbPath);
+  _db.pragma("auto_vacuum = INCREMENTAL");
   _db.pragma("journal_mode = WAL");
   _db.pragma("busy_timeout = 5000");
 

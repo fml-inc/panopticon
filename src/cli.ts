@@ -475,9 +475,19 @@ async function syncSetup() {
     ? JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"))
     : {};
 
+  const defaultBackend = existingConfig.backendType || "fml";
+  const backendInput = await prompt(
+    `Backend type (fml, otlp) [${defaultBackend}]: `,
+  );
+  const backendType = backendInput || defaultBackend;
+  if (backendType !== "fml" && backendType !== "otlp") {
+    console.error("Backend type must be 'fml' or 'otlp'.");
+    process.exit(1);
+  }
+
   const defaultUrl = existingConfig.urls?.[0] ?? "";
   const urlInput = await prompt(
-    `FML backend URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `,
+    `${backendType.toUpperCase()} backend URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `,
   );
   const url = urlInput || defaultUrl;
   if (!url) {
@@ -487,12 +497,17 @@ async function syncSetup() {
 
   const defaultOrgs = existingConfig.allowedOrgs?.join(",") ?? "";
   const orgsInput = await prompt(
-    `Allowed GitHub orgs (comma-separated)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `,
+    `Allowed GitHub orgs (comma-separated, or * for all)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `,
   );
   const orgs = (orgsInput || defaultOrgs)
     .split(",")
     .map((s: string) => s.trim())
     .filter(Boolean);
+
+  if (orgs.length === 0) {
+    console.error("\nAt least one allowed org (or *) is required for syncing.");
+    process.exit(1);
+  }
 
   // Verify GitHub token
   const token = resolveGitHubToken();
@@ -505,8 +520,9 @@ async function syncSetup() {
   console.log("\nGitHub token: found");
 
   const syncConfig = {
+    backendType,
     urls: [url],
-    allowedOrgs: orgs.length > 0 ? orgs : undefined,
+    allowedOrgs: orgs,
     batchSize: existingConfig.batchSize ?? 20,
     intervalMs: existingConfig.intervalMs ?? 30000,
   };

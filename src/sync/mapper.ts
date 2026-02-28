@@ -2,7 +2,7 @@
  * Maps SQLite rows to the shapes expected by FML ingestion endpoints.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 // Cache: cwd → "org/repo" | null
 const repoCache = new Map<string, string | null>();
@@ -16,8 +16,9 @@ export function resolveRepoFromCwd(cwd: string): string | null {
 
   let repo: string | null = null;
   try {
-    const url = execSync(
-      `git -C ${JSON.stringify(cwd)} remote get-url origin`,
+    const url = execFileSync(
+      "git",
+      ["-C", cwd, "remote", "get-url", "origin"],
       {
         encoding: "utf-8",
         timeout: 5000,
