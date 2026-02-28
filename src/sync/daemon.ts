@@ -26,6 +26,7 @@ export interface SyncTarget {
 }
 
 interface SyncConfig {
+  backendType?: "fml" | "otlp";
   targets: SyncTarget[];
   allowedOrgs?: string[];
   /** Maps directory paths to GitHub org names, e.g. {"/Users/gus/workspace/fml-inc": "fml-inc"} */
@@ -123,7 +124,8 @@ function isAllowedOrg(
   cwd?: string,
   orgDirs?: Record<string, string>,
 ): boolean {
-  if (!allowedOrgs || allowedOrgs.length === 0) return true;
+  if (!allowedOrgs || allowedOrgs.length === 0) return false;
+  if (allowedOrgs.includes("*")) return true;
   if (repository) {
     const org = repository.split("/")[0];
     return allowedOrgs.includes(org);
@@ -213,6 +215,7 @@ async function syncHookEvents(
     const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-batch`;
 
     for (const batch of batches) {
+      if (syncConfig.backendType === "otlp") continue;
       await postBatch(url, { events: batch }, token);
     }
   }
@@ -283,7 +286,30 @@ async function syncOtelLogs(
     const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-logs`;
 
     for (const batch of batches) {
-      await postBatch(url, { logs: batch }, token);
+      if (syncConfig.backendType === "otlp") {
+        const otlpUrl = `${target.url.replace(/\/$/, "")}/v1/logs`;
+        const payload = {
+          resourceLogs: [
+            {
+              resource: { attributes: [] },
+              scopeLogs: [
+                {
+                  logRecords: batch.map((l) => ({
+                    timeUnixNano: (l.timestampMs * 1000000).toString(),
+                    severityText: l.severityText,
+                    body: { stringValue: l.body },
+                    traceId: l.traceId,
+                    spanId: l.spanId,
+                  })),
+                },
+              ],
+            },
+          ],
+        };
+        await postBatch(otlpUrl, payload, token);
+      } else {
+        await postBatch(url, { logs: batch }, token);
+      }
     }
   }
 
@@ -352,7 +378,35 @@ async function syncOtelMetrics(
     const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-metrics`;
 
     for (const batch of batches) {
-      await postBatch(url, { metrics: batch }, token);
+      if (syncConfig.backendType === "otlp") {
+        const otlpUrl = `${target.url.replace(/\/$/, "")}/v1/metrics`;
+        const payload = {
+          resourceMetrics: [
+            {
+              resource: { attributes: [] },
+              scopeMetrics: [
+                {
+                  metrics: batch.map((m) => ({
+                    name: m.name,
+                    unit: m.unit,
+                    gauge: {
+                      dataPoints: [
+                        {
+                          timeUnixNano: (m.timestampMs * 1000000).toString(),
+                          asDouble: m.value,
+                        },
+                      ],
+                    },
+                  })),
+                },
+              ],
+            },
+          ],
+        };
+        await postBatch(otlpUrl, payload, token);
+      } else {
+        await postBatch(url, { metrics: batch }, token);
+      }
     }
   }
 
