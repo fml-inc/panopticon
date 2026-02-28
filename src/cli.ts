@@ -20,7 +20,8 @@ function printUsage() {
 panopticon - Observability for Claude Code
 
 Usage:
-  panopticon install        Build, register plugin, init DB, configure shell
+  panopticon install         Build, register plugin, init DB, configure shell
+    --force                  Overwrite customized env vars with defaults
   panopticon start          Start the OTLP receiver (background)
   panopticon stop           Stop the OTLP receiver
   panopticon status         Show receiver status and database stats
@@ -61,6 +62,7 @@ function writeJsonFile(filePath: string, data: any): void {
 }
 
 async function install() {
+  const force = hasFlag("--force");
   const pluginRoot = getPluginRoot();
   const pluginJson = readJsonFile(
     path.join(pluginRoot, ".claude-plugin", "plugin.json"),
@@ -70,7 +72,7 @@ async function install() {
   console.log("Installing panopticon...\n");
 
   // 1. Build
-  console.log("[1/5] Building...");
+  console.log("[1/6] Building...");
   try {
     execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
     console.log("      Built successfully.\n");
@@ -80,14 +82,14 @@ async function install() {
   }
 
   // 2. Initialize database
-  console.log("[2/5] Initializing database...");
+  console.log("[2/6] Initializing database...");
   ensureDataDir();
   getDb();
   closeDb();
   console.log(`      ${config.dbPath}\n`);
 
   // 3. Set up local marketplace
-  console.log("[3/5] Setting up local marketplace...");
+  console.log("[3/6] Setting up local marketplace...");
   fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
     recursive: true,
   });
@@ -135,7 +137,7 @@ async function install() {
   console.log(`      Cache: ${cacheDir}\n`);
 
   // 4. Register in Claude Code settings
-  console.log("[4/5] Registering plugin in Claude Code settings...");
+  console.log("[4/6] Registering plugin in Claude Code settings...");
   const settings = readJsonFile(config.claudeSettingsPath) ?? {};
 
   settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
@@ -149,8 +151,24 @@ async function install() {
   writeJsonFile(config.claudeSettingsPath, settings);
   console.log(`      ${config.claudeSettingsPath}\n`);
 
-  // 5. Configure shell environment
-  console.log("[5/5] Configuring shell environment...");
+  // 5. Symlink CLI into PATH
+  console.log("[5/6] Adding CLI to PATH...");
+  const localBin = path.join(os.homedir(), ".local", "bin");
+  fs.mkdirSync(localBin, { recursive: true });
+  const symlinks: Record<string, string> = {
+    panopticon: path.join(pluginRoot, "bin", "panopticon"),
+  };
+  for (const [name, target] of Object.entries(symlinks)) {
+    const link = path.join(localBin, name);
+    try {
+      fs.unlinkSync(link);
+    } catch {}
+    fs.symlinkSync(target, link);
+  }
+  console.log(`      Linked panopticon -> ${localBin}/panopticon\n`);
+
+  // 6. Configure shell environment
+  console.log("[6/6] Configuring shell environment...");
   const shellRc = path.join(
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
@@ -159,26 +177,108 @@ async function install() {
     ? fs.readFileSync(shellRc, "utf-8")
     : "";
 
-  const envBlock = [
-    "",
-    "# Panopticon — Claude Code observability",
-    "export CLAUDE_CODE_ENABLE_TELEMETRY=1",
-    `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
-    "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
-    "export OTEL_METRICS_EXPORTER=otlp",
-    "export OTEL_LOGS_EXPORTER=otlp",
-    "export OTEL_LOG_TOOL_DETAILS=1",
-    "export OTEL_LOG_USER_PROMPTS=1",
-    "export OTEL_METRIC_EXPORT_INTERVAL=10000",
-    "",
-  ].join("\n");
+  // Lines we own — identified by exact variable name or comment marker
+  const PANOPTICON_VARS = [
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_METRIC_EXPORT_INTERVAL",
+  ];
+  const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
-  if (rcContent.includes("# Panopticon")) {
-    console.log(`      Already configured in ${shellRc}\n`);
-  } else {
-    fs.appendFileSync(shellRc, envBlock);
-    console.log(`      Added env vars to ${shellRc}\n`);
+  const isPanopticonLine = (line: string): boolean => {
+    const trimmed = line.trim();
+    if (PANOPTICON_COMMENTS.some((c) => trimmed.startsWith(c))) return true;
+    for (const v of PANOPTICON_VARS) {
+      if (trimmed === `export ${v}` || trimmed.startsWith(`export ${v}=`))
+        return true;
+    }
+    return false;
+  };
+
+  // Desired lines keyed by variable name (order preserved)
+  const wantedLines: [string, string][] = [
+    ["# >>> panopticon >>>", "# >>> panopticon >>>"],
+    ["CLAUDE_CODE_ENABLE_TELEMETRY", "export CLAUDE_CODE_ENABLE_TELEMETRY=1"],
+    [
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
+    ],
+    [
+      "OTEL_EXPORTER_OTLP_PROTOCOL",
+      "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+    ],
+    ["OTEL_METRICS_EXPORTER", "export OTEL_METRICS_EXPORTER=otlp"],
+    ["OTEL_LOGS_EXPORTER", "export OTEL_LOGS_EXPORTER=otlp"],
+    ["OTEL_LOG_TOOL_DETAILS", "export OTEL_LOG_TOOL_DETAILS=1"],
+    ["OTEL_LOG_USER_PROMPTS", "export OTEL_LOG_USER_PROMPTS=1"],
+    ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
+    ["# <<< panopticon <<<", "# <<< panopticon <<<"],
+  ];
+
+  // Only add PATH entry if ~/.local/bin isn't already on PATH in the file
+  if (!rcContent.includes(".local/bin")) {
+    wantedLines.splice(1, 0, [
+      "PATH_LOCAL_BIN",
+      'export PATH="$HOME/.local/bin:$PATH"',
+    ]);
   }
+
+  const lines = rcContent.split("\n");
+  const seen = new Set<string>(); // keys we already replaced in-place
+  let lastPanopticonIdx = -1;
+
+  // Pass 1: replace existing panopticon lines in-place with their updated values
+  for (let i = 0; i < lines.length; i++) {
+    if (!isPanopticonLine(lines[i])) continue;
+    lastPanopticonIdx = i;
+
+    // Match this line to a wanted key
+    const match = wantedLines.find(([key]) => {
+      if (key.startsWith("#")) return lines[i].trim().startsWith(key);
+      return (
+        lines[i].trim() === `export ${key}` ||
+        lines[i].trim().startsWith(`export ${key}=`)
+      );
+    });
+    if (match) {
+      if (!force && lines[i].trim() !== match[1] && !match[0].startsWith("#")) {
+        console.log(`      ⚠ Keeping existing value: ${lines[i].trim()}`);
+        console.log(`        (default would be: ${match[1]})`);
+        console.log("        (use --force to overwrite)");
+      } else {
+        lines[i] = match[1];
+      }
+      seen.add(match[0]);
+    } else {
+      // Legacy line we no longer need (e.g. old comment) — blank it out
+      lines[i] = "";
+    }
+  }
+
+  // Pass 2: collect any new lines not already present
+  const newLines = wantedLines
+    .filter(([key]) => !seen.has(key))
+    .map(([, val]) => val);
+
+  if (newLines.length > 0) {
+    if (lastPanopticonIdx >= 0) {
+      // Insert after last existing panopticon line
+      lines.splice(lastPanopticonIdx + 1, 0, ...newLines);
+    } else {
+      // No existing lines — append at end
+      lines.push("", ...newLines, "");
+    }
+  }
+
+  fs.writeFileSync(shellRc, lines.join("\n"));
+  console.log(
+    `      ${lastPanopticonIdx >= 0 ? "Updated" : "Added"} env vars in ${shellRc}\n`,
+  );
 
   console.log("Done! Start a new Claude Code session to activate.\n");
   console.log("Verify with: panopticon status");
