@@ -15,12 +15,14 @@ No Docker, no external services. Just Node.js.
 ## Install
 
 ```bash
-git clone <repo-url> && cd panopticon
-npm install
-node bin/panopticon install
+git clone https://github.com/fml-inc/panopticon.git && cd panopticon
+pnpm install
+panopticon install
 ```
 
-This builds the project, registers it as a Claude Code plugin, initializes the database, and configures OTel environment variables in your shell. Start a new Claude Code session to activate.
+This builds the project, registers it as a Claude Code plugin, initializes the database, symlinks the CLI to `~/.local/bin`, and configures OTel environment variables in your shell. Start a new Claude Code session to activate.
+
+Use `panopticon install --force` to overwrite customized environment variables with defaults.
 
 ## How it works
 
@@ -80,24 +82,65 @@ Once the plugin is loaded, these tools are available to Claude:
 | `panopticon_session_timeline` | Chronological events for a session (hooks + OTel merged) |
 | `panopticon_tool_stats` | Per-tool aggregates: call count, success/failure |
 | `panopticon_costs` | Token/cost breakdowns by session, model, or day |
-| `panopticon_search` | Text search across all event payloads and attributes |
+| `panopticon_summary` | Activity summary for a time window (sessions, prompts, tools, files, costs) |
+| `panopticon_plans` | Plans created via ExitPlanMode with full markdown content |
+| `panopticon_search` | Full-text search across hook payloads (FTS5) and OTel log bodies |
+| `panopticon_get_event` | Fetch full untruncated details for a specific event by source and ID |
 | `panopticon_query` | Raw read-only SQL against the database |
 | `panopticon_status` | Database row counts |
 
 ## CLI
 
-```bash
-panopticon install   # Build, register plugin, init DB, configure shell
-panopticon start     # Start OTLP receiver (background)
-panopticon stop      # Stop OTLP receiver
-panopticon status    # Show receiver status and DB stats
+```
+panopticon install          Build, register plugin, init DB, configure shell
+  --force                   Overwrite customized env vars with defaults
+panopticon start            Start the OTLP receiver (background)
+panopticon stop             Stop the OTLP receiver
+panopticon status           Show receiver/sync status, DB stats, watermarks
+panopticon prune            Delete old data from the database
+  --older-than 30d            Max age (default: 30d)
+  --synced-only               Only delete rows already synced
+  --dry-run                   Show estimate without deleting
+  --vacuum                    Reclaim disk space after pruning
+  --yes                       Skip confirmation prompt
+panopticon sync setup       Configure sync targets (interactive)
+panopticon sync start       Start the sync daemon (background)
+panopticon sync stop        Stop the sync daemon
+panopticon sync status      Show per-target sync progress and watermarks
+panopticon sync reset [t]   Reset sync watermarks (all or per-target)
 ```
 
 The OTLP receiver auto-starts on `SessionStart` via hook, so manual start/stop is rarely needed.
 
-## Environment variables
+## Sync
 
-Set by `panopticon install` in your shell profile:
+The sync daemon pushes local data to one or more remote backends. Run `panopticon sync setup` to configure interactively.
+
+Config lives at `~/.local/share/panopticon/sync.json`:
+
+```json
+{
+  "backendType": "fml",
+  "targets": [
+    { "name": "prod", "url": "https://api.example.com" }
+  ],
+  "allowedOrgs": ["my-org"],
+  "orgDirs": { "/Users/me/work/my-org": "my-org" },
+  "batchSize": 20,
+  "intervalMs": 30000
+}
+```
+
+- **backendType** — `"fml"` (default) posts to FML Convex endpoints. `"otlp"` posts logs and metrics in standard OTLP wire format (`/v1/logs`, `/v1/metrics`).
+- **targets** — Multiple backends with independent per-table watermarks.
+- **allowedOrgs** — Only sync data from these GitHub orgs. Use `"*"` for all. Empty list = sync nothing (fail-closed).
+- **orgDirs** — Map local directories to org names for non-git workspaces.
+
+Authentication uses a GitHub token via `PANOPTICON_GITHUB_TOKEN` or `gh auth token`.
+
+## Configuration
+
+**Environment variables** set by `panopticon install` in your shell profile:
 
 ```bash
 CLAUDE_CODE_ENABLE_TELEMETRY=1           # Required to enable OTel
@@ -109,6 +152,15 @@ OTEL_LOG_TOOL_DETAILS=1                  # Include MCP/skill names in events
 OTEL_LOG_USER_PROMPTS=1                  # Include prompt content in events
 OTEL_METRIC_EXPORT_INTERVAL=10000        # Flush metrics every 10s
 ```
+
+**Server configuration:**
+
+| Env var | Default | Description |
+|---|---|---|
+| `PANOPTICON_DATA_DIR` | `~/.local/share/panopticon` | Data directory |
+| `PANOPTICON_OTLP_PORT` | `4318` | OTLP receiver port |
+| `PANOPTICON_OTLP_HOST` | `0.0.0.0` | OTLP receiver bind address |
+| `PANOPTICON_GITHUB_TOKEN` | — | GitHub token for sync authentication |
 
 ## Database
 
@@ -129,9 +181,36 @@ Or ask Claude — it has the `panopticon_query` MCP tool for ad-hoc SQL.
 ## Development
 
 ```bash
-npx tsup          # Build
-npx tsup --watch  # Watch mode
-node bin/panopticon install  # Rebuild and update plugin cache
+pnpm install       # Install dependencies
+pnpm dev           # Watch mode (tsup)
+pnpm check         # Lint (Biome)
+pnpm typecheck     # Type check
+panopticon install # Rebuild and update plugin cache
 ```
 
-After rebuilding, run `node bin/panopticon install` to sync changes to the plugin cache. Restart Claude Code to pick up the changes.
+Pre-commit hooks (via lefthook) run Biome formatting and type checking automatically.
+
+After rebuilding, run `panopticon install` to sync changes to the plugin cache. Restart Claude Code to pick up the changes.
+
+## Architecture
+
+```
+src/
+├── cli.ts              CLI entry point (install, start/stop, prune, sync)
+├── config.ts           Paths, ports, defaults
+├── db/
+│   ├── schema.ts       SQLite schema, migrations, WAL + incremental auto-vacuum
+│   ├── query.ts        Query helpers for MCP tools
+│   └── prune.ts        Data retention / pruning
+├── hooks/
+│   └── handler.ts      Hook event ingestion (stdin JSON → gzipped SQLite)
+├── mcp/
+│   └── server.ts       MCP server with query tools
+├── otlp/
+│   └── server.ts       HTTP OTLP receiver (protobuf + JSON)
+└── sync/
+    ├── daemon.ts        Background sync loop (multi-target, FML + OTLP backends)
+    ├── client.ts        HTTP client, batching, GitHub auth
+    ├── mapper.ts        DB rows → API payloads
+    └── state.ts         Per-target watermark persistence
+```
