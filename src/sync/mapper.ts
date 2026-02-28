@@ -50,6 +50,7 @@ export interface FmlBatchEvent {
   timestamp: number;
   cwd: string;
   repositoryFullName?: string;
+  orgName?: string;
   permissionMode?: string;
   payload?: unknown;
 }
@@ -64,6 +65,7 @@ export interface FmlLogEntry {
   traceId?: string;
   spanId?: string;
   repositoryFullName?: string;
+  orgName?: string;
 }
 
 export interface FmlMetricEntry {
@@ -74,6 +76,7 @@ export interface FmlMetricEntry {
   unit?: string;
   attributes?: unknown;
   repositoryFullName?: string;
+  orgName?: string;
 }
 
 function parseJson(raw: string | null | undefined): unknown {

@@ -10,7 +10,13 @@ import { pruneEstimate, pruneExecute } from "./db/prune.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
 import { resolveGitHubToken } from "./sync/client.js";
-import { readWatermark, resetWatermarks } from "./sync/state.js";
+import type { SyncTarget } from "./sync/daemon.js";
+import {
+  readWatermark,
+  resetWatermarks,
+  resetWatermarksForTarget,
+  watermarkKey,
+} from "./sync/state.js";
 
 const command = process.argv[2];
 const subcommand = process.argv[3];
@@ -34,7 +40,7 @@ Usage:
   panopticon sync start     Start the sync daemon (background)
   panopticon sync stop      Stop the sync daemon
   panopticon sync status    Show sync daemon state and watermarks
-  panopticon sync reset     Reset all sync watermarks to 0
+  panopticon sync reset [target]  Reset sync watermarks (all or per-target)
   panopticon help           Show this help message
 `);
 }
@@ -302,11 +308,7 @@ async function status() {
       console.log(`  otel_metrics: ${stats.otel_metrics}`);
       console.log(`  hook_events:  ${stats.hook_events}`);
 
-      // Sync watermarks
-      const hookWm = readWatermark("hook_events_last_id") ?? 0;
-      const logWm = readWatermark("otel_logs_last_id") ?? 0;
-      const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
-
+      // Sync watermarks (per-target)
       const db = getDb();
       const maxHook =
         (
@@ -327,11 +329,40 @@ async function status() {
           }
         )?.m ?? 0;
 
+      // Load targets from sync config
+      let statusTargets: SyncTarget[] = [];
+      if (fs.existsSync(config.syncConfigFile)) {
+        try {
+          const cfg = JSON.parse(
+            fs.readFileSync(config.syncConfigFile, "utf-8"),
+          );
+          statusTargets =
+            cfg.targets ??
+            (cfg.urls
+              ? cfg.urls.map((url: string, i: number) => ({
+                  name: i === 0 ? "default" : `target-${i}`,
+                  url,
+                }))
+              : []);
+        } catch {}
+      }
+
       console.log();
-      console.log("Sync watermarks (synced / total):");
-      console.log(`  hook_events:  ${hookWm} / ${maxHook}`);
-      console.log(`  otel_logs:    ${logWm} / ${maxLog}`);
-      console.log(`  otel_metrics: ${metricWm} / ${maxMetric}`);
+      if (statusTargets.length > 0) {
+        console.log("Sync watermarks (synced / total):");
+        for (const t of statusTargets) {
+          const hookWm =
+            readWatermark(watermarkKey("hook_events_last_id", t.name)) ?? 0;
+          const logWm =
+            readWatermark(watermarkKey("otel_logs_last_id", t.name)) ?? 0;
+          const metricWm =
+            readWatermark(watermarkKey("otel_metrics_last_id", t.name)) ?? 0;
+          console.log(`  ${t.name}:`);
+          console.log(`    hook_events:  ${hookWm} / ${maxHook}`);
+          console.log(`    otel_logs:    ${logWm} / ${maxLog}`);
+          console.log(`    otel_metrics: ${metricWm} / ${maxMetric}`);
+        }
+      }
     } catch {
       console.log("  (could not read database)");
     } finally {
@@ -346,12 +377,28 @@ async function status() {
       const syncCfg = JSON.parse(
         fs.readFileSync(config.syncConfigFile, "utf-8"),
       );
+      const cfgTargets: SyncTarget[] =
+        syncCfg.targets ??
+        (syncCfg.urls
+          ? syncCfg.urls.map((url: string, i: number) => ({
+              name: i === 0 ? "default" : `target-${i}`,
+              url,
+            }))
+          : []);
       console.log();
       console.log("Sync config:");
-      console.log(`  URLs: ${syncCfg.urls?.join(", ") ?? "none"}`);
+      console.log(
+        `  Targets: ${cfgTargets.map((t: SyncTarget) => `${t.name}(${t.url})`).join(", ") || "none"}`,
+      );
       console.log(
         `  Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`,
       );
+      if (syncCfg.orgDirs && Object.keys(syncCfg.orgDirs).length > 0) {
+        console.log(`  Org directories:`);
+        for (const [dir, org] of Object.entries(syncCfg.orgDirs)) {
+          console.log(`    ${dir} → ${org}`);
+        }
+      }
     } catch {}
   }
 }
@@ -475,24 +522,80 @@ async function syncSetup() {
     ? JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"))
     : {};
 
-  const defaultUrl = existingConfig.urls?.[0] ?? "";
-  const urlInput = await prompt(
-    `FML backend URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `,
+  // Auto-migrate old urls[] to targets[] for display
+  const existingTargets: SyncTarget[] =
+    existingConfig.targets ??
+    (existingConfig.urls
+      ? existingConfig.urls.map((url: string, i: number) => ({
+          name: i === 0 ? "default" : `target-${i}`,
+          url,
+        }))
+      : []);
+
+  // Multi-target prompts
+  const targets: SyncTarget[] = [];
+  let idx = 0;
+  console.log(
+    "Configure sync targets (press Enter with empty name to finish):",
   );
-  const url = urlInput || defaultUrl;
-  if (!url) {
-    console.error("URL is required.");
+  while (true) {
+    const existingTarget = existingTargets[idx];
+    const defaultName = existingTarget?.name ?? (idx === 0 ? "default" : "");
+    const nameInput = await prompt(
+      `\nTarget name${defaultName ? ` [${defaultName}]` : ""}: `,
+    );
+    const name = nameInput || defaultName;
+    if (!name) break;
+
+    const defaultUrl = existingTarget?.url ?? "";
+    const urlInput = await prompt(
+      `  URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `,
+    );
+    const url = urlInput || defaultUrl;
+    if (!url) {
+      console.error("  URL is required, skipping this target.");
+      continue;
+    }
+
+    targets.push({ name, url });
+    idx++;
+  }
+
+  if (targets.length === 0) {
+    console.error("At least one target is required.");
     process.exit(1);
   }
 
   const defaultOrgs = existingConfig.allowedOrgs?.join(",") ?? "";
   const orgsInput = await prompt(
-    `Allowed GitHub orgs (comma-separated)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `,
+    `\nAllowed GitHub orgs (comma-separated)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `,
   );
   const orgs = (orgsInput || defaultOrgs)
     .split(",")
     .map((s: string) => s.trim())
     .filter(Boolean);
+
+  // Org directories (for attributing non-repo directories to an org)
+  const existingOrgDirs = existingConfig.orgDirs ?? {};
+  const existingOrgDirsStr = Object.entries(existingOrgDirs)
+    .map(([dir, org]) => `${dir}=${org}`)
+    .join(",");
+  const orgDirsInput = await prompt(
+    `Org directories (dir=org, comma-separated)${existingOrgDirsStr ? ` [${existingOrgDirsStr}]` : ""}: `,
+  );
+  const orgDirsRaw = orgDirsInput || existingOrgDirsStr;
+  const orgDirs: Record<string, string> = {};
+  if (orgDirsRaw) {
+    for (const entry of orgDirsRaw
+      .split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean)) {
+      const eqIdx = entry.indexOf("=");
+      if (eqIdx > 0) {
+        orgDirs[entry.slice(0, eqIdx).trim()] = entry.slice(eqIdx + 1).trim();
+      }
+    }
+  }
 
   // Verify GitHub token
   const token = resolveGitHubToken();
@@ -505,8 +608,9 @@ async function syncSetup() {
   console.log("\nGitHub token: found");
 
   const syncConfig = {
-    urls: [url],
+    targets,
     allowedOrgs: orgs.length > 0 ? orgs : undefined,
+    orgDirs: Object.keys(orgDirs).length > 0 ? orgDirs : undefined,
     batchSize: existingConfig.batchSize ?? 20,
     intervalMs: existingConfig.intervalMs ?? 30000,
   };
@@ -596,13 +700,32 @@ async function syncStatus() {
   const { running, pid } = isProcessRunning(config.syncPidFile);
   console.log(`Sync daemon: ${running ? `running (PID ${pid})` : "stopped"}`);
 
+  let targets: SyncTarget[] = [];
+
   if (fs.existsSync(config.syncConfigFile)) {
     try {
       const syncCfg = JSON.parse(
         fs.readFileSync(config.syncConfigFile, "utf-8"),
       );
-      console.log(`URLs: ${syncCfg.urls?.join(", ") ?? "none"}`);
+      // Support both old and new format for display
+      targets =
+        syncCfg.targets ??
+        (syncCfg.urls
+          ? syncCfg.urls.map((url: string, i: number) => ({
+              name: i === 0 ? "default" : `target-${i}`,
+              url,
+            }))
+          : []);
+      console.log(
+        `Targets: ${targets.map((t: SyncTarget) => `${t.name}(${t.url})`).join(", ") || "none"}`,
+      );
       console.log(`Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`);
+      if (syncCfg.orgDirs && Object.keys(syncCfg.orgDirs).length > 0) {
+        console.log(`Org directories:`);
+        for (const [dir, org] of Object.entries(syncCfg.orgDirs)) {
+          console.log(`  ${dir} → ${org}`);
+        }
+      }
       console.log(`Interval: ${syncCfg.intervalMs ?? 30000}ms`);
     } catch {}
   } else {
@@ -613,9 +736,6 @@ async function syncStatus() {
   if (fs.existsSync(config.dbPath)) {
     try {
       const db = getDb();
-      const hookWm = readWatermark("hook_events_last_id") ?? 0;
-      const logWm = readWatermark("otel_logs_last_id") ?? 0;
-      const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
 
       const maxHook =
         (
@@ -637,16 +757,25 @@ async function syncStatus() {
         )?.m ?? 0;
 
       console.log();
-      console.log("Watermarks (synced / total):");
-      console.log(
-        `  hook_events:  ${hookWm} / ${maxHook} (${maxHook - hookWm} pending)`,
-      );
-      console.log(
-        `  otel_logs:    ${logWm} / ${maxLog} (${maxLog - logWm} pending)`,
-      );
-      console.log(
-        `  otel_metrics: ${metricWm} / ${maxMetric} (${maxMetric - metricWm} pending)`,
-      );
+      for (const target of targets) {
+        const hookWm =
+          readWatermark(watermarkKey("hook_events_last_id", target.name)) ?? 0;
+        const logWm =
+          readWatermark(watermarkKey("otel_logs_last_id", target.name)) ?? 0;
+        const metricWm =
+          readWatermark(watermarkKey("otel_metrics_last_id", target.name)) ?? 0;
+
+        console.log(`${target.name} → ${target.url}`);
+        console.log(
+          `  hook_events:  ${hookWm} / ${maxHook} (${maxHook - hookWm} pending)`,
+        );
+        console.log(
+          `  otel_logs:    ${logWm} / ${maxLog} (${maxLog - logWm} pending)`,
+        );
+        console.log(
+          `  otel_metrics: ${metricWm} / ${maxMetric} (${maxMetric - metricWm} pending)`,
+        );
+      }
     } catch {
       console.log("  (could not read database)");
     } finally {
@@ -656,9 +785,15 @@ async function syncStatus() {
 }
 
 async function syncReset() {
+  const targetName = process.argv[4]; // e.g. "panopticon sync reset dev"
   try {
-    resetWatermarks();
-    console.log("All sync watermarks reset to 0.");
+    if (targetName) {
+      resetWatermarksForTarget(targetName);
+      console.log(`Sync watermarks for target "${targetName}" reset to 0.`);
+    } else {
+      resetWatermarks();
+      console.log("All sync watermarks reset to 0.");
+    }
   } finally {
     closeDb();
   }
