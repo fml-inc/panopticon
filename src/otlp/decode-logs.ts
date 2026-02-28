@@ -1,10 +1,10 @@
 import type { OtelLogRow } from "../db/store.js";
 import {
-  ExportLogsServiceRequest,
   attrsToMap,
+  bytesToHex,
+  ExportLogsServiceRequest,
   extractAnyValue,
   longToNumber,
-  bytesToHex,
 } from "./proto.js";
 
 export function decodeLogs(buf: Uint8Array): OtelLogRow[] {
@@ -26,14 +26,23 @@ export function decodeLogs(buf: Uint8Array): OtelLogRow[] {
 
         rows.push({
           timestamp_ns: longToNumber(record.timeUnixNano),
-          observed_timestamp_ns: longToNumber(record.observedTimeUnixNano) || undefined,
+          observed_timestamp_ns:
+            longToNumber(record.observedTimeUnixNano) || undefined,
           severity_number: record.severityNumber ?? undefined,
           severity_text: record.severityText || undefined,
-          body: typeof body === "string" ? body : body != null ? JSON.stringify(body) : undefined,
+          body:
+            typeof body === "string"
+              ? body
+              : body != null
+                ? JSON.stringify(body)
+                : undefined,
           attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
-          resource_attributes: Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
+          resource_attributes:
+            Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
           session_id: (attrs["session.id"] as string) ?? resourceSessionId,
-          prompt_id: (attrs["prompt.id"] ?? attrs["prompt_id"]) as string | undefined,
+          prompt_id: (attrs["prompt.id"] ?? attrs.prompt_id) as
+            | string
+            | undefined,
           trace_id: bytesToHex(record.traceId) || undefined,
           span_id: bytesToHex(record.spanId) || undefined,
         });

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
-import { spawn, execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 import readline from "node:readline";
 import { config, ensureDataDir } from "./config.js";
-import { getDb, closeDb } from "./db/schema.js";
-import { dbStats } from "./db/query.js";
-import { readWatermark, resetWatermarks } from "./sync/state.js";
-import { resolveGitHubToken } from "./sync/client.js";
 import { pruneEstimate, pruneExecute } from "./db/prune.js";
+import { dbStats } from "./db/query.js";
+import { closeDb, getDb } from "./db/schema.js";
+import { resolveGitHubToken } from "./sync/client.js";
+import { readWatermark, resetWatermarks } from "./sync/state.js";
 
 const command = process.argv[2];
 const subcommand = process.argv[3];
@@ -57,12 +57,14 @@ function readJsonFile(filePath: string): any {
 
 function writeJsonFile(filePath: string, data: any): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n");
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 async function install() {
   const pluginRoot = getPluginRoot();
-  const pluginJson = readJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"));
+  const pluginJson = readJsonFile(
+    path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+  );
   const version = pluginJson?.version ?? "0.1.0";
 
   console.log("Installing panopticon...\n");
@@ -86,7 +88,9 @@ async function install() {
 
   // 3. Set up local marketplace
   console.log("[3/5] Setting up local marketplace...");
-  fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), { recursive: true });
+  fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
+    recursive: true,
+  });
   writeJsonFile(config.marketplaceManifest, {
     name: "local-plugins",
     owner: { name: os.userInfo().username },
@@ -101,7 +105,9 @@ async function install() {
 
   // Symlink plugin into marketplace
   const marketplaceLink = path.join(config.marketplaceDir, "panopticon");
-  try { fs.unlinkSync(marketplaceLink); } catch {}
+  try {
+    fs.unlinkSync(marketplaceLink);
+  } catch {}
   fs.symlinkSync(pluginRoot, marketplaceLink);
 
   // Copy to plugin cache (Claude Code reads from cache, not marketplace directly)
@@ -145,8 +151,13 @@ async function install() {
 
   // 5. Configure shell environment
   console.log("[5/5] Configuring shell environment...");
-  const shellRc = path.join(os.homedir(), process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc");
-  const rcContent = fs.existsSync(shellRc) ? fs.readFileSync(shellRc, "utf-8") : "";
+  const shellRc = path.join(
+    os.homedir(),
+    process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
+  );
+  const rcContent = fs.existsSync(shellRc)
+    ? fs.readFileSync(shellRc, "utf-8")
+    : "";
 
   const envBlock = [
     "",
@@ -178,7 +189,7 @@ async function start() {
 
   // Check if already running
   if (fs.existsSync(config.pidFile)) {
-    const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim());
+    const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
     try {
       process.kill(pid, 0); // Check if process exists
       console.log(`OTLP receiver already running (PID ${pid})`);
@@ -193,7 +204,7 @@ async function start() {
   const serverScript = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     "otlp",
-    "server.js"
+    "server.js",
   );
 
   const child = spawn("node", [serverScript], {
@@ -222,7 +233,9 @@ async function start() {
       if (child.pid) {
         fs.writeFileSync(config.pidFile, String(child.pid));
         child.unref();
-        console.log(`OTLP receiver started (PID ${child.pid}) on :${config.otlpPort}`);
+        console.log(
+          `OTLP receiver started (PID ${child.pid}) on :${config.otlpPort}`,
+        );
         resolve();
       } else {
         reject(new Error(`Failed to start: ${stderr}`));
@@ -237,7 +250,7 @@ async function stop() {
     return;
   }
 
-  const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim());
+  const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
   try {
     process.kill(pid, "SIGTERM");
     fs.unlinkSync(config.pidFile);
@@ -248,9 +261,12 @@ async function stop() {
   }
 }
 
-function isProcessRunning(pidFile: string): { running: boolean; pid: number | null } {
+function isProcessRunning(pidFile: string): {
+  running: boolean;
+  pid: number | null;
+} {
   if (!fs.existsSync(pidFile)) return { running: false, pid: null };
-  const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim());
+  const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
   try {
     process.kill(pid, 0);
     return { running: true, pid };
@@ -267,10 +283,10 @@ async function status() {
   console.log("=================");
   console.log();
   console.log(
-    `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`
+    `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
   );
   console.log(
-    `Sync Daemon:   ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`
+    `Sync Daemon:   ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`,
   );
   console.log(`Database: ${config.dbPath}`);
 
@@ -292,9 +308,24 @@ async function status() {
       const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
 
       const db = getDb();
-      const maxHook = (db.prepare("SELECT MAX(id) as m FROM hook_events").get() as { m: number | null })?.m ?? 0;
-      const maxLog = (db.prepare("SELECT MAX(id) as m FROM otel_logs").get() as { m: number | null })?.m ?? 0;
-      const maxMetric = (db.prepare("SELECT MAX(id) as m FROM otel_metrics").get() as { m: number | null })?.m ?? 0;
+      const maxHook =
+        (
+          db.prepare("SELECT MAX(id) as m FROM hook_events").get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
+      const maxLog =
+        (
+          db.prepare("SELECT MAX(id) as m FROM otel_logs").get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
+      const maxMetric =
+        (
+          db.prepare("SELECT MAX(id) as m FROM otel_metrics").get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
 
       console.log();
       console.log("Sync watermarks (synced / total):");
@@ -312,11 +343,15 @@ async function status() {
 
   if (fs.existsSync(config.syncConfigFile)) {
     try {
-      const syncCfg = JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"));
+      const syncCfg = JSON.parse(
+        fs.readFileSync(config.syncConfigFile, "utf-8"),
+      );
       console.log();
       console.log("Sync config:");
       console.log(`  URLs: ${syncCfg.urls?.join(", ") ?? "none"}`);
-      console.log(`  Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`);
+      console.log(
+        `  Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`,
+      );
     } catch {}
   }
 }
@@ -328,12 +363,18 @@ async function status() {
 function parseAge(value: string): number {
   const match = value.match(/^(\d+)\s*(d|h|m)$/);
   if (!match) {
-    console.error(`Invalid --older-than value: ${value} (use e.g. 30d, 24h, 60m)`);
+    console.error(
+      `Invalid --older-than value: ${value} (use e.g. 30d, 24h, 60m)`,
+    );
     process.exit(1);
   }
   const n = parseInt(match[1], 10);
   const unit = match[2];
-  const multipliers: Record<string, number> = { d: 86400000, h: 3600000, m: 60000 };
+  const multipliers: Record<string, number> = {
+    d: 86400000,
+    h: 3600000,
+    m: 60000,
+  };
   return n * multipliers[unit];
 }
 
@@ -364,7 +405,8 @@ async function prune() {
 
   try {
     const estimate = pruneEstimate(cutoffMs, syncedOnly);
-    const total = estimate.otel_logs + estimate.otel_metrics + estimate.hook_events;
+    const total =
+      estimate.otel_logs + estimate.otel_metrics + estimate.hook_events;
 
     console.log("Rows to delete:");
     console.log(`  otel_logs:    ${estimate.otel_logs}`);
@@ -414,7 +456,10 @@ async function prune() {
 // ============================================================================
 
 function prompt(question: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
   return new Promise((resolve) => {
     rl.question(question, (answer) => {
       rl.close();
@@ -431,7 +476,9 @@ async function syncSetup() {
     : {};
 
   const defaultUrl = existingConfig.urls?.[0] ?? "";
-  const urlInput = await prompt(`FML backend URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `);
+  const urlInput = await prompt(
+    `FML backend URL${defaultUrl ? ` [${defaultUrl}]` : ""}: `,
+  );
   const url = urlInput || defaultUrl;
   if (!url) {
     console.error("URL is required.");
@@ -439,7 +486,9 @@ async function syncSetup() {
   }
 
   const defaultOrgs = existingConfig.allowedOrgs?.join(",") ?? "";
-  const orgsInput = await prompt(`Allowed GitHub orgs (comma-separated)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `);
+  const orgsInput = await prompt(
+    `Allowed GitHub orgs (comma-separated)${defaultOrgs ? ` [${defaultOrgs}]` : ""}: `,
+  );
   const orgs = (orgsInput || defaultOrgs)
     .split(",")
     .map((s: string) => s.trim())
@@ -448,7 +497,9 @@ async function syncSetup() {
   // Verify GitHub token
   const token = resolveGitHubToken();
   if (!token) {
-    console.error("\nNo GitHub token found. Set PANOPTICON_GITHUB_TOKEN or install gh CLI.");
+    console.error(
+      "\nNo GitHub token found. Set PANOPTICON_GITHUB_TOKEN or install gh CLI.",
+    );
     process.exit(1);
   }
   console.log("\nGitHub token: found");
@@ -461,7 +512,10 @@ async function syncSetup() {
   };
 
   ensureDataDir();
-  fs.writeFileSync(config.syncConfigFile, JSON.stringify(syncConfig, null, 2) + "\n");
+  fs.writeFileSync(
+    config.syncConfigFile,
+    `${JSON.stringify(syncConfig, null, 2)}\n`,
+  );
   console.log(`\nSync config written to ${config.syncConfigFile}`);
 }
 
@@ -481,13 +535,15 @@ async function syncStart() {
   }
   // Clean up stale PID file
   if (pid !== null) {
-    try { fs.unlinkSync(config.syncPidFile); } catch {}
+    try {
+      fs.unlinkSync(config.syncPidFile);
+    } catch {}
   }
 
   const daemonScript = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     "sync",
-    "daemon.js"
+    "daemon.js",
   );
 
   const child = spawn("node", [daemonScript], {
@@ -525,7 +581,7 @@ async function syncStop() {
     return;
   }
 
-  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim());
+  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim(), 10);
   try {
     process.kill(pid, "SIGTERM");
     fs.unlinkSync(config.syncPidFile);
@@ -542,7 +598,9 @@ async function syncStatus() {
 
   if (fs.existsSync(config.syncConfigFile)) {
     try {
-      const syncCfg = JSON.parse(fs.readFileSync(config.syncConfigFile, "utf-8"));
+      const syncCfg = JSON.parse(
+        fs.readFileSync(config.syncConfigFile, "utf-8"),
+      );
       console.log(`URLs: ${syncCfg.urls?.join(", ") ?? "none"}`);
       console.log(`Allowed orgs: ${syncCfg.allowedOrgs?.join(", ") ?? "all"}`);
       console.log(`Interval: ${syncCfg.intervalMs ?? 30000}ms`);
@@ -559,15 +617,36 @@ async function syncStatus() {
       const logWm = readWatermark("otel_logs_last_id") ?? 0;
       const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
 
-      const maxHook = (db.prepare("SELECT MAX(id) as m FROM hook_events").get() as { m: number | null })?.m ?? 0;
-      const maxLog = (db.prepare("SELECT MAX(id) as m FROM otel_logs").get() as { m: number | null })?.m ?? 0;
-      const maxMetric = (db.prepare("SELECT MAX(id) as m FROM otel_metrics").get() as { m: number | null })?.m ?? 0;
+      const maxHook =
+        (
+          db.prepare("SELECT MAX(id) as m FROM hook_events").get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
+      const maxLog =
+        (
+          db.prepare("SELECT MAX(id) as m FROM otel_logs").get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
+      const maxMetric =
+        (
+          db.prepare("SELECT MAX(id) as m FROM otel_metrics").get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
 
       console.log();
       console.log("Watermarks (synced / total):");
-      console.log(`  hook_events:  ${hookWm} / ${maxHook} (${maxHook - hookWm} pending)`);
-      console.log(`  otel_logs:    ${logWm} / ${maxLog} (${maxLog - logWm} pending)`);
-      console.log(`  otel_metrics: ${metricWm} / ${maxMetric} (${maxMetric - metricWm} pending)`);
+      console.log(
+        `  hook_events:  ${hookWm} / ${maxHook} (${maxHook - hookWm} pending)`,
+      );
+      console.log(
+        `  otel_logs:    ${logWm} / ${maxLog} (${maxLog - logWm} pending)`,
+      );
+      console.log(
+        `  otel_metrics: ${metricWm} / ${maxMetric} (${maxMetric - metricWm} pending)`,
+      );
     } catch {
       console.log("  (could not read database)");
     } finally {

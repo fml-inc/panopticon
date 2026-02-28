@@ -3,9 +3,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { insertHookEvent } from "../db/store.js";
 import { config, ensureDataDir } from "../config.js";
 import { autoPrune } from "../db/prune.js";
+import { insertHookEvent } from "../db/store.js";
 
 interface HookInput {
   session_id: string;
@@ -18,13 +18,15 @@ interface HookInput {
 
 function isReceiverRunning(): boolean {
   if (!fs.existsSync(config.pidFile)) return false;
-  const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim());
+  const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
   try {
     process.kill(pid, 0);
     return true;
   } catch {
     // Stale PID file
-    try { fs.unlinkSync(config.pidFile); } catch {}
+    try {
+      fs.unlinkSync(config.pidFile);
+    } catch {}
     return false;
   }
 }
@@ -36,7 +38,7 @@ function startReceiver(): void {
     path.dirname(new URL(import.meta.url).pathname),
     "..",
     "otlp",
-    "server.js"
+    "server.js",
   );
 
   const child = spawn("node", [serverScript], {
@@ -56,12 +58,14 @@ function startReceiver(): void {
 
 function isSyncRunning(): boolean {
   if (!fs.existsSync(config.syncPidFile)) return false;
-  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim());
+  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim(), 10);
   try {
     process.kill(pid, 0);
     return true;
   } catch {
-    try { fs.unlinkSync(config.syncPidFile); } catch {}
+    try {
+      fs.unlinkSync(config.syncPidFile);
+    } catch {}
     return false;
   }
 }
@@ -74,7 +78,7 @@ function startSyncDaemon(): void {
     path.dirname(new URL(import.meta.url).pathname),
     "..",
     "sync",
-    "daemon.js"
+    "daemon.js",
   );
 
   const child = spawn("node", [daemonScript], {

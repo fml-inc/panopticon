@@ -6,10 +6,10 @@ function parseSince(since?: string): number | null {
   if (match) {
     const [, num, unit] = match;
     const ms = unit === "h" ? 3600000 : unit === "d" ? 86400000 : 60000;
-    return Date.now() - parseInt(num) * ms;
+    return Date.now() - parseInt(num, 10) * ms;
   }
   const date = new Date(since);
-  return isNaN(date.getTime()) ? null : date.getTime();
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
 }
 
 export function listSessions(opts: { limit?: number; since?: string } = {}) {
@@ -69,7 +69,9 @@ export function sessionTimeline(opts: {
   const offset = opts.offset ?? 0;
   const truncate = !opts.full_payloads;
 
-  const payloadCol = truncate ? "SUBSTR(decompress(payload), 1, 500)" : "decompress(payload)";
+  const payloadCol = truncate
+    ? "SUBSTR(decompress(payload), 1, 500)"
+    : "decompress(payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Hook events
@@ -105,7 +107,9 @@ export function sessionTimeline(opts: {
   const countSql = `
     SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})
   `;
-  const total = (db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }).total;
+  const total = (
+    db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }
+  ).total;
 
   const sql = `
     SELECT * FROM (${hookSql} UNION ALL ${otelSql})
@@ -149,7 +153,9 @@ export function toolStats(opts: { since?: string; session_id?: string } = {}) {
   return db.prepare(sql).all(...params);
 }
 
-export function costBreakdown(opts: { since?: string; group_by?: "session" | "model" | "day" } = {}) {
+export function costBreakdown(
+  opts: { since?: string; group_by?: "session" | "model" | "day" } = {},
+) {
   const db = getDb();
   const sinceMs = parseSince(opts.since);
   const groupBy = opts.group_by ?? "session";
@@ -211,7 +217,9 @@ export function searchEvents(opts: {
   const pattern = `%${opts.query}%`;
   const truncate = !opts.full_payloads;
 
-  const hookPayloadCol = truncate ? "SUBSTR(decompress(h.payload), 1, 500)" : "decompress(h.payload)";
+  const hookPayloadCol = truncate
+    ? "SUBSTR(decompress(h.payload), 1, 500)"
+    : "decompress(h.payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Search hook events via FTS5 + fallback on tool_name/event_type LIKE
@@ -225,7 +233,9 @@ export function searchEvents(opts: {
   hookParams.push(opts.query, pattern, pattern);
 
   if (opts.event_types?.length) {
-    hookConditions.push(`h.event_type IN (${opts.event_types.map(() => "?").join(",")})`);
+    hookConditions.push(
+      `h.event_type IN (${opts.event_types.map(() => "?").join(",")})`,
+    );
     hookParams.push(...opts.event_types);
   }
   if (sinceMs) {
@@ -241,9 +251,7 @@ export function searchEvents(opts: {
   `;
 
   // Search otel logs
-  const otelConditions: string[] = [
-    "(body LIKE ? OR attributes LIKE ?)",
-  ];
+  const otelConditions: string[] = ["(body LIKE ? OR attributes LIKE ?)"];
   const otelParams: unknown[] = [pattern, pattern];
 
   if (sinceMs) {
@@ -263,7 +271,9 @@ export function searchEvents(opts: {
   const countSql = `
     SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})
   `;
-  const total = (db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }).total;
+  const total = (
+    db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }
+  ).total;
 
   const sql = `
     SELECT * FROM (${hookSql} UNION ALL ${otelSql})
@@ -292,69 +302,94 @@ export function activitySummary(opts: { since?: string } = {}) {
     ORDER BY start_ms ASC
   `;
   const sessions = db.prepare(sessionsSql).all(sinceMs) as {
-    session_id: string; start_ms: number; end_ms: number; event_count: number;
+    session_id: string;
+    start_ms: number;
+    end_ms: number;
+    event_count: number;
   }[];
 
   const result: {
     period: { since: string; until: string };
     sessions: unknown[];
-    totals: { session_count: number; total_cost: number; total_tokens: number; top_tools: { tool: string; count: number }[] };
+    totals: {
+      session_count: number;
+      total_cost: number;
+      total_tokens: number;
+      top_tools: { tool: string; count: number }[];
+    };
   } = {
     period: {
       since: new Date(sinceMs).toISOString(),
       until: new Date(now).toISOString(),
     },
     sessions: [],
-    totals: { session_count: sessions.length, total_cost: 0, total_tokens: 0, top_tools: [] },
+    totals: {
+      session_count: sessions.length,
+      total_cost: 0,
+      total_tokens: 0,
+      top_tools: [],
+    },
   };
 
   for (const s of sessions) {
     // User prompts (first 100 chars of each)
-    const prompts = db.prepare(`
+    const prompts = db
+      .prepare(`
       SELECT SUBSTR(json_extract(decompress(payload), '$.user_prompt'), 1, 100) as prompt
       FROM hook_events
       WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ?
       ORDER BY timestamp_ms ASC
-    `).all(s.session_id, sinceMs) as { prompt: string | null }[];
+    `)
+      .all(s.session_id, sinceMs) as { prompt: string | null }[];
 
     // Tool usage
-    const tools = db.prepare(`
+    const tools = db
+      .prepare(`
       SELECT tool_name, COUNT(*) as count
       FROM hook_events
       WHERE session_id = ? AND event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ?
       GROUP BY tool_name
       ORDER BY count DESC
-    `).all(s.session_id, sinceMs) as { tool_name: string; count: number }[];
+    `)
+      .all(s.session_id, sinceMs) as { tool_name: string; count: number }[];
 
     // Files modified (from Write/Edit tools)
-    const files = db.prepare(`
+    const files = db
+      .prepare(`
       SELECT DISTINCT json_extract(decompress(payload), '$.tool_input.file_path') as file_path
       FROM hook_events
       WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse' AND timestamp_ms >= ?
-    `).all(s.session_id, sinceMs) as { file_path: string | null }[];
+    `)
+      .all(s.session_id, sinceMs) as { file_path: string | null }[];
 
     // Plans created in this session
-    const plans = db.prepare(`
+    const plans = db
+      .prepare(`
       SELECT json_extract(decompress(payload), '$.tool_input.plan') as plan
       FROM hook_events
       WHERE session_id = ? AND tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse' AND timestamp_ms >= ?
       ORDER BY timestamp_ms ASC
-    `).all(s.session_id, sinceMs) as { plan: string | null }[];
+    `)
+      .all(s.session_id, sinceMs) as { plan: string | null }[];
 
     // Working directory
-    const cwdRow = db.prepare(`
+    const cwdRow = db
+      .prepare(`
       SELECT cwd FROM hook_events
       WHERE session_id = ? AND event_type = 'SessionStart'
       LIMIT 1
-    `).get(s.session_id) as { cwd: string | null } | undefined;
+    `)
+      .get(s.session_id) as { cwd: string | null } | undefined;
 
     // Cost from otel_metrics
-    const costRow = db.prepare(`
+    const costRow = db
+      .prepare(`
       SELECT SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as tokens,
              SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as cost
       FROM otel_metrics
       WHERE session_id = ?
-    `).get(s.session_id) as { tokens: number; cost: number } | undefined;
+    `)
+      .get(s.session_id) as { tokens: number; cost: number } | undefined;
 
     const sessionCost = costRow?.cost ?? 0;
     const sessionTokens = costRow?.tokens ?? 0;
@@ -375,20 +410,27 @@ export function activitySummary(opts: { since?: string } = {}) {
   }
 
   // Global top tools
-  const topTools = db.prepare(`
+  const topTools = db
+    .prepare(`
     SELECT tool_name, COUNT(*) as count
     FROM hook_events
     WHERE event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ?
     GROUP BY tool_name
     ORDER BY count DESC
     LIMIT 10
-  `).all(sinceMs) as { tool_name: string; count: number }[];
-  result.totals.top_tools = topTools.map((t) => ({ tool: t.tool_name, count: t.count }));
+  `)
+    .all(sinceMs) as { tool_name: string; count: number }[];
+  result.totals.top_tools = topTools.map((t) => ({
+    tool: t.tool_name,
+    count: t.count,
+  }));
 
   return result;
 }
 
-export function listPlans(opts: { session_id?: string; since?: string; limit?: number } = {}) {
+export function listPlans(
+  opts: { session_id?: string; since?: string; limit?: number } = {},
+) {
   const db = getDb();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
@@ -420,8 +462,11 @@ export function listPlans(opts: { session_id?: string; since?: string; limit?: n
   params.push(limit);
 
   const rows = db.prepare(sql).all(...params) as {
-    id: number; session_id: string; timestamp_ms: number;
-    plan: string | null; allowed_prompts: string | null;
+    id: number;
+    session_id: string;
+    timestamp_ms: number;
+    plan: string | null;
+    allowed_prompts: string | null;
   }[];
 
   return rows.map((r) => ({
@@ -438,13 +483,17 @@ export function rawQuery(sql: string) {
 
   // Only allow SELECT statements
   const trimmed = sql.trim().toUpperCase();
-  if (!trimmed.startsWith("SELECT") && !trimmed.startsWith("WITH") && !trimmed.startsWith("PRAGMA")) {
+  if (
+    !trimmed.startsWith("SELECT") &&
+    !trimmed.startsWith("WITH") &&
+    !trimmed.startsWith("PRAGMA")
+  ) {
     throw new Error("Only SELECT, WITH, and PRAGMA statements are allowed");
   }
 
   // Safety net: append LIMIT if not already present (skip for PRAGMA)
   if (!trimmed.startsWith("PRAGMA") && !trimmed.includes("LIMIT")) {
-    sql = sql.trimEnd().replace(/;$/, "") + " LIMIT 1000";
+    sql = `${sql.trimEnd().replace(/;$/, "")} LIMIT 1000`;
   }
 
   return db.prepare(sql).all();
@@ -452,9 +501,15 @@ export function rawQuery(sql: string) {
 
 export function dbStats() {
   const db = getDb();
-  const logs = db.prepare("SELECT COUNT(*) as count FROM otel_logs").get() as { count: number };
-  const metrics = db.prepare("SELECT COUNT(*) as count FROM otel_metrics").get() as { count: number };
-  const hooks = db.prepare("SELECT COUNT(*) as count FROM hook_events").get() as { count: number };
+  const logs = db.prepare("SELECT COUNT(*) as count FROM otel_logs").get() as {
+    count: number;
+  };
+  const metrics = db
+    .prepare("SELECT COUNT(*) as count FROM otel_metrics")
+    .get() as { count: number };
+  const hooks = db
+    .prepare("SELECT COUNT(*) as count FROM hook_events")
+    .get() as { count: number };
 
   return {
     otel_logs: logs.count,

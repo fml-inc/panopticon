@@ -16,11 +16,14 @@ export function resolveRepoFromCwd(cwd: string): string | null {
 
   let repo: string | null = null;
   try {
-    const url = execSync(`git -C ${JSON.stringify(cwd)} remote get-url origin`, {
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    const url = execSync(
+      `git -C ${JSON.stringify(cwd)} remote get-url origin`,
+      {
+        encoding: "utf-8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
 
     // SSH: git@github.com:org/repo.git
     const sshMatch = url.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);

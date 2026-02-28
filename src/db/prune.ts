@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import { getDb } from "./schema.js";
-import { readWatermark } from "../sync/state.js";
 import { config } from "../config.js";
+import { readWatermark } from "../sync/state.js";
+import { getDb } from "./schema.js";
 
 export interface PruneResult {
   otel_logs: number;
@@ -37,13 +37,19 @@ export function pruneEstimate(
   }
 
   const logs = (
-    db.prepare(`SELECT COUNT(*) as c FROM otel_logs ${logWhere}`).get(...logParams) as { c: number }
+    db
+      .prepare(`SELECT COUNT(*) as c FROM otel_logs ${logWhere}`)
+      .get(...logParams) as { c: number }
   ).c;
   const metrics = (
-    db.prepare(`SELECT COUNT(*) as c FROM otel_metrics ${metricWhere}`).get(...metricParams) as { c: number }
+    db
+      .prepare(`SELECT COUNT(*) as c FROM otel_metrics ${metricWhere}`)
+      .get(...metricParams) as { c: number }
   ).c;
   const hooks = (
-    db.prepare(`SELECT COUNT(*) as c FROM hook_events ${hookWhere}`).get(...hookParams) as { c: number }
+    db
+      .prepare(`SELECT COUNT(*) as c FROM hook_events ${hookWhere}`)
+      .get(...hookParams) as { c: number }
   ).c;
 
   return { otel_logs: logs, otel_metrics: metrics, hook_events: hooks };

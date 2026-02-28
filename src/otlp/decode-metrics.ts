@@ -1,7 +1,7 @@
 import type { OtelMetricRow } from "../db/store.js";
 import {
-  ExportMetricsServiceRequest,
   attrsToMap,
+  ExportMetricsServiceRequest,
   longToNumber,
 } from "./proto.js";
 
@@ -71,9 +71,7 @@ export function decodeMetrics(buf: Uint8Array): OtelMetricRow[] {
             unit,
             attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
             resource_attributes:
-              Object.keys(resourceAttrs).length > 0
-                ? resourceAttrs
-                : undefined,
+              Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
             session_id: (attrs["session.id"] as string) ?? resourceSessionId,
           });
         }

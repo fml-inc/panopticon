@@ -4,15 +4,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
+  activitySummary,
+  costBreakdown,
+  dbStats,
+  listPlans,
   listSessions,
+  rawQuery,
+  searchEvents,
   sessionTimeline,
   toolStats,
-  costBreakdown,
-  searchEvents,
-  activitySummary,
-  listPlans,
-  rawQuery,
-  dbStats,
 } from "../db/query.js";
 
 const server = new McpServer({
@@ -24,7 +24,10 @@ server.tool(
   "panopticon_sessions",
   "List recent Claude Code sessions with stats (event count, tools used, cost)",
   {
-    limit: z.number().optional().describe("Max sessions to return (default 20)"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Max sessions to return (default 20)"),
     since: z
       .string()
       .optional()
@@ -40,7 +43,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -53,11 +56,23 @@ server.tool(
       .optional()
       .describe("Filter to specific event types"),
     limit: z.number().optional().describe("Max events to return (default 20)"),
-    offset: z.number().optional().describe("Number of events to skip (for pagination)"),
-    full_payloads: z.boolean().optional().describe("Return full payloads instead of truncated (default false)"),
+    offset: z
+      .number()
+      .optional()
+      .describe("Number of events to skip (for pagination)"),
+    full_payloads: z
+      .boolean()
+      .optional()
+      .describe("Return full payloads instead of truncated (default false)"),
   },
   async ({ session_id, event_types, limit, offset, full_payloads }) => {
-    const { total, rows } = sessionTimeline({ session_id, event_types, limit, offset, full_payloads });
+    const { total, rows } = sessionTimeline({
+      session_id,
+      event_types,
+      limit,
+      offset,
+      full_payloads,
+    });
     return {
       content: [
         {
@@ -66,7 +81,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -89,7 +104,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -115,7 +130,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -125,7 +140,9 @@ server.tool(
     since: z
       .string()
       .optional()
-      .describe('Time window (default "24h"). ISO date or relative like "24h", "7d"'),
+      .describe(
+        'Time window (default "24h"). ISO date or relative like "24h", "7d"',
+      ),
   },
   async ({ since }) => {
     const summary = activitySummary({ since });
@@ -137,7 +154,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -161,7 +178,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -178,11 +195,24 @@ server.tool(
       .optional()
       .describe('Time filter: ISO date or relative like "24h", "7d"'),
     limit: z.number().optional().describe("Max results (default 20)"),
-    offset: z.number().optional().describe("Number of results to skip (for pagination)"),
-    full_payloads: z.boolean().optional().describe("Return full payloads instead of truncated (default false)"),
+    offset: z
+      .number()
+      .optional()
+      .describe("Number of results to skip (for pagination)"),
+    full_payloads: z
+      .boolean()
+      .optional()
+      .describe("Return full payloads instead of truncated (default false)"),
   },
   async ({ query, event_types, since, limit, offset, full_payloads }) => {
-    const { total, rows } = searchEvents({ query, event_types, since, limit, offset, full_payloads });
+    const { total, rows } = searchEvents({
+      query,
+      event_types,
+      since,
+      limit,
+      offset,
+      full_payloads,
+    });
     return {
       content: [
         {
@@ -191,7 +221,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 server.tool(
@@ -204,11 +234,7 @@ Schema:
   otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)
   sync_state(key, value)`,
   {
-    sql: z
-      .string()
-      .describe(
-        "SQL query (SELECT/WITH/PRAGMA only)"
-      ),
+    sql: z.string().describe("SQL query (SELECT/WITH/PRAGMA only)"),
   },
   async ({ sql }) => {
     try {
@@ -232,7 +258,7 @@ Schema:
         isError: true,
       };
     }
-  }
+  },
 );
 
 server.tool(
@@ -249,7 +275,7 @@ server.tool(
         },
       ],
     };
-  }
+  },
 );
 
 async function main() {

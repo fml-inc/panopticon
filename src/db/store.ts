@@ -63,7 +63,9 @@ export function insertOtelLogs(rows: OtelLogRow[]): void {
         severity_text: row.severity_text ?? null,
         body: row.body ?? null,
         attributes: row.attributes ? JSON.stringify(row.attributes) : null,
-        resource_attributes: row.resource_attributes ? JSON.stringify(row.resource_attributes) : null,
+        resource_attributes: row.resource_attributes
+          ? JSON.stringify(row.resource_attributes)
+          : null,
         session_id: row.session_id ?? null,
         prompt_id: row.prompt_id ?? null,
         trace_id: row.trace_id ?? null,
@@ -86,7 +88,9 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
         metric_type: row.metric_type ?? null,
         unit: row.unit ?? null,
         attributes: row.attributes ? JSON.stringify(row.attributes) : null,
-        resource_attributes: row.resource_attributes ? JSON.stringify(row.resource_attributes) : null,
+        resource_attributes: row.resource_attributes
+          ? JSON.stringify(row.resource_attributes)
+          : null,
         session_id: row.session_id ?? null,
       });
     }
@@ -107,8 +111,13 @@ export function insertHookEvent(row: HookEventRow): void {
       tool_name: row.tool_name ?? null,
       payload: gzipSync(Buffer.from(json)),
     });
-    const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
-    db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(id, json);
+    const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
+      id: number;
+    };
+    db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(
+      id,
+      json,
+    );
   });
   insertWithFts();
 }

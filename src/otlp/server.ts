@@ -19,7 +19,9 @@ function collectBody(req: http.IncomingMessage): Promise<Buffer> {
 
 function isProtobuf(req: http.IncomingMessage): boolean {
   const ct = req.headers["content-type"] ?? "";
-  return ct.includes("application/x-protobuf") || ct.includes("application/protobuf");
+  return (
+    ct.includes("application/x-protobuf") || ct.includes("application/protobuf")
+  );
 }
 
 function isJson(req: http.IncomingMessage): boolean {
@@ -53,7 +55,7 @@ export function createOtlpServer(): http.Server {
           const rows = decodeLogs(body);
           if (rows.length > 0) insertOtelLogs(rows);
           const respBytes = ExportLogsServiceResponse.encode(
-            ExportLogsServiceResponse.create({})
+            ExportLogsServiceResponse.create({}),
           ).finish();
           res.writeHead(200, { "Content-Type": "application/x-protobuf" });
           res.end(Buffer.from(respBytes));
@@ -73,7 +75,7 @@ export function createOtlpServer(): http.Server {
           const rows = decodeMetrics(body);
           if (rows.length > 0) insertOtelMetrics(rows);
           const respBytes = ExportMetricsServiceResponse.encode(
-            ExportMetricsServiceResponse.create({})
+            ExportMetricsServiceResponse.create({}),
           ).finish();
           res.writeHead(200, { "Content-Type": "application/x-protobuf" });
           res.end(Buffer.from(respBytes));
@@ -118,9 +120,9 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
       for (const lr of sl.logRecords ?? []) {
         const attrs = kvListToMap(lr.attributes);
         rows.push({
-          timestamp_ns: parseInt(lr.timeUnixNano ?? "0"),
+          timestamp_ns: parseInt(lr.timeUnixNano ?? "0", 10),
           observed_timestamp_ns: lr.observedTimeUnixNano
-            ? parseInt(lr.observedTimeUnixNano)
+            ? parseInt(lr.observedTimeUnixNano, 10)
             : undefined,
           severity_number: lr.severityNumber,
           severity_text: lr.severityText,
@@ -128,8 +130,10 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
           attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
           resource_attributes:
             Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
-          session_id: (attrs["session.id"] ?? resourceSessionId) as string | undefined,
-          prompt_id: (attrs["prompt.id"] ?? attrs["prompt_id"]) as
+          session_id: (attrs["session.id"] ?? resourceSessionId) as
+            | string
+            | undefined,
+          prompt_id: (attrs["prompt.id"] ?? attrs.prompt_id) as
             | string
             | undefined,
           trace_id: lr.traceId,
@@ -142,7 +146,7 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
 }
 
 function jsonMetricsToRows(
-  data: any
+  data: any,
 ): import("../db/store.js").OtelMetricRow[] {
   const rows: import("../db/store.js").OtelMetricRow[] = [];
 
@@ -154,7 +158,10 @@ function jsonMetricsToRows(
     for (const sm of rm.scopeMetrics ?? []) {
       for (const m of sm.metrics ?? []) {
         const dps =
-          m.gauge?.dataPoints ?? m.sum?.dataPoints ?? m.histogram?.dataPoints ?? [];
+          m.gauge?.dataPoints ??
+          m.sum?.dataPoints ??
+          m.histogram?.dataPoints ??
+          [];
         const metricType = m.gauge
           ? "gauge"
           : m.sum
@@ -165,21 +172,20 @@ function jsonMetricsToRows(
 
         for (const dp of dps) {
           const attrs = kvListToMap(dp.attributes);
-          const value =
-            dp.asDouble ?? dp.asInt ?? dp.sum ?? dp.count ?? 0;
+          const value = dp.asDouble ?? dp.asInt ?? dp.sum ?? dp.count ?? 0;
 
           rows.push({
-            timestamp_ns: parseInt(dp.timeUnixNano ?? "0"),
+            timestamp_ns: parseInt(dp.timeUnixNano ?? "0", 10),
             name: m.name,
             value: Number(value),
             metric_type: metricType,
             unit: m.unit || undefined,
             attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
             resource_attributes:
-              Object.keys(resourceAttrs).length > 0
-                ? resourceAttrs
-                : undefined,
-            session_id: (attrs["session.id"] ?? resourceSessionId) as string | undefined,
+              Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
+            session_id: (attrs["session.id"] ?? resourceSessionId) as
+              | string
+              | undefined,
           });
         }
       }

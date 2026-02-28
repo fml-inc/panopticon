@@ -1,13 +1,18 @@
-import path from "node:path";
-import os from "node:os";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const DATA_DIR =
   process.env.PANOPTICON_DATA_DIR ??
   path.join(os.homedir(), ".local", "share", "panopticon");
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
-const MARKETPLACE_DIR = path.join(os.homedir(), ".local", "share", "claude-plugins");
+const MARKETPLACE_DIR = path.join(
+  os.homedir(),
+  ".local",
+  "share",
+  "claude-plugins",
+);
 
 export const config = {
   dataDir: DATA_DIR,
@@ -19,8 +24,18 @@ export const config = {
   claudeDir: CLAUDE_DIR,
   claudeSettingsPath: path.join(CLAUDE_DIR, "settings.json"),
   marketplaceDir: MARKETPLACE_DIR,
-  marketplaceManifest: path.join(MARKETPLACE_DIR, ".claude-plugin", "marketplace.json"),
-  pluginCacheDir: path.join(CLAUDE_DIR, "plugins", "cache", "local-plugins", "panopticon"),
+  marketplaceManifest: path.join(
+    MARKETPLACE_DIR,
+    ".claude-plugin",
+    "marketplace.json",
+  ),
+  pluginCacheDir: path.join(
+    CLAUDE_DIR,
+    "plugins",
+    "cache",
+    "local-plugins",
+    "panopticon",
+  ),
   autoMaxSizeMb: 1000,
   autoMaxAgeDays: 90,
 } as const;

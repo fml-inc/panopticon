@@ -10,7 +10,10 @@ export function resolveGitHubToken(): string | null {
 
   // Fall back to gh CLI
   try {
-    return execSync("gh auth token", { encoding: "utf-8", timeout: 5000 }).trim();
+    return execSync("gh auth token", {
+      encoding: "utf-8",
+      timeout: 5000,
+    }).trim();
   } catch {
     return null;
   }
@@ -57,7 +60,7 @@ export async function postBatch(
     }
 
     if (attempt < MAX_RETRIES) {
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+      const delay = BASE_DELAY_MS * 2 ** attempt;
       await new Promise((r) => setTimeout(r, delay));
     }
   }

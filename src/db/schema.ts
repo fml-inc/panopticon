@@ -1,5 +1,5 @@
-import Database from "better-sqlite3";
 import { gunzipSync } from "node:zlib";
+import Database from "better-sqlite3";
 import { config, ensureDataDir } from "../config.js";
 
 const SCHEMA_SQL = `

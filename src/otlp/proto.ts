@@ -222,11 +222,7 @@ const root = protobuf.Root.fromJSON({
                     Metric: {
                       oneofs: {
                         data: {
-                          oneof: [
-                            "gauge",
-                            "sum",
-                            "histogram",
-                          ],
+                          oneof: ["gauge", "sum", "histogram"],
                         },
                       },
                       fields: {
@@ -387,16 +383,16 @@ const root = protobuf.Root.fromJSON({
 });
 
 export const ExportLogsServiceRequest = root.lookupType(
-  "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest"
+  "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest",
 );
 export const ExportMetricsServiceRequest = root.lookupType(
-  "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest"
+  "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest",
 );
 export const ExportLogsServiceResponse = root.lookupType(
-  "opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse"
+  "opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse",
 );
 export const ExportMetricsServiceResponse = root.lookupType(
-  "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse"
+  "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse",
 );
 
 // Helper: extract a scalar value from a protobuf AnyValue
@@ -410,16 +406,16 @@ export function extractAnyValue(v: any): string | number | boolean | null {
   }
   if (v.doubleValue != null) return v.doubleValue;
   if (v.boolValue != null) return v.boolValue;
-  if (v.bytesValue != null)
-    return Buffer.from(v.bytesValue).toString("hex");
-  if (v.arrayValue?.values) return v.arrayValue.values.map(extractAnyValue) as any;
+  if (v.bytesValue != null) return Buffer.from(v.bytesValue).toString("hex");
+  if (v.arrayValue?.values)
+    return v.arrayValue.values.map(extractAnyValue) as any;
   if (v.kvlistValue?.values) return attrsToMap(v.kvlistValue.values) as any;
   return null;
 }
 
 // Helper: convert repeated KeyValue to a plain object
 export function attrsToMap(
-  kvs: any[] | null | undefined
+  kvs: any[] | null | undefined,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!kvs) return out;

@@ -6,19 +6,19 @@
  */
 
 import fs from "node:fs";
-import { getDb, closeDb } from "../db/schema.js";
 import { config } from "../config.js";
-import { readWatermark, writeWatermark } from "./state.js";
+import { closeDb, getDb } from "../db/schema.js";
+import { chunk, postBatch, resolveGitHubToken } from "./client.js";
 import {
+  type HookEventDbRow,
   mapHookEvent,
   mapOtelLog,
   mapOtelMetric,
-  resolveRepoFromCwd,
-  type HookEventDbRow,
   type OtelLogDbRow,
   type OtelMetricDbRow,
+  resolveRepoFromCwd,
 } from "./mapper.js";
-import { resolveGitHubToken, postBatch, chunk } from "./client.js";
+import { readWatermark, writeWatermark } from "./state.js";
 
 interface SyncConfig {
   urls: string[];
@@ -65,12 +65,17 @@ function buildSessionRepoMap(sessionIds: string[]): Map<string, string> {
     .prepare(
       `SELECT DISTINCT session_id, cwd, repository FROM hook_events WHERE session_id IN (${placeholders})`,
     )
-    .all(...sessionIds) as { session_id: string; cwd: string | null; repository: string | null }[];
+    .all(...sessionIds) as {
+    session_id: string;
+    cwd: string | null;
+    repository: string | null;
+  }[];
 
   const map = new Map<string, string>();
   for (const row of rows) {
     if (map.has(row.session_id)) continue;
-    const repo = row.repository || (row.cwd ? resolveRepoFromCwd(row.cwd) : null);
+    const repo =
+      row.repository || (row.cwd ? resolveRepoFromCwd(row.cwd) : null);
     if (repo) map.set(row.session_id, repo);
   }
   return map;
