@@ -69,15 +69,16 @@ export function sessionTimeline(opts: {
   const offset = opts.offset ?? 0;
   const truncate = !opts.full_payloads;
 
+  const strippedPayload = `json_remove(decompress(payload), '$.session_id', '$.hook_event_name', '$.tool_name', '$.cwd', '$.repository', '$.transcript_path', '$.permission_mode', '$.tool_use_id')`;
   const payloadCol = truncate
-    ? "SUBSTR(decompress(payload), 1, 500)"
-    : "decompress(payload)";
+    ? `SUBSTR(${strippedPayload}, 1, 500)`
+    : strippedPayload;
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Hook events
   let hookSql = `
     SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, ${payloadCol} as payload, NULL as body, NULL as attributes, NULL as severity_text
+           tool_name, cwd, ${payloadCol} as payload, NULL as body, NULL as attributes, NULL as severity_text
     FROM hook_events
     WHERE session_id = ?
   `;
@@ -92,7 +93,7 @@ export function sessionTimeline(opts: {
   let otelSql = `
     SELECT 'otel' as source, id, session_id, body as event_type,
            CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, NULL as payload, body, ${attrsCol} as attributes, severity_text
+           NULL as tool_name, NULL as cwd, NULL as payload, body, ${attrsCol} as attributes, severity_text
     FROM otel_logs
     WHERE session_id = ?
   `;
@@ -217,9 +218,10 @@ export function searchEvents(opts: {
   const pattern = `%${opts.query}%`;
   const truncate = !opts.full_payloads;
 
+  const strippedPayload = `json_remove(decompress(h.payload), '$.session_id', '$.hook_event_name', '$.tool_name', '$.cwd', '$.repository', '$.transcript_path', '$.permission_mode', '$.tool_use_id')`;
   const hookPayloadCol = truncate
-    ? "SUBSTR(decompress(h.payload), 1, 500)"
-    : "decompress(h.payload)";
+    ? `SUBSTR(${strippedPayload}, 1, 500)`
+    : strippedPayload;
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Search hook events via FTS5 + fallback on tool_name/event_type LIKE
@@ -245,7 +247,7 @@ export function searchEvents(opts: {
 
   const hookSql = `
     SELECT 'hook' as source, h.id, h.session_id, h.event_type, h.timestamp_ms,
-           h.tool_name, ${hookPayloadCol} as payload
+           h.tool_name, h.cwd, ${hookPayloadCol} as payload
     FROM hook_events h
     WHERE ${hookConditions.join(" AND ")}
   `;
@@ -262,7 +264,7 @@ export function searchEvents(opts: {
   const otelSql = `
     SELECT 'otel' as source, id, session_id, body as event_type,
            CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, ${attrsCol} as payload
+           NULL as tool_name, NULL as cwd, ${attrsCol} as payload
     FROM otel_logs
     WHERE ${otelConditions.join(" AND ")}
   `;
@@ -283,6 +285,30 @@ export function searchEvents(opts: {
 
   const rows = db.prepare(sql).all(...hookParams, ...otelParams, limit, offset);
   return { total, rows };
+}
+
+export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
+  const db = getDb();
+
+  if (opts.source === "hook") {
+    const strippedPayload = `json_remove(decompress(payload), '$.session_id', '$.hook_event_name', '$.tool_name', '$.cwd', '$.repository', '$.transcript_path', '$.permission_mode', '$.tool_use_id')`;
+    const sql = `
+      SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
+             tool_name, cwd, ${strippedPayload} as payload
+      FROM hook_events
+      WHERE id = ?
+    `;
+    return db.prepare(sql).get(opts.id) ?? null;
+  }
+
+  const sql = `
+    SELECT 'otel' as source, id, session_id, body as event_type,
+           CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
+           NULL as tool_name, NULL as cwd, attributes, severity_text, body
+    FROM otel_logs
+    WHERE id = ?
+  `;
+  return db.prepare(sql).get(opts.id) ?? null;
 }
 
 export function activitySummary(opts: { since?: string } = {}) {

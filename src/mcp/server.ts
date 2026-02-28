@@ -7,6 +7,7 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
+  getEvent,
   listPlans,
   listSessions,
   rawQuery,
@@ -218,6 +219,39 @@ server.tool(
         {
           type: "text" as const,
           text: JSON.stringify({ total, results: rows }, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "panopticon_get_event",
+  "Get full details for a specific event by source and ID (from search/timeline results). Returns the complete payload without truncation.",
+  {
+    source: z
+      .enum(["hook", "otel"])
+      .describe("Event source: 'hook' for hook events, 'otel' for OTel logs"),
+    id: z.number().describe("Event ID from search/timeline results"),
+  },
+  async ({ source, id }) => {
+    const result = getEvent({ source, id });
+    if (!result) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `No ${source} event found with id ${id}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };
