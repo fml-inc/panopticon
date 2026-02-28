@@ -65,11 +65,11 @@ export function sessionTimeline(opts: {
   full_payloads?: boolean;
 }) {
   const db = getDb();
-  const limit = opts.limit ?? 100;
+  const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const truncate = !opts.full_payloads;
 
-  const payloadCol = truncate ? "SUBSTR(payload, 1, 500)" : "payload";
+  const payloadCol = truncate ? "SUBSTR(decompress(payload), 1, 500)" : "decompress(payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Hook events
@@ -95,6 +95,11 @@ export function sessionTimeline(opts: {
     WHERE session_id = ?
   `;
   const otelParams: unknown[] = [opts.session_id];
+
+  if (opts.event_types?.length) {
+    otelSql += ` AND body IN (${opts.event_types.map(() => "?").join(",")})`;
+    otelParams.push(...opts.event_types);
+  }
 
   // Count query (same WHERE, no LIMIT)
   const countSql = `
@@ -200,34 +205,38 @@ export function searchEvents(opts: {
   full_payloads?: boolean;
 }) {
   const db = getDb();
-  const limit = opts.limit ?? 50;
+  const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const sinceMs = parseSince(opts.since);
   const pattern = `%${opts.query}%`;
   const truncate = !opts.full_payloads;
 
-  const payloadCol = truncate ? "SUBSTR(payload, 1, 500)" : "payload";
+  const hookPayloadCol = truncate ? "SUBSTR(decompress(h.payload), 1, 500)" : "decompress(h.payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
-  // Search hook events — always search full columns, truncate in SELECT
-  const hookConditions: string[] = [
-    "(payload LIKE ? OR tool_name LIKE ? OR event_type LIKE ?)",
-  ];
-  const hookParams: unknown[] = [pattern, pattern, pattern];
+  // Search hook events via FTS5 + fallback on tool_name/event_type LIKE
+  const hookConditions: string[] = [];
+  const hookParams: unknown[] = [];
+
+  // FTS5 match on payload, plus LIKE fallback for tool_name/event_type
+  hookConditions.push(
+    "(h.id IN (SELECT rowid FROM hook_events_fts WHERE hook_events_fts MATCH ?) OR h.tool_name LIKE ? OR h.event_type LIKE ?)",
+  );
+  hookParams.push(opts.query, pattern, pattern);
 
   if (opts.event_types?.length) {
-    hookConditions.push(`event_type IN (${opts.event_types.map(() => "?").join(",")})`);
+    hookConditions.push(`h.event_type IN (${opts.event_types.map(() => "?").join(",")})`);
     hookParams.push(...opts.event_types);
   }
   if (sinceMs) {
-    hookConditions.push("timestamp_ms >= ?");
+    hookConditions.push("h.timestamp_ms >= ?");
     hookParams.push(sinceMs);
   }
 
   const hookSql = `
-    SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, ${payloadCol} as payload
-    FROM hook_events
+    SELECT 'hook' as source, h.id, h.session_id, h.event_type, h.timestamp_ms,
+           h.tool_name, ${hookPayloadCol} as payload
+    FROM hook_events h
     WHERE ${hookConditions.join(" AND ")}
   `;
 
@@ -302,7 +311,7 @@ export function activitySummary(opts: { since?: string } = {}) {
   for (const s of sessions) {
     // User prompts (first 100 chars of each)
     const prompts = db.prepare(`
-      SELECT SUBSTR(json_extract(payload, '$.user_prompt'), 1, 100) as prompt
+      SELECT SUBSTR(json_extract(decompress(payload), '$.user_prompt'), 1, 100) as prompt
       FROM hook_events
       WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ?
       ORDER BY timestamp_ms ASC
@@ -319,10 +328,18 @@ export function activitySummary(opts: { since?: string } = {}) {
 
     // Files modified (from Write/Edit tools)
     const files = db.prepare(`
-      SELECT DISTINCT json_extract(payload, '$.tool_input.file_path') as file_path
+      SELECT DISTINCT json_extract(decompress(payload), '$.tool_input.file_path') as file_path
       FROM hook_events
       WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse' AND timestamp_ms >= ?
     `).all(s.session_id, sinceMs) as { file_path: string | null }[];
+
+    // Plans created in this session
+    const plans = db.prepare(`
+      SELECT json_extract(decompress(payload), '$.tool_input.plan') as plan
+      FROM hook_events
+      WHERE session_id = ? AND tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse' AND timestamp_ms >= ?
+      ORDER BY timestamp_ms ASC
+    `).all(s.session_id, sinceMs) as { plan: string | null }[];
 
     // Working directory
     const cwdRow = db.prepare(`
@@ -351,6 +368,7 @@ export function activitySummary(opts: { since?: string } = {}) {
       working_directory: cwdRow?.cwd ?? null,
       user_prompts: prompts.map((p) => p.prompt).filter(Boolean),
       tools_used: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
+      plans: plans.map((p) => p.plan).filter(Boolean),
       files_modified: files.map((f) => f.file_path).filter(Boolean),
       total_cost: sessionCost,
     });
@@ -370,6 +388,51 @@ export function activitySummary(opts: { since?: string } = {}) {
   return result;
 }
 
+export function listPlans(opts: { session_id?: string; since?: string; limit?: number } = {}) {
+  const db = getDb();
+  const limit = opts.limit ?? 20;
+  const sinceMs = parseSince(opts.since);
+
+  const conditions: string[] = [
+    "tool_name = 'ExitPlanMode'",
+    "event_type = 'PreToolUse'",
+  ];
+  const params: unknown[] = [];
+
+  if (opts.session_id) {
+    conditions.push("session_id = ?");
+    params.push(opts.session_id);
+  }
+  if (sinceMs) {
+    conditions.push("timestamp_ms >= ?");
+    params.push(sinceMs);
+  }
+
+  const sql = `
+    SELECT id, session_id, timestamp_ms,
+           json_extract(decompress(payload), '$.tool_input.plan') as plan,
+           json_extract(decompress(payload), '$.tool_input.allowedPrompts') as allowed_prompts
+    FROM hook_events
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY timestamp_ms DESC
+    LIMIT ?
+  `;
+  params.push(limit);
+
+  const rows = db.prepare(sql).all(...params) as {
+    id: number; session_id: string; timestamp_ms: number;
+    plan: string | null; allowed_prompts: string | null;
+  }[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    session_id: r.session_id,
+    timestamp: new Date(r.timestamp_ms).toISOString(),
+    plan: r.plan,
+    allowed_prompts: r.allowed_prompts ? JSON.parse(r.allowed_prompts) : null,
+  }));
+}
+
 export function rawQuery(sql: string) {
   const db = getDb();
 
@@ -379,8 +442,8 @@ export function rawQuery(sql: string) {
     throw new Error("Only SELECT, WITH, and PRAGMA statements are allowed");
   }
 
-  // Safety net: append LIMIT if not already present
-  if (!trimmed.includes("LIMIT")) {
+  // Safety net: append LIMIT if not already present (skip for PRAGMA)
+  if (!trimmed.startsWith("PRAGMA") && !trimmed.includes("LIMIT")) {
     sql = sql.trimEnd().replace(/;$/, "") + " LIMIT 1000";
   }
 

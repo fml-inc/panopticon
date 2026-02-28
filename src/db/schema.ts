@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { gunzipSync } from "node:zlib";
 import { config, ensureDataDir } from "../config.js";
 
 const SCHEMA_SQL = `
@@ -37,7 +38,14 @@ CREATE TABLE IF NOT EXISTS hook_events (
   cwd TEXT,
   repository TEXT,
   tool_name TEXT,
-  payload JSON NOT NULL
+  payload BLOB NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS hook_events_fts USING fts5(
+  payload,
+  content='',
+  contentless_delete=1,
+  tokenize='trigram'
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_session ON otel_logs(session_id);
@@ -60,6 +68,12 @@ CREATE TABLE IF NOT EXISTS sync_state (
 
 let _db: Database.Database | null = null;
 
+function registerCompressionFunctions(db: Database.Database): void {
+  db.function("decompress", (blob: Buffer | null) =>
+    blob ? gunzipSync(blob).toString() : null,
+  );
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db;
 
@@ -67,7 +81,10 @@ export function getDb(): Database.Database {
   _db = new Database(config.dbPath);
   _db.pragma("journal_mode = WAL");
   _db.pragma("busy_timeout = 5000");
+
+  registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
+
   return _db;
 }
 

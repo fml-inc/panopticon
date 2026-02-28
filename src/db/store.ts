@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -95,13 +96,19 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
 
 export function insertHookEvent(row: HookEventRow): void {
   const db = getDb();
-  db.prepare(INSERT_HOOK_SQL).run({
-    session_id: row.session_id,
-    event_type: row.event_type,
-    timestamp_ms: row.timestamp_ms,
-    cwd: row.cwd ?? null,
-    repository: row.repository ?? null,
-    tool_name: row.tool_name ?? null,
-    payload: JSON.stringify(row.payload),
+  const json = JSON.stringify(row.payload);
+  const insertWithFts = db.transaction(() => {
+    db.prepare(INSERT_HOOK_SQL).run({
+      session_id: row.session_id,
+      event_type: row.event_type,
+      timestamp_ms: row.timestamp_ms,
+      cwd: row.cwd ?? null,
+      repository: row.repository ?? null,
+      tool_name: row.tool_name ?? null,
+      payload: gzipSync(Buffer.from(json)),
+    });
+    const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
+    db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(id, json);
   });
+  insertWithFts();
 }

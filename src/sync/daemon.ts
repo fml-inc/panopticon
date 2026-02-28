@@ -86,7 +86,7 @@ async function syncHookEvents(
 
   const rows = db
     .prepare(
-      "SELECT id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, payload FROM hook_events WHERE id > ? ORDER BY id LIMIT ?",
+      "SELECT id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, decompress(payload) as payload FROM hook_events WHERE id > ? ORDER BY id LIMIT ?",
     )
     .all(watermark, batchSize) as HookEventDbRow[];
 

@@ -83,6 +83,12 @@ export function pruneExecute(
     const metrics = db
       .prepare(`DELETE FROM otel_metrics ${metricWhere}`)
       .run(...metricParams).changes;
+
+    // Delete from FTS5 index before deleting from hook_events
+    db.prepare(
+      `DELETE FROM hook_events_fts WHERE rowid IN (SELECT id FROM hook_events ${hookWhere})`,
+    ).run(...hookParams);
+
     const hooks = db
       .prepare(`DELETE FROM hook_events ${hookWhere}`)
       .run(...hookParams).changes;

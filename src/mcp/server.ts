@@ -10,6 +10,7 @@ import {
   costBreakdown,
   searchEvents,
   activitySummary,
+  listPlans,
   rawQuery,
   dbStats,
 } from "../db/query.js";
@@ -51,7 +52,7 @@ server.tool(
       .array(z.string())
       .optional()
       .describe("Filter to specific event types"),
-    limit: z.number().optional().describe("Max events to return (default 100)"),
+    limit: z.number().optional().describe("Max events to return (default 20)"),
     offset: z.number().optional().describe("Number of events to skip (for pagination)"),
     full_payloads: z.boolean().optional().describe("Return full payloads instead of truncated (default false)"),
   },
@@ -140,6 +141,30 @@ server.tool(
 );
 
 server.tool(
+  "panopticon_plans",
+  "List plans created by Claude Code (from ExitPlanMode events). Returns the full plan markdown, allowed prompts, session ID, and timestamp. Use for understanding intent behind sessions — what was planned vs what was executed.",
+  {
+    session_id: z.string().optional().describe("Filter to a specific session"),
+    since: z
+      .string()
+      .optional()
+      .describe('Time filter: ISO date or relative like "24h", "7d"'),
+    limit: z.number().optional().describe("Max plans to return (default 20)"),
+  },
+  async ({ session_id, since, limit }) => {
+    const plans = listPlans({ session_id, since, limit });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(plans, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
   "panopticon_search",
   "Search across all events (hook payloads, OTel log bodies/attributes) by text query. Payloads are truncated to 500 chars by default — use full_payloads: true for complete data.",
   {
@@ -152,7 +177,7 @@ server.tool(
       .string()
       .optional()
       .describe('Time filter: ISO date or relative like "24h", "7d"'),
-    limit: z.number().optional().describe("Max results (default 50)"),
+    limit: z.number().optional().describe("Max results (default 20)"),
     offset: z.number().optional().describe("Number of results to skip (for pagination)"),
     full_payloads: z.boolean().optional().describe("Return full payloads instead of truncated (default false)"),
   },
@@ -171,12 +196,18 @@ server.tool(
 
 server.tool(
   "panopticon_query",
-  "Execute a read-only SQL query against the panopticon database. Tables: otel_logs, otel_metrics, hook_events",
+  `Execute a read-only SQL query against the panopticon database.
+
+Schema:
+  hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, payload JSON)
+  otel_logs(id, timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, attributes JSON, resource_attributes JSON, session_id, prompt_id, trace_id, span_id)
+  otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)
+  sync_state(key, value)`,
   {
     sql: z
       .string()
       .describe(
-        "SQL query (SELECT/WITH/PRAGMA only). Tables: otel_logs, otel_metrics, hook_events"
+        "SQL query (SELECT/WITH/PRAGMA only)"
       ),
   },
   async ({ sql }) => {

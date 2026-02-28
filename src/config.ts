@@ -21,8 +21,8 @@ export const config = {
   marketplaceDir: MARKETPLACE_DIR,
   marketplaceManifest: path.join(MARKETPLACE_DIR, ".claude-plugin", "marketplace.json"),
   pluginCacheDir: path.join(CLAUDE_DIR, "plugins", "cache", "local-plugins", "panopticon"),
-  autoMaxSizeMb: 100,
-  autoMaxAgeDays: 30,
+  autoMaxSizeMb: 1000,
+  autoMaxAgeDays: 90,
 } as const;
 
 export function ensureDataDir(): void {
