@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process";
+import path from "node:path";
 import { getDb } from "./schema.js";
 
 const COST_SQL = `CASE 
@@ -578,5 +580,67 @@ export function dbStats() {
     otel_logs: logs.count,
     otel_metrics: metrics.count,
     hook_events: hooks.count,
+  };
+}
+
+export function explainCode(opts: { file_path: string; line_number?: number }) {
+  const db = getDb();
+  let sha = "";
+  try {
+    const dir = path.dirname(opts.file_path) || process.cwd();
+    const file = path.basename(opts.file_path);
+
+    if (opts.line_number) {
+      // git blame -l -L line,line -- file | awk '{print $1}'
+      const output = execSync(
+        `git blame -l -L ${opts.line_number},${opts.line_number} -- "${file}"`,
+        { cwd: dir, encoding: "utf-8" },
+      );
+      sha = output.split(" ")[0].trim();
+    } else {
+      const output = execSync(`git log -1 --format=%H -- "${file}"`, {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      sha = output.trim();
+    }
+  } catch (err: any) {
+    throw new Error(`Failed to run git blame/log: ${err.message}`);
+  }
+
+  if (!sha || sha.startsWith("^") || sha.startsWith("00000000")) {
+    return {
+      error: "Could not determine a committed SHA for the given file/line.",
+    };
+  }
+
+  const sql = `
+    SELECT session_id, timestamp_ms, json_extract(decompress(payload), '$.original_command') as original_command
+    FROM hook_events
+    WHERE event_type = 'GitCommit' AND json_extract(decompress(payload), '$.commit_sha') LIKE ?
+    ORDER BY timestamp_ms DESC LIMIT 1
+  `;
+  const row = db.prepare(sql).get(`${sha}%`) as
+    | {
+        session_id: string;
+        timestamp_ms: number;
+        original_command: string;
+      }
+    | undefined;
+
+  if (!row) {
+    return {
+      commit_sha: sha,
+      session_id: null,
+      message: "Commit found, but no matching Panopticon session recorded.",
+    };
+  }
+
+  return {
+    commit_sha: sha,
+    session_id: row.session_id,
+    timestamp: new Date(row.timestamp_ms).toISOString(),
+    original_command: row.original_command,
+    hint: `Use panopticon_session_timeline with session_id '${row.session_id}' to see the agent's intent.`,
   };
 }

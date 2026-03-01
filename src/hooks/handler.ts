@@ -183,6 +183,30 @@ async function main() {
       payload,
     });
 
+    if (eventType === "PostToolUse" && toolName === "run_shell_command") {
+      const cmd = (data.tool_input as any)?.command;
+      if (typeof cmd === "string" && cmd.includes("git commit")) {
+        try {
+          const sha = execSync("git log -1 --format=%H", {
+            cwd: data.cwd || process.cwd(),
+            encoding: "utf-8",
+          }).trim();
+          if (sha) {
+            await insertHookEvent({
+              session_id: sessionId,
+              event_type: "GitCommit",
+              timestamp_ms: Date.now(),
+              cwd: data.cwd,
+              repository: data.repository,
+              payload: { commit_sha: sha, original_command: cmd },
+            });
+          }
+        } catch (_e) {
+          // Ignore git errors silently
+        }
+      }
+    }
+
     // Output empty JSON to satisfy Gemini CLI hooks
     console.log("{}");
   } catch (err) {

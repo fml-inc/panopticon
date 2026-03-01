@@ -8,6 +8,7 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
+  explainCode,
   getEvent,
   listPlans,
   listSessions,
@@ -311,6 +312,41 @@ server.tool(
         },
       ],
     };
+  },
+);
+
+server.tool(
+  "panopticon_explain_code",
+  "Explain why a specific file or line of code was written by finding the Git commit and linking it to the LLM session that generated it.",
+  {
+    file_path: z.string().describe("Path to the file to explain"),
+    line_number: z
+      .number()
+      .optional()
+      .describe("Optional: specific line number to explain"),
+  },
+  async ({ file_path, line_number }) => {
+    try {
+      const result = explainCode({ file_path, line_number });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err: any) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error explaining code: ${err.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   },
 );
 
