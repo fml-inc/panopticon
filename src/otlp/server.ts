@@ -225,12 +225,11 @@ if (
     );
   });
 
-  process.on("SIGTERM", () => {
+  const shutdown = () => {
     server.close();
     process.exit(0);
-  });
-  process.on("SIGINT", () => {
-    server.close();
-    process.exit(0);
-  });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGHUP", shutdown);
 }

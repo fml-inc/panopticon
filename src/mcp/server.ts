@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import fs from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -15,6 +16,7 @@ import {
   sessionTimeline,
   toolStats,
 } from "../db/query.js";
+import { logPaths } from "../log.js";
 
 const server = new McpServer({
   name: "panopticon",
@@ -313,6 +315,13 @@ server.tool(
 );
 
 async function main() {
+  // Redirect stderr to log file (stdout is reserved for MCP JSON-RPC protocol)
+  const logFd = fs.openSync(logPaths.mcp, "a");
+  const logStream = fs.createWriteStream("", { fd: logFd });
+  process.stderr.write = logStream.write.bind(
+    logStream,
+  ) as typeof process.stderr.write;
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
