@@ -206,8 +206,16 @@ export function costBreakdown(
 
   const sql = `
     SELECT ${selectExpr},
-           SUM(CASE WHEN name LIKE '%input%token%' OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'input') THEN value ELSE 0 END) as input_tokens,
-           SUM(CASE WHEN name LIKE '%output%token%' OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'output') THEN value ELSE 0 END) as output_tokens,
+           SUM(CASE
+             WHEN name LIKE '%input%token%'
+               OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'input')
+               OR (name = 'gen_ai.client.token.usage' AND json_extract(attributes, '$."gen_ai.token.type"') = 'input')
+             THEN value ELSE 0 END) as input_tokens,
+           SUM(CASE
+             WHEN name LIKE '%output%token%'
+               OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'output')
+               OR (name = 'gen_ai.client.token.usage' AND json_extract(attributes, '$."gen_ai.token.type"') = 'output')
+             THEN value ELSE 0 END) as output_tokens,
            SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
            SUM(${COST_SQL}) as total_cost
     FROM otel_metrics
@@ -226,6 +234,7 @@ export function searchEvents(opts: {
   limit?: number;
   offset?: number;
   full_payloads?: boolean;
+  session_id?: string;
 }) {
   const db = getDb();
   const limit = opts.limit ?? 20;
@@ -250,6 +259,11 @@ export function searchEvents(opts: {
   );
   hookParams.push(opts.query, pattern, pattern);
 
+  if (opts.session_id) {
+    hookConditions.push("h.session_id = ?");
+    hookParams.push(opts.session_id);
+  }
+
   if (opts.event_types?.length) {
     hookConditions.push(
       `h.event_type IN (${opts.event_types.map(() => "?").join(",")})`,
@@ -260,17 +274,24 @@ export function searchEvents(opts: {
     hookConditions.push("h.timestamp_ms >= ?");
     hookParams.push(sinceMs);
   }
+  const hookWhere =
+    hookConditions.length > 0 ? `WHERE ${hookConditions.join(" AND ")}` : "";
 
   const hookSql = `
     SELECT 'hook' as source, h.id, h.session_id, h.event_type, h.timestamp_ms,
            h.tool_name, h.cwd, ${hookPayloadCol} as payload
     FROM hook_events h
-    WHERE ${hookConditions.join(" AND ")}
+    ${hookWhere}
   `;
 
   // Search otel logs
   const otelConditions: string[] = ["(body LIKE ? OR attributes LIKE ?)"];
   const otelParams: unknown[] = [pattern, pattern];
+
+  if (opts.session_id) {
+    otelConditions.push("session_id = ?");
+    otelParams.push(opts.session_id);
+  }
 
   if (sinceMs) {
     otelConditions.push("CAST(timestamp_ns / 1000000 AS INTEGER) >= ?");
