@@ -97,6 +97,9 @@ panopticon install          Build, register plugin, init DB, configure shell
 panopticon start            Start the OTLP receiver (background)
 panopticon stop             Stop the OTLP receiver
 panopticon status           Show receiver/sync status, DB stats, watermarks
+panopticon logs [daemon]    View daemon logs (otlp, sync, mcp)
+  -f, --follow                Follow log output (like tail -f)
+  -n <lines>                  Number of lines to show (default 50)
 panopticon prune            Delete old data from the database
   --older-than 30d            Max age (default: 30d)
   --synced-only               Only delete rows already synced
@@ -111,6 +114,16 @@ panopticon sync reset [t]   Reset sync watermarks (all or per-target)
 ```
 
 The OTLP receiver auto-starts on `SessionStart` via hook, so manual start/stop is rarely needed.
+
+## Logs
+
+Daemon stdout/stderr is written to `~/Library/Logs/panopticon/`:
+
+- `otlp-receiver.log` — OTLP receiver
+- `sync.log` — Sync daemon
+- `mcp-server.log` — MCP server (stderr only; stdout is the MCP protocol)
+
+These are also visible in Console.app. macOS manages the directory — no manual cleanup needed.
 
 ## Sync
 
@@ -196,8 +209,9 @@ After rebuilding, run `panopticon install` to sync changes to the plugin cache. 
 
 ```
 src/
-├── cli.ts              CLI entry point (install, start/stop, prune, sync)
+├── cli.ts              CLI entry point (install, start/stop, prune, sync, logs)
 ├── config.ts           Paths, ports, defaults
+├── log.ts              Log file paths + fd opener (~/Library/Logs/panopticon/)
 ├── db/
 │   ├── schema.ts       SQLite schema, migrations, WAL + incremental auto-vacuum
 │   ├── query.ts        Query helpers for MCP tools

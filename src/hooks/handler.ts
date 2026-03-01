@@ -6,6 +6,7 @@ import path from "node:path";
 import { config, ensureDataDir } from "../config.js";
 import { autoPrune } from "../db/prune.js";
 import { insertHookEvent } from "../db/store.js";
+import { openLogFd } from "../log.js";
 
 interface HookInput {
   session_id: string;
@@ -41,9 +42,11 @@ function startReceiver(): void {
     "server.js",
   );
 
+  const logFd = openLogFd("otlp");
+
   const child = spawn("node", [serverScript], {
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", logFd, logFd],
     env: {
       ...process.env,
       PANOPTICON_OTLP_PORT: String(config.otlpPort),
@@ -54,6 +57,7 @@ function startReceiver(): void {
     fs.writeFileSync(config.pidFile, String(child.pid));
   }
   child.unref();
+  fs.closeSync(logFd);
 }
 
 function isSyncRunning(): boolean {
@@ -81,13 +85,16 @@ function startSyncDaemon(): void {
     "daemon.js",
   );
 
+  const logFd = openLogFd("sync");
+
   const child = spawn("node", [daemonScript], {
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", logFd, logFd],
     env: process.env,
   });
 
   child.unref();
+  fs.closeSync(logFd);
 }
 
 function tryAutoPrune(): void {

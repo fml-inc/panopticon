@@ -486,6 +486,7 @@ async function main() {
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  process.on("SIGHUP", shutdown);
 
   // Main loop
   while (true) {

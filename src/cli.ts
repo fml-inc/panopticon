@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import { config, ensureDataDir } from "./config.js";
 import { pruneEstimate, pruneExecute } from "./db/prune.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
+import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
 import { resolveGitHubToken } from "./sync/client.js";
 import type { SyncTarget } from "./sync/daemon.js";
 import {
@@ -31,6 +32,9 @@ Usage:
   panopticon start          Start the OTLP receiver (background)
   panopticon stop           Stop the OTLP receiver
   panopticon status         Show receiver status and database stats
+  panopticon logs [daemon]  View daemon logs (otlp, sync, mcp)
+    -f, --follow             Follow log output (like tail -f)
+    -n <lines>               Number of lines to show (default 50)
   panopticon sync setup     Configure sync to FML backend
   panopticon prune          Delete old data from the database
     --older-than 30d         Max age (default: 30d)
@@ -78,13 +82,28 @@ async function install() {
   console.log("Installing panopticon...\n");
 
   // 1. Build
-  console.log("[1/6] Building...");
-  try {
-    execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
-    console.log("      Built successfully.\n");
-  } catch (err: any) {
-    console.error("      Build failed:", err.stderr?.toString() ?? err.message);
-    process.exit(1);
+  if (!hasFlag("--skip-build")) {
+    console.log("[1/6] Building...");
+    try {
+      execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
+      console.log("      Built successfully.\n");
+    } catch (err: any) {
+      console.error(
+        "      Build failed:",
+        err.stderr?.toString() ?? err.message,
+      );
+      process.exit(1);
+    }
+
+    // Re-exec with the freshly built code so steps 2-6 use the new version
+    const args = process.argv.slice(1).concat("--skip-build");
+    if (force) args.push("--force");
+    const result = spawnSync(process.argv[0], args, {
+      stdio: "inherit",
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    process.exit(result.status ?? 1);
   }
 
   // 2. Initialize database
@@ -313,9 +332,11 @@ async function start() {
     "server.js",
   );
 
+  const logFd = openLogFd("otlp");
+
   const child = spawn("node", [serverScript], {
     detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", logFd, logFd],
     env: {
       ...process.env,
       PANOPTICON_OTLP_PORT: String(config.otlpPort),
@@ -324,12 +345,6 @@ async function start() {
 
   // Wait briefly to check it started
   await new Promise<void>((resolve, reject) => {
-    let stderr = "";
-
-    child.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-
     child.on("error", (err) => {
       reject(new Error(`Failed to start: ${err.message}`));
     });
@@ -339,12 +354,15 @@ async function start() {
       if (child.pid) {
         fs.writeFileSync(config.pidFile, String(child.pid));
         child.unref();
+        fs.closeSync(logFd);
         console.log(
           `OTLP receiver started (PID ${child.pid}) on :${config.otlpPort}`,
         );
+        console.log(`Log: ${logPaths.otlp}`);
         resolve();
       } else {
-        reject(new Error(`Failed to start: ${stderr}`));
+        fs.closeSync(logFd);
+        reject(new Error("Failed to start OTLP receiver"));
       }
     }, 500);
   });
@@ -395,6 +413,22 @@ async function status() {
     `Sync Daemon:   ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`,
   );
   console.log(`Database: ${config.dbPath}`);
+
+  // Log files
+  console.log();
+  console.log("Log files:");
+  for (const name of DAEMON_NAMES) {
+    const logPath = logPaths[name];
+    let sizeStr = "not created";
+    try {
+      const stat = fs.statSync(logPath);
+      sizeStr =
+        stat.size < 1024
+          ? `${stat.size} B`
+          : `${(stat.size / 1024).toFixed(1)} KB`;
+    } catch {}
+    console.log(`  ${name}: ${logPath} (${sizeStr})`);
+  }
 
   if (fs.existsSync(config.dbPath)) {
     const stat = fs.statSync(config.dbPath);
@@ -766,19 +800,15 @@ async function syncStart() {
     "daemon.js",
   );
 
+  const logFd = openLogFd("sync");
+
   const child = spawn("node", [daemonScript], {
     detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", logFd, logFd],
     env: process.env,
   });
 
   await new Promise<void>((resolve, reject) => {
-    let stderr = "";
-
-    child.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-
     child.on("error", (err) => {
       reject(new Error(`Failed to start sync daemon: ${err.message}`));
     });
@@ -786,10 +816,13 @@ async function syncStart() {
     setTimeout(() => {
       if (child.pid) {
         child.unref();
+        fs.closeSync(logFd);
         console.log(`Sync daemon started (PID ${child.pid})`);
+        console.log(`Log: ${logPaths.sync}`);
         resolve();
       } else {
-        reject(new Error(`Failed to start sync daemon: ${stderr}`));
+        fs.closeSync(logFd);
+        reject(new Error("Failed to start sync daemon"));
       }
     }, 500);
   });
@@ -915,6 +948,33 @@ async function syncReset() {
   }
 }
 
+async function logs() {
+  const daemonArg = process.argv[3] as DaemonName | undefined;
+  const follow = hasFlag("-f") || hasFlag("--follow");
+  const numLines = parseInt(getFlagValue("-n", "50"), 10);
+
+  // Validate daemon name
+  if (daemonArg && !DAEMON_NAMES.includes(daemonArg)) {
+    console.error(`Unknown daemon: ${daemonArg}`);
+    console.log(`Available: ${DAEMON_NAMES.join(", ")}`);
+    process.exit(1);
+  }
+
+  const daemon = daemonArg ?? "otlp";
+  const logPath = logPaths[daemon];
+
+  if (!fs.existsSync(logPath)) {
+    console.log(`No logs yet for ${daemon} (${logPath})`);
+    return;
+  }
+
+  const args = follow
+    ? ["-f", `-n${numLines}`, logPath]
+    : [`-n${numLines}`, logPath];
+  const tail = spawn("tail", args, { stdio: "inherit" });
+  tail.on("exit", (code) => process.exit(code ?? 0));
+}
+
 async function handleSync() {
   switch (subcommand) {
     case "setup":
@@ -953,6 +1013,10 @@ async function main() {
       break;
     case "status":
       await status();
+      break;
+    case "logs":
+    case "log":
+      await logs();
       break;
     case "prune":
       await prune();
