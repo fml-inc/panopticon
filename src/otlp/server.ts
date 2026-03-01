@@ -29,6 +29,55 @@ function isJson(req: http.IncomingMessage): boolean {
   return ct.includes("application/json");
 }
 
+type Signal = "logs" | "metrics" | "traces";
+
+function detectSignal(url: string): Signal | undefined {
+  if (url === "/v1/logs") return "logs";
+  if (url === "/v1/metrics") return "metrics";
+  if (url === "/v1/traces") return "traces";
+  return undefined;
+}
+
+/**
+ * Auto-detect the OTLP signal type from the request body.
+ * Gemini CLI sends all signals to "/" because it passes the base endpoint
+ * as the `url` param to OTel HTTP exporters (instead of `endpoint`).
+ */
+function sniffSignalFromBody(
+  body: Buffer,
+  protobuf: boolean,
+): Signal | undefined {
+  if (protobuf) {
+    // Try decoding as each protobuf type; the wrong type will either throw
+    // or produce an empty result, so try logs first then metrics.
+    try {
+      const rows = decodeLogs(body);
+      if (rows.length > 0) return "logs";
+    } catch {
+      /* not logs */
+    }
+    try {
+      const rows = decodeMetrics(body);
+      if (rows.length > 0) return "metrics";
+    } catch {
+      /* not metrics */
+    }
+    // Assume traces for anything else
+    return "traces";
+  }
+
+  // JSON: check top-level keys
+  try {
+    const text = body.toString("utf-8");
+    if (text.includes('"resourceLogs"')) return "logs";
+    if (text.includes('"resourceMetrics"')) return "metrics";
+    if (text.includes('"resourceSpans"')) return "traces";
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
 export function createOtlpServer(): http.Server {
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "";
@@ -50,7 +99,16 @@ export function createOtlpServer(): http.Server {
     try {
       const body = await collectBody(req);
 
-      if (url === "/v1/logs") {
+      // Detect the signal type from the URL path, or auto-detect from the body.
+      // Gemini CLI passes the base endpoint as the full `url` to the OTel HTTP
+      // exporters, so all signals arrive at "/" instead of their standard paths.
+      let signal = detectSignal(url);
+
+      if (!signal && (url === "/" || url === "")) {
+        signal = sniffSignalFromBody(body, isProtobuf(req));
+      }
+
+      if (signal === "logs") {
         if (isProtobuf(req)) {
           const rows = decodeLogs(body);
           if (rows.length > 0) insertOtelLogs(rows);
@@ -70,7 +128,7 @@ export function createOtlpServer(): http.Server {
           res.writeHead(415);
           res.end();
         }
-      } else if (url === "/v1/metrics") {
+      } else if (signal === "metrics") {
         if (isProtobuf(req)) {
           const rows = decodeMetrics(body);
           if (rows.length > 0) insertOtelMetrics(rows);
@@ -89,7 +147,7 @@ export function createOtlpServer(): http.Server {
           res.writeHead(415);
           res.end();
         }
-      } else if (url === "/v1/traces") {
+      } else if (signal === "traces") {
         // Accept but ignore traces for now
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");

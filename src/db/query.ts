@@ -1,5 +1,20 @@
 import { getDb } from "./schema.js";
 
+const COST_SQL = `CASE 
+  WHEN name LIKE '%cost%' THEN value 
+  WHEN name = 'gemini_cli.token.usage' OR name = 'gen_ai.client.token.usage' THEN
+    CASE 
+      WHEN COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"')) LIKE '%flash%' THEN
+        CASE WHEN json_extract(attributes, '$.type') = 'input' OR json_extract(attributes, '$."gen_ai.token.type"') = 'input' THEN value * 0.000000075
+             WHEN json_extract(attributes, '$.type') = 'output' OR json_extract(attributes, '$."gen_ai.token.type"') = 'output' THEN value * 0.00000030
+             ELSE 0 END
+      WHEN COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"')) LIKE '%pro%' THEN
+        CASE WHEN json_extract(attributes, '$.type') = 'input' OR json_extract(attributes, '$."gen_ai.token.type"') = 'input' THEN value * 0.00000125
+             WHEN json_extract(attributes, '$.type') = 'output' OR json_extract(attributes, '$."gen_ai.token.type"') = 'output' THEN value * 0.00000500
+             ELSE 0 END
+      ELSE 0 END
+  ELSE 0 END`;
+
 function parseSince(since?: string): number | null {
   if (!since) return null;
   const match = since.match(/^(\d+)(h|d|m)$/);
@@ -32,7 +47,7 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
     otel_costs AS (
       SELECT session_id,
              SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
-             SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as total_cost
+             SUM(${COST_SQL}) as total_cost
       FROM otel_metrics
       WHERE session_id IS NOT NULL
       GROUP BY session_id
@@ -179,8 +194,9 @@ export function costBreakdown(
       selectExpr = "session_id as group_key";
       break;
     case "model":
-      groupExpr = "json_extract(attributes, '$.model')";
-      selectExpr = `json_extract(attributes, '$.model') as group_key`;
+      groupExpr =
+        "COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$.\"gen_ai.response.model\"'), 'unknown')";
+      selectExpr = `${groupExpr} as group_key`;
       break;
     case "day":
       groupExpr = "date(timestamp_ns / 1000000000, 'unixepoch')";
@@ -190,10 +206,10 @@ export function costBreakdown(
 
   const sql = `
     SELECT ${selectExpr},
-           SUM(CASE WHEN name LIKE '%input%token%' THEN value ELSE 0 END) as input_tokens,
-           SUM(CASE WHEN name LIKE '%output%token%' THEN value ELSE 0 END) as output_tokens,
+           SUM(CASE WHEN name LIKE '%input%token%' OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'input') THEN value ELSE 0 END) as input_tokens,
+           SUM(CASE WHEN name LIKE '%output%token%' OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'output') THEN value ELSE 0 END) as output_tokens,
            SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
-           SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as total_cost
+           SUM(${COST_SQL}) as total_cost
     FROM otel_metrics
     ${where}
     GROUP BY ${groupExpr}
@@ -411,7 +427,7 @@ export function activitySummary(opts: { since?: string } = {}) {
     const costRow = db
       .prepare(`
       SELECT SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as tokens,
-             SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as cost
+             SUM(${COST_SQL}) as cost
       FROM otel_metrics
       WHERE session_id = ?
     `)
