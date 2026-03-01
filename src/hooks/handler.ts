@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { config, ensureDataDir } from "../config.js";
@@ -32,8 +32,24 @@ function isReceiverRunning(): boolean {
   }
 }
 
+function isPortInUse(port: number): boolean {
+  try {
+    execSync(`ss -tlnp 'sport = :${port}' 2>/dev/null | grep -q LISTEN`, {
+      encoding: "utf-8",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function startReceiver(): void {
   ensureDataDir();
+
+  // Don't spawn if port is already held by an orphan process
+  if (isPortInUse(config.otlpPort)) {
+    return;
+  }
 
   const serverScript = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
@@ -123,8 +139,27 @@ async function main() {
     const data: HookInput = JSON.parse(input);
 
     const sessionId = data.session_id ?? "unknown";
-    const eventType = data.hook_event_name ?? "Unknown";
+    let eventType = data.hook_event_name ?? "Unknown";
     const toolName = data.tool_name ?? null;
+
+    // Normalize Gemini CLI event types to Claude Code equivalents for FML and query compatibility
+    if (eventType === "BeforeTool") {
+      eventType = "PreToolUse";
+    } else if (eventType === "AfterTool") {
+      eventType = "PostToolUse";
+    } else if (eventType === "BeforeModel") {
+      eventType = "UserPromptSubmit";
+      // Extract user_prompt for Gemini CLI
+      const llmRequest = data.llm_request as any;
+      if (llmRequest?.messages && Array.isArray(llmRequest.messages)) {
+        const lastUserMessage = [...llmRequest.messages]
+          .reverse()
+          .find((m) => m.role === "user");
+        if (lastUserMessage && typeof lastUserMessage.content === "string") {
+          data.user_prompt = lastUserMessage.content;
+        }
+      }
+    }
 
     // On SessionStart, ensure background processes are running
     if (eventType === "SessionStart") {
@@ -138,7 +173,7 @@ async function main() {
     const shellPwd = process.env.PWD ?? undefined;
     const payload = shellPwd ? { ...data, shell_pwd: shellPwd } : data;
 
-    insertHookEvent({
+    await insertHookEvent({
       session_id: sessionId,
       event_type: eventType,
       timestamp_ms: Date.now(),
@@ -147,11 +182,16 @@ async function main() {
       tool_name: toolName ?? undefined,
       payload,
     });
+
+    // Output empty JSON to satisfy Gemini CLI hooks
+    console.log("{}");
   } catch (err) {
-    // Silently fail — hooks must not block Claude Code
+    // Silently fail — hooks must not block Claude Code or Gemini CLI
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);
     }
+    // Output error JSON so Gemini CLI can log the warning
+    console.log(JSON.stringify({ error: "panopticon hook failed" }));
   }
 }
 

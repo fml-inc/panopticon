@@ -1,4 +1,3 @@
-import { gzipSync } from "node:zlib";
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -98,9 +97,16 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
   insertMany(rows);
 }
 
-export function insertHookEvent(row: HookEventRow): void {
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
+
+const gzipAsync = promisify(gzip);
+
+export async function insertHookEvent(row: HookEventRow): Promise<void> {
   const db = getDb();
   const json = JSON.stringify(row.payload);
+  const compressed = await gzipAsync(Buffer.from(json));
+
   const insertWithFts = db.transaction(() => {
     db.prepare(INSERT_HOOK_SQL).run({
       session_id: row.session_id,
@@ -109,7 +115,7 @@ export function insertHookEvent(row: HookEventRow): void {
       cwd: row.cwd ?? null,
       repository: row.repository ?? null,
       tool_name: row.tool_name ?? null,
-      payload: gzipSync(Buffer.from(json)),
+      payload: compressed,
     });
     const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
       id: number;
