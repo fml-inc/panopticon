@@ -2,20 +2,117 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import { getDb } from "./schema.js";
 
-const COST_SQL = `CASE 
-  WHEN name LIKE '%cost%' THEN value 
-  WHEN name = 'gemini_cli.token.usage' OR name = 'gen_ai.client.token.usage' THEN
-    CASE 
-      WHEN COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"')) LIKE '%flash%' THEN
-        CASE WHEN json_extract(attributes, '$.type') = 'input' OR json_extract(attributes, '$."gen_ai.token.type"') = 'input' THEN value * 0.000000075
-             WHEN json_extract(attributes, '$.type') = 'output' OR json_extract(attributes, '$."gen_ai.token.type"') = 'output' THEN value * 0.00000030
+// Unified token type extraction: works for claude_code, gemini_cli, and gen_ai metric names
+const TOKEN_TYPE_EXPR = `COALESCE(json_extract(attributes, '$.type'), json_extract(attributes, '$."gen_ai.token.type"'))`;
+const MODEL_EXPR = `COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"'))`;
+
+// IS_INPUT/IS_OUTPUT: true for the primary input/output token types only (no cache/thought/tool)
+const IS_INPUT = `${TOKEN_TYPE_EXPR} = 'input'`;
+const IS_OUTPUT = `${TOKEN_TYPE_EXPR} = 'output'`;
+const IS_CACHE_READ = `${TOKEN_TYPE_EXPR} IN ('cache', 'cacheRead')`;
+const IS_CACHE_WRITE = `${TOKEN_TYPE_EXPR} = 'cacheCreation'`;
+
+const _COST_SQL = `CASE
+  WHEN name LIKE '%cost%' THEN value
+  WHEN name IN ('gemini_cli.token.usage', 'gen_ai.client.token.usage', 'claude_code.token.usage') THEN
+    CASE
+      -- Claude models
+      WHEN ${MODEL_EXPR} LIKE 'claude-opus%' THEN
+        CASE WHEN ${IS_INPUT} THEN value * 0.000015
+             WHEN ${IS_OUTPUT} THEN value * 0.000075
+             WHEN ${IS_CACHE_READ} THEN value * 0.0000015
+             WHEN ${IS_CACHE_WRITE} THEN value * 0.00001875
              ELSE 0 END
-      WHEN COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"')) LIKE '%pro%' THEN
-        CASE WHEN json_extract(attributes, '$.type') = 'input' OR json_extract(attributes, '$."gen_ai.token.type"') = 'input' THEN value * 0.00000125
-             WHEN json_extract(attributes, '$.type') = 'output' OR json_extract(attributes, '$."gen_ai.token.type"') = 'output' THEN value * 0.00000500
+      WHEN ${MODEL_EXPR} LIKE 'claude-sonnet%' THEN
+        CASE WHEN ${IS_INPUT} THEN value * 0.000003
+             WHEN ${IS_OUTPUT} THEN value * 0.000015
+             WHEN ${IS_CACHE_READ} THEN value * 0.0000003
+             WHEN ${IS_CACHE_WRITE} THEN value * 0.00000375
+             ELSE 0 END
+      WHEN ${MODEL_EXPR} LIKE 'claude-haiku%' THEN
+        CASE WHEN ${IS_INPUT} THEN value * 0.0000008
+             WHEN ${IS_OUTPUT} THEN value * 0.000004
+             WHEN ${IS_CACHE_READ} THEN value * 0.00000008
+             WHEN ${IS_CACHE_WRITE} THEN value * 0.000001
+             ELSE 0 END
+      -- Gemini Flash Lite
+      WHEN ${MODEL_EXPR} LIKE '%flash-lite%' THEN
+        CASE WHEN ${IS_INPUT} THEN value * 0.000000075
+             WHEN ${IS_OUTPUT} THEN value * 0.0000003
+             ELSE 0 END
+      -- Gemini Flash
+      WHEN ${MODEL_EXPR} LIKE '%flash%' THEN
+        CASE WHEN ${IS_INPUT} THEN value * 0.000000075
+             WHEN ${IS_OUTPUT} THEN value * 0.0000003
+             ELSE 0 END
+      -- Gemini Pro
+      WHEN ${MODEL_EXPR} LIKE '%pro%' THEN
+        CASE WHEN ${IS_INPUT} THEN value * 0.00000125
+             WHEN ${IS_OUTPUT} THEN value * 0.000005
              ELSE 0 END
       ELSE 0 END
   ELSE 0 END`;
+
+// Cost expression for use inside the deduped CTE (uses model/token_type columns directly)
+const DEDUPED_COST_EXPR = `SUM(CASE
+  WHEN model LIKE 'claude-opus%' THEN
+    CASE WHEN token_type = 'input' THEN value * 0.000015
+         WHEN token_type = 'output' THEN value * 0.000075
+         WHEN token_type IN ('cache', 'cacheRead') THEN value * 0.0000015
+         WHEN token_type = 'cacheCreation' THEN value * 0.00001875
+         ELSE 0 END
+  WHEN model LIKE 'claude-sonnet%' THEN
+    CASE WHEN token_type = 'input' THEN value * 0.000003
+         WHEN token_type = 'output' THEN value * 0.000015
+         WHEN token_type IN ('cache', 'cacheRead') THEN value * 0.0000003
+         WHEN token_type = 'cacheCreation' THEN value * 0.00000375
+         ELSE 0 END
+  WHEN model LIKE 'claude-haiku%' THEN
+    CASE WHEN token_type = 'input' THEN value * 0.0000008
+         WHEN token_type = 'output' THEN value * 0.000004
+         WHEN token_type IN ('cache', 'cacheRead') THEN value * 0.00000008
+         WHEN token_type = 'cacheCreation' THEN value * 0.000001
+         ELSE 0 END
+  WHEN model LIKE '%flash-lite%' THEN
+    CASE WHEN token_type = 'input' THEN value * 0.000000075
+         WHEN token_type = 'output' THEN value * 0.0000003
+         ELSE 0 END
+  WHEN model LIKE '%flash%' THEN
+    CASE WHEN token_type = 'input' THEN value * 0.000000075
+         WHEN token_type = 'output' THEN value * 0.0000003
+         ELSE 0 END
+  WHEN model LIKE '%pro%' THEN
+    CASE WHEN token_type = 'input' THEN value * 0.00000125
+         WHEN token_type = 'output' THEN value * 0.000005
+         ELSE 0 END
+  ELSE 0 END)`;
+
+// CTE that resolves both metric styles into one unified view.
+// Gemini (cumulative counters) → MAX per (session, model, token_type)
+// Claude (per-request values) → SUM per (session, model, token_type)
+function RESOLVED_METRICS_CTE(extraWhere = ""): string {
+  return `WITH resolved_metrics AS (
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             ${TOKEN_TYPE_EXPR} as token_type,
+             MAX(value) as value,
+             MAX(timestamp_ns) as timestamp_ns
+      FROM otel_metrics
+      WHERE name IN ('gemini_cli.token.usage', 'gen_ai.client.token.usage')
+      ${extraWhere}
+      GROUP BY session_id, model, token_type
+    UNION ALL
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             ${TOKEN_TYPE_EXPR} as token_type,
+             SUM(value) as value,
+             MAX(timestamp_ns) as timestamp_ns
+      FROM otel_metrics
+      WHERE name = 'claude_code.token.usage'
+      ${extraWhere}
+      GROUP BY session_id, model, token_type
+    )`;
+}
 
 function parseSince(since?: string): number | null {
   if (!since) return null;
@@ -46,12 +143,30 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
       ${sinceMs ? "WHERE timestamp_ms >= ?" : ""}
       GROUP BY session_id
     ),
+    resolved AS (
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             ${TOKEN_TYPE_EXPR} as token_type,
+             MAX(value) as value
+      FROM otel_metrics
+      WHERE name IN ('gemini_cli.token.usage', 'gen_ai.client.token.usage')
+        AND session_id IS NOT NULL
+      GROUP BY session_id, model, token_type
+    UNION ALL
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             ${TOKEN_TYPE_EXPR} as token_type,
+             SUM(value) as value
+      FROM otel_metrics
+      WHERE name = 'claude_code.token.usage'
+        AND session_id IS NOT NULL
+      GROUP BY session_id, model, token_type
+    ),
     otel_costs AS (
       SELECT session_id,
-             SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
-             SUM(${COST_SQL}) as total_cost
-      FROM otel_metrics
-      WHERE session_id IS NOT NULL
+             SUM(CASE WHEN token_type IN ('input', 'output') THEN value ELSE 0 END) as total_tokens,
+             ${DEDUPED_COST_EXPR} as total_cost
+      FROM resolved
       GROUP BY session_id
     )
     SELECT s.session_id,
@@ -186,44 +301,31 @@ export function costBreakdown(
     params.push(sinceMs);
   }
 
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  // Gemini metrics are cumulative counters (MAX per session/model/token_type).
+  // Claude metrics are per-request values (SUM per session/model/token_type).
+  const conditionClause = conditions.length
+    ? `AND ${conditions.join(" AND ")}`
+    : "";
 
-  let groupExpr: string;
-  let selectExpr: string;
-  switch (groupBy) {
-    case "session":
-      groupExpr = "session_id";
-      selectExpr = "session_id as group_key";
-      break;
-    case "model":
-      groupExpr =
-        "COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$.\"gen_ai.response.model\"'), 'unknown')";
-      selectExpr = `${groupExpr} as group_key`;
-      break;
-    case "day":
-      groupExpr = "date(timestamp_ns / 1000000000, 'unixepoch')";
-      selectExpr = `date(timestamp_ns / 1000000000, 'unixepoch') as group_key`;
-      break;
-  }
+  const groupKeyExpr =
+    groupBy === "model"
+      ? "model"
+      : groupBy === "day"
+        ? "date(timestamp_ns / 1000000000, 'unixepoch')"
+        : "session_id";
 
   const sql = `
-    SELECT ${selectExpr},
-           SUM(CASE
-             WHEN name LIKE '%input%token%'
-               OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'input')
-               OR (name = 'gen_ai.client.token.usage' AND json_extract(attributes, '$."gen_ai.token.type"') = 'input')
-             THEN value ELSE 0 END) as input_tokens,
-           SUM(CASE
-             WHEN name LIKE '%output%token%'
-               OR (name = 'gemini_cli.token.usage' AND json_extract(attributes, '$.type') = 'output')
-               OR (name = 'gen_ai.client.token.usage' AND json_extract(attributes, '$."gen_ai.token.type"') = 'output')
-             THEN value ELSE 0 END) as output_tokens,
-           SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
-           SUM(${COST_SQL}) as total_cost
-    FROM otel_metrics
-    ${where}
-    GROUP BY ${groupExpr}
-    ORDER BY total_tokens DESC
+    ${RESOLVED_METRICS_CTE(conditionClause)}
+    SELECT ${groupKeyExpr} as group_key,
+           SUM(CASE WHEN token_type = 'input' THEN value ELSE 0 END) as input_tokens,
+           SUM(CASE WHEN token_type = 'output' THEN value ELSE 0 END) as output_tokens,
+           SUM(CASE WHEN token_type IN ('cache', 'cacheRead') THEN value ELSE 0 END) as cache_read_tokens,
+           SUM(CASE WHEN token_type = 'cacheCreation' THEN value ELSE 0 END) as cache_write_tokens,
+           SUM(CASE WHEN token_type IN ('input', 'output') THEN value ELSE 0 END) as total_tokens,
+           ${DEDUPED_COST_EXPR} as total_cost
+    FROM resolved_metrics
+    GROUP BY ${groupKeyExpr}
+    ORDER BY total_cost DESC
   `;
 
   return db.prepare(sql).all(...params);
@@ -446,15 +548,33 @@ export function activitySummary(opts: { since?: string } = {}) {
     `)
       .get(s.session_id) as { cwd: string | null } | undefined;
 
-    // Cost from otel_metrics
+    // Cost from otel_metrics (Gemini=cumulative MAX, Claude=per-request SUM)
     const costRow = db
       .prepare(`
-      SELECT SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as tokens,
-             SUM(${COST_SQL}) as cost
-      FROM otel_metrics
-      WHERE session_id = ?
+      WITH resolved AS (
+        SELECT ${MODEL_EXPR} as model,
+               ${TOKEN_TYPE_EXPR} as token_type,
+               MAX(value) as value
+        FROM otel_metrics
+        WHERE name IN ('gemini_cli.token.usage', 'gen_ai.client.token.usage')
+          AND session_id = ?
+        GROUP BY model, token_type
+      UNION ALL
+        SELECT ${MODEL_EXPR} as model,
+               ${TOKEN_TYPE_EXPR} as token_type,
+               SUM(value) as value
+        FROM otel_metrics
+        WHERE name = 'claude_code.token.usage'
+          AND session_id = ?
+        GROUP BY model, token_type
+      )
+      SELECT SUM(CASE WHEN token_type IN ('input', 'output') THEN value ELSE 0 END) as tokens,
+             ${DEDUPED_COST_EXPR} as cost
+      FROM resolved
     `)
-      .get(s.session_id) as { tokens: number; cost: number } | undefined;
+      .get(s.session_id, s.session_id) as
+      | { tokens: number; cost: number }
+      | undefined;
 
     const sessionCost = costRow?.cost ?? 0;
     const sessionTokens = costRow?.tokens ?? 0;

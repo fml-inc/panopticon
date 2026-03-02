@@ -40,6 +40,9 @@ export const config = {
     "local-plugins",
     "panopticon",
   ),
+  webPidFile: path.join(DATA_DIR, "web.pid"),
+  webPort: parseInt(process.env.PANOPTICON_WEB_PORT ?? "3000", 10),
+  webHost: process.env.PANOPTICON_WEB_HOST ?? "0.0.0.0",
   autoMaxSizeMb: 1000,
   autoMaxAgeDays: 90,
 } as const;
