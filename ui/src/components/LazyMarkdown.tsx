@@ -26,6 +26,9 @@ const SyntaxHighlighter = lazy(() =>
 // @ts-expect-error — no type declarations for style subpath
 import vscDarkPlus from "react-syntax-highlighter/dist/esm/styles/prism/vsc-dark-plus";
 
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeRaw];
+
 interface LazyMarkdownProps {
   content: string;
   className?: string;
@@ -54,8 +57,8 @@ function LazyMarkdownInner({ content, className }: LazyMarkdownProps) {
       }
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw]}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
         components={{
           code({ node, className: codeClassName, children, ...props }: any) {
             const match = /language-(\S+)/.exec(codeClassName || "");

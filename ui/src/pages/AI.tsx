@@ -29,6 +29,7 @@ interface ToolCall {
 }
 
 interface Message {
+  id: string;
   role: "user" | "assistant";
   content: string;
   toolCalls?: ToolCall[];
@@ -41,6 +42,10 @@ interface ChatSummary {
   created_at: number;
   updated_at: number;
 }
+
+const WIDGET_TOOL_NAMES = ["add_widget", "list_widgets", "remove_widget"];
+const hasWidgetTool = (tc: ToolCall) =>
+  WIDGET_TOOL_NAMES.some((name) => tc.name.includes(name));
 
 function formatRelativeTime(ms: number): string {
   const diff = Date.now() - ms;
@@ -86,8 +91,9 @@ export function AI() {
       autoSentRef.current = false;
       return;
     }
+    const controller = new AbortController();
     currentChatIdRef.current = chatId;
-    fetch(`/api/v2/chats/${chatId}`)
+    fetch(`/api/v2/chats/${chatId}`, { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) {
@@ -95,13 +101,18 @@ export function AI() {
           return;
         }
         const loaded: Message[] = (data.messages || []).map((m: any) => ({
+          id: crypto.randomUUID(),
           role: m.role,
           content: m.content,
           toolCalls: m.tool_calls ? JSON.parse(m.tool_calls) : undefined,
           cost: m.cost,
         }));
         setMessages(loaded);
+      })
+      .catch((e) => {
+        if (e.name !== "AbortError") console.error(e);
       });
+    return () => controller.abort();
   }, [chatId, navigate]);
 
   useEffect(() => {
@@ -135,7 +146,10 @@ export function AI() {
       if (!text || isStreaming) return;
 
       setInput("");
-      setMessages((prev) => [...prev, { role: "user", content: text }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "user", content: text },
+      ]);
       setIsStreaming(true);
       setActiveToolName(null);
 
@@ -174,7 +188,12 @@ export function AI() {
 
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "", toolCalls: [] },
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: "",
+          toolCalls: [],
+        },
       ]);
 
       let assistantContent = "";
@@ -300,7 +319,7 @@ export function AI() {
       queryClient,
       navigate,
       persistMessage,
-      messages.filter,
+      messages,
     ],
   );
 
@@ -336,11 +355,6 @@ export function AI() {
         c.title.toLowerCase().includes(sidebarSearch.toLowerCase()),
       )
     : chats;
-
-  const hasWidgetTool = (tc: ToolCall) =>
-    tc.name.includes("add_widget") ||
-    tc.name.includes("list_widgets") ||
-    tc.name.includes("remove_widget");
 
   return (
     <div className="h-full flex">
@@ -459,9 +473,9 @@ export function AI() {
             </div>
           ) : (
             <div className="space-y-6 max-w-3xl mx-auto">
-              {messages.map((msg, i) => (
+              {messages.map((msg, _i) => (
                 <div
-                  key={i}
+                  key={msg.id}
                   className={msg.role === "user" ? "flex justify-end" : ""}
                 >
                   <div

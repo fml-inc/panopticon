@@ -48,6 +48,23 @@ const MODEL_COLORS = [
   "#84cc16",
 ];
 
+function SortIcon({
+  column,
+  current,
+  dir,
+}: {
+  column: string;
+  current: string;
+  dir: string;
+}) {
+  if (current !== column) return null;
+  return dir === "asc" ? (
+    <ArrowUp className="w-3 h-3 inline-block ml-1" />
+  ) : (
+    <ArrowDown className="w-3 h-3 inline-block ml-1" />
+  );
+}
+
 export function Metrics() {
   const [{ sort: sortKey, dir: sortDir }, setSort] = useQueryStates({
     sort: parseAsStringLiteral([
@@ -161,6 +178,37 @@ export function Metrics() {
     });
   }, [data?.modelCosts, modelSort]);
 
+  const models: any[] = data?.modelCosts || [];
+  const costs = data?.costs;
+
+  // Model cost chart data — sorted by cost desc
+  const modelCostChart = useMemo(
+    () =>
+      [...models]
+        .sort((a: any, b: any) => b.total_cost - a.total_cost)
+        .map((m: any) => ({ name: m.group_key, cost: m.total_cost })),
+    [models],
+  );
+
+  // Model token chart data — stacked input/output/cache
+  const modelTokenChart = useMemo(
+    () =>
+      [...models]
+        .sort(
+          (a: any, b: any) =>
+            b.input_tokens +
+            b.output_tokens -
+            (a.input_tokens + a.output_tokens),
+        )
+        .map((m: any) => ({
+          name: m.group_key,
+          input_tokens: m.input_tokens || 0,
+          output_tokens: m.output_tokens || 0,
+          cache_read_tokens: m.cache_read_tokens || 0,
+        })),
+    [models],
+  );
+
   if (isLoading)
     return (
       <div className="p-8 text-slate-500 font-mono text-sm animate-pulse">
@@ -169,9 +217,6 @@ export function Metrics() {
     );
 
   if (!data) return null;
-
-  const { costs } = data;
-  const models: any[] = data.modelCosts || [];
 
   const totalCost =
     costs?.reduce((acc: number, c: any) => acc + c.total_cost, 0) || 0;
@@ -207,24 +252,6 @@ export function Metrics() {
     cache_read_tokens: { label: "Cache Read", color: "#8b5cf6" },
   };
 
-  // Model cost chart data — sorted by cost desc
-  const modelCostChart = [...models]
-    .sort((a: any, b: any) => b.total_cost - a.total_cost)
-    .map((m: any) => ({ name: m.group_key, cost: m.total_cost }));
-
-  // Model token chart data — stacked input/output/cache
-  const modelTokenChart = [...models]
-    .sort(
-      (a: any, b: any) =>
-        b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens),
-    )
-    .map((m: any) => ({
-      name: m.group_key,
-      input_tokens: m.input_tokens || 0,
-      output_tokens: m.output_tokens || 0,
-      cache_read_tokens: m.cache_read_tokens || 0,
-    }));
-
   function formatTokens(n: number): string {
     if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -237,23 +264,6 @@ export function Metrics() {
     if (n >= 0.01) return `$${n.toFixed(3)}`;
     return `$${n.toFixed(4)}`;
   }
-
-  const SortIcon = ({
-    column,
-    current,
-    dir,
-  }: {
-    column: string;
-    current: string;
-    dir: string;
-  }) => {
-    if (current !== column) return null;
-    return dir === "asc" ? (
-      <ArrowUp className="w-3 h-3 inline-block ml-1" />
-    ) : (
-      <ArrowDown className="w-3 h-3 inline-block ml-1" />
-    );
-  };
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8 h-full overflow-y-auto">
@@ -638,12 +648,7 @@ export function Metrics() {
               </TableHeader>
               <TableBody>
                 {sortedModels.map((m: any) => {
-                  const totalModelCost =
-                    data.modelCosts.reduce(
-                      (a: number, c: any) => a + c.total_cost,
-                      0,
-                    ) || 1;
-                  const pct = (m.total_cost / totalModelCost) * 100;
+                  const pct = (m.total_cost / (totalCost || 1)) * 100;
                   return (
                     <TableRow
                       key={m.group_key}
