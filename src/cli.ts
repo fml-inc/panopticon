@@ -2,6 +2,7 @@
 
 import { execSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -21,20 +22,24 @@ import {
 
 const command = process.argv[2];
 const subcommand = process.argv[3];
+const cliFlags = new Set(process.argv.slice(3));
 
 function printUsage() {
   console.log(`
-panopticon - Observability for Claude Code
+panopticon - Observability for Claude Code & Gemini CLI
 
 Usage:
-  panopticon install         Build, register plugin, init DB, configure shell
+  panopticon install         Build, register plugin/hooks, init DB, configure shell
+    --target <target>        Target CLI: claude, gemini, all (default: claude)
     --force                  Overwrite customized env vars with defaults
   panopticon start          Start the OTLP receiver (background)
+    -f, --force              Kill existing process on port conflict and restart
   panopticon stop           Stop the OTLP receiver
   panopticon status         Show receiver status and database stats
   panopticon logs [daemon]  View daemon logs (otlp, sync, mcp)
     -f, --follow             Follow log output (like tail -f)
     -n <lines>               Number of lines to show (default 50)
+  panopticon doctor         Analyze system, daemons, logs, and database health
   panopticon sync setup     Configure sync to FML backend
   panopticon prune          Delete old data from the database
     --older-than 30d         Max age (default: 30d)
@@ -42,6 +47,12 @@ Usage:
     --dry-run                Show estimate without deleting
     --vacuum                 Reclaim disk space after pruning
     --yes                    Skip confirmation prompt
+  panopticon web [start]    Start the web dashboard (background)
+    -f, --force              Kill existing process on port conflict
+    -p, --port <port>        Port (default: 3000, or PANOPTICON_WEB_PORT)
+    --host <host>            Host (default: 0.0.0.0, or PANOPTICON_WEB_HOST)
+  panopticon web stop       Stop the web dashboard
+  panopticon web status     Show web dashboard status
   panopticon sync start     Start the sync daemon (background)
   panopticon sync stop      Stop the sync daemon
   panopticon sync status    Show sync daemon state and watermarks
@@ -73,13 +84,43 @@ function writeJsonFile(filePath: string, data: any): void {
 
 async function install() {
   const force = hasFlag("--force");
+  const target = getFlagValue("--target", "all");
+  if (!["claude", "gemini", "all"].includes(target)) {
+    console.error(`Invalid target: ${target}. Must be claude, gemini, or all.`);
+    process.exit(1);
+  }
+
   const pluginRoot = getPluginRoot();
   const pluginJson = readJsonFile(
     path.join(pluginRoot, ".claude-plugin", "plugin.json"),
   );
+  if (pluginJson?.name && pluginJson.name !== "panopticon") {
+    console.error(
+      `ERROR: .claude-plugin/plugin.json has name "${pluginJson.name}" instead of "panopticon".`,
+    );
+    console.error(
+      "Another plugin installer may have overwritten it. Restoring from git...",
+    );
+    try {
+      execSync("git checkout .claude-plugin/plugin.json", {
+        cwd: pluginRoot,
+        stdio: "pipe",
+      });
+      Object.assign(
+        pluginJson,
+        readJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json")),
+      );
+      console.log("      Restored successfully.\n");
+    } catch {
+      console.error(
+        "      Could not restore. Please run: git checkout .claude-plugin/plugin.json",
+      );
+      process.exit(1);
+    }
+  }
   const version = pluginJson?.version ?? "0.1.0";
 
-  console.log("Installing panopticon...\n");
+  console.log(`Installing panopticon (target: ${target})...\n`);
 
   // 1. Build
   if (!hasFlag("--skip-build")) {
@@ -113,68 +154,150 @@ async function install() {
   closeDb();
   console.log(`      ${config.dbPath}\n`);
 
-  // 3. Set up local marketplace
-  console.log("[3/6] Setting up local marketplace...");
-  fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
-    recursive: true,
-  });
-  writeJsonFile(config.marketplaceManifest, {
-    name: "local-plugins",
-    owner: { name: os.userInfo().username },
-    plugins: [
-      {
+  if (target === "claude" || target === "all") {
+    // 3. Set up local marketplace
+    console.log("[3/6] Setting up local marketplace (Claude)...");
+    fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
+      recursive: true,
+    });
+
+    let existingManifest: any = {
+      name: "local-plugins",
+      owner: { name: os.userInfo().username },
+      plugins: [],
+    };
+    if (fs.existsSync(config.marketplaceManifest)) {
+      try {
+        existingManifest = JSON.parse(
+          fs.readFileSync(config.marketplaceManifest, "utf-8"),
+        );
+      } catch {}
+    }
+
+    if (!existingManifest.plugins.some((p: any) => p.name === "panopticon")) {
+      existingManifest.plugins.push({
         name: "panopticon",
         source: "./panopticon",
         description: pluginJson?.description ?? "Observability for Claude Code",
-      },
-    ],
-  });
-
-  // Symlink plugin into marketplace
-  const marketplaceLink = path.join(config.marketplaceDir, "panopticon");
-  try {
-    fs.unlinkSync(marketplaceLink);
-  } catch {}
-  fs.symlinkSync(pluginRoot, marketplaceLink);
-
-  // Copy to plugin cache (Claude Code reads from cache, not marketplace directly)
-  const cacheDir = path.join(config.pluginCacheDir, version);
-  fs.mkdirSync(cacheDir, { recursive: true });
-  // Sync all necessary files to cache
-  const filesToSync = [
-    ".claude-plugin",
-    "hooks",
-    "bin",
-    "dist",
-    "node_modules",
-    "package.json",
-    "package-lock.json",
-  ];
-  for (const name of filesToSync) {
-    const src = path.join(pluginRoot, name);
-    const dest = path.join(cacheDir, name);
-    if (fs.existsSync(src)) {
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.cpSync(src, dest, { recursive: true });
+      });
     }
+
+    writeJsonFile(config.marketplaceManifest, existingManifest);
+
+    // Symlink plugin into marketplace
+    const marketplaceLink = path.join(config.marketplaceDir, "panopticon");
+    try {
+      fs.unlinkSync(marketplaceLink);
+    } catch {}
+    fs.symlinkSync(pluginRoot, marketplaceLink);
+
+    // Copy to plugin cache (Claude Code reads from cache, not marketplace directly)
+    const cacheDir = path.join(config.pluginCacheDir, version);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    // Sync all necessary files to cache
+    const filesToSync = [
+      ".claude-plugin",
+      "hooks",
+      "bin",
+      "dist",
+      "node_modules",
+      "package.json",
+      "package-lock.json",
+    ];
+    for (const name of filesToSync) {
+      const src = path.join(pluginRoot, name);
+      const dest = path.join(cacheDir, name);
+      if (fs.existsSync(src)) {
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.cpSync(src, dest, { recursive: true });
+      }
+    }
+    console.log(`      Marketplace: ${config.marketplaceDir}`);
+    console.log(`      Cache: ${cacheDir}\n`);
+
+    // 4. Register in Claude Code settings
+    console.log("[4/6] Registering plugin in Claude Code settings...");
+    const settings = readJsonFile(config.claudeSettingsPath) ?? {};
+
+    settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
+    settings.extraKnownMarketplaces["local-plugins"] = {
+      source: { source: "directory", path: config.marketplaceDir },
+    };
+
+    settings.enabledPlugins = settings.enabledPlugins ?? {};
+    settings.enabledPlugins["panopticon@local-plugins"] = true;
+
+    writeJsonFile(config.claudeSettingsPath, settings);
+    console.log(`      ${config.claudeSettingsPath}\n`);
+  } else {
+    console.log("[3/6] Skipping Claude Code marketplace setup...");
+    console.log("[4/6] Skipping Claude Code settings registration...\n");
   }
-  console.log(`      Marketplace: ${config.marketplaceDir}`);
-  console.log(`      Cache: ${cacheDir}\n`);
 
-  // 4. Register in Claude Code settings
-  console.log("[4/6] Registering plugin in Claude Code settings...");
-  const settings = readJsonFile(config.claudeSettingsPath) ?? {};
+  if (target === "gemini" || target === "all") {
+    console.log("[4a/6] Registering hooks in Gemini CLI settings...");
+    const geminiSettings = readJsonFile(config.geminiSettingsPath) ?? {};
+    geminiSettings.hooks = geminiSettings.hooks || {};
 
-  settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
-  settings.extraKnownMarketplaces["local-plugins"] = {
-    source: { source: "directory", path: config.marketplaceDir },
-  };
+    const events = [
+      "SessionStart",
+      "SessionEnd",
+      "BeforeTool",
+      "AfterTool",
+      "BeforeToolSelection",
+      "BeforeAgent",
+      "AfterAgent",
+      "BeforeModel",
+      "AfterModel",
+    ];
 
-  settings.enabledPlugins = settings.enabledPlugins ?? {};
-  settings.enabledPlugins["panopticon@local-plugins"] = true;
+    for (const event of events) {
+      geminiSettings.hooks[event] = geminiSettings.hooks[event] || [];
+      // Remove any existing panopticon hooks
+      geminiSettings.hooks[event] = geminiSettings.hooks[event]
+        .map((group: any) => ({
+          ...group,
+          hooks: group.hooks.filter((h: any) => h.name !== "panopticon-hook"),
+        }))
+        .filter((group: any) => group.hooks.length > 0);
 
-  writeJsonFile(config.claudeSettingsPath, settings);
-  console.log(`      ${config.claudeSettingsPath}\n`);
+      // Add panopticon hook group
+      geminiSettings.hooks[event].push({
+        hooks: [
+          {
+            name: "panopticon-hook",
+            type: "command",
+            command: path.join(pluginRoot, "bin", "hook-handler"),
+            timeout: 5000,
+          },
+        ],
+      });
+    }
+
+    geminiSettings.hooksConfig = geminiSettings.hooksConfig || {};
+    geminiSettings.hooksConfig.enabled = true;
+
+    geminiSettings.mcpServers = geminiSettings.mcpServers || {};
+    geminiSettings.mcpServers.panopticon = {
+      command: "node",
+      args: [path.join(pluginRoot, "bin", "mcp-server")],
+    };
+
+    geminiSettings.telemetry = geminiSettings.telemetry || {};
+    Object.assign(geminiSettings.telemetry, {
+      enabled: true,
+      target: "local",
+      useCollector: true,
+      otlpEndpoint: `http://localhost:${config.otlpPort}`,
+      otlpProtocol: "http",
+      logPrompts: true,
+    });
+
+    writeJsonFile(config.geminiSettingsPath, geminiSettings);
+    console.log(`      ${config.geminiSettingsPath}\n`);
+  } else {
+    console.log("[4a/6] Skipping Gemini CLI settings registration...\n");
+  }
 
   // 5. Symlink CLI into PATH
   console.log("[5/6] Adding CLI to PATH...");
@@ -212,6 +335,12 @@ async function install() {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
+    "GEMINI_TELEMETRY_ENABLED",
+    "GEMINI_TELEMETRY_TARGET",
+    "GEMINI_TELEMETRY_USE_COLLECTOR",
+    "GEMINI_TELEMETRY_OTLP_ENDPOINT",
+    "GEMINI_TELEMETRY_OTLP_PROTOCOL",
+    "GEMINI_TELEMETRY_LOG_PROMPTS",
   ];
   const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
@@ -225,25 +354,56 @@ async function install() {
     return false;
   };
 
-  // Desired lines keyed by variable name (order preserved)
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
-    ["CLAUDE_CODE_ENABLE_TELEMETRY", "export CLAUDE_CODE_ENABLE_TELEMETRY=1"],
-    [
-      "OTEL_EXPORTER_OTLP_ENDPOINT",
-      `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
-    ],
-    [
-      "OTEL_EXPORTER_OTLP_PROTOCOL",
-      "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
-    ],
-    ["OTEL_METRICS_EXPORTER", "export OTEL_METRICS_EXPORTER=otlp"],
-    ["OTEL_LOGS_EXPORTER", "export OTEL_LOGS_EXPORTER=otlp"],
-    ["OTEL_LOG_TOOL_DETAILS", "export OTEL_LOG_TOOL_DETAILS=1"],
-    ["OTEL_LOG_USER_PROMPTS", "export OTEL_LOG_USER_PROMPTS=1"],
-    ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
-    ["# <<< panopticon <<<", "# <<< panopticon <<<"],
   ];
+
+  if (target === "claude" || target === "all") {
+    wantedLines.push(
+      ["CLAUDE_CODE_ENABLE_TELEMETRY", "export CLAUDE_CODE_ENABLE_TELEMETRY=1"],
+      [
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
+      ],
+      [
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+      ],
+      ["OTEL_METRICS_EXPORTER", "export OTEL_METRICS_EXPORTER=otlp"],
+      ["OTEL_LOGS_EXPORTER", "export OTEL_LOGS_EXPORTER=otlp"],
+      ["OTEL_LOG_TOOL_DETAILS", "export OTEL_LOG_TOOL_DETAILS=1"],
+      ["OTEL_LOG_USER_PROMPTS", "export OTEL_LOG_USER_PROMPTS=1"],
+      [
+        "OTEL_METRIC_EXPORT_INTERVAL",
+        "export OTEL_METRIC_EXPORT_INTERVAL=10000",
+      ],
+    );
+  }
+
+  if (target === "gemini" || target === "all") {
+    wantedLines.push(
+      ["GEMINI_TELEMETRY_ENABLED", "export GEMINI_TELEMETRY_ENABLED=true"],
+      ["GEMINI_TELEMETRY_TARGET", "export GEMINI_TELEMETRY_TARGET=local"],
+      [
+        "GEMINI_TELEMETRY_USE_COLLECTOR",
+        "export GEMINI_TELEMETRY_USE_COLLECTOR=true",
+      ],
+      [
+        "GEMINI_TELEMETRY_OTLP_ENDPOINT",
+        `export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
+      ],
+      [
+        "GEMINI_TELEMETRY_OTLP_PROTOCOL",
+        "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
+      ],
+      [
+        "GEMINI_TELEMETRY_LOG_PROMPTS",
+        "export GEMINI_TELEMETRY_LOG_PROMPTS=true",
+      ],
+    );
+  }
+
+  wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
 
   // Only add PATH entry if ~/.local/bin isn't already on PATH in the file
   if (!rcContent.includes(".local/bin")) {
@@ -305,23 +465,97 @@ async function install() {
     `      ${lastPanopticonIdx >= 0 ? "Updated" : "Added"} env vars in ${shellRc}\n`,
   );
 
-  console.log("Done! Start a new Claude Code session to activate.\n");
+  const assistant =
+    target === "all"
+      ? "Claude Code and Gemini CLI"
+      : target === "claude"
+        ? "Claude Code"
+        : "Gemini CLI";
+  console.log(`Done! Start a new ${assistant} session to activate.\n`);
   console.log("Verify with: panopticon status");
 }
 
+/** Check if a port is in use. Returns the PID holding it (via lsof/ss) or true/null. */
+function findPortHolder(port: number): number | null {
+  try {
+    // Try ss first (Linux)
+    const out = execSync(
+      `ss -tlnp 'sport = :${port}' 2>/dev/null || lsof -ti :${port} 2>/dev/null`,
+      { encoding: "utf-8" },
+    );
+    // ss output contains pid=NNNN; lsof outputs bare PIDs
+    const pidMatch = out.match(/pid=(\d+)/);
+    if (pidMatch) return parseInt(pidMatch[1], 10);
+    // lsof fallback: first line is a PID
+    const firstLine = out.trim().split("\n")[0];
+    const parsed = parseInt(firstLine, 10);
+    if (!Number.isNaN(parsed)) return parsed;
+    // Port is in use but couldn't extract PID
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isPortInUse(port: number): boolean {
+  try {
+    execSync(`ss -tlnp 'sport = :${port}' 2>/dev/null | grep -q LISTEN`, {
+      encoding: "utf-8",
+    });
+    return true;
+  } catch {
+    // ss failed or no match — try net.connect as fallback
+    return false;
+  }
+}
+
 async function start() {
+  const force = cliFlags.has("-f") || cliFlags.has("--force");
   ensureDataDir();
 
-  // Check if already running
+  // Check if already running via PID file
   if (fs.existsSync(config.pidFile)) {
     const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
     try {
-      process.kill(pid, 0); // Check if process exists
-      console.log(`OTLP receiver already running (PID ${pid})`);
-      return;
+      process.kill(pid, 0);
+      if (force) {
+        process.kill(pid, "SIGTERM");
+        console.log(`Killed existing OTLP receiver (PID ${pid})`);
+        fs.unlinkSync(config.pidFile);
+        // Brief wait for port release
+        await new Promise((r) => setTimeout(r, 300));
+      } else {
+        console.log(`OTLP receiver already running (PID ${pid})`);
+        return;
+      }
     } catch {
       // PID file stale, remove it
       fs.unlinkSync(config.pidFile);
+    }
+  }
+
+  // Check if port is held by an orphan process (no PID file match)
+  if (isPortInUse(config.otlpPort)) {
+    const holder = findPortHolder(config.otlpPort);
+    if (force && holder) {
+      try {
+        process.kill(holder, "SIGTERM");
+        console.log(
+          `Killed orphan process (PID ${holder}) holding port ${config.otlpPort}`,
+        );
+        await new Promise((r) => setTimeout(r, 300));
+      } catch {
+        console.error(
+          `Failed to kill process ${holder} on port ${config.otlpPort}`,
+        );
+        process.exit(1);
+      }
+    } else {
+      console.error(
+        `Port ${config.otlpPort} is already in use${holder ? ` (PID ${holder})` : ""}.`,
+      );
+      console.error("Use `panopticon start -f` to force-kill and restart.");
+      process.exit(1);
     }
   }
 
@@ -402,15 +636,19 @@ function isProcessRunning(pidFile: string): {
 async function status() {
   const receiver = isProcessRunning(config.pidFile);
   const syncDaemon = isProcessRunning(config.syncPidFile);
+  const webInfo = readWebInfo();
 
   console.log("Panopticon Status");
   console.log("=================");
   console.log();
   console.log(
-    `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
+    `OTLP Receiver:  ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
   );
   console.log(
-    `Sync Daemon:   ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`,
+    `Sync Daemon:    ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`,
+  );
+  console.log(
+    `Web Dashboard:  ${webInfo.running ? `running (PID ${webInfo.pid}, port ${webInfo.port})` : "stopped"}`,
   );
   console.log(`Database: ${config.dbPath}`);
 
@@ -534,6 +772,123 @@ async function status() {
         }
       }
     } catch {}
+  }
+}
+
+// ============================================================================
+// DOCTOR COMMAND
+// ============================================================================
+
+async function checkPortOpen(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => {
+      resolve(false);
+    });
+    server.once("listening", () => {
+      server.close();
+      resolve(true);
+    });
+    server.listen(port, host);
+  });
+}
+
+async function doctor() {
+  console.log("Panopticon Doctor");
+  console.log("=================\n");
+
+  console.log("System Info");
+  console.log("-----------");
+  const isSandbox =
+    process.env.SANDBOX !== undefined ||
+    fs.existsSync(path.join(os.homedir(), ".sandbox-home"));
+  console.log(`OS:       ${os.platform()} (${os.release()} ${os.arch()})`);
+  console.log(`Node:     ${process.version}`);
+  console.log(`Sandbox:  ${isSandbox ? "Yes" : "No"}`);
+  console.log();
+
+  console.log("Configuration");
+  console.log("-------------");
+  console.log(`Data Dir: ${config.dataDir}`);
+  console.log(`DB Path:  ${config.dbPath}`);
+  console.log(`OTLP Port: ${config.otlpPort} (Host: ${config.otlpHost})`);
+  console.log(`Env PORT: ${process.env.PANOPTICON_OTLP_PORT || "not set"}`);
+  console.log();
+
+  console.log("Network & Daemons");
+  console.log("-----------------");
+  const receiver = isProcessRunning(config.pidFile);
+  const syncDaemon = isProcessRunning(config.syncPidFile);
+  const webDocInfo = readWebInfo();
+  const isPortFree = await checkPortOpen(config.otlpPort, config.otlpHost);
+
+  console.log(
+    `OTLP Receiver:  ${receiver.running ? `Running (PID ${receiver.pid})` : "Stopped"}`,
+  );
+  console.log(
+    `Sync Daemon:    ${syncDaemon.running ? `Running (PID ${syncDaemon.pid})` : "Stopped"}`,
+  );
+  console.log(
+    `Web Dashboard:  ${webDocInfo.running ? `Running (PID ${webDocInfo.pid}, port ${webDocInfo.port})` : "Stopped"}`,
+  );
+  console.log(
+    `Port ${config.otlpPort}:    ${isPortFree ? "Free (Available)" : "IN USE (Occupied)"}`,
+  );
+  if (!isPortFree && !receiver.running) {
+    console.log(
+      "  ⚠️  WARNING: Port is in use, but Panopticon PID file indicates it is stopped.",
+    );
+    console.log(
+      "      This usually means another sandbox or host process is holding the port.",
+    );
+  }
+  console.log();
+
+  console.log("Database & Logs");
+  console.log("---------------");
+  if (!fs.existsSync(config.dbPath)) {
+    console.log("Database: Not initialized");
+  } else {
+    try {
+      const stats = dbStats();
+      console.log(
+        `Tables: hook_events (${stats.hook_events}), otel_logs (${stats.otel_logs}), otel_metrics (${stats.otel_metrics})`,
+      );
+
+      const db = getDb();
+      // Fetch recent errors
+      const errors = db
+        .prepare(
+          "SELECT * FROM otel_logs WHERE severity_text = 'ERROR' ORDER BY id DESC LIMIT 3",
+        )
+        .all() as any[];
+      if (errors.length > 0) {
+        console.log("\nRecent OTel Errors:");
+        errors.forEach((err) => {
+          console.log(`  [${err.id}] ${err.body?.slice(0, 100)}...`);
+        });
+      } else {
+        console.log("Recent OTel Errors: None found");
+      }
+
+      // Fetch recent hooks
+      const hooks = db
+        .prepare(
+          "SELECT event_type, tool_name, timestamp_ms FROM hook_events ORDER BY id DESC LIMIT 3",
+        )
+        .all() as any[];
+      if (hooks.length > 0) {
+        console.log("\nRecent Hook Events:");
+        hooks.forEach((hook) => {
+          console.log(
+            `  - ${hook.event_type} ${hook.tool_name ? `(${hook.tool_name})` : ""} at ${new Date(hook.timestamp_ms).toISOString()}`,
+          );
+        });
+      }
+      closeDb();
+    } catch (e: any) {
+      console.log(`  ❌ Failed to query database: ${e.message}`);
+    }
   }
 }
 
@@ -975,6 +1330,173 @@ async function logs() {
   tail.on("exit", (code) => process.exit(code ?? 0));
 }
 
+async function webStart() {
+  const force = hasFlag("-f") || hasFlag("--force");
+  const portOverride = getFlagValue("-p", "") || getFlagValue("--port", "");
+  const hostOverride = getFlagValue("--host", "");
+  const port = portOverride ? parseInt(portOverride, 10) : config.webPort;
+  const host = hostOverride || config.webHost;
+
+  ensureDataDir();
+
+  // Check if already running via PID file
+  if (fs.existsSync(config.webPidFile)) {
+    const pid = parseInt(
+      fs.readFileSync(config.webPidFile, "utf-8").trim(),
+      10,
+    );
+    try {
+      process.kill(pid, 0);
+      if (force) {
+        process.kill(pid, "SIGTERM");
+        console.log(`Killed existing web dashboard (PID ${pid})`);
+        fs.unlinkSync(config.webPidFile);
+        await new Promise((r) => setTimeout(r, 300));
+      } else {
+        console.log(`Web dashboard already running (PID ${pid})`);
+        return;
+      }
+    } catch {
+      // PID file stale, remove it
+      fs.unlinkSync(config.webPidFile);
+    }
+  }
+
+  // Check if port is held by an orphan process
+  if (isPortInUse(port)) {
+    const holder = findPortHolder(port);
+    if (force && holder) {
+      try {
+        process.kill(holder, "SIGTERM");
+        console.log(
+          `Killed orphan process (PID ${holder}) holding port ${port}`,
+        );
+        await new Promise((r) => setTimeout(r, 300));
+      } catch {
+        console.error(`Failed to kill process ${holder} on port ${port}`);
+        process.exit(1);
+      }
+    } else {
+      console.error(
+        `Port ${port} is already in use${holder ? ` (PID ${holder})` : ""}.`,
+      );
+      console.error("Use `panopticon web start -f` to force-kill and restart.");
+      process.exit(1);
+    }
+  }
+
+  const serverScript = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "web2",
+    "server.js",
+  );
+
+  const logFd = openLogFd("web");
+
+  const child = spawn("node", [serverScript], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: host,
+    },
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    child.on("error", (err) => {
+      reject(new Error(`Failed to start: ${err.message}`));
+    });
+
+    setTimeout(() => {
+      if (child.pid) {
+        fs.writeFileSync(config.webPidFile, `${child.pid}\n${port}\n${host}`);
+        child.unref();
+        fs.closeSync(logFd);
+        const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
+        console.log(`Web dashboard started (PID ${child.pid}) on ${url}`);
+        console.log(`Log: ${logPaths.web}`);
+        resolve();
+      } else {
+        fs.closeSync(logFd);
+        reject(new Error("Failed to start web dashboard"));
+      }
+    }, 500);
+  });
+}
+
+async function webStop() {
+  if (!fs.existsSync(config.webPidFile)) {
+    console.log("Web dashboard is not running (no PID file)");
+    return;
+  }
+
+  const pid = parseInt(fs.readFileSync(config.webPidFile, "utf-8").trim(), 10);
+  try {
+    process.kill(pid, "SIGTERM");
+    fs.unlinkSync(config.webPidFile);
+    console.log(`Web dashboard stopped (PID ${pid})`);
+  } catch {
+    fs.unlinkSync(config.webPidFile);
+    console.log("Web dashboard was not running (stale PID file removed)");
+  }
+}
+
+function readWebInfo(): {
+  pid: number | null;
+  port: number;
+  host: string;
+  running: boolean;
+} {
+  if (!fs.existsSync(config.webPidFile)) {
+    return {
+      pid: null,
+      port: config.webPort,
+      host: config.webHost,
+      running: false,
+    };
+  }
+  const lines = fs.readFileSync(config.webPidFile, "utf-8").trim().split("\n");
+  const pid = parseInt(lines[0], 10);
+  const port = lines[1] ? parseInt(lines[1], 10) : config.webPort;
+  const host = lines[2] || config.webHost;
+  let running = false;
+  try {
+    process.kill(pid, 0);
+    running = true;
+  } catch {}
+  return { pid, port, host, running };
+}
+
+async function webStatus() {
+  const { running, pid, port, host } = readWebInfo();
+  if (running) {
+    const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
+    console.log(`Web dashboard: running (PID ${pid}) on ${url}`);
+  } else {
+    console.log("Web dashboard: stopped");
+  }
+}
+
+async function handleWeb() {
+  switch (subcommand) {
+    case "start":
+    case undefined:
+      await webStart();
+      break;
+    case "stop":
+      await webStop();
+      break;
+    case "status":
+      await webStatus();
+      break;
+    default:
+      console.error(`Unknown web subcommand: ${subcommand}`);
+      console.log("Available: start, stop, status");
+      process.exit(1);
+  }
+}
+
 async function handleSync() {
   switch (subcommand) {
     case "setup":
@@ -1018,8 +1540,14 @@ async function main() {
     case "log":
       await logs();
       break;
+    case "doctor":
+      await doctor();
+      break;
     case "prune":
       await prune();
+      break;
+    case "web":
+      await handleWeb();
       break;
     case "sync":
       await handleSync();
