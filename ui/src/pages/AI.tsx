@@ -101,7 +101,7 @@ export function AI() {
           return;
         }
         const loaded: Message[] = (data.messages || []).map((m: any) => ({
-          id: crypto.randomUUID(),
+          id: self.crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
           role: m.role,
           content: m.content,
           toolCalls: m.tool_calls ? JSON.parse(m.tool_calls) : undefined,
@@ -148,7 +148,7 @@ export function AI() {
       setInput("");
       setMessages((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), role: "user", content: text },
+        { id: self.crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36), role: "user", content: text },
       ]);
       setIsStreaming(true);
       setActiveToolName(null);
@@ -189,7 +189,7 @@ export function AI() {
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: self.crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
           role: "assistant",
           content: "",
           toolCalls: [],
