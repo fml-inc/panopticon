@@ -485,12 +485,21 @@ app.post("/api/v2/analyze", (req: any, res: any) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   req.setTimeout(0);
   res.setTimeout(0);
-  if (req.socket) req.socket.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+    req.socket.setNoDelay(true);
+  }
   res.flushHeaders();
 
-  res.write(
+  const sseWrite = (chunk: string) => {
+    res.write(chunk);
+    if (typeof res.flush === "function") res.flush();
+  };
+
+  sseWrite(
     `event: status\ndata: ${JSON.stringify({ status: "starting" })}\n\n`,
   );
 
@@ -544,23 +553,23 @@ app.post("/api/v2/analyze", (req: any, res: any) => {
                 ? block.text.slice(lastTextContent.length)
                 : block.text;
               if (newText) {
-                res.write(
+                sseWrite(
                   `event: text\ndata: ${JSON.stringify({ content: newText })}\n\n`,
                 );
                 lastTextContent = block.text;
               }
             } else if (block.type === "tool_use") {
-              res.write(
+              sseWrite(
                 `event: tool_use_start\ndata: ${JSON.stringify({ name: block.name, id: block.id, input: block.input })}\n\n`,
               );
             } else if (block.type === "tool_result") {
-              res.write(
+              sseWrite(
                 `event: tool_result\ndata: ${JSON.stringify({ tool_use_id: block.tool_use_id, content: block.content })}\n\n`,
               );
             }
           }
         } else if (json.type === "result") {
-          res.write(
+          sseWrite(
             `event: result\ndata: ${JSON.stringify({ cost: json.total_cost_usd, duration: json.duration_ms, result: json.result })}\n\n`,
           );
         }
@@ -578,7 +587,7 @@ app.post("/api/v2/analyze", (req: any, res: any) => {
   claudeProcess.on("close", (code) => {
     if (code !== 0 && !jsonBuffer.trim() && stderrBuffer.trim()) {
       const errorMsg = stderrBuffer.trim().split("\n")[0];
-      res.write(
+      sseWrite(
         `event: error\ndata: ${JSON.stringify({ error: errorMsg })}\n\n`,
       );
     }
@@ -586,13 +595,13 @@ app.post("/api/v2/analyze", (req: any, res: any) => {
       try {
         const json = JSON.parse(jsonBuffer);
         if (json.type === "result") {
-          res.write(
+          sseWrite(
             `event: result\ndata: ${JSON.stringify({ cost: json.total_cost_usd, duration: json.duration_ms, result: json.result })}\n\n`,
           );
         }
       } catch {}
     }
-    res.write(`event: done\ndata: {}\n\n`);
+    sseWrite(`event: done\ndata: {}\n\n`);
     res.end();
   });
 
