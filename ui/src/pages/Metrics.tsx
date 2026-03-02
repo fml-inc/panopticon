@@ -486,7 +486,7 @@ export function Metrics() {
                   <Bar dataKey="cost" radius={[0, 4, 4, 0]} name="Cost ($)">
                     {modelCostChart.map((entry, i) => (
                       <Cell
-                        key={`model-${entry.model ?? i}`}
+                        key={`model-${entry.name ?? i}`}
                         fill={MODEL_COLORS[i % MODEL_COLORS.length]}
                       />
                     ))}
