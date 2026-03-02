@@ -133,6 +133,11 @@ async function main() {
       tryAutoPrune();
     }
 
+    // Capture the shell's PWD — may differ from data.cwd if Claude Code
+    // changed its internal working directory after launch.
+    const shellPwd = process.env.PWD ?? undefined;
+    const payload = shellPwd ? { ...data, shell_pwd: shellPwd } : data;
+
     insertHookEvent({
       session_id: sessionId,
       event_type: eventType,
@@ -140,7 +145,7 @@ async function main() {
       cwd: data.cwd,
       repository: data.repository,
       tool_name: toolName ?? undefined,
-      payload: data,
+      payload,
     });
   } catch (err) {
     // Silently fail — hooks must not block Claude Code
