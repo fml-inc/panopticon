@@ -16,7 +16,6 @@ import {
   mapOtelMetric,
   type OtelLogDbRow,
   type OtelMetricDbRow,
-  resolveRepoFromCwd,
 } from "./mapper.js";
 import { readWatermark, watermarkKey, writeWatermark } from "./state.js";
 
@@ -138,43 +137,22 @@ function isAllowedOrg(
   return false;
 }
 
-interface SessionMaps {
-  repoMap: Map<string, string>;
-  cwdMap: Map<string, string>;
+function lookupSessionRepo(sessionId: string): string | undefined {
+  const db = getDb();
+  const row = db
+    .prepare(
+      "SELECT repository FROM session_repositories WHERE session_id = ? LIMIT 1",
+    )
+    .get(sessionId) as { repository: string } | undefined;
+  return row?.repository;
 }
 
-/**
- * Build mappings from session_id → resolved "org/repo" and session_id → cwd
- * by looking up hook_events rows for the given session IDs.
- * Used to backfill repo/cwd info on OTel rows which lack those fields.
- */
-function buildSessionMaps(sessionIds: string[]): SessionMaps {
-  if (sessionIds.length === 0) return { repoMap: new Map(), cwdMap: new Map() };
+function lookupSessionCwd(sessionId: string): string | undefined {
   const db = getDb();
-  const placeholders = sessionIds.map(() => "?").join(",");
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT session_id, cwd, repository FROM hook_events WHERE session_id IN (${placeholders})`,
-    )
-    .all(...sessionIds) as {
-    session_id: string;
-    cwd: string | null;
-    repository: string | null;
-  }[];
-
-  const repoMap = new Map<string, string>();
-  const cwdMap = new Map<string, string>();
-  for (const row of rows) {
-    if (!repoMap.has(row.session_id)) {
-      const repo =
-        row.repository || (row.cwd ? resolveRepoFromCwd(row.cwd) : null);
-      if (repo) repoMap.set(row.session_id, repo);
-    }
-    if (!cwdMap.has(row.session_id) && row.cwd) {
-      cwdMap.set(row.session_id, row.cwd);
-    }
-  }
-  return { repoMap, cwdMap };
+  const row = db
+    .prepare("SELECT cwd FROM session_cwds WHERE session_id = ? LIMIT 1")
+    .get(sessionId) as { cwd: string } | undefined;
+  return row?.cwd;
 }
 
 async function syncHookEvents(
@@ -247,15 +225,10 @@ async function syncOtelLogs(
 
   const mapped = rows.map(mapOtelLog);
 
-  // Backfill repositoryFullName from hook_events for rows missing it
-  const needsRepo = mapped.filter((l) => !l.repositoryFullName);
-  let sessionCwdMap = new Map<string, string>();
-  if (needsRepo.length > 0) {
-    const sessionIds = [...new Set(needsRepo.map((l) => l.sessionId))];
-    const { repoMap, cwdMap } = buildSessionMaps(sessionIds);
-    sessionCwdMap = cwdMap;
-    for (const entry of needsRepo) {
-      const repo = repoMap.get(entry.sessionId);
+  // Backfill repositoryFullName and cwd from session tables
+  for (const entry of mapped) {
+    if (!entry.repositoryFullName) {
+      const repo = lookupSessionRepo(entry.sessionId);
       if (repo) entry.repositoryFullName = repo;
     }
   }
@@ -264,7 +237,7 @@ async function syncOtelLogs(
   for (const entry of mapped) {
     const cwd = entry.repositoryFullName
       ? undefined
-      : sessionCwdMap.get(entry.sessionId);
+      : lookupSessionCwd(entry.sessionId);
     entry.orgName = resolveOrgName(
       entry.repositoryFullName,
       cwd,
@@ -272,14 +245,17 @@ async function syncOtelLogs(
     );
   }
 
-  const filtered = mapped.filter((l) =>
-    isAllowedOrg(
+  const filtered = mapped.filter((l) => {
+    const cwd = l.repositoryFullName
+      ? undefined
+      : lookupSessionCwd(l.sessionId);
+    return isAllowedOrg(
       l.repositoryFullName,
       syncConfig.allowedOrgs,
-      l.repositoryFullName ? undefined : sessionCwdMap.get(l.sessionId),
+      cwd,
       syncConfig.orgDirs,
-    ),
-  );
+    );
+  });
 
   if (filtered.length > 0) {
     const batches = chunk(filtered, OTEL_LOGS_BATCH_LIMIT);
@@ -339,15 +315,10 @@ async function syncOtelMetrics(
 
   const mapped = rows.map(mapOtelMetric);
 
-  // Backfill repositoryFullName from hook_events for rows missing it
-  const needsRepo = mapped.filter((m) => !m.repositoryFullName);
-  let sessionCwdMap = new Map<string, string>();
-  if (needsRepo.length > 0) {
-    const sessionIds = [...new Set(needsRepo.map((m) => m.sessionId))];
-    const { repoMap, cwdMap } = buildSessionMaps(sessionIds);
-    sessionCwdMap = cwdMap;
-    for (const entry of needsRepo) {
-      const repo = repoMap.get(entry.sessionId);
+  // Backfill repositoryFullName from session tables
+  for (const entry of mapped) {
+    if (!entry.repositoryFullName) {
+      const repo = lookupSessionRepo(entry.sessionId);
       if (repo) entry.repositoryFullName = repo;
     }
   }
@@ -356,7 +327,7 @@ async function syncOtelMetrics(
   for (const entry of mapped) {
     const cwd = entry.repositoryFullName
       ? undefined
-      : sessionCwdMap.get(entry.sessionId);
+      : lookupSessionCwd(entry.sessionId);
     entry.orgName = resolveOrgName(
       entry.repositoryFullName,
       cwd,
@@ -364,14 +335,17 @@ async function syncOtelMetrics(
     );
   }
 
-  const filtered = mapped.filter((m) =>
-    isAllowedOrg(
+  const filtered = mapped.filter((m) => {
+    const cwd = m.repositoryFullName
+      ? undefined
+      : lookupSessionCwd(m.sessionId);
+    return isAllowedOrg(
       m.repositoryFullName,
       syncConfig.allowedOrgs,
-      m.repositoryFullName ? undefined : sessionCwdMap.get(m.sessionId),
+      cwd,
       syncConfig.orgDirs,
-    ),
-  );
+    );
+  });
 
   if (filtered.length > 0) {
     const batches = chunk(filtered, OTEL_METRICS_BATCH_LIMIT);

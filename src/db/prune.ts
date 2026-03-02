@@ -7,6 +7,8 @@ export interface PruneResult {
   otel_logs: number;
   otel_metrics: number;
   hook_events: number;
+  session_repositories: number;
+  session_cwds: number;
 }
 
 export function pruneEstimate(
@@ -51,8 +53,26 @@ export function pruneEstimate(
       .prepare(`SELECT COUNT(*) as c FROM hook_events ${hookWhere}`)
       .get(...hookParams) as { c: number }
   ).c;
+  const sessionRepos = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM session_repositories WHERE first_seen_ms < ?`,
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+  const sessionCwds = (
+    db
+      .prepare(`SELECT COUNT(*) as c FROM session_cwds WHERE first_seen_ms < ?`)
+      .get(cutoffMs) as { c: number }
+  ).c;
 
-  return { otel_logs: logs, otel_metrics: metrics, hook_events: hooks };
+  return {
+    otel_logs: logs,
+    otel_metrics: metrics,
+    hook_events: hooks,
+    session_repositories: sessionRepos,
+    session_cwds: sessionCwds,
+  };
 }
 
 export function pruneExecute(
@@ -98,7 +118,21 @@ export function pruneExecute(
     const hooks = db
       .prepare(`DELETE FROM hook_events ${hookWhere}`)
       .run(...hookParams).changes;
-    return { otel_logs: logs, otel_metrics: metrics, hook_events: hooks };
+
+    const sessionRepos = db
+      .prepare("DELETE FROM session_repositories WHERE first_seen_ms < ?")
+      .run(cutoffMs).changes;
+    const sessionCwds = db
+      .prepare("DELETE FROM session_cwds WHERE first_seen_ms < ?")
+      .run(cutoffMs).changes;
+
+    return {
+      otel_logs: logs,
+      otel_metrics: metrics,
+      hook_events: hooks,
+      session_repositories: sessionRepos,
+      session_cwds: sessionCwds,
+    };
   });
 
   return tx();

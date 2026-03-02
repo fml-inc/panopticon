@@ -60,6 +60,23 @@ CREATE INDEX IF NOT EXISTS idx_hooks_type ON hook_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_hooks_tool ON hook_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_hooks_ts ON hook_events(timestamp_ms);
 
+CREATE TABLE IF NOT EXISTS session_repositories (
+  session_id TEXT NOT NULL,
+  repository TEXT NOT NULL,
+  first_seen_ms INTEGER NOT NULL,
+  UNIQUE(session_id, repository)
+);
+CREATE INDEX IF NOT EXISTS idx_session_repos_session ON session_repositories(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(repository);
+
+CREATE TABLE IF NOT EXISTS session_cwds (
+  session_id TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  first_seen_ms INTEGER NOT NULL,
+  UNIQUE(session_id, cwd)
+);
+CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

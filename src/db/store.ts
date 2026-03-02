@@ -98,6 +98,28 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
   insertMany(rows);
 }
 
+export function upsertSessionRepository(
+  sessionId: string,
+  repository: string,
+  timestampMs: number,
+): void {
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO session_repositories (session_id, repository, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+  ).run(sessionId, repository, timestampMs);
+}
+
+export function upsertSessionCwd(
+  sessionId: string,
+  cwd: string,
+  timestampMs: number,
+): void {
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+  ).run(sessionId, cwd, timestampMs);
+}
+
 export function insertHookEvent(row: HookEventRow): void {
   const db = getDb();
   const json = JSON.stringify(row.payload);

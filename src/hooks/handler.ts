@@ -5,8 +5,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { config, ensureDataDir } from "../config.js";
 import { autoPrune } from "../db/prune.js";
-import { insertHookEvent } from "../db/store.js";
+import {
+  insertHookEvent,
+  upsertSessionCwd,
+  upsertSessionRepository,
+} from "../db/store.js";
 import { openLogFd } from "../log.js";
+import { resolveRepoFromCwd } from "../repo.js";
 
 interface HookInput {
   session_id: string;
@@ -125,12 +130,31 @@ async function main() {
     const sessionId = data.session_id ?? "unknown";
     const eventType = data.hook_event_name ?? "Unknown";
     const toolName = data.tool_name ?? null;
+    const timestampMs = Date.now();
 
     // On SessionStart, ensure background processes are running
     if (eventType === "SessionStart") {
       if (!isReceiverRunning()) startReceiver();
       if (!isSyncRunning()) startSyncDaemon();
       tryAutoPrune();
+    }
+
+    // Resolve repository at capture time
+    let repo = data.repository ?? null;
+    if (!repo) {
+      // Try file_path / path from tool_input
+      const toolInput = data.tool_input;
+      if (toolInput && typeof toolInput === "object") {
+        const filePath =
+          (toolInput as Record<string, unknown>).file_path ??
+          (toolInput as Record<string, unknown>).path;
+        if (typeof filePath === "string" && path.isAbsolute(filePath)) {
+          repo = resolveRepoFromCwd(path.dirname(filePath));
+        }
+      }
+    }
+    if (!repo && data.cwd) {
+      repo = resolveRepoFromCwd(data.cwd as string);
     }
 
     // Capture the shell's PWD — may differ from data.cwd if Claude Code
@@ -141,12 +165,20 @@ async function main() {
     insertHookEvent({
       session_id: sessionId,
       event_type: eventType,
-      timestamp_ms: Date.now(),
+      timestamp_ms: timestampMs,
       cwd: data.cwd,
-      repository: data.repository,
+      repository: repo ?? undefined,
       tool_name: toolName ?? undefined,
       payload,
     });
+
+    // Populate session junction tables
+    if (repo) {
+      upsertSessionRepository(sessionId, repo, timestampMs);
+    }
+    if (data.cwd) {
+      upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+    }
   } catch (err) {
     // Silently fail — hooks must not block Claude Code
     if (process.env.PANOPTICON_DEBUG) {

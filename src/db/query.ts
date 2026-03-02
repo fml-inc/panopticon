@@ -43,9 +43,12 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
            s.event_count,
            s.tool_count,
            COALESCE(c.total_tokens, 0) as total_tokens,
-           COALESCE(c.total_cost, 0) as total_cost
+           COALESCE(c.total_cost, 0) as total_cost,
+           GROUP_CONCAT(DISTINCT sr.repository) as repositories
     FROM all_sessions s
     LEFT JOIN otel_costs c ON s.session_id = c.session_id
+    LEFT JOIN session_repositories sr ON s.session_id = sr.session_id
+    GROUP BY s.session_id
     ORDER BY s.start_ms DESC
     LIMIT ?
   `;
@@ -398,6 +401,13 @@ export function activitySummary(opts: { since?: string } = {}) {
     `)
       .all(s.session_id, sinceMs) as { plan: string | null }[];
 
+    // Repositories for this session
+    const repos = db
+      .prepare(
+        "SELECT repository FROM session_repositories WHERE session_id = ?",
+      )
+      .all(s.session_id) as { repository: string }[];
+
     // Working directory
     const cwdRow = db
       .prepare(`
@@ -427,6 +437,7 @@ export function activitySummary(opts: { since?: string } = {}) {
       start: new Date(s.start_ms).toISOString(),
       duration_minutes: Math.round((s.end_ms - s.start_ms) / 60000),
       working_directory: cwdRow?.cwd ?? null,
+      repositories: repos.map((r) => r.repository),
       user_prompts: prompts.map((p) => p.prompt).filter(Boolean),
       tools_used: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
       plans: plans.map((p) => p.plan).filter(Boolean),
