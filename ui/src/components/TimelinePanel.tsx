@@ -164,7 +164,7 @@ export function TimelinePanel() {
       (ev: any) => `${ev.source}:${ev.id}` === activeEventId,
     );
     if (index >= 0) {
-      virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
+      virtualizer.scrollToIndex(index, { align: "center" });
     }
   }, [activeEventId, filteredRows, virtualizer]);
 
