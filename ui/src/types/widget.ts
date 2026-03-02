@@ -5,6 +5,9 @@ export interface Widget {
   query: string;
   config: WidgetConfig;
   position: number;
+  group_name: string | null;
+  status: "active" | "pending";
+  chat_id: string | null;
   created_at: number;
   updated_at: number;
 }

@@ -36,7 +36,9 @@ import {
   createWidget,
   deleteWidget,
   executeWidgetQuery,
+  getWidget,
   listWidgets,
+  promoteWidget,
   updateWidget,
 } from "../db/widgets.js";
 
@@ -79,7 +81,7 @@ app.use("/api/v2/", (req, res, next) => {
 const DB_SCHEMA = `hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, payload JSON)
 otel_logs(id, timestamp_ns, severity_text, body, attributes JSON, session_id, prompt_id, trace_id)
 otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, session_id)
-widgets(id TEXT PK, type TEXT, title TEXT, query TEXT, config TEXT, position INTEGER, created_at, updated_at)
+widgets(id TEXT PK, type TEXT, title TEXT, query TEXT, config TEXT, position INTEGER, group_name TEXT, status TEXT ['active'|'pending'], chat_id TEXT, created_at, updated_at)
 
 VIEW v_resolved_tokens(session_id, model, token_type, tokens, timestamp_ns)
   -- Pre-deduped token data. Handles Gemini cumulative counters (MAX) vs Claude per-request (SUM).
@@ -107,11 +109,14 @@ DATA ENDPOINTS (read-only, no token needed):
 - POST ${base}/api/v2/query-preview?token=${apiToken} — Run ad-hoc SQL: {"sql": "SELECT ..."}
 
 WIDGET CRUD ENDPOINTS (require token):
-- GET  ${base}/api/v2/widgets — List all widgets
+- GET  ${base}/api/v2/widgets?status=active&chat_id= — List widgets (filter by status/chat_id)
+- GET  ${base}/api/v2/widgets/:id — Get single widget
 - POST ${base}/api/v2/widgets?token=${apiToken} — Create widget
-  Body: {"type":"chart|table|kpi|markdown","title":"...","query":"SELECT ...","config":{...},"position":0}
+  Body: {"type":"chart|table|kpi|markdown","title":"...","query":"SELECT ...","config":{...},"position":0,"group_name":"...","status":"pending|active","chat_id":"..."}
 - PUT  ${base}/api/v2/widgets/:id?token=${apiToken} — Update widget (partial update)
-  Body: any subset of {"title","query","config","position"}
+  Body: any subset of {"title","query","config","position","group_name","status"}
+- POST ${base}/api/v2/widgets/:id/promote?token=${apiToken} — Promote pending widget to active
+  Body: {"group_name":"optional group name"}
 - DELETE ${base}/api/v2/widgets/:id?token=${apiToken} — Delete widget
 - GET  ${base}/api/v2/widgets/:id/data — Execute widget query and return data
 
@@ -227,8 +232,10 @@ app.get("/api/v2/search", (req, res) => {
 });
 
 // Widget CRUD
-app.get("/api/v2/widgets", (_req, res) => {
-  const widgets = listWidgets().map((w) => ({
+app.get("/api/v2/widgets", (req, res) => {
+  const status = (req.query.status as string) || undefined;
+  const chat_id = (req.query.chat_id as string) || undefined;
+  const widgets = listWidgets({ status, chat_id }).map((w) => ({
     ...w,
     config: typeof w.config === "string" ? JSON.parse(w.config) : w.config,
   }));
@@ -237,12 +244,30 @@ app.get("/api/v2/widgets", (_req, res) => {
 
 app.post("/api/v2/widgets", (req, res) => {
   try {
-    const { type, title, query, config, position } = req.body;
+    const {
+      type,
+      title,
+      query,
+      config,
+      position,
+      group_name,
+      status,
+      chat_id,
+    } = req.body;
     if (!type || !title || !query) {
       res.status(400).json({ error: "type, title, and query are required" });
       return;
     }
-    const widget = createWidget({ type, title, query, config, position });
+    const widget = createWidget({
+      type,
+      title,
+      query,
+      config,
+      position,
+      group_name,
+      status,
+      chat_id,
+    });
     res.status(201).json({
       ...widget,
       config:
@@ -256,12 +281,14 @@ app.post("/api/v2/widgets", (req, res) => {
 });
 
 app.put("/api/v2/widgets/:id", (req, res) => {
-  const { title, query, config, position } = req.body;
+  const { title, query, config, position, group_name, status } = req.body;
   const updated = updateWidget(req.params.id, {
     title,
     query,
     config,
     position,
+    group_name,
+    status,
   });
   if (!updated) {
     res.status(404).json({ error: "Widget not found" });
@@ -283,6 +310,37 @@ app.delete("/api/v2/widgets/:id", (req, res) => {
   } else {
     res.status(404).json({ error: "Widget not found" });
   }
+});
+
+app.get("/api/v2/widgets/:id", (req, res) => {
+  const widget = getWidget(req.params.id);
+  if (!widget) {
+    res.status(404).json({ error: "Widget not found" });
+    return;
+  }
+  res.json({
+    ...widget,
+    config:
+      typeof widget.config === "string"
+        ? JSON.parse(widget.config)
+        : widget.config,
+  });
+});
+
+app.post("/api/v2/widgets/:id/promote", (req, res) => {
+  const { group_name } = req.body || {};
+  const promoted = promoteWidget(req.params.id, group_name);
+  if (!promoted) {
+    res.status(404).json({ error: "Widget not found" });
+    return;
+  }
+  res.json({
+    ...promoted,
+    config:
+      typeof promoted.config === "string"
+        ? JSON.parse(promoted.config)
+        : promoted.config,
+  });
 });
 
 app.get("/api/v2/widgets/:id/data", (req, res) => {

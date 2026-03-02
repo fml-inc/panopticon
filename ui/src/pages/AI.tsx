@@ -3,6 +3,8 @@ import {
   ExternalLink,
   Loader2,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Search,
   Send,
@@ -13,6 +15,7 @@ import {
 import { parseAsString, useQueryState } from "nuqs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { InlineWidgetPreview } from "@/components/InlineWidgetPreview";
 import { LazyMarkdown } from "@/components/LazyMarkdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +29,7 @@ interface ToolCall {
   name: string;
   id: string;
   input: string;
+  resultWidgetId?: string;
 }
 
 interface Message {
@@ -66,6 +70,7 @@ export function AI() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeToolName, setActiveToolName] = useState<string | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const [initialQuery, setInitialQuery] = useQueryState("q", parseAsString);
@@ -101,7 +106,9 @@ export function AI() {
           return;
         }
         const loaded: Message[] = (data.messages || []).map((m: any) => ({
-          id: self.crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
+          id:
+            self.crypto.randomUUID?.() ??
+            Math.random().toString(36).slice(2) + Date.now().toString(36),
           role: m.role,
           content: m.content,
           toolCalls: m.tool_calls ? JSON.parse(m.tool_calls) : undefined,
@@ -148,7 +155,13 @@ export function AI() {
       setInput("");
       setMessages((prev) => [
         ...prev,
-        { id: self.crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36), role: "user", content: text },
+        {
+          id:
+            self.crypto.randomUUID?.() ??
+            Math.random().toString(36).slice(2) + Date.now().toString(36),
+          role: "user",
+          content: text,
+        },
       ]);
       setIsStreaming(true);
       setActiveToolName(null);
@@ -189,7 +202,9 @@ export function AI() {
       setMessages((prev) => [
         ...prev,
         {
-          id: self.crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
+          id:
+            self.crypto.randomUUID?.() ??
+            Math.random().toString(36).slice(2) + Date.now().toString(36),
           role: "assistant",
           content: "",
           toolCalls: [],
@@ -252,6 +267,37 @@ export function AI() {
 
             case "tool_result":
               setActiveToolName(null);
+              // Extract widget ID from add_widget tool results
+              {
+                const matchingTc = assistantToolCalls.find(
+                  (tc) => tc.id === event.tool_use_id,
+                );
+                if (matchingTc?.name.includes("add_widget") && event.content) {
+                  try {
+                    const contentStr =
+                      typeof event.content === "string"
+                        ? event.content
+                        : Array.isArray(event.content)
+                          ? event.content.map((c: any) => c.text || "").join("")
+                          : "";
+                    const parsed = JSON.parse(contentStr);
+                    if (parsed.id) {
+                      matchingTc.resultWidgetId = parsed.id;
+                      setMessages((prev) => {
+                        const updated = [...prev];
+                        const last = updated[updated.length - 1];
+                        if (last.role === "assistant" && last.toolCalls) {
+                          const tc = last.toolCalls.find(
+                            (t) => t.id === event.tool_use_id,
+                          );
+                          if (tc) tc.resultWidgetId = parsed.id;
+                        }
+                        return updated;
+                      });
+                    }
+                  } catch {}
+                }
+              }
               break;
 
             case "result":
@@ -358,8 +404,27 @@ export function AI() {
 
   return (
     <div className="h-full flex">
-      {/* Sidebar */}
-      <div className="w-64 border-r border-slate-800 bg-slate-900/50 flex flex-col shrink-0">
+      {/* Mobile overlay */}
+      {chatSidebarOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-40 bg-black/60"
+          onClick={() => setChatSidebarOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setChatSidebarOpen(false);
+          }}
+        />
+      )}
+
+      {/* Chat sidebar */}
+      <div
+        className={cn(
+          "w-64 border-r border-slate-800 bg-slate-900/50 flex flex-col shrink-0",
+          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:transition-transform max-md:duration-200",
+          chatSidebarOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
+          "hidden md:flex",
+          chatSidebarOpen && "!flex",
+        )}
+      >
         <div className="p-3 border-b border-slate-800">
           <Button
             onClick={handleNewChat}
@@ -388,10 +453,15 @@ export function AI() {
                 key={chat.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => navigate(`/ai/${chat.id}`)}
+                onClick={() => {
+                  navigate(`/ai/${chat.id}`);
+                  setChatSidebarOpen(false);
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ")
+                  if (e.key === "Enter" || e.key === " ") {
                     navigate(`/ai/${chat.id}`);
+                    setChatSidebarOpen(false);
+                  }
                 }}
                 className={cn(
                   "px-3 py-2 rounded-lg cursor-pointer text-xs transition-all group flex items-center gap-2",
@@ -426,8 +496,20 @@ export function AI() {
 
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="p-6 border-b border-slate-800 bg-slate-900/50">
+        <div className="px-4 py-3 md:p-6 border-b border-slate-800 bg-slate-900/50">
           <div className="flex items-center space-x-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="md:hidden h-8 w-8 p-0 text-slate-400 hover:text-white shrink-0"
+              onClick={() => setChatSidebarOpen((v) => !v)}
+            >
+              {chatSidebarOpen ? (
+                <PanelLeftClose className="w-4 h-4" />
+              ) : (
+                <PanelLeftOpen className="w-4 h-4" />
+              )}
+            </Button>
             <div className="bg-blue-600 text-white p-2 rounded-lg">
               <Sparkles className="w-5 h-5" />
             </div>
@@ -491,29 +573,33 @@ export function AI() {
                       <>
                         {/* Tool calls */}
                         {msg.toolCalls?.map((tc) => (
-                          <div
-                            key={tc.id}
-                            className="my-2 p-3 rounded-lg border border-slate-700 bg-slate-950/50"
-                          >
-                            <div className="flex items-center gap-2 text-xs mb-1">
-                              <Wrench className="w-3 h-3 text-amber-400" />
-                              <span className="font-mono font-bold text-amber-400">
-                                {tc.name.replace(/^mcp__panopticon__/, "")}
-                              </span>
-                              {hasWidgetTool(tc) && (
-                                <Link
-                                  to="/dashboard"
-                                  className="ml-auto flex items-center gap-1 text-blue-400 hover:text-blue-300"
-                                >
-                                  <ExternalLink className="w-3 h-3" />
-                                  <span>Dashboard</span>
-                                </Link>
+                          <div key={tc.id}>
+                            <div className="my-2 p-3 rounded-lg border border-slate-700 bg-slate-950/50">
+                              <div className="flex items-center gap-2 text-xs mb-1">
+                                <Wrench className="w-3 h-3 text-amber-400" />
+                                <span className="font-mono font-bold text-amber-400">
+                                  {tc.name.replace(/^mcp__panopticon__/, "")}
+                                </span>
+                                {hasWidgetTool(tc) && !tc.resultWidgetId && (
+                                  <Link
+                                    to="/dashboard"
+                                    className="ml-auto flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                    <span>Dashboard</span>
+                                  </Link>
+                                )}
+                              </div>
+                              {tc.input && (
+                                <div className="text-[10px] text-slate-500 font-mono truncate mt-1">
+                                  {tc.input.substring(0, 200)}
+                                </div>
                               )}
                             </div>
-                            {tc.input && (
-                              <div className="text-[10px] text-slate-500 font-mono truncate mt-1">
-                                {tc.input.substring(0, 200)}
-                              </div>
+                            {tc.resultWidgetId && (
+                              <InlineWidgetPreview
+                                widgetId={tc.resultWidgetId}
+                              />
                             )}
                           </div>
                         ))}
