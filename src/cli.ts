@@ -57,6 +57,12 @@ Usage:
     --dry-run                Show estimate without deleting
     --vacuum                 Reclaim disk space after pruning
     --yes                    Skip confirmation prompt
+  panopticon web [start]    Start the web dashboard (background)
+    -f, --force              Kill existing process on port conflict
+    -p, --port <port>        Port (default: 3000, or PANOPTICON_WEB_PORT)
+    --host <host>            Host (default: 0.0.0.0, or PANOPTICON_WEB_HOST)
+  panopticon web stop       Stop the web dashboard
+  panopticon web status     Show web dashboard status
   panopticon sync start     Start the sync daemon (background)
   panopticon sync stop      Stop the sync daemon
   panopticon sync status    Show sync daemon state and watermarks
@@ -752,15 +758,19 @@ function isProcessRunning(pidFile: string): {
 async function status() {
   const receiver = isProcessRunning(config.pidFile);
   const syncDaemon = isProcessRunning(config.syncPidFile);
+  const webInfo = readWebInfo();
 
   console.log("Panopticon Status");
   console.log("=================");
   console.log();
   console.log(
-    `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
+    `OTLP Receiver:  ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
   );
   console.log(
-    `Sync Daemon:   ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`,
+    `Sync Daemon:    ${syncDaemon.running ? `running (PID ${syncDaemon.pid})` : "stopped"}`,
+  );
+  console.log(
+    `Web Dashboard:  ${webInfo.running ? `running (PID ${webInfo.pid}, port ${webInfo.port})` : "stopped"}`,
   );
   console.log(`Database: ${config.dbPath}`);
 
@@ -931,13 +941,17 @@ async function doctor() {
   console.log("-----------------");
   const receiver = isProcessRunning(config.pidFile);
   const syncDaemon = isProcessRunning(config.syncPidFile);
+  const webDocInfo = readWebInfo();
   const isPortFree = await checkPortOpen(config.otlpPort, config.otlpHost);
 
   console.log(
-    `OTLP Receiver: ${receiver.running ? `Running (PID ${receiver.pid})` : "Stopped"}`,
+    `OTLP Receiver:  ${receiver.running ? `Running (PID ${receiver.pid})` : "Stopped"}`,
   );
   console.log(
-    `Sync Daemon:   ${syncDaemon.running ? `Running (PID ${syncDaemon.pid})` : "Stopped"}`,
+    `Sync Daemon:    ${syncDaemon.running ? `Running (PID ${syncDaemon.pid})` : "Stopped"}`,
+  );
+  console.log(
+    `Web Dashboard:  ${webDocInfo.running ? `Running (PID ${webDocInfo.pid}, port ${webDocInfo.port})` : "Stopped"}`,
   );
   console.log(
     `Port ${config.otlpPort}:    ${isPortFree ? "Free (Available)" : "IN USE (Occupied)"}`,
@@ -1478,6 +1492,173 @@ async function logs() {
   }
 }
 
+async function webStart() {
+  const force = hasFlag("-f") || hasFlag("--force");
+  const portOverride = getFlagValue("-p", "") || getFlagValue("--port", "");
+  const hostOverride = getFlagValue("--host", "");
+  const port = portOverride ? parseInt(portOverride, 10) : config.webPort;
+  const host = hostOverride || config.webHost;
+
+  ensureDataDir();
+
+  // Check if already running via PID file
+  if (fs.existsSync(config.webPidFile)) {
+    const pid = parseInt(
+      fs.readFileSync(config.webPidFile, "utf-8").trim(),
+      10,
+    );
+    try {
+      process.kill(pid, 0);
+      if (force) {
+        process.kill(pid, "SIGTERM");
+        console.log(`Killed existing web dashboard (PID ${pid})`);
+        fs.unlinkSync(config.webPidFile);
+        await new Promise((r) => setTimeout(r, 300));
+      } else {
+        console.log(`Web dashboard already running (PID ${pid})`);
+        return;
+      }
+    } catch {
+      // PID file stale, remove it
+      fs.unlinkSync(config.webPidFile);
+    }
+  }
+
+  // Check if port is held by an orphan process
+  if (isPortInUse(port)) {
+    const holder = findPortHolder(port);
+    if (force && holder) {
+      try {
+        process.kill(holder, "SIGTERM");
+        console.log(
+          `Killed orphan process (PID ${holder}) holding port ${port}`,
+        );
+        await new Promise((r) => setTimeout(r, 300));
+      } catch {
+        console.error(`Failed to kill process ${holder} on port ${port}`);
+        process.exit(1);
+      }
+    } else {
+      console.error(
+        `Port ${port} is already in use${holder ? ` (PID ${holder})` : ""}.`,
+      );
+      console.error("Use `panopticon web start -f` to force-kill and restart.");
+      process.exit(1);
+    }
+  }
+
+  const serverScript = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "web2",
+    "server.js",
+  );
+
+  const logFd = openLogFd("web");
+
+  const child = spawn("node", [serverScript], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: host,
+    },
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    child.on("error", (err) => {
+      reject(new Error(`Failed to start: ${err.message}`));
+    });
+
+    setTimeout(() => {
+      if (child.pid) {
+        fs.writeFileSync(config.webPidFile, `${child.pid}\n${port}\n${host}`);
+        child.unref();
+        fs.closeSync(logFd);
+        const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
+        console.log(`Web dashboard started (PID ${child.pid}) on ${url}`);
+        console.log(`Log: ${logPaths.web}`);
+        resolve();
+      } else {
+        fs.closeSync(logFd);
+        reject(new Error("Failed to start web dashboard"));
+      }
+    }, 500);
+  });
+}
+
+async function webStop() {
+  if (!fs.existsSync(config.webPidFile)) {
+    console.log("Web dashboard is not running (no PID file)");
+    return;
+  }
+
+  const pid = parseInt(fs.readFileSync(config.webPidFile, "utf-8").trim(), 10);
+  try {
+    process.kill(pid, "SIGTERM");
+    fs.unlinkSync(config.webPidFile);
+    console.log(`Web dashboard stopped (PID ${pid})`);
+  } catch {
+    fs.unlinkSync(config.webPidFile);
+    console.log("Web dashboard was not running (stale PID file removed)");
+  }
+}
+
+function readWebInfo(): {
+  pid: number | null;
+  port: number;
+  host: string;
+  running: boolean;
+} {
+  if (!fs.existsSync(config.webPidFile)) {
+    return {
+      pid: null,
+      port: config.webPort,
+      host: config.webHost,
+      running: false,
+    };
+  }
+  const lines = fs.readFileSync(config.webPidFile, "utf-8").trim().split("\n");
+  const pid = parseInt(lines[0], 10);
+  const port = lines[1] ? parseInt(lines[1], 10) : config.webPort;
+  const host = lines[2] || config.webHost;
+  let running = false;
+  try {
+    process.kill(pid, 0);
+    running = true;
+  } catch {}
+  return { pid, port, host, running };
+}
+
+async function webStatus() {
+  const { running, pid, port, host } = readWebInfo();
+  if (running) {
+    const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
+    console.log(`Web dashboard: running (PID ${pid}) on ${url}`);
+  } else {
+    console.log("Web dashboard: stopped");
+  }
+}
+
+async function handleWeb() {
+  switch (subcommand) {
+    case "start":
+    case undefined:
+      await webStart();
+      break;
+    case "stop":
+      await webStop();
+      break;
+    case "status":
+      await webStatus();
+      break;
+    default:
+      console.error(`Unknown web subcommand: ${subcommand}`);
+      console.log("Available: start, stop, status");
+      process.exit(1);
+  }
+}
+
 async function handleSync() {
   switch (subcommand) {
     case "setup":
@@ -1526,6 +1707,9 @@ async function main() {
       break;
     case "prune":
       await prune();
+      break;
+    case "web":
+      await handleWeb();
       break;
     case "sync":
       await handleSync();
