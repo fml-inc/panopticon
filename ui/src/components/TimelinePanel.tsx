@@ -145,8 +145,8 @@ export function TimelinePanel() {
     isFetchingNextPage,
     allRows.length,
     fetchNextPage,
-    virtualizer.getVirtualItems,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+    virtualizer,
+  ]);
 
   // Scroll active event into view
   useEffect(() => {
@@ -157,7 +157,7 @@ export function TimelinePanel() {
     if (index >= 0) {
       virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
     }
-  }, [activeEventId, filteredRows.findIndex, virtualizer.scrollToIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeEventId, filteredRows, virtualizer]);
 
   const toggleExpand = useCallback(
     (key: string, e: React.MouseEvent) => {
@@ -169,7 +169,7 @@ export function TimelinePanel() {
         return next;
       });
       // Re-measure after expand/collapse
-      setTimeout(() => virtualizer.measure(), 50);
+      requestAnimationFrame(() => virtualizer.measure());
     },
     [virtualizer],
   );
@@ -240,7 +240,7 @@ export function TimelinePanel() {
           else next.add(activeEventId);
           return next;
         });
-        setTimeout(() => virtualizer.measure(), 50);
+        requestAnimationFrame(() => virtualizer.measure());
         return;
       }
 
