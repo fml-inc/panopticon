@@ -607,13 +607,16 @@ export function TimelinePanel() {
                               );
                           }}
                           className={cn(
-                            "p-3 rounded-xl border transition-all cursor-pointer",
+                            "rounded-xl border transition-all cursor-pointer",
+                            isTool && !isExpanded
+                              ? "px-3 py-1.5"
+                              : "p-3",
                             isActive
                               ? "bg-slate-800 border-slate-600 shadow-md"
                               : "bg-slate-900/80 border-slate-800 hover:bg-slate-800/50",
                           )}
                         >
-                          <div className="flex justify-between items-center mb-1.5">
+                          <div className={cn("flex justify-between items-center", !(isTool && !isExpanded) && "mb-1.5")}>
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
@@ -630,6 +633,14 @@ export function TimelinePanel() {
                               <span className="font-bold text-slate-200 text-xs">
                                 {String(ev.event_type || "Log")}
                               </span>
+                              {isTool && ev.tool_name && (
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[9px] bg-blue-950/50 text-blue-400 border-blue-900/30 px-1 py-0"
+                                >
+                                  {String(ev.tool_name)}
+                                </Badge>
+                              )}
                             </div>
                             <span className="text-[9px] text-slate-500 font-mono">
                               {ev.timestamp_ms
@@ -645,7 +656,7 @@ export function TimelinePanel() {
                                 : ""}
                             </span>
                           </div>
-                          {ev.tool_name && (
+                          {!isTool && ev.tool_name && (
                             <div className="mb-1">
                               <Badge
                                 variant="secondary"
@@ -655,7 +666,7 @@ export function TimelinePanel() {
                               </Badge>
                             </div>
                           )}
-                          {ev.payload && !isExpanded && (
+                          {ev.payload && !isExpanded && !isTool && (
                             <div className="text-[10px] text-slate-400 font-mono truncate opacity-70">
                               {typeof ev.payload === "string"
                                 ? ev.payload
