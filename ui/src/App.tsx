@@ -3,10 +3,12 @@ import {
   BarChart3,
   Grid3X3,
   LayoutDashboard,
+  Menu,
   Search,
   Sparkles,
+  X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   Link,
   Outlet,
@@ -17,6 +19,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   ResizableHandle,
@@ -52,13 +55,19 @@ const EventDetailsPanel = lazy(() =>
 function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [mobileOpen, setMobileOpen] = useState(false);
   const searchValue =
     location.pathname === "/search"
       ? new URLSearchParams(location.search).get("q") || ""
       : "";
 
-  // TODO(@tanstack/react-hotkeys): Replace with:
-  //   useHotkey({ key: 'k', meta: true }, () => document.getElementById('globalSearch')?.focus())
+  // Close mobile sidebar on navigation
+  const currentPath = location.pathname;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally re-run on path change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [currentPath]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
@@ -102,15 +111,25 @@ function Sidebar() {
     [location.pathname],
   );
 
-  return (
-    <div className="w-64 border-r border-slate-800 bg-slate-900 flex flex-col h-full shrink-0">
-      <div className="p-4 border-b border-slate-800 flex items-center space-x-3">
-        <div className="bg-blue-600 text-white p-1.5 rounded-lg shadow-inner">
-          <Activity className="w-5 h-5" />
+  const sidebarContent = (
+    <>
+      <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <div className="bg-blue-600 text-white p-1.5 rounded-lg shadow-inner">
+            <Activity className="w-5 h-5" />
+          </div>
+          <h1 className="text-lg font-black text-white tracking-tighter">
+            PANOPTICON
+          </h1>
         </div>
-        <h1 className="text-lg font-black text-white tracking-tighter">
-          PANOPTICON
-        </h1>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="md:hidden h-8 w-8 p-0 text-slate-400 hover:text-white"
+          onClick={() => setMobileOpen(false)}
+        >
+          <X className="w-5 h-5" />
+        </Button>
       </div>
 
       <div className="p-3">
@@ -159,8 +178,60 @@ function Sidebar() {
           <span>localhost:3000</span>
         </div>
       </div>
-    </div>
+    </>
   );
+
+  return (
+    <>
+      {/* Mobile top bar */}
+      <div className="md:hidden fixed top-0 left-0 right-0 z-40 flex items-center gap-3 px-4 py-3 border-b border-slate-800 bg-slate-900">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 p-0 text-slate-400 hover:text-white"
+          onClick={() => setMobileOpen(true)}
+        >
+          <Menu className="w-5 h-5" />
+        </Button>
+        <div className="flex items-center gap-2">
+          <div className="bg-blue-600 text-white p-1 rounded-md">
+            <Activity className="w-4 h-4" />
+          </div>
+          <span className="text-sm font-black text-white tracking-tighter">
+            PANOPTICON
+          </span>
+        </div>
+      </div>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-50 bg-black/60"
+          onClick={() => setMobileOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setMobileOpen(false);
+          }}
+        />
+      )}
+
+      {/* Sidebar — always visible on md+, slide-over on mobile */}
+      <div
+        className={cn(
+          "border-r border-slate-800 bg-slate-900 flex flex-col h-full shrink-0 w-64",
+          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:transition-transform max-md:duration-200",
+          mobileOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
+          "hidden md:flex",
+          mobileOpen && "!flex",
+        )}
+      >
+        {sidebarContent}
+      </div>
+    </>
+  );
+}
+
+function MobileTopBarSpacer() {
+  return <div className="md:hidden h-[53px] shrink-0" />;
 }
 
 function AppLayout() {
@@ -169,7 +240,7 @@ function AppLayout() {
 
   return (
     <ResizablePanelGroup direction="horizontal" className="flex-1 h-full">
-      <ResizablePanel defaultSize={sessionId ? 40 : 100} minSize={30}>
+      <ResizablePanel defaultSize={sessionId ? 40 : 100} minSize={20}>
         <Suspense fallback={<PageSkeleton />}>
           <Outlet />
         </Suspense>
@@ -177,8 +248,15 @@ function AppLayout() {
 
       {sessionId && (
         <>
-          <ResizableHandle withHandle className="bg-slate-800 w-2" />
-          <ResizablePanel defaultSize={30} minSize={20}>
+          <ResizableHandle
+            withHandle
+            className="bg-slate-800 w-2 max-md:hidden"
+          />
+          <ResizablePanel
+            defaultSize={30}
+            minSize={20}
+            className="max-md:hidden"
+          >
             <Suspense fallback={<PageSkeleton />}>
               <TimelinePanel />
             </Suspense>
@@ -188,8 +266,15 @@ function AppLayout() {
 
       {hasEvent && (
         <>
-          <ResizableHandle withHandle className="bg-slate-800 w-2" />
-          <ResizablePanel defaultSize={30} minSize={20}>
+          <ResizableHandle
+            withHandle
+            className="bg-slate-800 w-2 max-md:hidden"
+          />
+          <ResizablePanel
+            defaultSize={30}
+            minSize={20}
+            className="max-md:hidden"
+          >
             <Suspense fallback={<PageSkeleton />}>
               <EventDetailsPanel />
             </Suspense>
@@ -204,21 +289,24 @@ export default function App() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-300">
       <Sidebar />
-      <Routes>
-        <Route element={<AppLayout />}>
-          <Route path="/" element={<Sessions />} />
-          <Route path="/sessions/:sessionId" element={<Sessions />} />
-          <Route
-            path="/sessions/:sessionId/events/:source/:eventId"
-            element={<Sessions />}
-          />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/metrics" element={<Metrics />} />
-          <Route path="/search" element={<SearchResults />} />
-          <Route path="/ai" element={<AI />} />
-          <Route path="/ai/:chatId" element={<AI />} />
-        </Route>
-      </Routes>
+      <div className="flex-1 flex flex-col min-w-0">
+        <MobileTopBarSpacer />
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<Sessions />} />
+            <Route path="/sessions/:sessionId" element={<Sessions />} />
+            <Route
+              path="/sessions/:sessionId/events/:source/:eventId"
+              element={<Sessions />}
+            />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/metrics" element={<Metrics />} />
+            <Route path="/search" element={<SearchResults />} />
+            <Route path="/ai" element={<AI />} />
+            <Route path="/ai/:chatId" element={<AI />} />
+          </Route>
+        </Routes>
+      </div>
     </div>
   );
 }

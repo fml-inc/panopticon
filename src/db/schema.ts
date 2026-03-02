@@ -114,6 +114,20 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS widgets (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  query TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  position INTEGER NOT NULL DEFAULT 0,
+  group_name TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  chat_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 -- Materialized-style view that correctly deduplicates Gemini (cumulative MAX) vs Claude (per-request SUM).
 -- Widget queries should SELECT from v_resolved_tokens instead of raw otel_metrics for cost/token data.
 DROP VIEW IF EXISTS v_resolved_tokens;
@@ -159,6 +173,17 @@ export function getDb(): Database.Database {
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
+
+  // Migrate existing widgets tables that lack new columns
+  for (const col of [
+    "ALTER TABLE widgets ADD COLUMN group_name TEXT",
+    "ALTER TABLE widgets ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    "ALTER TABLE widgets ADD COLUMN chat_id TEXT",
+  ]) {
+    try {
+      _db.exec(col);
+    } catch {}
+  }
 
   return _db;
 }

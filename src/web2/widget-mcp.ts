@@ -51,9 +51,38 @@ server.tool(
         "Widget-specific config (chartType/xKey/yKeys/colors for chart, valueKey/format/prefix/suffix for kpi, pageSize for table)",
       ),
     position: z.number().optional().describe("Display order (lower = first)"),
+    group_name: z
+      .string()
+      .optional()
+      .describe("Dashboard group name for organizing widgets"),
+    status: z
+      .enum(["active", "pending"])
+      .default("pending")
+      .describe(
+        "Widget status — pending widgets appear as inline previews in chat",
+      ),
+    chat_id: z.string().optional().describe("Chat ID that created this widget"),
   },
-  async ({ type, title, query, config, position }) => {
-    const widget = createWidget({ type, title, query, config, position });
+  async ({
+    type,
+    title,
+    query,
+    config,
+    position,
+    group_name,
+    status,
+    chat_id,
+  }) => {
+    const widget = createWidget({
+      type,
+      title,
+      query,
+      config,
+      position,
+      group_name,
+      status,
+      chat_id,
+    });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(widget, null, 2) },

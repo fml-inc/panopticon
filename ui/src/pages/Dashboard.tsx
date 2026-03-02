@@ -14,8 +14,8 @@ export function Dashboard() {
   const refreshInterval = refreshSec ? refreshSec * 1000 : undefined;
 
   const { data: widgets = [], isLoading } = useQuery<Widget[]>({
-    queryKey: ["widgets"],
-    queryFn: () => fetch("/api/v2/widgets").then((r) => r.json()),
+    queryKey: ["widgets", "active"],
+    queryFn: () => fetch("/api/v2/widgets?status=active").then((r) => r.json()),
     refetchInterval: refreshInterval,
   });
 
@@ -36,6 +36,25 @@ export function Dashboard() {
     });
     return map;
   }, [widgets, widgetDataQueries]);
+
+  // Group widgets by group_name — null group rendered last as "General"
+  const widgetGroups = useMemo(() => {
+    const groups = new Map<string, Widget[]>();
+    for (const w of widgets) {
+      const key = w.group_name ?? "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(w);
+    }
+    // Sort: named groups first (alphabetical), then the unnamed group
+    const sorted = new Map<string, Widget[]>();
+    const keys = [...groups.keys()].sort((a, b) => {
+      if (a === "") return 1;
+      if (b === "") return -1;
+      return a.localeCompare(b);
+    });
+    for (const k of keys) sorted.set(k, groups.get(k)!);
+    return sorted;
+  }, [widgets]);
 
   const deleteWidget = useCallback(
     async (id: string) => {
@@ -78,7 +97,7 @@ export function Dashboard() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="p-8 max-w-7xl mx-auto space-y-6">
+      <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6">
         <div className="flex justify-between items-end border-b border-slate-800 pb-4">
           <div>
             <h2 className="text-2xl font-black text-white tracking-tight">
@@ -94,64 +113,79 @@ export function Dashboard() {
           </Badge>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {widgets.map((widget) => {
-            const query = widgetDataMap.get(widget.id);
-            const span =
-              widget.type === "table"
-                ? "md:col-span-2 xl:col-span-3"
-                : widget.type === "chart"
-                  ? "md:col-span-2"
-                  : "";
-
-            return (
-              <div
-                key={widget.id}
-                className={`${span} bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden`}
+        {[...widgetGroups.entries()].map(([groupKey, groupWidgets]) => (
+          <div key={groupKey || "__general"} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider">
+                {groupKey || "General"}
+              </h3>
+              <Badge
+                variant="outline"
+                className="text-[9px] text-slate-500 border-slate-700"
               >
-                <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/50">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-bold text-white">
-                      {widget.title}
-                    </h3>
-                    <Badge
-                      variant="secondary"
-                      className="text-[9px] bg-slate-800 text-slate-400"
-                    >
-                      {widget.type}
-                    </Badge>
+                {groupWidgets.length}
+              </Badge>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {groupWidgets.map((widget) => {
+                const query = widgetDataMap.get(widget.id);
+                const span =
+                  widget.type === "table"
+                    ? "md:col-span-2 xl:col-span-3"
+                    : widget.type === "chart"
+                      ? "md:col-span-2"
+                      : "";
+
+                return (
+                  <div
+                    key={widget.id}
+                    className={`${span} bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden`}
+                  >
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/50">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-white">
+                          {widget.title}
+                        </h3>
+                        <Badge
+                          variant="secondary"
+                          className="text-[9px] bg-slate-800 text-slate-400"
+                        >
+                          {widget.type}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-slate-500 hover:text-white"
+                          onClick={() => refreshWidget(widget.id)}
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 ${query?.isRefetching ? "animate-spin" : ""}`}
+                          />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-slate-500 hover:text-red-400"
+                          onClick={() => deleteWidget(widget.id)}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                    <WidgetRenderer
+                      widget={widget}
+                      data={query?.data}
+                      isLoading={query?.isLoading ?? true}
+                      error={query?.error as Error | null}
+                    />
                   </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0 text-slate-500 hover:text-white"
-                      onClick={() => refreshWidget(widget.id)}
-                    >
-                      <RefreshCw
-                        className={`w-3.5 h-3.5 ${query?.isRefetching ? "animate-spin" : ""}`}
-                      />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0 text-slate-500 hover:text-red-400"
-                      onClick={() => deleteWidget(widget.id)}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-                <WidgetRenderer
-                  widget={widget}
-                  data={query?.data}
-                  isLoading={query?.isLoading ?? true}
-                  error={query?.error as Error | null}
-                />
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </ScrollArea>
   );
