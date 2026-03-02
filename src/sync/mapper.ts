@@ -3,6 +3,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import path from "node:path";
 
 // Cache: cwd → "org/repo" | null
 const repoCache = new Map<string, string | null>();
@@ -118,6 +119,21 @@ export function mapHookEvent(row: HookEventDbRow): FmlBatchEvent {
 
   const cwd = row.cwd ?? "";
   let repo = row.repository ?? undefined;
+
+  // Prefer file_path repo — it's specific to what the event is actually touching.
+  if (!repo && payload && typeof payload === "object") {
+    const toolInput = (payload as Record<string, unknown>).tool_input;
+    if (toolInput && typeof toolInput === "object") {
+      const filePath =
+        (toolInput as Record<string, unknown>).file_path ??
+        (toolInput as Record<string, unknown>).path;
+      if (typeof filePath === "string" && path.isAbsolute(filePath)) {
+        repo = resolveRepoFromCwd(path.dirname(filePath)) ?? undefined;
+      }
+    }
+  }
+
+  // Fallback: resolve from the event's CWD (Claude Code's working directory).
   if (!repo && cwd) {
     repo = resolveRepoFromCwd(cwd) ?? undefined;
   }
