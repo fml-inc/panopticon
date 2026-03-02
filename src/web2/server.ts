@@ -28,6 +28,11 @@ import {
   setSessionLabel,
 } from "../db/session-labels.js";
 import {
+  deleteSessionSummary,
+  getSessionSummary,
+  setSessionSummary,
+} from "../db/session-summaries.js";
+import {
   createWidget,
   deleteWidget,
   executeWidgetQuery,
@@ -382,6 +387,31 @@ app.put("/api/v2/sessions/:id/label", (req, res) => {
 
 app.delete("/api/v2/sessions/:id/label", (req, res) => {
   deleteSessionLabel(req.params.id);
+  res.json({ ok: true });
+});
+
+// Session summaries
+app.get("/api/v2/sessions/:id/summary", (req, res) => {
+  const summary = getSessionSummary(req.params.id);
+  if (summary) {
+    res.json(summary);
+  } else {
+    res.json({ summary: null });
+  }
+});
+
+app.put("/api/v2/sessions/:id/summary", (req, res) => {
+  const { summary, event_count } = req.body || {};
+  if (!summary || event_count == null) {
+    res.status(400).json({ error: "summary and event_count are required" });
+    return;
+  }
+  setSessionSummary(req.params.id, summary, event_count);
+  res.json(getSessionSummary(req.params.id));
+});
+
+app.delete("/api/v2/sessions/:id/summary", (req, res) => {
+  deleteSessionSummary(req.params.id);
   res.json({ ok: true });
 });
 
