@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS session_labels (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_summaries (
+  session_id  TEXT PRIMARY KEY,
+  summary     TEXT NOT NULL,
+  event_count INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
 -- Materialized-style view that correctly deduplicates Gemini (cumulative MAX) vs Claude (per-request SUM).
 -- Widget queries should SELECT from v_resolved_tokens instead of raw otel_metrics for cost/token data.
 DROP VIEW IF EXISTS v_resolved_tokens;

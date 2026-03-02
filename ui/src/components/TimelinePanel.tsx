@@ -58,6 +58,15 @@ export function TimelinePanel() {
     enabled: !!sessionId,
   });
 
+  const { data: summaryData } = useQuery({
+    queryKey: ["session-summary", sessionId],
+    queryFn: () =>
+      fetch(`/api/v2/sessions/${sessionId}/summary`).then((res) => res.json()),
+    enabled: !!sessionId,
+  });
+
+  const storedSummary = summaryData?.summary ? summaryData : null;
+
   const sessionLabel = labelData?.name || null;
 
   const startEditingLabel = useCallback(() => {
@@ -174,12 +183,19 @@ export function TimelinePanel() {
     [virtualizer],
   );
 
+  const isSummaryStale =
+    storedSummary && totalCount > storedSummary.event_count;
+  const newEventCount = storedSummary
+    ? totalCount - storedSummary.event_count
+    : 0;
+
   // AI Session Summary
   const summarizeSession = useCallback(async () => {
-    if (summaryLoading || summaryText) return;
+    if (summaryLoading) return;
     setSummaryLoading(true);
     setSummaryText("");
 
+    let fullText = "";
     try {
       const eventSummary = filteredRows
         .slice(0, 50)
@@ -201,15 +217,88 @@ export function TimelinePanel() {
 
       for await (const event of parseAnalyzeStream(response)) {
         if (event.type === "text") {
-          setSummaryText((prev) => (prev || "") + event.content);
+          fullText += event.content;
+          setSummaryText(fullText);
         }
+      }
+
+      // Persist on completion
+      if (fullText && sessionId) {
+        await fetch(`/api/v2/sessions/${sessionId}/summary`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ summary: fullText, event_count: totalCount }),
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["session-summary", sessionId],
+        });
+        setSummaryText(null);
       }
     } catch (e: any) {
       setSummaryText(`**Error:** ${e.message}`);
     } finally {
       setSummaryLoading(false);
     }
-  }, [filteredRows, sessionId, summaryLoading, summaryText]);
+  }, [filteredRows, sessionId, summaryLoading, totalCount, queryClient]);
+
+  // Delta update — sends only new events + existing summary
+  const updateSummary = useCallback(async () => {
+    if (summaryLoading || !storedSummary) return;
+    setSummaryLoading(true);
+    setSummaryText("");
+
+    let fullText = "";
+    try {
+      const deltaEvents = allRows
+        .slice(-Math.min(newEventCount, 50))
+        .map(
+          (ev: any) =>
+            `[${ev.event_type}] ${ev.tool_name || ""} ${ev.payload?.substring(0, 100) || ""}`,
+        )
+        .join("\n");
+
+      const prompt = `Here is the existing summary of this session:\n\n${storedSummary.summary}\n\nHere are ${newEventCount} new events since the last summary:\n${deltaEvents}\n\nUpdate the summary to incorporate the new events. Keep it 2-3 paragraphs.`;
+
+      const response = await fetch("/api/v2/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, model: "haiku" }),
+      });
+
+      if (!response.ok) throw new Error("Update failed");
+
+      for await (const event of parseAnalyzeStream(response)) {
+        if (event.type === "text") {
+          fullText += event.content;
+          setSummaryText(fullText);
+        }
+      }
+
+      if (fullText && sessionId) {
+        await fetch(`/api/v2/sessions/${sessionId}/summary`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ summary: fullText, event_count: totalCount }),
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["session-summary", sessionId],
+        });
+        setSummaryText(null);
+      }
+    } catch (e: any) {
+      setSummaryText(`**Error:** ${e.message}`);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [
+    allRows,
+    summaryLoading,
+    storedSummary,
+    newEventCount,
+    sessionId,
+    totalCount,
+    queryClient,
+  ]);
 
   // Keyboard navigation (Arrow keys + vim j/k, Enter to expand, Escape to deselect)
   useEffect(() => {
@@ -344,20 +433,40 @@ export function TimelinePanel() {
               )}
             </div>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={summarizeSession}
-            disabled={summaryLoading}
-            className="h-7 px-2 text-xs text-slate-400 hover:text-blue-400"
-          >
-            {summaryLoading ? (
-              <Loader2 className="w-3 h-3 animate-spin mr-1" />
-            ) : (
-              <Sparkles className="w-3 h-3 mr-1" />
+          <div className="flex items-center gap-1">
+            {isSummaryStale && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={updateSummary}
+                disabled={summaryLoading}
+                className="h-7 px-2 text-xs text-amber-400 hover:text-amber-300"
+              >
+                {summaryLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                ) : (
+                  <Sparkles className="w-3 h-3 mr-1" />
+                )}
+                Update ({newEventCount} new)
+              </Button>
             )}
-            Summarize
-          </Button>
+            {!storedSummary && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={summarizeSession}
+                disabled={summaryLoading}
+                className="h-7 px-2 text-xs text-slate-400 hover:text-blue-400"
+              >
+                {summaryLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                ) : (
+                  <Sparkles className="w-3 h-3 mr-1" />
+                )}
+                Summarize
+              </Button>
+            )}
+          </div>
         </div>
         <div className="relative">
           <Input
@@ -371,18 +480,36 @@ export function TimelinePanel() {
       </div>
 
       {/* AI Summary */}
-      {(summaryLoading || summaryText !== null) && (
+      {(summaryLoading || summaryText !== null || storedSummary) && (
         <div className="border-b border-slate-800 bg-slate-900/30 max-h-48 overflow-auto">
           <div className="px-4 py-2 flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-widest font-black text-blue-400">
-              AI Summary
-            </span>
-            {summaryText !== null && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-widest font-black text-blue-400">
+                AI Summary
+              </span>
+              {isSummaryStale && !summaryText && (
+                <Badge
+                  variant="secondary"
+                  className="text-[9px] bg-amber-950/50 text-amber-400 border-amber-900/30 px-1 py-0"
+                >
+                  stale
+                </Badge>
+              )}
+            </div>
+            {(summaryText !== null || storedSummary) && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   setSummaryText(null);
                   setSummaryLoading(false);
+                  if (sessionId) {
+                    await fetch(`/api/v2/sessions/${sessionId}/summary`, {
+                      method: "DELETE",
+                    });
+                    queryClient.invalidateQueries({
+                      queryKey: ["session-summary", sessionId],
+                    });
+                  }
                 }}
                 className="text-[10px] text-slate-500 hover:text-slate-300"
               >
@@ -395,9 +522,9 @@ export function TimelinePanel() {
               <Loader2 className="w-3 h-3 animate-spin" />
               <span>Analyzing session...</span>
             </div>
-          ) : summaryText ? (
+          ) : (summaryText ?? storedSummary?.summary) ? (
             <LazyMarkdown
-              content={summaryText}
+              content={(summaryText ?? storedSummary?.summary)!}
               className="prose prose-invert prose-xs max-w-none px-4 pb-3 text-[11px]"
             />
           ) : null}
