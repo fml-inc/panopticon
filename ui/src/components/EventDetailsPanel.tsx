@@ -8,7 +8,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { LazyMarkdown, LazySyntaxHighlighter } from "@/components/LazyMarkdown";
 import {
@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { parseAnalyzeStream } from "@/lib/parse-stream";
 
 export function EventDetailsPanel() {
   const { sessionId, source, eventId } = useParams();
@@ -61,7 +62,13 @@ export function EventDetailsPanel() {
     return prompt;
   };
 
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const startAnalysis = async () => {
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setAnalysisText("");
     setAnalysisError(null);
     setAnalysisLoading(true);
@@ -73,6 +80,7 @@ export function EventDetailsPanel() {
         body: JSON.stringify({
           prompt: promptInput || generateAnalysisPrompt(event),
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -80,47 +88,21 @@ export function EventDetailsPanel() {
         throw new Error(errorData.error || "Failed to start analysis");
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("Failed to get reader from response");
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        let eventEndIndex: number = buffer.indexOf("\n\n");
-        while (eventEndIndex !== -1) {
-          const eventString = buffer.substring(0, eventEndIndex);
-          buffer = buffer.substring(eventEndIndex + 2);
-
-          const eventTypeMatch = eventString.match(/^event: (.*)\n/);
-          const dataMatch = eventString.match(/\ndata: (.*)$/);
-
-          if (eventTypeMatch && dataMatch) {
-            const evtType = eventTypeMatch[1];
-            const data = JSON.parse(dataMatch[1]);
-
-            if (evtType === "claude-analysis-chunk") {
-              setAnalysisText((prev) => prev + (data.content || ""));
-            } else if (evtType === "claude-analysis-error") {
-              setAnalysisError(data.error || "Unknown AI error");
-              setAnalysisText(
-                (prev) =>
-                  `${prev}\n\n**AI Error:** ${data.error || "Unknown AI error"}\n`,
-              );
-            }
-          }
-          eventEndIndex = buffer.indexOf("\n\n");
+      for await (const evt of parseAnalyzeStream(response)) {
+        if (controller.signal.aborted) break;
+        if (evt.type === "text") {
+          setAnalysisText((prev) => prev + evt.content);
+        } else if (evt.type === "error") {
+          setAnalysisError(evt.error);
+          setAnalysisText((prev) => `${prev}\n\n**AI Error:** ${evt.error}\n`);
         }
       }
     } catch (e: any) {
-      setAnalysisError(
-        e.message || "An unknown error occurred during analysis.",
-      );
+      if (e.name !== "AbortError") {
+        setAnalysisError(
+          e.message || "An unknown error occurred during analysis.",
+        );
+      }
     } finally {
       setAnalysisLoading(false);
       setShowAnalysisInput(false);

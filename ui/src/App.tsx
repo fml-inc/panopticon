@@ -6,7 +6,7 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useMemo } from "react";
 import {
   Link,
   Outlet,
@@ -70,33 +70,37 @@ function Sidebar() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const navItems = [
-    {
-      to: "/",
-      label: "Sessions",
-      icon: LayoutDashboard,
-      active:
-        location.pathname.startsWith("/sessions") || location.pathname === "/",
-    },
-    {
-      to: "/dashboard",
-      label: "Dashboard",
-      icon: Grid3X3,
-      active: location.pathname === "/dashboard",
-    },
-    {
-      to: "/metrics",
-      label: "Metrics",
-      icon: BarChart3,
-      active: location.pathname === "/metrics",
-    },
-    {
-      to: "/ai",
-      label: "AI",
-      icon: Sparkles,
-      active: location.pathname.startsWith("/ai"),
-    },
-  ];
+  const navItems = useMemo(
+    () => [
+      {
+        to: "/",
+        label: "Sessions",
+        icon: LayoutDashboard,
+        active:
+          location.pathname.startsWith("/sessions") ||
+          location.pathname === "/",
+      },
+      {
+        to: "/dashboard",
+        label: "Dashboard",
+        icon: Grid3X3,
+        active: location.pathname === "/dashboard",
+      },
+      {
+        to: "/metrics",
+        label: "Metrics",
+        icon: BarChart3,
+        active: location.pathname === "/metrics",
+      },
+      {
+        to: "/ai",
+        label: "AI",
+        icon: Sparkles,
+        active: location.pathname.startsWith("/ai"),
+      },
+    ],
+    [location.pathname],
+  );
 
   return (
     <div className="w-64 border-r border-slate-800 bg-slate-900 flex flex-col h-full shrink-0">

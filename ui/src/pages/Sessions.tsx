@@ -18,24 +18,27 @@ export function Sessions() {
   });
 
   // Fetch all session labels
+  const sessionIds = useMemo(
+    () => (sessions || []).map((s: any) => s.session_id),
+    [sessions],
+  );
+
   const { data: labelsData } = useQuery({
-    queryKey: ["session-labels"],
+    queryKey: ["session-labels", sessionIds],
     queryFn: async () => {
-      if (!sessions?.length) return {};
       const labels: Record<string, string> = {};
-      // Fetch labels for all sessions in parallel
       await Promise.all(
-        sessions.map(async (s: any) => {
+        sessionIds.map(async (id: string) => {
           try {
-            const res = await fetch(`/api/v2/sessions/${s.session_id}/label`);
+            const res = await fetch(`/api/v2/sessions/${id}/label`);
             const data = await res.json();
-            if (data.name) labels[s.session_id] = data.name;
+            if (data.name) labels[id] = data.name;
           } catch {}
         }),
       );
       return labels;
     },
-    enabled: !!sessions?.length,
+    enabled: sessionIds.length > 0,
   });
 
   const labels = labelsData || {};

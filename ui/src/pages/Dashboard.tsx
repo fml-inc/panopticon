@@ -1,7 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LayoutGrid, RefreshCw, Trash2 } from "lucide-react";
 import { parseAsInteger, useQueryState } from "nuqs";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -37,14 +37,20 @@ export function Dashboard() {
     return map;
   }, [widgets, widgetDataQueries]);
 
-  const deleteWidget = async (id: string) => {
-    await fetch(`/api/v2/widgets/${id}`, { method: "DELETE" });
-    queryClient.invalidateQueries({ queryKey: ["widgets"] });
-  };
+  const deleteWidget = useCallback(
+    async (id: string) => {
+      await fetch(`/api/v2/widgets/${id}`, { method: "DELETE" });
+      queryClient.invalidateQueries({ queryKey: ["widgets"] });
+    },
+    [queryClient],
+  );
 
-  const refreshWidget = (id: string) => {
-    queryClient.invalidateQueries({ queryKey: ["widget-data", id] });
-  };
+  const refreshWidget = useCallback(
+    (id: string) => {
+      queryClient.invalidateQueries({ queryKey: ["widget-data", id] });
+    },
+    [queryClient],
+  );
 
   if (isLoading)
     return (
