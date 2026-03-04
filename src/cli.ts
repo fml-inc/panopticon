@@ -22,12 +22,21 @@ import {
 const command = process.argv[2];
 const subcommand = process.argv[3];
 
+const CLAUDE_DESKTOP_CONFIG = path.join(
+  os.homedir(),
+  "Library",
+  "Application Support",
+  "Claude",
+  "claude_desktop_config.json",
+);
+
 function printUsage() {
   console.log(`
 panopticon - Observability for Claude Code
 
 Usage:
   panopticon install         Build, register plugin, init DB, configure shell
+    --desktop                Install as MCP server for Claude Desktop instead
     --force                  Overwrite customized env vars with defaults
   panopticon start          Start the OTLP receiver (background)
   panopticon stop           Stop the OTLP receiver
@@ -72,8 +81,75 @@ function writeJsonFile(filePath: string, data: any): void {
 }
 
 async function install() {
-  const force = hasFlag("--force");
+  const desktop = hasFlag("--desktop");
   const pluginRoot = getPluginRoot();
+
+  if (desktop) {
+    await installDesktop(pluginRoot);
+  } else {
+    await installClaudeCode(pluginRoot);
+  }
+}
+
+async function installDesktop(pluginRoot: string) {
+  const skipBuild = hasFlag("--skip-build");
+  const totalSteps = skipBuild ? 3 : 4;
+  let step = 0;
+
+  console.log("Installing panopticon for Claude Desktop...\n");
+
+  // 1. Build
+  if (!skipBuild) {
+    step++;
+    console.log(`[${step}/${totalSteps}] Building...`);
+    try {
+      execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
+      console.log("      Built successfully.\n");
+    } catch (err: any) {
+      console.error(
+        "      Build failed:",
+        err.stderr?.toString() ?? err.message,
+      );
+      process.exit(1);
+    }
+  }
+
+  // 2. Initialize database
+  step++;
+  console.log(`[${step}/${totalSteps}] Initializing database...`);
+  ensureDataDir();
+  getDb();
+  closeDb();
+  console.log(`      ${config.dbPath}\n`);
+
+  // 3. Register MCP server in Claude Desktop config
+  step++;
+  console.log(
+    `[${step}/${totalSteps}] Registering MCP server in Claude Desktop...`,
+  );
+
+  const serverBin = path.join(pluginRoot, "bin", "mcp-server");
+  const desktopConfig = readJsonFile(CLAUDE_DESKTOP_CONFIG) ?? {};
+  desktopConfig.mcpServers = desktopConfig.mcpServers ?? {};
+
+  desktopConfig.mcpServers.panopticon = {
+    command: "node",
+    args: [serverBin],
+  };
+
+  writeJsonFile(CLAUDE_DESKTOP_CONFIG, desktopConfig);
+  console.log(`      ${CLAUDE_DESKTOP_CONFIG}\n`);
+
+  // 4. Configure shell environment (OTLP vars needed for telemetry)
+  step++;
+  console.log(`[${step}/${totalSteps}] Configuring shell environment...`);
+  configureShellEnv(false);
+
+  console.log("Done! Restart Claude Desktop to activate.\n");
+}
+
+async function installClaudeCode(pluginRoot: string) {
+  const force = hasFlag("--force");
   const pluginJson = readJsonFile(
     path.join(pluginRoot, ".claude-plugin", "plugin.json"),
   );
@@ -194,6 +270,13 @@ async function install() {
 
   // 6. Configure shell environment
   console.log("[6/6] Configuring shell environment...");
+  configureShellEnv(force);
+
+  console.log("Done! Start a new Claude Code session to activate.\n");
+  console.log("Verify with: panopticon status");
+}
+
+function configureShellEnv(force: boolean) {
   const shellRc = path.join(
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
@@ -304,9 +387,6 @@ async function install() {
   console.log(
     `      ${lastPanopticonIdx >= 0 ? "Updated" : "Added"} env vars in ${shellRc}\n`,
   );
-
-  console.log("Done! Start a new Claude Code session to activate.\n");
-  console.log("Verify with: panopticon status");
 }
 
 async function start() {
