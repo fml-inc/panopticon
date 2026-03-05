@@ -4,7 +4,9 @@
   "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
   "type": "module",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.0.0",
+    "npm": "please-use-pnpm",
+    "yarn": "please-use-pnpm"
   },
   "packageManager": "pnpm@10.17.1",
   "bin": {
@@ -31,7 +33,7 @@
     "@types/node": "^22.0.0",
     "lefthook": "^2.1.1",
     "tsup": "^8.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
