@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
 import { autoPrune } from "../db/prune.js";
 import {
@@ -41,7 +42,7 @@ function startReceiver(): void {
   ensureDataDir();
 
   const serverScript = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     "..",
     "otlp",
     "server.js",
@@ -84,7 +85,7 @@ function startSyncDaemon(): void {
   if (!fs.existsSync(config.syncConfigFile)) return;
 
   const daemonScript = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     "..",
     "sync",
     "daemon.js",

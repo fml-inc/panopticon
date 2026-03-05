@@ -2,7 +2,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const LOG_DIR = path.join(os.homedir(), "Library", "Logs", "panopticon");
+function getLogDir(): string {
+  switch (process.platform) {
+    case "darwin":
+      return path.join(os.homedir(), "Library", "Logs", "panopticon");
+    case "win32":
+      return path.join(
+        process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"),
+        "panopticon",
+        "logs",
+      );
+    default:
+      // Linux and other Unix-like
+      return path.join(
+        process.env.XDG_STATE_HOME ??
+          path.join(os.homedir(), ".local", "state"),
+        "panopticon",
+        "logs",
+      );
+  }
+}
+
+const LOG_DIR = getLogDir();
 
 export const logPaths = {
   otlp: path.join(LOG_DIR, "otlp-receiver.log"),

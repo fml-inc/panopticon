@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "packageManager": "pnpm@10.17.1",
   "bin": {
     "panopticon": "./bin/panopticon"
