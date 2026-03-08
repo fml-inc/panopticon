@@ -505,7 +505,6 @@ function configureShellEnv(force: boolean, target = "claude") {
 
   wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
 
-
   // Only add PATH entry if ~/.local/bin isn't already on PATH in the file
   if (!rcContent.includes(".local/bin")) {
     wantedLines.splice(1, 0, [
