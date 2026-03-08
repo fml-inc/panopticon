@@ -213,10 +213,11 @@ function extractJsonAnyValue(v: any): any {
 }
 
 // When run directly, start the server
+// Use normalized separators so this works on both Unix (/) and Windows (\)
+const entryScript = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
-  process.argv[1] &&
-  (process.argv[1].endsWith("/otlp/server.js") ||
-    process.argv[1].endsWith("/otlp/server.ts"))
+  entryScript.endsWith("/otlp/server.js") ||
+  entryScript.endsWith("/otlp/server.ts")
 ) {
   const server = createOtlpServer();
   server.listen(config.otlpPort, config.otlpHost, () => {

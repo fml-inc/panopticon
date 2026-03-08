@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "./config.js";
 import { pruneEstimate, pruneExecute } from "./db/prune.js";
 import { dbStats } from "./db/query.js";
@@ -38,8 +39,8 @@ Usage:
   panopticon install         Build, register plugin, init DB, configure shell
     --desktop                Install as MCP server for Claude Desktop instead
     --force                  Overwrite customized env vars with defaults
-  panopticon start          Start the OTLP receiver (background)
-  panopticon stop           Stop the OTLP receiver
+  panopticon start          Start OTLP receiver and sync daemon (background)
+  panopticon stop           Stop OTLP receiver and sync daemon
   panopticon status         Show receiver status and database stats
   panopticon logs [daemon]  View daemon logs (otlp, sync, mcp)
     -f, --follow             Follow log output (like tail -f)
@@ -61,7 +62,8 @@ Usage:
 
 function getPluginRoot(): string {
   // Walk up from the CLI script to find the plugin root (directory containing .claude-plugin/)
-  let dir = path.dirname(new URL(import.meta.url).pathname);
+  // fileURLToPath handles Windows drive-letter paths correctly (unlike URL.pathname)
+  let dir = path.dirname(fileURLToPath(import.meta.url));
   // We're in dist/, go up one level
   dir = path.resolve(dir, "..");
   return dir;
@@ -207,11 +209,13 @@ async function installClaudeCode(pluginRoot: string) {
   });
 
   // Symlink plugin into marketplace
+  // Use 'junction' on Windows — works without admin privileges for directories
+  const symlinkType = process.platform === "win32" ? "junction" : "dir";
   const marketplaceLink = path.join(config.marketplaceDir, "panopticon");
   try {
     fs.unlinkSync(marketplaceLink);
   } catch {}
-  fs.symlinkSync(pluginRoot, marketplaceLink);
+  fs.symlinkSync(pluginRoot, marketplaceLink, symlinkType);
 
   // Copy to plugin cache (Claude Code reads from cache, not marketplace directly)
   const cacheDir = path.join(config.pluginCacheDir, version);
@@ -231,7 +235,9 @@ async function installClaudeCode(pluginRoot: string) {
     const dest = path.join(cacheDir, name);
     if (fs.existsSync(src)) {
       fs.rmSync(dest, { recursive: true, force: true });
-      fs.cpSync(src, dest, { recursive: true });
+      // dereference: follow symlinks and copy actual files (pnpm uses symlinks
+      // inside node_modules which require admin privileges to recreate on Windows)
+      fs.cpSync(src, dest, { recursive: true, dereference: true });
     }
   }
   console.log(`      Marketplace: ${config.marketplaceDir}`);
@@ -264,7 +270,12 @@ async function installClaudeCode(pluginRoot: string) {
     try {
       fs.unlinkSync(link);
     } catch {}
-    fs.symlinkSync(target, link);
+    // 'file' symlinks on Windows require admin; use 'junction' for dirs or copy for files
+    if (process.platform === "win32") {
+      fs.copyFileSync(target, link);
+    } else {
+      fs.symlinkSync(target, link);
+    }
   }
   console.log(`      Linked panopticon -> ${localBin}/panopticon\n`);
 
@@ -406,8 +417,9 @@ async function start() {
   }
 
   // Find the OTLP server script
+  // Use fileURLToPath to handle Windows drive-letter paths correctly
   const serverScript = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     "otlp",
     "server.js",
   );
@@ -446,9 +458,39 @@ async function start() {
       }
     }, 500);
   });
+
+  // Also start the sync daemon
+  const { running: syncRunning, pid: syncPid } = isProcessRunning(
+    config.syncPidFile,
+  );
+  if (syncRunning) {
+    console.log(`Sync daemon already running (PID ${syncPid})`);
+  } else {
+    // Clean up stale PID file
+    if (syncPid !== null) {
+      try {
+        fs.unlinkSync(config.syncPidFile);
+      } catch {}
+    }
+    await syncStart();
+  }
 }
 
 async function stop() {
+  // Stop the sync daemon first (if running)
+  const sync = isProcessRunning(config.syncPidFile);
+  if (sync.running && sync.pid !== null) {
+    try {
+      process.kill(sync.pid, "SIGTERM");
+      fs.unlinkSync(config.syncPidFile);
+      console.log(`Sync daemon stopped (PID ${sync.pid})`);
+    } catch {
+      fs.unlinkSync(config.syncPidFile);
+      console.log("Sync daemon was not running (stale PID file removed)");
+    }
+  }
+
+  // Stop the OTLP receiver
   if (!fs.existsSync(config.pidFile)) {
     console.log("OTLP receiver is not running (no PID file)");
     return;
@@ -856,11 +898,6 @@ async function syncSetup() {
 async function syncStart() {
   ensureDataDir();
 
-  if (!fs.existsSync(config.syncConfigFile)) {
-    console.error("No sync config found. Run 'panopticon sync setup' first.");
-    process.exit(1);
-  }
-
   // Check if already running
   const { running, pid } = isProcessRunning(config.syncPidFile);
   if (running) {
@@ -874,8 +911,9 @@ async function syncStart() {
     } catch {}
   }
 
+  // Use fileURLToPath to handle Windows drive-letter paths correctly
   const daemonScript = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     "sync",
     "daemon.js",
   );
@@ -1028,6 +1066,29 @@ async function syncReset() {
   }
 }
 
+function tailLines(filePath: string, n: number): string[] {
+  const CHUNK_SIZE = 64 * 1024; // 64 KB — read from end to avoid loading entire file
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const { size } = fs.fstatSync(fd);
+    if (size === 0) return [];
+
+    const readStart = Math.max(0, size - CHUNK_SIZE);
+    const buf = Buffer.alloc(size - readStart);
+    fs.readSync(fd, buf, 0, buf.length, readStart);
+    const chunk = buf.toString("utf-8");
+
+    const lines = chunk.split("\n");
+    // Remove trailing empty line from final newline
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    // If we didn't read from the start, the first line is likely partial — drop it
+    if (readStart > 0 && lines.length > 0) lines.shift();
+    return lines.slice(-n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 async function logs() {
   const daemonArg = process.argv[3] as DaemonName | undefined;
   const follow = hasFlag("-f") || hasFlag("--follow");
@@ -1048,11 +1109,32 @@ async function logs() {
     return;
   }
 
-  const args = follow
-    ? ["-f", `-n${numLines}`, logPath]
-    : [`-n${numLines}`, logPath];
-  const tail = spawn("tail", args, { stdio: "inherit" });
-  tail.on("exit", (code) => process.exit(code ?? 0));
+  // Print last N lines
+  const lines = tailLines(logPath, numLines);
+  for (const line of lines) {
+    console.log(line);
+  }
+
+  // Follow mode: watch for new content
+  if (follow) {
+    let pos = fs.statSync(logPath).size;
+    fs.watchFile(logPath, { interval: 200 }, () => {
+      const stat = fs.statSync(logPath);
+      if (stat.size > pos) {
+        const fd = fs.openSync(logPath, "r");
+        const buf = Buffer.alloc(stat.size - pos);
+        fs.readSync(fd, buf, 0, buf.length, pos);
+        fs.closeSync(fd);
+        process.stdout.write(buf.toString("utf-8"));
+        pos = stat.size;
+      } else if (stat.size < pos) {
+        // File was truncated/rotated, reset
+        pos = 0;
+      }
+    });
+    // Keep process alive
+    await new Promise(() => {});
+  }
 }
 
 async function handleSync() {

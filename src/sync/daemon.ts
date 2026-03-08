@@ -432,19 +432,7 @@ async function runOnce(syncConfig: SyncConfig): Promise<void> {
 }
 
 async function main() {
-  const syncConfig = loadSyncConfig();
-  if (!syncConfig) {
-    console.error(
-      "[sync] No sync config found. Run 'panopticon sync setup' first.",
-    );
-    process.exit(1);
-  }
-
-  const intervalMs = syncConfig.intervalMs ?? 30000;
-
-  console.log(
-    `[sync] Starting daemon — targets: ${syncConfig.targets.map((t) => `${t.name}(${t.url})`).join(", ")}, interval: ${intervalMs}ms`,
-  );
+  const DEFAULT_INTERVAL_MS = 30000;
 
   // Write PID file
   fs.writeFileSync(config.syncPidFile, String(process.pid));
@@ -462,17 +450,36 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGHUP", shutdown);
 
-  // Main loop
+  const initialConfig = loadSyncConfig();
+  if (initialConfig) {
+    console.log(
+      `[sync] Starting daemon — targets: ${initialConfig.targets.map((t) => `${t.name}(${t.url})`).join(", ")}, interval: ${initialConfig.intervalMs ?? DEFAULT_INTERVAL_MS}ms`,
+    );
+  } else {
+    console.log(
+      "[sync] Starting daemon — no sync config yet, waiting for 'panopticon sync setup'",
+    );
+  }
+
+  // Main loop — reload config each cycle so setup changes are picked up
   while (true) {
-    try {
-      await runOnce(syncConfig);
-    } catch (err) {
-      console.error(
-        "[sync] Cycle error:",
-        err instanceof Error ? err.message : err,
+    const syncConfig = loadSyncConfig();
+    if (syncConfig) {
+      try {
+        await runOnce(syncConfig);
+      } catch (err) {
+        console.error(
+          "[sync] Cycle error:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      await new Promise((r) =>
+        setTimeout(r, syncConfig.intervalMs ?? DEFAULT_INTERVAL_MS),
       );
+    } else {
+      // No config — idle and re-check periodically
+      await new Promise((r) => setTimeout(r, DEFAULT_INTERVAL_MS));
     }
-    await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
 
