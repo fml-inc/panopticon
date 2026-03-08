@@ -1067,11 +1067,26 @@ async function syncReset() {
 }
 
 function tailLines(filePath: string, n: number): string[] {
-  const content = fs.readFileSync(filePath, "utf-8");
-  const lines = content.split("\n");
-  // Remove trailing empty line from final newline
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  return lines.slice(-n);
+  const CHUNK_SIZE = 64 * 1024; // 64 KB — read from end to avoid loading entire file
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const { size } = fs.fstatSync(fd);
+    if (size === 0) return [];
+
+    const readStart = Math.max(0, size - CHUNK_SIZE);
+    const buf = Buffer.alloc(size - readStart);
+    fs.readSync(fd, buf, 0, buf.length, readStart);
+    const chunk = buf.toString("utf-8");
+
+    const lines = chunk.split("\n");
+    // Remove trailing empty line from final newline
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    // If we didn't read from the start, the first line is likely partial — drop it
+    if (readStart > 0 && lines.length > 0) lines.shift();
+    return lines.slice(-n);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 async function logs() {
