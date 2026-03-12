@@ -174,33 +174,42 @@ async function syncHookEvents(
   if (rows.length === 0) return false;
 
   // Map first (resolves repo from cwd when row.repository is empty),
-  // then stamp orgName and filter on the resolved repositoryFullName.
-  const events = rows.map(mapHookEvent);
-  for (const e of events) {
-    e.orgName = resolveOrgName(e.repositoryFullName, e.cwd, syncConfig.orgDirs);
-  }
-  const filtered = events.filter((e) =>
-    isAllowedOrg(
-      e.repositoryFullName,
-      syncConfig.allowedOrgs,
-      e.cwd,
+  // then stamp orgName and pair each entry with its original row ID.
+  const tagged = rows.map((row) => {
+    const event = mapHookEvent(row);
+    event.orgName = resolveOrgName(
+      event.repositoryFullName,
+      event.cwd,
       syncConfig.orgDirs,
-    ),
-  );
+    );
+    return { event, rowId: row.id };
+  });
 
-  if (filtered.length > 0) {
-    const batches = chunk(filtered, HOOK_EVENTS_BATCH_LIMIT);
-    const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-batch`;
+  // Batch the original rows, filter within each batch, and advance
+  // watermark per-batch so retries don't re-send successful batches.
+  const batches = chunk(tagged, HOOK_EVENTS_BATCH_LIMIT);
+  const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-batch`;
 
-    for (const batch of batches) {
-      if (syncConfig.backendType === "otlp") continue;
-      await postBatch(url, { events: batch }, token);
+  for (const batch of batches) {
+    const filtered = batch
+      .filter(({ event }) =>
+        isAllowedOrg(
+          event.repositoryFullName,
+          syncConfig.allowedOrgs,
+          event.cwd,
+          syncConfig.orgDirs,
+        ),
+      )
+      .map(({ event }) => event);
+
+    if (filtered.length > 0 && syncConfig.backendType !== "otlp") {
+      await postBatch(url, { events: filtered }, token);
     }
-  }
 
-  // Advance watermark to the last row we processed (even if filtered out)
-  const lastId = rows[rows.length - 1].id;
-  writeWatermark(wmKey, lastId);
+    // Advance watermark after each successful batch (including filtered-out rows)
+    const lastId = batch[batch.length - 1].rowId;
+    writeWatermark(wmKey, lastId);
+  }
 
   return rows.length === batchSize;
 }
@@ -223,18 +232,13 @@ async function syncOtelLogs(
 
   if (rows.length === 0) return false;
 
-  const mapped = rows.map(mapOtelLog);
-
-  // Backfill repositoryFullName and cwd from session tables
-  for (const entry of mapped) {
+  // Map and backfill repositoryFullName / orgName, paired with original row IDs
+  const tagged = rows.map((row) => {
+    const entry = mapOtelLog(row);
     if (!entry.repositoryFullName) {
       const repo = lookupSessionRepo(entry.sessionId);
       if (repo) entry.repositoryFullName = repo;
     }
-  }
-
-  // Stamp orgName using repo or cwd fallback
-  for (const entry of mapped) {
     const cwd = entry.repositoryFullName
       ? undefined
       : lookupSessionCwd(entry.sessionId);
@@ -243,25 +247,30 @@ async function syncOtelLogs(
       cwd,
       syncConfig.orgDirs,
     );
-  }
-
-  const filtered = mapped.filter((l) => {
-    const cwd = l.repositoryFullName
-      ? undefined
-      : lookupSessionCwd(l.sessionId);
-    return isAllowedOrg(
-      l.repositoryFullName,
-      syncConfig.allowedOrgs,
-      cwd,
-      syncConfig.orgDirs,
-    );
+    return { entry, rowId: row.id };
   });
 
-  if (filtered.length > 0) {
-    const batches = chunk(filtered, OTEL_LOGS_BATCH_LIMIT);
-    const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-logs`;
+  // Batch the original rows, filter within each batch, and advance
+  // watermark per-batch so retries don't re-send successful batches.
+  const batches = chunk(tagged, OTEL_LOGS_BATCH_LIMIT);
+  const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-logs`;
 
-    for (const batch of batches) {
+  for (const batch of batches) {
+    const filtered = batch
+      .filter(({ entry }) => {
+        const cwd = entry.repositoryFullName
+          ? undefined
+          : lookupSessionCwd(entry.sessionId);
+        return isAllowedOrg(
+          entry.repositoryFullName,
+          syncConfig.allowedOrgs,
+          cwd,
+          syncConfig.orgDirs,
+        );
+      })
+      .map(({ entry }) => entry);
+
+    if (filtered.length > 0) {
       if (syncConfig.backendType === "otlp") {
         const otlpUrl = `${target.url.replace(/\/$/, "")}/v1/logs`;
         const payload = {
@@ -270,7 +279,7 @@ async function syncOtelLogs(
               resource: { attributes: [] },
               scopeLogs: [
                 {
-                  logRecords: batch.map((l) => ({
+                  logRecords: filtered.map((l) => ({
                     timeUnixNano: (l.timestampMs * 1000000).toString(),
                     severityText: l.severityText,
                     body: { stringValue: l.body },
@@ -284,13 +293,14 @@ async function syncOtelLogs(
         };
         await postBatch(otlpUrl, payload, token);
       } else {
-        await postBatch(url, { logs: batch }, token);
+        await postBatch(url, { logs: filtered }, token);
       }
     }
-  }
 
-  const lastId = rows[rows.length - 1].id;
-  writeWatermark(wmKey, lastId);
+    // Advance watermark after each successful batch (including filtered-out rows)
+    const lastId = batch[batch.length - 1].rowId;
+    writeWatermark(wmKey, lastId);
+  }
 
   return rows.length === batchSize;
 }
@@ -313,18 +323,13 @@ async function syncOtelMetrics(
 
   if (rows.length === 0) return false;
 
-  const mapped = rows.map(mapOtelMetric);
-
-  // Backfill repositoryFullName from session tables
-  for (const entry of mapped) {
+  // Map and backfill repositoryFullName / orgName, paired with original row IDs
+  const tagged = rows.map((row) => {
+    const entry = mapOtelMetric(row);
     if (!entry.repositoryFullName) {
       const repo = lookupSessionRepo(entry.sessionId);
       if (repo) entry.repositoryFullName = repo;
     }
-  }
-
-  // Stamp orgName using repo or cwd fallback
-  for (const entry of mapped) {
     const cwd = entry.repositoryFullName
       ? undefined
       : lookupSessionCwd(entry.sessionId);
@@ -333,25 +338,30 @@ async function syncOtelMetrics(
       cwd,
       syncConfig.orgDirs,
     );
-  }
-
-  const filtered = mapped.filter((m) => {
-    const cwd = m.repositoryFullName
-      ? undefined
-      : lookupSessionCwd(m.sessionId);
-    return isAllowedOrg(
-      m.repositoryFullName,
-      syncConfig.allowedOrgs,
-      cwd,
-      syncConfig.orgDirs,
-    );
+    return { entry, rowId: row.id };
   });
 
-  if (filtered.length > 0) {
-    const batches = chunk(filtered, OTEL_METRICS_BATCH_LIMIT);
-    const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-metrics`;
+  // Batch the original rows, filter within each batch, and advance
+  // watermark per-batch so retries don't re-send successful batches.
+  const batches = chunk(tagged, OTEL_METRICS_BATCH_LIMIT);
+  const url = `${target.url.replace(/\/$/, "")}/panopticon/ingest-metrics`;
 
-    for (const batch of batches) {
+  for (const batch of batches) {
+    const filtered = batch
+      .filter(({ entry }) => {
+        const cwd = entry.repositoryFullName
+          ? undefined
+          : lookupSessionCwd(entry.sessionId);
+        return isAllowedOrg(
+          entry.repositoryFullName,
+          syncConfig.allowedOrgs,
+          cwd,
+          syncConfig.orgDirs,
+        );
+      })
+      .map(({ entry }) => entry);
+
+    if (filtered.length > 0) {
       if (syncConfig.backendType === "otlp") {
         const otlpUrl = `${target.url.replace(/\/$/, "")}/v1/metrics`;
         const payload = {
@@ -360,7 +370,7 @@ async function syncOtelMetrics(
               resource: { attributes: [] },
               scopeMetrics: [
                 {
-                  metrics: batch.map((m) => ({
+                  metrics: filtered.map((m) => ({
                     name: m.name,
                     unit: m.unit,
                     gauge: {
@@ -379,13 +389,14 @@ async function syncOtelMetrics(
         };
         await postBatch(otlpUrl, payload, token);
       } else {
-        await postBatch(url, { metrics: batch }, token);
+        await postBatch(url, { metrics: filtered }, token);
       }
     }
-  }
 
-  const lastId = rows[rows.length - 1].id;
-  writeWatermark(wmKey, lastId);
+    // Advance watermark after each successful batch (including filtered-out rows)
+    const lastId = batch[batch.length - 1].rowId;
+    writeWatermark(wmKey, lastId);
+  }
 
   return rows.length === batchSize;
 }
