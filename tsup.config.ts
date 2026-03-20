@@ -2,11 +2,10 @@ import { defineConfig } from "tsup";
 
 export default defineConfig({
   entry: {
-    "cli": "src/cli.ts",
+    cli: "src/cli.ts",
     "hooks/handler": "src/hooks/handler.ts",
     "mcp/server": "src/mcp/server.ts",
     "otlp/server": "src/otlp/server.ts",
-    "sync/daemon": "src/sync/daemon.ts",
   },
   format: ["esm"],
   target: "node22",
