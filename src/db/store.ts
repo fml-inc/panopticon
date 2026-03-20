@@ -1,4 +1,5 @@
 import { gzipSync } from "node:zlib";
+import { detectAccountTypeFromAttributes } from "../account.js";
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -51,6 +52,29 @@ const INSERT_HOOK_SQL = `
   VALUES (@session_id, @event_type, @timestamp_ms, @cwd, @repository, @tool_name, @payload)
 `;
 
+/** Check OTel rows for account-type hints in resource_attributes and upsert if found. */
+function detectAccountFromOtelRows(
+  rows: {
+    session_id?: string;
+    resource_attributes?: Record<string, unknown>;
+  }[],
+): void {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!row.session_id || seen.has(row.session_id)) continue;
+    seen.add(row.session_id);
+    const detected = detectAccountTypeFromAttributes(row.resource_attributes);
+    if (detected && detected !== "unknown") {
+      upsertSessionAccountType(
+        row.session_id,
+        detected,
+        "resource_attributes",
+        Date.now(),
+      );
+    }
+  }
+}
+
 export function insertOtelLogs(rows: OtelLogRow[]): void {
   const db = getDb();
   const stmt = db.prepare(INSERT_LOG_SQL);
@@ -74,6 +98,7 @@ export function insertOtelLogs(rows: OtelLogRow[]): void {
     }
   });
   insertMany(rows);
+  detectAccountFromOtelRows(rows);
 }
 
 export function insertOtelMetrics(rows: OtelMetricRow[]): void {
@@ -96,6 +121,7 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
     }
   });
   insertMany(rows);
+  detectAccountFromOtelRows(rows);
 }
 
 export function upsertSessionRepository(
@@ -118,6 +144,34 @@ export function upsertSessionCwd(
   db.prepare(
     "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
   ).run(sessionId, cwd, timestampMs);
+}
+
+export function upsertSessionAccountType(
+  sessionId: string,
+  accountType: string,
+  detectedFrom: string,
+  timestampMs: number,
+): void {
+  const db = getDb();
+  // Only update if the new detection is more specific (not 'unknown')
+  // or if no row exists yet
+  db.prepare(
+    `INSERT INTO session_metadata (session_id, account_type, detected_from, detected_at_ms)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET
+       account_type = CASE
+         WHEN excluded.account_type != 'unknown' THEN excluded.account_type
+         ELSE session_metadata.account_type
+       END,
+       detected_from = CASE
+         WHEN excluded.account_type != 'unknown' THEN excluded.detected_from
+         ELSE session_metadata.detected_from
+       END,
+       detected_at_ms = CASE
+         WHEN excluded.account_type != 'unknown' THEN excluded.detected_at_ms
+         ELSE session_metadata.detected_at_ms
+       END`,
+  ).run(sessionId, accountType, detectedFrom, timestampMs);
 }
 
 export function insertHookEvent(row: HookEventRow): void {
