@@ -1,3 +1,4 @@
+import { isSubscription } from "../account.js";
 import { getDb } from "./schema.js";
 
 function parseSince(since?: string): number | null {
@@ -44,9 +45,11 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
            s.tool_count,
            COALESCE(c.total_tokens, 0) as total_tokens,
            COALESCE(c.total_cost, 0) as total_cost,
+           COALESCE(sm.account_type, 'unknown') as account_type,
            GROUP_CONCAT(DISTINCT sr.repository) as repositories
     FROM all_sessions s
     LEFT JOIN otel_costs c ON s.session_id = c.session_id
+    LEFT JOIN session_metadata sm ON s.session_id = sm.session_id
     LEFT JOIN session_repositories sr ON s.session_id = sr.session_id
     GROUP BY s.session_id
     ORDER BY s.start_ms DESC
@@ -191,19 +194,45 @@ export function costBreakdown(
       break;
   }
 
+  // When grouping by session, join session_metadata to include account_type
+  const joinMeta = groupBy === "session";
+  const metaSelect = joinMeta
+    ? ", COALESCE(sm.account_type, 'unknown') as account_type"
+    : "";
+  const metaJoin = joinMeta
+    ? "LEFT JOIN session_metadata sm ON otel_metrics.session_id = sm.session_id"
+    : "";
+
   const sql = `
     SELECT ${selectExpr},
            SUM(CASE WHEN name LIKE '%input%token%' THEN value ELSE 0 END) as input_tokens,
            SUM(CASE WHEN name LIKE '%output%token%' THEN value ELSE 0 END) as output_tokens,
            SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
            SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as total_cost
+           ${metaSelect}
     FROM otel_metrics
+    ${metaJoin}
     ${where}
     GROUP BY ${groupExpr}
     ORDER BY total_tokens DESC
   `;
 
-  return db.prepare(sql).all(...params);
+  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
+
+  // Annotate subscription sessions: costs are equivalent, not actual charges
+  if (joinMeta) {
+    for (const row of rows) {
+      const acct = (row.account_type as string) ?? "unknown";
+      row.is_subscription = isSubscription(acct);
+      row.cost_note = isSubscription(acct)
+        ? "equivalent API cost (covered by subscription)"
+        : acct === "unknown"
+          ? "account type unknown — cost may be actual or equivalent"
+          : "actual API cost";
+    }
+  }
+
+  return rows;
 }
 
 export function searchEvents(opts: {
@@ -344,6 +373,8 @@ export function activitySummary(opts: { since?: string } = {}) {
       session_count: number;
       total_cost: number;
       total_tokens: number;
+      actual_api_cost: number;
+      equivalent_subscription_cost: number;
       top_tools: { tool: string; count: number }[];
     };
   } = {
@@ -356,6 +387,8 @@ export function activitySummary(opts: { since?: string } = {}) {
       session_count: sessions.length,
       total_cost: 0,
       total_tokens: 0,
+      actual_api_cost: 0,
+      equivalent_subscription_cost: 0,
       top_tools: [],
     },
   };
@@ -427,10 +460,22 @@ export function activitySummary(opts: { since?: string } = {}) {
     `)
       .get(s.session_id) as { tokens: number; cost: number } | undefined;
 
+    // Account type for this session
+    const metaRow = db
+      .prepare("SELECT account_type FROM session_metadata WHERE session_id = ?")
+      .get(s.session_id) as { account_type: string } | undefined;
+    const accountType = metaRow?.account_type ?? "unknown";
+    const isSub = isSubscription(accountType);
+
     const sessionCost = costRow?.cost ?? 0;
     const sessionTokens = costRow?.tokens ?? 0;
     result.totals.total_cost += sessionCost;
     result.totals.total_tokens += sessionTokens;
+    if (isSub) {
+      result.totals.equivalent_subscription_cost += sessionCost;
+    } else if (accountType !== "unknown") {
+      result.totals.actual_api_cost += sessionCost;
+    }
 
     result.sessions.push({
       session_id: s.session_id,
@@ -443,6 +488,13 @@ export function activitySummary(opts: { since?: string } = {}) {
       plans: plans.map((p) => p.plan).filter(Boolean),
       files_modified: files.map((f) => f.file_path).filter(Boolean),
       total_cost: sessionCost,
+      account_type: accountType,
+      is_subscription: isSub,
+      cost_note: isSub
+        ? "equivalent API cost (covered by subscription)"
+        : accountType === "unknown"
+          ? undefined
+          : "actual API cost",
     });
   }
 

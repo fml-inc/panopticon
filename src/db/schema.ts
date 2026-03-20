@@ -77,6 +77,13 @@ CREATE TABLE IF NOT EXISTS session_cwds (
 );
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
 
+CREATE TABLE IF NOT EXISTS session_metadata (
+  session_id TEXT PRIMARY KEY,
+  account_type TEXT NOT NULL DEFAULT 'unknown',
+  detected_from TEXT,
+  detected_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

@@ -4,10 +4,12 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectAccountType } from "../account.js";
 import { config, ensureDataDir } from "../config.js";
 import { autoPrune } from "../db/prune.js";
 import {
   insertHookEvent,
+  upsertSessionAccountType,
   upsertSessionCwd,
   upsertSessionRepository,
 } from "../db/store.js";
@@ -172,6 +174,19 @@ async function main() {
       tool_name: toolName ?? undefined,
       payload,
     });
+
+    // Detect and store account type on SessionStart
+    if (eventType === "SessionStart") {
+      const { accountType, detectedFrom } = detectAccountType({
+        hookPayload: data as Record<string, unknown>,
+      });
+      upsertSessionAccountType(
+        sessionId,
+        accountType,
+        detectedFrom,
+        timestampMs,
+      );
+    }
 
     // Populate session junction tables
     if (repo) {

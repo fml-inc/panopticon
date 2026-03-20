@@ -20,6 +20,7 @@ export const config = {
   pidFile: path.join(DATA_DIR, "otlp-receiver.pid"),
   syncPidFile: path.join(DATA_DIR, "sync.pid"),
   syncConfigFile: path.join(DATA_DIR, "sync.json"),
+  accountConfigFile: path.join(DATA_DIR, "account.json"),
   otlpPort: parseInt(process.env.PANOPTICON_OTLP_PORT ?? "4318", 10),
   otlpHost: process.env.PANOPTICON_OTLP_HOST ?? "0.0.0.0",
   claudeDir: CLAUDE_DIR,

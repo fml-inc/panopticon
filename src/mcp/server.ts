@@ -25,7 +25,7 @@ const server = new McpServer({
 
 server.tool(
   "panopticon_sessions",
-  "List recent Claude Code sessions with stats (event count, tools used, cost)",
+  "List recent Claude Code sessions with stats (event count, tools used, cost). Includes account_type per session — if the session ran under a subscription (pro/max/team/enterprise), total_cost represents the equivalent API cost, not an actual charge.",
   {
     limit: z
       .number()
@@ -112,7 +112,7 @@ server.tool(
 
 server.tool(
   "panopticon_costs",
-  "Token usage and cost breakdowns, grouped by session, model, or day",
+  "Token usage and cost breakdowns, grouped by session, model, or day. When grouped by session, includes account_type and cost_note indicating whether costs are actual API charges or equivalent costs covered by a subscription.",
   {
     since: z
       .string()
@@ -138,7 +138,7 @@ server.tool(
 
 server.tool(
   "panopticon_summary",
-  "Generate a summary of recent Claude Code activity — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates, daily reports, and progress reviews.",
+  "Generate a summary of recent Claude Code activity — sessions, prompts, tools used, files changed, and costs. Includes per-session account_type and cost annotations. Totals break down actual_api_cost vs equivalent_subscription_cost. Ideal for standup updates, daily reports, and progress reviews.",
   {
     since: z
       .string()
@@ -268,6 +268,7 @@ Schema:
   hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, payload JSON)
   otel_logs(id, timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, attributes JSON, resource_attributes JSON, session_id, prompt_id, trace_id, span_id)
   otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)
+  session_metadata(session_id PK, account_type TEXT, detected_from TEXT, detected_at_ms INTEGER) — account_type: api|pro|max|team|enterprise|unknown
   sync_state(key, value)`,
   {
     sql: z.string().describe("SQL query (SELECT/WITH/PRAGMA only)"),

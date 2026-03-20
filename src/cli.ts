@@ -52,6 +52,8 @@ Usage:
     --dry-run                Show estimate without deleting
     --vacuum                 Reclaim disk space after pruning
     --yes                    Skip confirmation prompt
+  panopticon account        Show current account type configuration
+  panopticon account set <type>  Set account type (api, pro, max, team, enterprise)
   panopticon sync start     Start the sync daemon (background)
   panopticon sync stop      Stop the sync daemon
   panopticon sync status    Show sync daemon state and watermarks
@@ -755,6 +757,57 @@ async function prune() {
 }
 
 // ============================================================================
+// ACCOUNT COMMAND
+// ============================================================================
+
+function handleAccount() {
+  const VALID_TYPES = ["api", "pro", "max", "team", "enterprise"];
+
+  if (subcommand === "set") {
+    const value = process.argv[4];
+    if (!value || !VALID_TYPES.includes(value)) {
+      console.error(
+        `Invalid account type: ${value ?? "(none)"}\nValid types: ${VALID_TYPES.join(", ")}`,
+      );
+      process.exit(1);
+    }
+    ensureDataDir();
+    fs.writeFileSync(
+      config.accountConfigFile,
+      `${JSON.stringify({ accountType: value }, null, 2)}\n`,
+    );
+    console.log(`Account type set to: ${value}`);
+    console.log(`Config written to: ${config.accountConfigFile}`);
+    if (value !== "api") {
+      console.log(
+        `\nSessions will be marked as subscription accounts. Reported costs\nrepresent equivalent API cost, not actual charges.`,
+      );
+    }
+  } else {
+    // Show current account type
+    let current = "unknown (not configured)";
+    let source = "";
+    if (fs.existsSync(config.accountConfigFile)) {
+      try {
+        const cfg = JSON.parse(
+          fs.readFileSync(config.accountConfigFile, "utf-8"),
+        );
+        if (cfg.accountType) {
+          current = cfg.accountType;
+          source = ` (from ${config.accountConfigFile})`;
+        }
+      } catch {}
+    }
+    console.log(`Account type: ${current}${source}`);
+    console.log(`\nSet with: panopticon account set <type>`);
+    console.log(`Valid types: ${VALID_TYPES.join(", ")}`);
+    console.log(
+      "\nThis determines how session costs are interpreted. Subscription\naccounts (pro, max, team, enterprise) report equivalent API costs.\nAPI accounts report actual charges.",
+    );
+  }
+}
+
+// ============================================================================
 // SYNC SUBCOMMANDS
 // ============================================================================
 
@@ -933,6 +986,7 @@ async function syncStart() {
 
     setTimeout(() => {
       if (child.pid) {
+        fs.writeFileSync(config.syncPidFile, String(child.pid));
         child.unref();
         fs.closeSync(logFd);
         console.log(`Sync daemon started (PID ${child.pid})`);
@@ -1182,6 +1236,9 @@ async function main() {
       break;
     case "prune":
       await prune();
+      break;
+    case "account":
+      handleAccount();
       break;
     case "sync":
       await handleSync();
