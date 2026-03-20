@@ -77,10 +77,6 @@ CREATE TABLE IF NOT EXISTS session_cwds (
 );
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
 
-CREATE TABLE IF NOT EXISTS sync_state (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
 `;
 
 let _db: Database.Database | null = null;

@@ -18,8 +18,6 @@ export const config = {
   dataDir: DATA_DIR,
   dbPath: path.join(DATA_DIR, "data.db"),
   pidFile: path.join(DATA_DIR, "otlp-receiver.pid"),
-  syncPidFile: path.join(DATA_DIR, "sync.pid"),
-  syncConfigFile: path.join(DATA_DIR, "sync.json"),
   otlpPort: parseInt(process.env.PANOPTICON_OTLP_PORT ?? "4318", 10),
   otlpHost: process.env.PANOPTICON_OTLP_HOST ?? "0.0.0.0",
   claudeDir: CLAUDE_DIR,

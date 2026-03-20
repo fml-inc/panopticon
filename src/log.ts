@@ -27,7 +27,6 @@ const LOG_DIR = getLogDir();
 
 export const logPaths = {
   otlp: path.join(LOG_DIR, "otlp-receiver.log"),
-  sync: path.join(LOG_DIR, "sync.log"),
   mcp: path.join(LOG_DIR, "mcp-server.log"),
 } as const;
 

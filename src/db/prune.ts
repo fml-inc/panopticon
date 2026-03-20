@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { config } from "../config.js";
-import { readWatermark } from "../sync/state.js";
 import { getDb } from "./schema.js";
 
 export interface PruneResult {
@@ -11,58 +10,35 @@ export interface PruneResult {
   session_cwds: number;
 }
 
-export function pruneEstimate(
-  cutoffMs: number,
-  syncedOnly: boolean,
-): PruneResult {
+export function pruneEstimate(cutoffMs: number): PruneResult {
   const db = getDb();
   const cutoffNs = cutoffMs * 1_000_000;
 
-  let logWhere = "WHERE timestamp_ns < ?";
-  let metricWhere = "WHERE timestamp_ns < ?";
-  let hookWhere = "WHERE timestamp_ms < ?";
-  const logParams: number[] = [cutoffNs];
-  const metricParams: number[] = [cutoffNs];
-  const hookParams: number[] = [cutoffMs];
-
-  if (syncedOnly) {
-    const logWm = readWatermark("otel_logs_last_id") ?? 0;
-    const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
-    const hookWm = readWatermark("hook_events_last_id") ?? 0;
-
-    logWhere += " AND id <= ?";
-    metricWhere += " AND id <= ?";
-    hookWhere += " AND id <= ?";
-    logParams.push(logWm);
-    metricParams.push(metricWm);
-    hookParams.push(hookWm);
-  }
-
   const logs = (
     db
-      .prepare(`SELECT COUNT(*) as c FROM otel_logs ${logWhere}`)
-      .get(...logParams) as { c: number }
+      .prepare("SELECT COUNT(*) as c FROM otel_logs WHERE timestamp_ns < ?")
+      .get(cutoffNs) as { c: number }
   ).c;
   const metrics = (
     db
-      .prepare(`SELECT COUNT(*) as c FROM otel_metrics ${metricWhere}`)
-      .get(...metricParams) as { c: number }
+      .prepare("SELECT COUNT(*) as c FROM otel_metrics WHERE timestamp_ns < ?")
+      .get(cutoffNs) as { c: number }
   ).c;
   const hooks = (
     db
-      .prepare(`SELECT COUNT(*) as c FROM hook_events ${hookWhere}`)
-      .get(...hookParams) as { c: number }
+      .prepare("SELECT COUNT(*) as c FROM hook_events WHERE timestamp_ms < ?")
+      .get(cutoffMs) as { c: number }
   ).c;
   const sessionRepos = (
     db
       .prepare(
-        `SELECT COUNT(*) as c FROM session_repositories WHERE first_seen_ms < ?`,
+        "SELECT COUNT(*) as c FROM session_repositories WHERE first_seen_ms < ?",
       )
       .get(cutoffMs) as { c: number }
   ).c;
   const sessionCwds = (
     db
-      .prepare(`SELECT COUNT(*) as c FROM session_cwds WHERE first_seen_ms < ?`)
+      .prepare("SELECT COUNT(*) as c FROM session_cwds WHERE first_seen_ms < ?")
       .get(cutoffMs) as { c: number }
   ).c;
 
@@ -75,49 +51,26 @@ export function pruneEstimate(
   };
 }
 
-export function pruneExecute(
-  cutoffMs: number,
-  syncedOnly: boolean,
-): PruneResult {
+export function pruneExecute(cutoffMs: number): PruneResult {
   const db = getDb();
   const cutoffNs = cutoffMs * 1_000_000;
 
-  let logWhere = "WHERE timestamp_ns < ?";
-  let metricWhere = "WHERE timestamp_ns < ?";
-  let hookWhere = "WHERE timestamp_ms < ?";
-  const logParams: number[] = [cutoffNs];
-  const metricParams: number[] = [cutoffNs];
-  const hookParams: number[] = [cutoffMs];
-
-  if (syncedOnly) {
-    const logWm = readWatermark("otel_logs_last_id") ?? 0;
-    const metricWm = readWatermark("otel_metrics_last_id") ?? 0;
-    const hookWm = readWatermark("hook_events_last_id") ?? 0;
-
-    logWhere += " AND id <= ?";
-    metricWhere += " AND id <= ?";
-    hookWhere += " AND id <= ?";
-    logParams.push(logWm);
-    metricParams.push(metricWm);
-    hookParams.push(hookWm);
-  }
-
   const tx = db.transaction(() => {
     const logs = db
-      .prepare(`DELETE FROM otel_logs ${logWhere}`)
-      .run(...logParams).changes;
+      .prepare("DELETE FROM otel_logs WHERE timestamp_ns < ?")
+      .run(cutoffNs).changes;
     const metrics = db
-      .prepare(`DELETE FROM otel_metrics ${metricWhere}`)
-      .run(...metricParams).changes;
+      .prepare("DELETE FROM otel_metrics WHERE timestamp_ns < ?")
+      .run(cutoffNs).changes;
 
     // Delete from FTS5 index before deleting from hook_events
     db.prepare(
-      `DELETE FROM hook_events_fts WHERE rowid IN (SELECT id FROM hook_events ${hookWhere})`,
-    ).run(...hookParams);
+      "DELETE FROM hook_events_fts WHERE rowid IN (SELECT id FROM hook_events WHERE timestamp_ms < ?)",
+    ).run(cutoffMs);
 
     const hooks = db
-      .prepare(`DELETE FROM hook_events ${hookWhere}`)
-      .run(...hookParams).changes;
+      .prepare("DELETE FROM hook_events WHERE timestamp_ms < ?")
+      .run(cutoffMs).changes;
 
     const sessionRepos = db
       .prepare("DELETE FROM session_repositories WHERE first_seen_ms < ?")
@@ -149,5 +102,5 @@ export function autoPrune(maxAgeDays: number, maxSizeMb: number): void {
   if (sizeBytes / (1024 * 1024) <= maxSizeMb) return;
 
   const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-  pruneExecute(cutoffMs, true);
+  pruneExecute(cutoffMs);
 }

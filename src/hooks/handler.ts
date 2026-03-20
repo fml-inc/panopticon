@@ -66,43 +66,6 @@ function startReceiver(): void {
   fs.closeSync(logFd);
 }
 
-function isSyncRunning(): boolean {
-  if (!fs.existsSync(config.syncPidFile)) return false;
-  const pid = parseInt(fs.readFileSync(config.syncPidFile, "utf-8").trim(), 10);
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    try {
-      fs.unlinkSync(config.syncPidFile);
-    } catch {}
-    return false;
-  }
-}
-
-function startSyncDaemon(): void {
-  // Only start if sync is configured
-  if (!fs.existsSync(config.syncConfigFile)) return;
-
-  const daemonScript = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "sync",
-    "daemon.js",
-  );
-
-  const logFd = openLogFd("sync");
-
-  const child = spawn("node", [daemonScript], {
-    detached: true,
-    stdio: ["ignore", logFd, logFd],
-    env: process.env,
-  });
-
-  child.unref();
-  fs.closeSync(logFd);
-}
-
 function tryAutoPrune(): void {
   try {
     autoPrune(config.autoMaxAgeDays, config.autoMaxSizeMb);
@@ -136,7 +99,6 @@ async function main() {
     // On SessionStart, ensure background processes are running
     if (eventType === "SessionStart") {
       if (!isReceiverRunning()) startReceiver();
-      if (!isSyncRunning()) startSyncDaemon();
       tryAutoPrune();
     }
 
