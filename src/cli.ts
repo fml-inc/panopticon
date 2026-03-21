@@ -149,7 +149,7 @@ async function installClaudeCode(pluginRoot: string) {
 
   // 1. Build
   if (!hasFlag("--skip-build")) {
-    console.log("[1/6] Building...");
+    console.log("[1/7] Building...");
     try {
       execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
       console.log("      Built successfully.\n");
@@ -161,7 +161,7 @@ async function installClaudeCode(pluginRoot: string) {
       process.exit(1);
     }
 
-    // Re-exec with the freshly built code so steps 2-6 use the new version
+    // Re-exec with the freshly built code so steps 2-7 use the new version
     const args = process.argv.slice(1).concat("--skip-build");
     if (force) args.push("--force");
     const result = spawnSync(process.argv[0], args, {
@@ -173,14 +173,14 @@ async function installClaudeCode(pluginRoot: string) {
   }
 
   // 2. Initialize database
-  console.log("[2/6] Initializing database...");
+  console.log("[2/7] Initializing database...");
   ensureDataDir();
   getDb();
   closeDb();
   console.log(`      ${config.dbPath}\n`);
 
   // 3. Set up local marketplace
-  console.log("[3/6] Setting up local marketplace...");
+  console.log("[3/7] Setting up local marketplace...");
   fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
     recursive: true,
   });
@@ -214,6 +214,7 @@ async function installClaudeCode(pluginRoot: string) {
     "hooks",
     "bin",
     "dist",
+    "skills",
     "node_modules",
     "package.json",
     "package-lock.json",
@@ -232,7 +233,7 @@ async function installClaudeCode(pluginRoot: string) {
   console.log(`      Cache: ${cacheDir}\n`);
 
   // 4. Register in Claude Code settings
-  console.log("[4/6] Registering plugin in Claude Code settings...");
+  console.log("[4/7] Registering plugin in Claude Code settings...");
   const settings = readJsonFile(config.claudeSettingsPath) ?? {};
 
   settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
@@ -247,7 +248,7 @@ async function installClaudeCode(pluginRoot: string) {
   console.log(`      ${config.claudeSettingsPath}\n`);
 
   // 5. Symlink CLI into PATH
-  console.log("[5/6] Adding CLI to PATH...");
+  console.log("[5/7] Adding CLI to PATH...");
   const localBin = path.join(os.homedir(), ".local", "bin");
   fs.mkdirSync(localBin, { recursive: true });
   const symlinks: Record<string, string> = {
@@ -267,8 +268,28 @@ async function installClaudeCode(pluginRoot: string) {
   }
   console.log(`      Linked panopticon -> ${localBin}/panopticon\n`);
 
-  // 6. Configure shell environment
-  console.log("[6/6] Configuring shell environment...");
+  // 6. Install skills
+  console.log("[6/7] Installing skills...");
+  const skillsSource = path.join(pluginRoot, "skills");
+  const skillsTarget = path.join(os.homedir(), ".claude", "skills");
+  if (fs.existsSync(skillsSource)) {
+    for (const skillName of fs.readdirSync(skillsSource)) {
+      const src = path.join(skillsSource, skillName);
+      if (!fs.statSync(src).isDirectory()) continue;
+      const dest = path.join(skillsTarget, skillName);
+      fs.mkdirSync(dest, { recursive: true });
+      for (const file of fs.readdirSync(src)) {
+        fs.cpSync(path.join(src, file), path.join(dest, file), {
+          recursive: true,
+        });
+      }
+      console.log(`      ${skillName} -> ${dest}`);
+    }
+  }
+  console.log();
+
+  // 7. Configure shell environment
+  console.log("[7/7] Configuring shell environment...");
   configureShellEnv(force);
 
   console.log("Done! Start a new Claude Code session to activate.\n");

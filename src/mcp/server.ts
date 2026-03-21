@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { config } from "../config.js";
 import {
   activitySummary,
   costBreakdown,
@@ -307,6 +309,217 @@ server.tool(
         {
           type: "text" as const,
           text: JSON.stringify(stats, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Optimize: permission management tools
+// ---------------------------------------------------------------------------
+
+const PERMISSIONS_DIR = path.join(config.dataDir, "permissions");
+const APPROVALS_PATH = path.join(PERMISSIONS_DIR, "approvals.json");
+const BACKUPS_DIR = path.join(PERMISSIONS_DIR, "backups");
+
+const DEFAULT_APPROVALS = {
+  approved_categories: ["safe"],
+  denied_categories: [] as string[],
+  custom_overrides: {} as Record<string, string>,
+  last_run: null as string | null,
+};
+
+function readJson(filePath: string): any {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+server.tool(
+  "panopticon_optimize_state",
+  "Load the current panopticon-optimize approvals state and the project's existing settings.local.json permissions. Returns both so the skill can determine what needs prompting vs auto-applying.",
+  {
+    project_path: z
+      .string()
+      .describe("Absolute path to the project root (where .claude/ lives)"),
+  },
+  async ({ project_path }) => {
+    const approvals = readJson(APPROVALS_PATH) ?? DEFAULT_APPROVALS;
+    const settingsPath = path.join(
+      project_path,
+      ".claude",
+      "settings.local.json",
+    );
+    const settings = readJson(settingsPath) ?? { permissions: { allow: [] } };
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              approvals,
+              approvals_path: APPROVALS_PATH,
+              current_permissions: settings.permissions?.allow ?? [],
+              settings_path: settingsPath,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+const categorySchema = z.object({
+  status: z.enum(["approved", "denied", "skipped"]),
+  patterns: z.array(z.string()),
+  observed_commands: z.array(z.string()),
+  call_count: z.number(),
+});
+
+server.tool(
+  "panopticon_optimize_apply",
+  `Apply the results of a panopticon-optimize run: write permissions to the project's settings.local.json (using managed section markers), save approvals state, and create a timestamped backup. Call this after the user has approved/denied categories.`,
+  {
+    project_path: z
+      .string()
+      .describe("Absolute path to the project root (where .claude/ lives)"),
+    repository: z
+      .string()
+      .optional()
+      .describe("Repository slug for backup metadata (e.g. org/repo)"),
+    approved_categories: z
+      .array(z.string())
+      .describe("Category names the user approved"),
+    denied_categories: z
+      .array(z.string())
+      .describe("Category names the user denied"),
+    custom_overrides: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe("Per-pattern overrides: pattern -> 'allow' | 'deny'"),
+    permissions: z
+      .array(z.string())
+      .describe("The final list of permission patterns to write"),
+    categories: z
+      .record(z.string(), categorySchema)
+      .describe("Full category breakdown for the backup"),
+  },
+  async ({
+    project_path,
+    repository,
+    approved_categories,
+    denied_categories,
+    custom_overrides,
+    permissions,
+    categories,
+  }) => {
+    const now = new Date().toISOString();
+    const results: string[] = [];
+
+    // Split permissions: Bash patterns → hook enforcement, non-Bash → settings.local.json
+    const bashPattern = /^Bash\((.+?)[\s:]\*\)$/;
+    const bashCommands: string[] = [];
+    const settingsPermissions: string[] = [];
+
+    for (const p of permissions) {
+      const match = p.match(bashPattern);
+      if (match) {
+        bashCommands.push(match[1]);
+      } else {
+        settingsPermissions.push(p);
+      }
+    }
+
+    // 1. Write settings.local.json with non-Bash patterns only
+    const settingsPath = path.join(
+      project_path,
+      ".claude",
+      "settings.local.json",
+    );
+    fs.mkdirSync(path.join(project_path, ".claude"), { recursive: true });
+    const settings = readJson(settingsPath) ?? {};
+    settings.permissions = settings.permissions ?? {};
+
+    const existing: string[] = settings.permissions.allow ?? [];
+    const START_MARKER = "// managed-by:panopticon-optimize";
+    const END_MARKER = "// end:panopticon-optimize";
+
+    // Find managed section boundaries
+    const startIdx = existing.indexOf(START_MARKER);
+    const endIdx = existing.indexOf(END_MARKER);
+
+    const managed = [START_MARKER, ...settingsPermissions, END_MARKER];
+
+    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+      // Replace managed section, keep everything outside it
+      const before = existing.slice(0, startIdx);
+      const after = existing.slice(endIdx + 1);
+      settings.permissions.allow = [...before, ...managed, ...after];
+    } else {
+      // No existing markers — filter out any stale markers and prepend managed section
+      const cleaned = existing.filter(
+        (e: string) => e !== START_MARKER && e !== END_MARKER,
+      );
+      settings.permissions.allow = [...managed, ...cleaned];
+    }
+
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+    results.push(
+      `Settings written to ${settingsPath} (${settingsPermissions.length} non-Bash patterns)`,
+    );
+
+    // 2. Write allowed_commands.json for hook-based chain-aware enforcement
+    const allowedCommandsPath = path.join(
+      PERMISSIONS_DIR,
+      "allowed_commands.json",
+    );
+    fs.mkdirSync(PERMISSIONS_DIR, { recursive: true });
+    fs.writeFileSync(
+      allowedCommandsPath,
+      `${JSON.stringify({ bash_commands: bashCommands, updated: now }, null, 2)}\n`,
+    );
+    results.push(
+      `Hook enforcement written to ${allowedCommandsPath} (${bashCommands.length} Bash commands)`,
+    );
+
+    // 3. Save approvals state
+    const approvals = {
+      approved_categories: [...new Set(["safe", ...approved_categories])],
+      denied_categories: [...new Set(denied_categories)],
+      custom_overrides: custom_overrides ?? {},
+      last_run: now,
+    };
+    fs.writeFileSync(APPROVALS_PATH, `${JSON.stringify(approvals, null, 2)}\n`);
+    results.push(`Approvals saved to ${APPROVALS_PATH}`);
+
+    // 4. Create backup
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    const dateStr = now.slice(0, 10);
+    const timeStr = now.slice(11, 19).replace(/:/g, "");
+    const backupPath = path.join(BACKUPS_DIR, `${dateStr}_${timeStr}.json`);
+    const backup = {
+      timestamp: now,
+      repository,
+      project_path,
+      skill_version: "3",
+      categories,
+      generated_permissions: permissions,
+      approvals_state: approvals,
+    };
+    fs.writeFileSync(backupPath, `${JSON.stringify(backup, null, 2)}\n`);
+    results.push(`Backup saved to ${backupPath}`);
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ success: true, details: results }, null, 2),
         },
       ],
     };
