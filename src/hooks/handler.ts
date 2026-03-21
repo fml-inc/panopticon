@@ -20,7 +20,30 @@ interface HookInput {
   cwd?: string;
   repository?: string;
   tool_name?: string;
+  tool_input?: Record<string, unknown>;
   [key: string]: unknown;
+}
+
+// --- Chain-aware Bash permission enforcement ---
+
+import { checkBashPermission } from "./permissions.js";
+
+const ALLOWED_COMMANDS_PATH = path.join(
+  config.dataDir,
+  "permissions",
+  "allowed_commands.json",
+);
+
+interface AllowedCommands {
+  bash_commands: string[];
+}
+
+function loadAllowedCommands(): AllowedCommands | null {
+  try {
+    return JSON.parse(fs.readFileSync(ALLOWED_COMMANDS_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 function isReceiverRunning(): boolean {
@@ -141,6 +164,28 @@ async function main() {
     }
     if (data.cwd) {
       upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+    }
+
+    // Chain-aware permission enforcement for Bash commands
+    if (eventType === "PreToolUse" && toolName === "Bash") {
+      const command = data.tool_input?.command;
+      if (typeof command === "string") {
+        const allowed = loadAllowedCommands();
+        const result = allowed?.bash_commands?.length
+          ? checkBashPermission(command, allowed.bash_commands)
+          : null;
+        if (result) {
+          process.stdout.write(
+            JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                permissionDecisionReason: result.reason,
+              },
+            }),
+          );
+        }
+      }
     }
   } catch (err) {
     // Silently fail — hooks must not block Claude Code
