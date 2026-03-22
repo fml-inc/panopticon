@@ -9,17 +9,17 @@ Analyze all tool usage captured by panopticon for the current repository, catego
 
 ## Architecture
 
-Bash permissions use **hook-based chain-aware enforcement** rather than `settings.local.json` wildcards. Claude Code's `Bash(ls *)` wildcards match across chain operators (`&&`, `;`, `|`), so `Bash(ls *)` would auto-approve `ls /tmp && rm -rf /`. Instead:
+All permissions are enforced via panopticon's `PreToolUse` hook — panopticon does **not** write to `settings.local.json`.
 
-- **Bash commands** → `allowed_commands.json` read by panopticon's `PreToolUse` hook, which splits chains and checks each component independently
-- **Non-Bash tools** (MCP, etc.) → `settings.local.json` as normal (no chain problem)
+- **Bash commands** → chain-aware enforcement: the hook splits chains (`&&`, `;`, `|`) and checks each component independently against approved base commands
+- **Non-Bash tools** → exact name match against the allowed tools list
 
-The hook returns `"permissionDecision": "allow"` only when ALL chain components match approved base commands. Unmatched commands fall through to Claude Code's normal prompting.
+Both are stored in `~/.local/share/panopticon/permissions/allowed.json`. The hook returns `"permissionDecision": "allow"` only when the tool or all chain components match. Unmatched tools fall through to Claude Code's normal prompting.
 
 ## MCP Tools
 
-- **`panopticon_optimize_state`** — Load existing approvals + current project permissions. Call this first.
-- **`panopticon_optimize_apply`** — Write permissions (splitting Bash → hook, non-Bash → settings), save approvals, and create backup. Call this at the end.
+- **`panopticon_permissions_show`** — Load existing approvals + current allowed tools/commands. Call this first (no arguments needed).
+- **`panopticon_permissions_apply`** — Write allowed.json (Bash commands + tool names), save approvals, and create backup. Call this at the end.
 
 All analysis and querying uses the standard `panopticon_query` tool.
 
@@ -27,9 +27,9 @@ All analysis and querying uses the standard `panopticon_query` tool.
 
 ## Step 1 — Load State
 
-Call `panopticon_optimize_state` with the current project path. It returns:
+Call `panopticon_permissions_show` (no arguments). It returns:
 - `approvals` — previously approved/denied categories and custom overrides
-- `current_permissions` — existing `permissions.allow` entries in the project
+- `allowed` — current `{ bash_commands, tools }` list
 - File paths for reference
 
 `"safe"` is always pre-approved and cannot be removed.
@@ -40,7 +40,7 @@ Run `git remote get-url origin` and extract `org/repo` (strip `.git` suffix and 
 
 ## Step 3 — Query Panopticon
 
-The allowed_commands.json and settings permissions are global (not per-repo), so queries must aggregate across **all** repositories.
+The allowed list is global (not per-repo), so queries must aggregate across **all** repositories.
 
 Run via `panopticon_query`:
 
@@ -152,11 +152,11 @@ For each approved category, generate permission patterns based on observed usage
 
 ### Non-Bash tools
 
-Use the tool name directly (e.g., `mcp__plugin_panopticon_panopticon__panopticon_query`).
+Use the tool name directly (e.g., `WebSearch`, `mcp__plugin_panopticon_panopticon__panopticon_query`).
 
 ### Bash commands
 
-For each unique base command observed in panopticon data that falls within an approved category, generate `Bash({base_command} *)`. The `panopticon_optimize_apply` tool will automatically route these to the hook enforcement file (`allowed_commands.json`) instead of `settings.local.json`.
+For each unique base command observed in panopticon data that falls within an approved category, generate `Bash({base_command} *)`. The `panopticon_permissions_apply` tool splits these into the `bash_commands` list in `allowed.json`.
 
 ### Only generate for observed commands
 
@@ -189,8 +189,7 @@ For `denied_categories`, show as denied with option to re-evaluate.
 
 ## Step 7 — Apply
 
-Call `panopticon_optimize_apply` with:
-- `project_path` — current project root
+Call `panopticon_permissions_apply` with:
 - `repository` (optional) — org/repo slug, included in backup metadata
 - `approved_categories` — all approved (including previously approved from state)
 - `denied_categories` — all denied (including previously denied from state)
@@ -199,10 +198,9 @@ Call `panopticon_optimize_apply` with:
 - `categories` — full category breakdown (for backup)
 
 The tool handles atomically:
-1. Writing `settings.local.json` with non-Bash patterns (managed section markers)
-2. Writing `allowed_commands.json` with Bash base commands (for hook enforcement)
-3. Saving approvals state
-4. Creating timestamped backup
+1. Writing `allowed.json` with Bash base commands + tool names (for hook enforcement)
+2. Saving approvals state
+3. Creating timestamped backup
 
 ## Step 8 — Summary
 
@@ -213,11 +211,9 @@ Panopticon Optimize — Complete
 Repository:    org/repo
 Analyzed:      N tool calls across M sessions
 
-settings.local.json:
-  X non-Bash patterns (MCP tools, etc.)
-
-allowed_commands.json (hook enforcement):
-  Y Bash base commands with chain-aware matching
+allowed.json (hook enforcement):
+  X Bash base commands with chain-aware matching
+  Y non-Bash tools with exact name matching
 
 Backup saved to ~/.local/share/panopticon/permissions/backups/...
 
