@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS session_cwds (
 );
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
 
+CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
+
 `;
 
 let _db: Database.Database | null = null;
@@ -85,6 +87,67 @@ function registerCompressionFunctions(db: Database.Database): void {
   db.function("decompress", (blob: Buffer | null) =>
     blob ? gunzipSync(blob).toString() : null,
   );
+}
+
+interface Migration {
+  version: number;
+  up: (db: Database.Database) => void;
+}
+
+const migrations: Migration[] = [
+  {
+    version: 1,
+    up: (db) => {
+      // Extract frequently-queried fields from compressed payloads into columns
+      db.exec("ALTER TABLE hook_events ADD COLUMN user_prompt TEXT");
+      db.exec("ALTER TABLE hook_events ADD COLUMN file_path TEXT");
+      db.exec("ALTER TABLE hook_events ADD COLUMN command TEXT");
+      db.exec("ALTER TABLE hook_events ADD COLUMN plan TEXT");
+      db.exec("ALTER TABLE hook_events ADD COLUMN allowed_prompts TEXT");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_hooks_file_path ON hook_events(file_path)",
+      );
+
+      // Backfill existing rows from compressed payloads
+      db.exec(`
+        UPDATE hook_events
+        SET user_prompt = json_extract(decompress(payload), '$.prompt')
+        WHERE event_type = 'UserPromptSubmit' AND user_prompt IS NULL
+      `);
+      db.exec(`
+        UPDATE hook_events
+        SET file_path = json_extract(decompress(payload), '$.tool_input.file_path')
+        WHERE tool_name IN ('Write', 'Edit', 'Read') AND file_path IS NULL
+      `);
+      db.exec(`
+        UPDATE hook_events
+        SET command = json_extract(decompress(payload), '$.tool_input.command')
+        WHERE tool_name = 'Bash' AND command IS NULL
+      `);
+      db.exec(`
+        UPDATE hook_events
+        SET plan = json_extract(decompress(payload), '$.tool_input.plan'),
+            allowed_prompts = json_extract(decompress(payload), '$.tool_input.allowedPrompts')
+        WHERE tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse' AND plan IS NULL
+      `);
+    },
+  },
+];
+
+function runMigrations(db: Database.Database): void {
+  const row = db
+    .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
+    .get() as { value: string } | undefined;
+  const currentVersion = row ? parseInt(row.value, 10) : 0;
+
+  for (const m of migrations) {
+    if (m.version > currentVersion) {
+      m.up(db);
+      db.prepare(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
+      ).run(String(m.version));
+    }
+  }
 }
 
 export function getDb(): Database.Database {
@@ -98,6 +161,7 @@ export function getDb(): Database.Database {
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
+  runMigrations(_db);
 
   return _db;
 }

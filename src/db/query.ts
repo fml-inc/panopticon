@@ -72,10 +72,9 @@ export function sessionTimeline(opts: {
   const offset = opts.offset ?? 0;
   const truncate = !opts.full_payloads;
 
-  const strippedPayload = `json_remove(decompress(payload), '$.session_id', '$.hook_event_name', '$.tool_name', '$.cwd', '$.repository', '$.transcript_path', '$.permission_mode', '$.tool_use_id')`;
   const payloadCol = truncate
-    ? `SUBSTR(${strippedPayload}, 1, 500)`
-    : strippedPayload;
+    ? "SUBSTR(decompress(payload), 1, 500)"
+    : "decompress(payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Hook events
@@ -221,10 +220,9 @@ export function searchEvents(opts: {
   const pattern = `%${opts.query}%`;
   const truncate = !opts.full_payloads;
 
-  const strippedPayload = `json_remove(decompress(h.payload), '$.session_id', '$.hook_event_name', '$.tool_name', '$.cwd', '$.repository', '$.transcript_path', '$.permission_mode', '$.tool_use_id')`;
   const hookPayloadCol = truncate
-    ? `SUBSTR(${strippedPayload}, 1, 500)`
-    : strippedPayload;
+    ? "SUBSTR(decompress(h.payload), 1, 500)"
+    : "decompress(h.payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   // Search hook events via FTS5 + fallback on tool_name/event_type LIKE
@@ -294,10 +292,10 @@ export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
   const db = getDb();
 
   if (opts.source === "hook") {
-    const strippedPayload = `json_remove(decompress(payload), '$.session_id', '$.hook_event_name', '$.tool_name', '$.cwd', '$.repository', '$.transcript_path', '$.permission_mode', '$.tool_use_id')`;
     const sql = `
       SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-             tool_name, cwd, ${strippedPayload} as payload
+             tool_name, cwd, user_prompt, file_path, command, plan,
+             decompress(payload) as payload
       FROM hook_events
       WHERE id = ?
     `;
@@ -364,7 +362,7 @@ export function activitySummary(opts: { since?: string } = {}) {
     // User prompts (first 100 chars of each)
     const prompts = db
       .prepare(`
-      SELECT SUBSTR(json_extract(decompress(payload), '$.user_prompt'), 1, 100) as prompt
+      SELECT SUBSTR(user_prompt, 1, 100) as prompt
       FROM hook_events
       WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ?
       ORDER BY timestamp_ms ASC
@@ -385,18 +383,20 @@ export function activitySummary(opts: { since?: string } = {}) {
     // Files modified (from Write/Edit tools)
     const files = db
       .prepare(`
-      SELECT DISTINCT json_extract(decompress(payload), '$.tool_input.file_path') as file_path
+      SELECT DISTINCT file_path
       FROM hook_events
-      WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse' AND timestamp_ms >= ?
+      WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse'
+        AND file_path IS NOT NULL AND timestamp_ms >= ?
     `)
       .all(s.session_id, sinceMs) as { file_path: string | null }[];
 
     // Plans created in this session
     const plans = db
       .prepare(`
-      SELECT json_extract(decompress(payload), '$.tool_input.plan') as plan
+      SELECT plan
       FROM hook_events
-      WHERE session_id = ? AND tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse' AND timestamp_ms >= ?
+      WHERE session_id = ? AND tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse'
+        AND plan IS NOT NULL AND timestamp_ms >= ?
       ORDER BY timestamp_ms ASC
     `)
       .all(s.session_id, sinceMs) as { plan: string | null }[];
@@ -488,9 +488,7 @@ export function listPlans(
   }
 
   const sql = `
-    SELECT id, session_id, timestamp_ms,
-           json_extract(decompress(payload), '$.tool_input.plan') as plan,
-           json_extract(decompress(payload), '$.tool_input.allowedPrompts') as allowed_prompts
+    SELECT id, session_id, timestamp_ms, plan, allowed_prompts
     FROM hook_events
     WHERE ${conditions.join(" AND ")}
     ORDER BY timestamp_ms DESC
