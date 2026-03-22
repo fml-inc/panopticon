@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS session_cwds (
 );
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
 
+CREATE TABLE IF NOT EXISTS model_pricing (
+  model_id TEXT PRIMARY KEY,
+  input_per_m REAL NOT NULL,
+  output_per_m REAL NOT NULL,
+  cache_read_per_m REAL NOT NULL DEFAULT 0,
+  cache_write_per_m REAL NOT NULL DEFAULT 0,
+  updated_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
 
 `;

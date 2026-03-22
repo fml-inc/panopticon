@@ -1,4 +1,4 @@
-import { buildCostSQL } from "./pricing.js";
+import { COST_EXPR } from "./pricing.js";
 import { getDb } from "./schema.js";
 
 // Unified token type extraction: works for Claude, Gemini CLI, and gen_ai metric names
@@ -37,11 +37,6 @@ function resolvedMetricsCTE(extraWhere = ""): string {
     )`;
 }
 
-/** Cost SQL expression — uses OpenRouter pricing cache, falls back to hardcoded defaults. */
-function costExpr(): string {
-  return buildCostSQL();
-}
-
 function parseSince(since?: string): number | null {
   if (!since) return null;
   const match = since.match(/^(\d+)(h|d|m)$/);
@@ -75,7 +70,7 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
     otel_costs AS (
       SELECT session_id,
              SUM(tokens) as total_tokens,
-             SUM(${costExpr()}) as total_cost
+             SUM(${COST_EXPR}) as total_cost
       FROM resolved_tokens
       GROUP BY session_id
     )
@@ -233,7 +228,7 @@ export function costBreakdown(
            SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
            SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
            SUM(tokens) as total_tokens,
-           SUM(${costExpr()}) as total_cost
+           SUM(${COST_EXPR}) as total_cost
     FROM resolved_tokens
     GROUP BY ${groupExpr}
     ORDER BY total_tokens DESC
@@ -459,7 +454,7 @@ export function activitySummary(opts: { since?: string } = {}) {
       .prepare(`
       WITH ${resolvedMetricsCTE(`AND session_id = ?`)}
       SELECT SUM(tokens) as tokens,
-             SUM(${costExpr()}) as cost
+             SUM(${COST_EXPR}) as cost
       FROM resolved_tokens
     `)
       .get(s.session_id) as { tokens: number; cost: number } | undefined;
