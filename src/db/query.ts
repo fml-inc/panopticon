@@ -1,3 +1,15 @@
+import type {
+  ActivitySessionDetail,
+  ActivitySummaryResult,
+  SearchMatch,
+  SearchResult,
+  Session,
+  SessionListResult,
+  SessionTimelineResult,
+  SpendingGroup,
+  SpendingResult,
+  TimelineEvent,
+} from "../types.js";
 import { COST_EXPR } from "./pricing.js";
 import { getDb } from "./schema.js";
 
@@ -7,8 +19,6 @@ const MODEL_EXPR = `COALESCE(json_extract(attributes, '$.model'), json_extract(a
 
 /**
  * Resolved metrics CTE that correctly deduplicates Gemini (cumulative MAX) vs Claude (per-request SUM).
- * Gemini CLI sends cumulative counters — use MAX per (session, model, token_type).
- * Claude Code sends per-request values — use SUM per (session, model, token_type).
  */
 function resolvedMetricsCTE(extraWhere = ""): string {
   return `
@@ -49,12 +59,44 @@ function parseSince(since?: string): number | null {
   return Number.isNaN(date.getTime()) ? null : date.getTime();
 }
 
-export function listSessions(opts: { limit?: number; since?: string } = {}) {
+function toIso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+function parseJson(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+interface RawSessionRow {
+  session_id: string;
+  start_ms: number;
+  end_ms: number;
+  event_count: number;
+  tool_count: number;
+  total_tokens: number;
+  total_cost: number;
+  repositories: string | null;
+  cwd: string | null;
+  first_prompt: string | null;
+  event_type_counts: string | null;
+}
+
+export function listSessions(
+  opts: { limit?: number; since?: string } = {},
+): SessionListResult {
   const db = getDb();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
 
-  // Combine sessions from both hook_events and otel_logs
+  const sinceClause = sinceMs ? "WHERE timestamp_ms >= ?" : "";
+
   const sql = `
     WITH all_sessions AS (
       SELECT session_id,
@@ -63,7 +105,7 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
              COUNT(*) as event_count,
              COUNT(DISTINCT tool_name) as tool_count
       FROM hook_events
-      ${sinceMs ? "WHERE timestamp_ms >= ?" : ""}
+      ${sinceClause}
       GROUP BY session_id
     ),
     ${resolvedMetricsCTE()},
@@ -73,6 +115,31 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
              SUM(${COST_EXPR}) as total_cost
       FROM resolved_tokens
       GROUP BY session_id
+    ),
+    session_cwds AS (
+      SELECT h.session_id, h.cwd
+      FROM hook_events h
+      INNER JOIN all_sessions a ON h.session_id = a.session_id
+      WHERE h.event_type = 'SessionStart' AND h.cwd IS NOT NULL
+      GROUP BY h.session_id
+    ),
+    session_prompts AS (
+      SELECT h.session_id, MIN(h.timestamp_ms) as ts, SUBSTR(h.user_prompt, 1, 200) as prompt
+      FROM hook_events h
+      INNER JOIN all_sessions a ON h.session_id = a.session_id
+      WHERE h.event_type = 'UserPromptSubmit' AND h.user_prompt IS NOT NULL
+      GROUP BY h.session_id
+    ),
+    session_event_types AS (
+      SELECT session_id,
+             json_group_object(event_type, cnt) as event_type_counts
+      FROM (
+        SELECT h.session_id, h.event_type, COUNT(*) as cnt
+        FROM hook_events h
+        INNER JOIN all_sessions a ON h.session_id = a.session_id
+        GROUP BY h.session_id, h.event_type
+      )
+      GROUP BY session_id
     )
     SELECT s.session_id,
            s.start_ms,
@@ -81,10 +148,16 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
            s.tool_count,
            COALESCE(c.total_tokens, 0) as total_tokens,
            COALESCE(c.total_cost, 0) as total_cost,
-           GROUP_CONCAT(DISTINCT sr.repository) as repositories
+           GROUP_CONCAT(DISTINCT sr.repository) as repositories,
+           sc.cwd,
+           sp.prompt as first_prompt,
+           se.event_type_counts
     FROM all_sessions s
     LEFT JOIN otel_costs c ON s.session_id = c.session_id
     LEFT JOIN session_repositories sr ON s.session_id = sr.session_id
+    LEFT JOIN session_cwds sc ON s.session_id = sc.session_id
+    LEFT JOIN session_prompts sp ON s.session_id = sp.session_id
+    LEFT JOIN session_event_types se ON s.session_id = se.session_id
     GROUP BY s.session_id
     ORDER BY s.start_ms DESC
     LIMIT ?
@@ -94,41 +167,77 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
   if (sinceMs) params.push(sinceMs);
   params.push(limit);
 
-  return db.prepare(sql).all(...params);
+  const rows = db.prepare(sql).all(...params) as RawSessionRow[];
+
+  const sessions: Session[] = rows.map((row) => ({
+    sessionId: row.session_id,
+    startedAt: toIso(row.start_ms),
+    endedAt: toIso(row.end_ms),
+    eventCount: row.event_count,
+    toolCount: row.tool_count,
+    totalTokens: row.total_tokens,
+    totalCost: row.total_cost,
+    repositories: row.repositories ? row.repositories.split(",") : [],
+    cwd: row.cwd ?? null,
+    firstPrompt: row.first_prompt ?? null,
+    githubUsername: null,
+    eventTypeCounts:
+      (parseJson(row.event_type_counts) as Record<string, number>) ?? {},
+  }));
+
+  return {
+    sessions,
+    totalCount: sessions.length,
+    source: "local",
+  };
+}
+
+// ── Timeline ──────────────────────────────────────────────────────────────────
+
+interface RawTimelineRow {
+  source: string;
+  id: number;
+  session_id: string;
+  event_type: string;
+  timestamp_ms: number;
+  tool_name: string | null;
+  cwd: string | null;
+  payload: string | null;
+  body: string | null;
+  attributes: string | null;
+  severity_text: string | null;
 }
 
 export function sessionTimeline(opts: {
-  session_id: string;
-  event_types?: string[];
+  sessionId: string;
+  eventTypes?: string[];
   limit?: number;
   offset?: number;
-  full_payloads?: boolean;
-}) {
+  fullPayloads?: boolean;
+}): SessionTimelineResult {
   const db = getDb();
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
-  const truncate = !opts.full_payloads;
+  const truncate = !opts.fullPayloads;
 
   const payloadCol = truncate
     ? "SUBSTR(decompress(payload), 1, 500)"
     : "decompress(payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
-  // Hook events
   let hookSql = `
     SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
            tool_name, cwd, ${payloadCol} as payload, NULL as body, NULL as attributes, NULL as severity_text
     FROM hook_events
     WHERE session_id = ?
   `;
-  const hookParams: unknown[] = [opts.session_id];
+  const hookParams: unknown[] = [opts.sessionId];
 
-  if (opts.event_types?.length) {
-    hookSql += ` AND event_type IN (${opts.event_types.map(() => "?").join(",")})`;
-    hookParams.push(...opts.event_types);
+  if (opts.eventTypes?.length) {
+    hookSql += ` AND event_type IN (${opts.eventTypes.map(() => "?").join(",")})`;
+    hookParams.push(...opts.eventTypes);
   }
 
-  // OTel log events
   let otelSql = `
     SELECT 'otel' as source, id, session_id, body as event_type,
            CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
@@ -136,17 +245,14 @@ export function sessionTimeline(opts: {
     FROM otel_logs
     WHERE session_id = ?
   `;
-  const otelParams: unknown[] = [opts.session_id];
+  const otelParams: unknown[] = [opts.sessionId];
 
-  if (opts.event_types?.length) {
-    otelSql += ` AND body IN (${opts.event_types.map(() => "?").join(",")})`;
-    otelParams.push(...opts.event_types);
+  if (opts.eventTypes?.length) {
+    otelSql += ` AND body IN (${opts.eventTypes.map(() => "?").join(",")})`;
+    otelParams.push(...opts.eventTypes);
   }
 
-  // Count query (same WHERE, no LIMIT)
-  const countSql = `
-    SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})
-  `;
+  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})`;
   const total = (
     db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }
   ).total;
@@ -156,10 +262,64 @@ export function sessionTimeline(opts: {
     ORDER BY timestamp_ms ASC
     LIMIT ? OFFSET ?
   `;
+  const rows = db
+    .prepare(sql)
+    .all(...hookParams, ...otelParams, limit, offset) as RawTimelineRow[];
 
-  const rows = db.prepare(sql).all(...hookParams, ...otelParams, limit, offset);
-  return { total, rows };
+  // Session metadata
+  const cwdRow = db
+    .prepare(
+      "SELECT cwd FROM hook_events WHERE session_id = ? AND event_type = 'SessionStart' LIMIT 1",
+    )
+    .get(opts.sessionId) as { cwd: string | null } | undefined;
+
+  const repoRows = db
+    .prepare("SELECT repository FROM session_repositories WHERE session_id = ?")
+    .all(opts.sessionId) as { repository: string }[];
+
+  const events: TimelineEvent[] = rows.map((row) => {
+    let promptPreview: string | null = null;
+    let payload: unknown = null;
+
+    if (row.source === "hook") {
+      const parsed = parseJson(row.payload);
+      payload = parsed;
+      if (
+        row.event_type === "UserPromptSubmit" &&
+        parsed &&
+        typeof parsed === "object"
+      ) {
+        const p = (parsed as Record<string, unknown>).prompt;
+        if (typeof p === "string") promptPreview = p.slice(0, 300);
+      }
+    } else {
+      payload = parseJson(row.attributes);
+    }
+
+    return {
+      eventType: row.event_type,
+      timestamp: toIso(row.timestamp_ms),
+      toolName: row.tool_name,
+      promptPreview,
+      payload,
+    };
+  });
+
+  return {
+    session: {
+      sessionId: opts.sessionId,
+      githubUsername: null,
+      repositories: repoRows.map((r) => r.repository),
+      cwd: cwdRow?.cwd ?? null,
+    },
+    events,
+    totalEvents: total,
+    hasMore: offset + rows.length < total,
+    source: "local",
+  };
 }
+
+// ── Tool Stats (not in unified types — panopticon-specific) ───────────────────
 
 export function toolStats(opts: { since?: string; session_id?: string } = {}) {
   const db = getDb();
@@ -193,85 +353,137 @@ export function toolStats(opts: { since?: string; session_id?: string } = {}) {
   return db.prepare(sql).all(...params);
 }
 
+// ── Spending ──────────────────────────────────────────────────────────────────
+
+interface RawCostRow {
+  group_key: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  total_cost: number;
+  session_count: number;
+}
+
 export function costBreakdown(
-  opts: { since?: string; group_by?: "session" | "model" | "day" } = {},
-) {
+  opts: { since?: string; groupBy?: "session" | "model" | "day" } = {},
+): SpendingResult {
   const db = getDb();
   const sinceMs = parseSince(opts.since);
-  const groupBy = opts.group_by ?? "session";
+  const groupBy = opts.groupBy ?? "session";
 
   const extraWhere = sinceMs
     ? `AND CAST(timestamp_ns / 1000000 AS INTEGER) >= ${Number(sinceMs)}`
     : "";
 
-  let groupExpr: string;
-  let selectExpr: string;
-  switch (groupBy) {
-    case "session":
-      groupExpr = "session_id";
-      selectExpr = "session_id as group_key";
-      break;
-    case "model":
-      groupExpr = "model";
-      selectExpr = "model as group_key";
-      break;
-    case "day":
-      // Fall back to raw metrics for day grouping (needs timestamp)
-      groupExpr = "session_id";
-      selectExpr = "session_id as group_key";
-      break;
+  let sql: string;
+
+  if (groupBy === "day") {
+    // Day grouping needs session start times — join resolved_tokens with hook_events
+    sql = `
+      WITH ${resolvedMetricsCTE(extraWhere)},
+      session_starts AS (
+        SELECT session_id, date(MIN(timestamp_ms) / 1000, 'unixepoch') as day
+        FROM hook_events
+        GROUP BY session_id
+      )
+      SELECT ss.day as group_key,
+             SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
+             SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
+             SUM(tokens) as total_tokens,
+             SUM(${COST_EXPR}) as total_cost,
+             COUNT(DISTINCT resolved_tokens.session_id) as session_count
+      FROM resolved_tokens
+      INNER JOIN session_starts ss ON resolved_tokens.session_id = ss.session_id
+      GROUP BY ss.day
+      ORDER BY ss.day DESC
+    `;
+  } else {
+    const groupExpr = groupBy === "model" ? "model" : "session_id";
+    const selectExpr =
+      groupBy === "model" ? "model as group_key" : "session_id as group_key";
+
+    sql = `
+      WITH ${resolvedMetricsCTE(extraWhere)}
+      SELECT ${selectExpr},
+             SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
+             SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
+             SUM(tokens) as total_tokens,
+             SUM(${COST_EXPR}) as total_cost,
+             COUNT(DISTINCT session_id) as session_count
+      FROM resolved_tokens
+      GROUP BY ${groupExpr}
+      ORDER BY total_tokens DESC
+    `;
   }
 
-  const sql = `
-    WITH ${resolvedMetricsCTE(extraWhere)}
-    SELECT ${selectExpr},
-           SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
-           SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
-           SUM(tokens) as total_tokens,
-           SUM(${COST_EXPR}) as total_cost
-    FROM resolved_tokens
-    GROUP BY ${groupExpr}
-    ORDER BY total_tokens DESC
-  `;
+  const rows = db.prepare(sql).all() as RawCostRow[];
 
-  return db.prepare(sql).all();
+  const groups: SpendingGroup[] = rows.map((row) => ({
+    key: row.group_key,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    totalTokens: row.total_tokens,
+    totalCost: row.total_cost,
+    sessionCount: row.session_count,
+    githubUsername: null,
+  }));
+
+  const totals = {
+    inputTokens: groups.reduce((sum, g) => sum + g.inputTokens, 0),
+    outputTokens: groups.reduce((sum, g) => sum + g.outputTokens, 0),
+    totalTokens: groups.reduce((sum, g) => sum + g.totalTokens, 0),
+    totalCost: groups.reduce((sum, g) => sum + g.totalCost, 0),
+  };
+
+  return { groups, totals, groupBy, source: "local" };
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+interface RawSearchRow {
+  source: string;
+  id: number;
+  session_id: string;
+  event_type: string;
+  timestamp_ms: number;
+  tool_name: string | null;
+  cwd: string | null;
+  payload: string | null;
 }
 
 export function searchEvents(opts: {
   query: string;
-  event_types?: string[];
+  eventTypes?: string[];
   since?: string;
   limit?: number;
   offset?: number;
-  full_payloads?: boolean;
-}) {
+  fullPayloads?: boolean;
+}): SearchResult {
   const db = getDb();
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const sinceMs = parseSince(opts.since);
   const pattern = `%${opts.query}%`;
-  const truncate = !opts.full_payloads;
+  const truncate = !opts.fullPayloads;
 
   const hookPayloadCol = truncate
     ? "SUBSTR(decompress(h.payload), 1, 500)"
     : "decompress(h.payload)";
   const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
-  // Search hook events via FTS5 + fallback on tool_name/event_type LIKE
   const hookConditions: string[] = [];
   const hookParams: unknown[] = [];
 
-  // FTS5 match on payload, plus LIKE fallback for tool_name/event_type
   hookConditions.push(
     "(h.id IN (SELECT rowid FROM hook_events_fts WHERE hook_events_fts MATCH ?) OR h.tool_name LIKE ? OR h.event_type LIKE ?)",
   );
   hookParams.push(opts.query, pattern, pattern);
 
-  if (opts.event_types?.length) {
+  if (opts.eventTypes?.length) {
     hookConditions.push(
-      `h.event_type IN (${opts.event_types.map(() => "?").join(",")})`,
+      `h.event_type IN (${opts.eventTypes.map(() => "?").join(",")})`,
     );
-    hookParams.push(...opts.event_types);
+    hookParams.push(...opts.eventTypes);
   }
   if (sinceMs) {
     hookConditions.push("h.timestamp_ms >= ?");
@@ -285,7 +497,6 @@ export function searchEvents(opts: {
     WHERE ${hookConditions.join(" AND ")}
   `;
 
-  // Search otel logs
   const otelConditions: string[] = ["(body LIKE ? OR attributes LIKE ?)"];
   const otelParams: unknown[] = [pattern, pattern];
 
@@ -302,10 +513,7 @@ export function searchEvents(opts: {
     WHERE ${otelConditions.join(" AND ")}
   `;
 
-  // Count query
-  const countSql = `
-    SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})
-  `;
+  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})`;
   const total = (
     db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }
   ).total;
@@ -316,40 +524,50 @@ export function searchEvents(opts: {
     LIMIT ? OFFSET ?
   `;
 
-  const rows = db.prepare(sql).all(...hookParams, ...otelParams, limit, offset);
-  return { total, rows };
+  const rows = db
+    .prepare(sql)
+    .all(...hookParams, ...otelParams, limit, offset) as RawSearchRow[];
+
+  const results: SearchMatch[] = rows.map((row) => {
+    const snippet = row.payload ?? row.event_type ?? "";
+    const matchType =
+      row.event_type === "UserPromptSubmit"
+        ? "prompt"
+        : row.tool_name
+          ? "tool_use"
+          : "event";
+
+    return {
+      sessionId: row.session_id,
+      timestamp: toIso(row.timestamp_ms),
+      githubUsername: null,
+      matchType,
+      matchSnippet:
+        typeof snippet === "string"
+          ? snippet.slice(0, 300)
+          : String(snippet).slice(0, 300),
+      eventType: row.event_type,
+      toolName: row.tool_name,
+    };
+  });
+
+  return {
+    results,
+    totalMatches: total,
+    query: opts.query,
+    source: "local",
+  };
 }
 
-export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
-  const db = getDb();
+// ── Activity Summary ──────────────────────────────────────────────────────────
 
-  if (opts.source === "hook") {
-    const sql = `
-      SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-             tool_name, cwd, user_prompt, file_path, command, plan,
-             decompress(payload) as payload
-      FROM hook_events
-      WHERE id = ?
-    `;
-    return db.prepare(sql).get(opts.id) ?? null;
-  }
-
-  const sql = `
-    SELECT 'otel' as source, id, session_id, body as event_type,
-           CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, NULL as cwd, attributes, severity_text, body
-    FROM otel_logs
-    WHERE id = ?
-  `;
-  return db.prepare(sql).get(opts.id) ?? null;
-}
-
-export function activitySummary(opts: { since?: string } = {}) {
+export function activitySummary(
+  opts: { since?: string } = {},
+): ActivitySummaryResult {
   const db = getDb();
   const sinceMs = parseSince(opts.since ?? "24h") ?? Date.now() - 86400000;
   const now = Date.now();
 
-  // 1. Sessions with basic stats
   const sessionsSql = `
     SELECT session_id,
            MIN(timestamp_ms) as start_ms,
@@ -360,142 +578,108 @@ export function activitySummary(opts: { since?: string } = {}) {
     GROUP BY session_id
     ORDER BY start_ms ASC
   `;
-  const sessions = db.prepare(sessionsSql).all(sinceMs) as {
+  const rawSessions = db.prepare(sessionsSql).all(sinceMs) as {
     session_id: string;
     start_ms: number;
     end_ms: number;
     event_count: number;
   }[];
 
-  const result: {
-    period: { since: string; until: string };
-    sessions: unknown[];
-    totals: {
-      session_count: number;
-      total_cost: number;
-      total_tokens: number;
-      top_tools: { tool: string; count: number }[];
-    };
-  } = {
-    period: {
-      since: new Date(sinceMs).toISOString(),
-      until: new Date(now).toISOString(),
-    },
-    sessions: [],
-    totals: {
-      session_count: sessions.length,
-      total_cost: 0,
-      total_tokens: 0,
-      top_tools: [],
-    },
-  };
+  let totalCost = 0;
+  let totalTokens = 0;
+  const sessions: ActivitySessionDetail[] = [];
 
-  for (const s of sessions) {
-    // User prompts (first 100 chars of each)
+  for (const s of rawSessions) {
     const prompts = db
-      .prepare(`
-      SELECT SUBSTR(user_prompt, 1, 100) as prompt
-      FROM hook_events
-      WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ?
-      ORDER BY timestamp_ms ASC
-    `)
+      .prepare(
+        "SELECT SUBSTR(user_prompt, 1, 100) as prompt FROM hook_events WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ? ORDER BY timestamp_ms ASC",
+      )
       .all(s.session_id, sinceMs) as { prompt: string | null }[];
 
-    // Tool usage
     const tools = db
-      .prepare(`
-      SELECT tool_name, COUNT(*) as count
-      FROM hook_events
-      WHERE session_id = ? AND event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ?
-      GROUP BY tool_name
-      ORDER BY count DESC
-    `)
+      .prepare(
+        "SELECT tool_name, COUNT(*) as count FROM hook_events WHERE session_id = ? AND event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ? GROUP BY tool_name ORDER BY count DESC",
+      )
       .all(s.session_id, sinceMs) as { tool_name: string; count: number }[];
 
-    // Files modified (from Write/Edit tools)
     const files = db
-      .prepare(`
-      SELECT DISTINCT file_path
-      FROM hook_events
-      WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse'
-        AND file_path IS NOT NULL AND timestamp_ms >= ?
-    `)
+      .prepare(
+        "SELECT DISTINCT file_path FROM hook_events WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse' AND file_path IS NOT NULL AND timestamp_ms >= ?",
+      )
       .all(s.session_id, sinceMs) as { file_path: string | null }[];
 
-    // Plans created in this session
-    const plans = db
-      .prepare(`
-      SELECT plan
-      FROM hook_events
-      WHERE session_id = ? AND tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse'
-        AND plan IS NOT NULL AND timestamp_ms >= ?
-      ORDER BY timestamp_ms ASC
-    `)
-      .all(s.session_id, sinceMs) as { plan: string | null }[];
-
-    // Repositories for this session
     const repos = db
       .prepare(
         "SELECT repository FROM session_repositories WHERE session_id = ?",
       )
       .all(s.session_id) as { repository: string }[];
 
-    // Working directory
     const cwdRow = db
-      .prepare(`
-      SELECT cwd FROM hook_events
-      WHERE session_id = ? AND event_type = 'SessionStart'
-      LIMIT 1
-    `)
+      .prepare(
+        "SELECT cwd FROM hook_events WHERE session_id = ? AND event_type = 'SessionStart' LIMIT 1",
+      )
       .get(s.session_id) as { cwd: string | null } | undefined;
 
-    // Cost from otel_metrics (handles Gemini cumulative MAX vs Claude per-request SUM)
     const costRow = db
-      .prepare(`
-      WITH ${resolvedMetricsCTE(`AND session_id = ?`)}
-      SELECT SUM(tokens) as tokens,
-             SUM(${COST_EXPR}) as cost
-      FROM resolved_tokens
-    `)
+      .prepare(
+        `WITH ${resolvedMetricsCTE("AND session_id = ?")} SELECT SUM(tokens) as tokens, SUM(${COST_EXPR}) as cost FROM resolved_tokens`,
+      )
       .get(s.session_id) as { tokens: number; cost: number } | undefined;
 
     const sessionCost = costRow?.cost ?? 0;
     const sessionTokens = costRow?.tokens ?? 0;
-    result.totals.total_cost += sessionCost;
-    result.totals.total_tokens += sessionTokens;
+    totalCost += sessionCost;
+    totalTokens += sessionTokens;
 
-    result.sessions.push({
-      session_id: s.session_id,
-      start: new Date(s.start_ms).toISOString(),
-      duration_minutes: Math.round((s.end_ms - s.start_ms) / 60000),
-      working_directory: cwdRow?.cwd ?? null,
+    sessions.push({
+      sessionId: s.session_id,
+      startedAt: toIso(s.start_ms),
+      durationMinutes: Math.round((s.end_ms - s.start_ms) / 60000),
+      cwd: cwdRow?.cwd ?? null,
       repositories: repos.map((r) => r.repository),
-      user_prompts: prompts.map((p) => p.prompt).filter(Boolean),
-      tools_used: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
-      plans: plans.map((p) => p.plan).filter(Boolean),
-      files_modified: files.map((f) => f.file_path).filter(Boolean),
-      total_cost: sessionCost,
+      userPrompts: prompts.map((p) => p.prompt).filter(Boolean) as string[],
+      toolsUsed: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
+      filesModified: files.map((f) => f.file_path).filter(Boolean) as string[],
+      totalCost: sessionCost,
     });
   }
 
   // Global top tools
   const topTools = db
-    .prepare(`
-    SELECT tool_name, COUNT(*) as count
-    FROM hook_events
-    WHERE event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ?
-    GROUP BY tool_name
-    ORDER BY count DESC
-    LIMIT 10
-  `)
+    .prepare(
+      "SELECT tool_name, COUNT(*) as count FROM hook_events WHERE event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ? GROUP BY tool_name ORDER BY count DESC LIMIT 10",
+    )
     .all(sinceMs) as { tool_name: string; count: number }[];
-  result.totals.top_tools = topTools.map((t) => ({
-    tool: t.tool_name,
-    count: t.count,
-  }));
 
-  return result;
+  // Global event type counts
+  const eventTypeRows = db
+    .prepare(
+      "SELECT event_type, COUNT(*) as count FROM hook_events WHERE timestamp_ms >= ? GROUP BY event_type",
+    )
+    .all(sinceMs) as { event_type: string; count: number }[];
+
+  const eventTypeCounts: Record<string, number> = {};
+  for (const r of eventTypeRows) {
+    eventTypeCounts[r.event_type] = r.count;
+  }
+
+  return {
+    period: {
+      since: toIso(sinceMs),
+      until: toIso(now),
+    },
+    totalSessions: rawSessions.length,
+    totalTokens,
+    totalCost,
+    topTools: topTools.map((t) => ({ tool: t.tool_name, count: t.count })),
+    eventTypeCounts,
+    engineers: [], // local — single user, no engineer breakdown
+    sessions,
+    source: "local",
+  };
 }
+
+// ── Plans (panopticon-specific, not in unified types) ─────────────────────────
 
 export function listPlans(
   opts: { session_id?: string; since?: string; limit?: number } = {},
@@ -539,16 +723,43 @@ export function listPlans(
   return rows.map((r) => ({
     id: r.id,
     session_id: r.session_id,
-    timestamp: new Date(r.timestamp_ms).toISOString(),
+    timestamp: toIso(r.timestamp_ms),
     plan: r.plan,
     allowed_prompts: r.allowed_prompts ? JSON.parse(r.allowed_prompts) : null,
   }));
 }
 
+// ── Get Event (panopticon-specific) ───────────────────────────────────────────
+
+export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
+  const db = getDb();
+
+  if (opts.source === "hook") {
+    const sql = `
+      SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
+             tool_name, cwd, user_prompt, file_path, command, plan,
+             decompress(payload) as payload
+      FROM hook_events
+      WHERE id = ?
+    `;
+    return db.prepare(sql).get(opts.id) ?? null;
+  }
+
+  const sql = `
+    SELECT 'otel' as source, id, session_id, body as event_type,
+           CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
+           NULL as tool_name, NULL as cwd, attributes, severity_text, body
+    FROM otel_logs
+    WHERE id = ?
+  `;
+  return db.prepare(sql).get(opts.id) ?? null;
+}
+
+// ── Raw Query (panopticon-specific) ──────────────────────────────────────────
+
 export function rawQuery(sql: string) {
   const db = getDb();
 
-  // Only allow SELECT statements
   const trimmed = sql.trim().toUpperCase();
   if (
     !trimmed.startsWith("SELECT") &&
@@ -558,13 +769,14 @@ export function rawQuery(sql: string) {
     throw new Error("Only SELECT, WITH, and PRAGMA statements are allowed");
   }
 
-  // Safety net: append LIMIT if not already present (skip for PRAGMA)
   if (!trimmed.startsWith("PRAGMA") && !trimmed.includes("LIMIT")) {
     sql = `${sql.trimEnd().replace(/;$/, "")} LIMIT 1000`;
   }
 
   return db.prepare(sql).all();
 }
+
+// ── DB Stats (panopticon-specific) ───────────────────────────────────────────
 
 export function dbStats() {
   const db = getDb();
