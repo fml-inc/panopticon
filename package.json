@@ -42,6 +42,10 @@
     "./query": {
       "types": "./dist/query.d.ts",
       "import": "./dist/query.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
     }
   },
   "scripts": {
