@@ -55,15 +55,23 @@ function processCapture(capture: CapturedExchange): void {
 
     const hookEvents = parser.extractEvents(capture);
     for (const event of hookEvents) {
+      event.source = "proxy";
+      event.vendor = capture.vendor;
       emitHookEventAsync(event);
     }
 
     const metrics = parser.extractMetrics(capture);
+    for (const metric of metrics) {
+      metric.attributes = { ...metric.attributes, source: "proxy" };
+    }
     if (metrics.length > 0) {
       emitOtelMetrics(metrics);
     }
 
     const logs = parser.extractLogs(capture);
+    for (const log of logs) {
+      log.attributes = { ...log.attributes, source: "proxy" };
+    }
     if (logs.length > 0) {
       emitOtelLogs(logs);
     }
@@ -77,14 +85,20 @@ function forwardNonStreaming(
   clientReq: http.IncomingMessage,
   clientRes: http.ServerResponse,
   requestBody: Buffer,
+  parsedReqBody: unknown,
 ): void {
   const startMs = Date.now();
-  const { sessionId, isNew } = sessions.getOrCreateSession(route.vendor);
+  const { sessionId, isNew } = sessions.getOrCreateSession(
+    route.vendor,
+    parsedReqBody,
+  );
 
   if (isNew) {
     emitHookEventAsync({
       session_id: sessionId,
       hook_event_name: "SessionStart",
+      source: "proxy",
+      vendor: route.vendor,
     });
   }
 
@@ -115,13 +129,7 @@ function forwardNonStreaming(
         clientRes.end(responseBody);
 
         // Capture and process
-        let parsedReqBody: unknown;
         let parsedResBody: unknown;
-        try {
-          parsedReqBody = JSON.parse(requestBody.toString("utf-8"));
-        } catch {
-          parsedReqBody = {};
-        }
         try {
           parsedResBody = JSON.parse(responseBody.toString("utf-8"));
         } catch {
@@ -168,14 +176,20 @@ function forwardStreaming(
   clientReq: http.IncomingMessage,
   clientRes: http.ServerResponse,
   requestBody: Buffer,
+  parsedReqBody: unknown,
 ): void {
   const startMs = Date.now();
-  const { sessionId, isNew } = sessions.getOrCreateSession(route.vendor);
+  const { sessionId, isNew } = sessions.getOrCreateSession(
+    route.vendor,
+    parsedReqBody,
+  );
 
   if (isNew) {
     emitHookEventAsync({
       session_id: sessionId,
       hook_event_name: "SessionStart",
+      source: "proxy",
+      vendor: route.vendor,
     });
   }
 
@@ -214,13 +228,6 @@ function forwardStreaming(
 
         const duration_ms = Date.now() - startMs;
         const reconstructed = accumulator.finish();
-
-        let parsedReqBody: unknown;
-        try {
-          parsedReqBody = JSON.parse(requestBody.toString("utf-8"));
-        } catch {
-          parsedReqBody = {};
-        }
 
         const capture: CapturedExchange = {
           vendor: route.vendor,
@@ -302,19 +309,20 @@ export function createProxyServer(): http.Server {
     try {
       const requestBody = await collectBody(req);
 
-      // Detect streaming
+      // Parse request body once — used for streaming detection and session tracking
+      let parsedReqBody: unknown;
       let streaming = false;
       try {
-        const body = JSON.parse(requestBody.toString("utf-8"));
-        streaming = isStreamingRequest(body);
+        parsedReqBody = JSON.parse(requestBody.toString("utf-8"));
+        streaming = isStreamingRequest(parsedReqBody);
       } catch {
-        // Not JSON — forward as-is
+        parsedReqBody = {};
       }
 
       if (streaming) {
-        forwardStreaming(route, req, res, requestBody);
+        forwardStreaming(route, req, res, requestBody, parsedReqBody);
       } else {
-        forwardNonStreaming(route, req, res, requestBody);
+        forwardNonStreaming(route, req, res, requestBody, parsedReqBody);
       }
     } catch (err) {
       console.error("Proxy error:", err);
