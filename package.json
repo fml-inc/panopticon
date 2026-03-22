@@ -1,5 +1,5 @@
 {
-  "name": "panopticon",
+  "name": "@fml-inc/panopticon",
   "version": "0.1.0",
   "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
   "type": "module",
@@ -9,8 +9,25 @@
     "yarn": "please-use-pnpm"
   },
   "packageManager": "pnpm@10.17.1",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fml-inc/panopticon.git"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "hooks/",
+    "skills/",
+    ".claude-plugin/"
+  ],
   "bin": {
     "panopticon": "./bin/panopticon"
+  },
+  "exports": {
+    "./sdk": "./dist/sdk.js"
   },
   "scripts": {
     "build": "tsup",

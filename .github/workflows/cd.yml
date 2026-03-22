@@ -1,0 +1,55 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint & format
+        run: pnpm biome ci src/
+
+      - name: Type check
+        run: pnpm tsc --noEmit
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Set dev version (non-tag builds)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          COMMIT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}.${COMMIT_SHA}"
+          pnpm pkg set "version=${VERSION}"
+          echo "Publishing dev version: ${VERSION}"
+
+      - name: Set release version (tagged builds)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          pnpm pkg set "version=${VERSION}"
+          echo "Publishing release version: ${VERSION}"
+
+      - name: Publish to GitHub Packages
+        run: pnpm publish --no-git-checks --access restricted
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -14,6 +14,30 @@ No Docker, no external services. Just Node.js.
 
 ## Install
 
+### Quick install (requires repo access + `gh` CLI)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fml-inc/panopticon/main/install.sh | bash
+```
+
+Clones to `~/.panopticon`, builds, and runs `panopticon install`. Re-run to update.
+
+### As a dependency (e.g. from fml)
+
+```bash
+# .npmrc — add once per project
+@fml-inc:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+```
+
+```bash
+pnpm add @fml-inc/panopticon
+```
+
+CI gets `GITHUB_TOKEN` automatically. Locally, add `export GITHUB_TOKEN=$(gh auth token)` to your shell profile.
+
+### From source
+
 ```bash
 git clone https://github.com/fml-inc/panopticon.git && cd panopticon
 pnpm install
