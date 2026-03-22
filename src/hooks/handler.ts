@@ -112,9 +112,35 @@ async function main() {
     const data: HookInput = JSON.parse(input);
 
     const sessionId = data.session_id ?? "unknown";
-    const eventType = data.hook_event_name ?? "Unknown";
+    let eventType = data.hook_event_name ?? "Unknown";
     const toolName = data.tool_name ?? null;
     const timestampMs = Date.now();
+
+    // Normalize Gemini CLI event types to Claude Code equivalents
+    if (eventType === "BeforeTool") eventType = "PreToolUse";
+    else if (eventType === "AfterTool") eventType = "PostToolUse";
+    else if (eventType === "BeforeModel") {
+      eventType = "UserPromptSubmit";
+      // Extract user_prompt from Gemini's llm_request format
+      const messages = (data as any).llm_request?.messages;
+      if (Array.isArray(messages)) {
+        const lastUser = [...messages]
+          .reverse()
+          .find((m: any) => m.role === "user");
+        if (lastUser?.content) {
+          const text =
+            typeof lastUser.content === "string"
+              ? lastUser.content
+              : Array.isArray(lastUser.content)
+                ? lastUser.content
+                    .filter((p: any) => p.type === "text")
+                    .map((p: any) => p.text)
+                    .join("\n")
+                : "";
+          if (text) (data as any).user_prompt = text;
+        }
+      }
+    }
 
     // On SessionStart, ensure background processes are running
     if (eventType === "SessionStart") {
@@ -198,11 +224,16 @@ async function main() {
         );
       }
     }
+    // Output empty JSON for Gemini CLI hooks (expects JSON response)
+    if (!process.stdout.bytesWritten) {
+      process.stdout.write("{}");
+    }
   } catch (err) {
-    // Silently fail — hooks must not block Claude Code
+    // Silently fail — hooks must not block Claude Code or Gemini CLI
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);
     }
+    process.stdout.write(JSON.stringify({ error: "panopticon hook failed" }));
   }
 }
 

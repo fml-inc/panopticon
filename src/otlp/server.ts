@@ -29,6 +29,42 @@ function isJson(req: http.IncomingMessage): boolean {
   return ct.includes("application/json");
 }
 
+type Signal = "logs" | "metrics" | "traces";
+
+function detectSignal(url: string): Signal | null {
+  if (url.includes("/logs")) return "logs";
+  if (url.includes("/metrics")) return "metrics";
+  if (url.includes("/traces")) return "traces";
+  return null;
+}
+
+/**
+ * Gemini CLI sends all signals to "/" because it passes the base endpoint
+ * as the full URL. Sniff the body to determine the signal type.
+ */
+function sniffSignalFromBody(body: Buffer, protobuf: boolean): Signal | null {
+  if (protobuf) {
+    // Try decoding as each type — first successful one wins
+    try {
+      const rows = decodeLogs(body);
+      if (rows.length > 0) return "logs";
+    } catch {}
+    try {
+      const rows = decodeMetrics(body);
+      if (rows.length > 0) return "metrics";
+    } catch {}
+    return "traces"; // fallback
+  }
+  // JSON: check top-level keys
+  try {
+    const data = JSON.parse(body.toString("utf-8"));
+    if (data.resourceLogs) return "logs";
+    if (data.resourceMetrics) return "metrics";
+    if (data.resourceSpans) return "traces";
+  } catch {}
+  return null;
+}
+
 export function createOtlpServer(): http.Server {
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "";
@@ -50,7 +86,13 @@ export function createOtlpServer(): http.Server {
     try {
       const body = await collectBody(req);
 
-      if (url === "/v1/logs") {
+      // Detect signal from URL path, or sniff body for Gemini CLI (sends to "/")
+      let signal = detectSignal(url);
+      if (!signal && (url === "/" || url === "")) {
+        signal = sniffSignalFromBody(body, isProtobuf(req));
+      }
+
+      if (signal === "logs") {
         if (isProtobuf(req)) {
           const rows = decodeLogs(body);
           if (rows.length > 0) insertOtelLogs(rows);
@@ -70,7 +112,7 @@ export function createOtlpServer(): http.Server {
           res.writeHead(415);
           res.end();
         }
-      } else if (url === "/v1/metrics") {
+      } else if (signal === "metrics") {
         if (isProtobuf(req)) {
           const rows = decodeMetrics(body);
           if (rows.length > 0) insertOtelMetrics(rows);
@@ -89,7 +131,7 @@ export function createOtlpServer(): http.Server {
           res.writeHead(415);
           res.end();
         }
-      } else if (url === "/v1/traces") {
+      } else if (signal === "traces") {
         // Accept but ignore traces for now
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
