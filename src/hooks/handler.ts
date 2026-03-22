@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
+import { refreshIfStale } from "../db/pricing.js";
 import { autoPrune } from "../db/prune.js";
 import {
   insertHookEvent,
@@ -146,6 +147,7 @@ async function main() {
     if (eventType === "SessionStart") {
       if (!isReceiverRunning()) startReceiver();
       tryAutoPrune();
+      refreshIfStale().catch(() => {}); // non-blocking pricing refresh
     }
 
     // Resolve repository at capture time

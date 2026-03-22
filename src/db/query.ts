@@ -1,3 +1,4 @@
+import { buildCostSQL } from "./pricing.js";
 import { getDb } from "./schema.js";
 
 // Unified token type extraction: works for Claude, Gemini CLI, and gen_ai metric names
@@ -36,23 +37,10 @@ function resolvedMetricsCTE(extraWhere = ""): string {
     )`;
 }
 
-// Cost per million tokens by model prefix
-const COST_CASE_EXPR = `
-  CASE
-    -- Claude Opus
-    WHEN model LIKE 'claude-opus%' THEN tokens * CASE WHEN token_type = 'input' THEN 15.0 WHEN token_type = 'output' THEN 75.0 WHEN token_type = 'cacheRead' THEN 1.5 WHEN token_type = 'cacheWrite' THEN 18.75 ELSE 0 END / 1000000.0
-    -- Claude Sonnet
-    WHEN model LIKE 'claude-sonnet%' OR model LIKE 'claude-3%sonnet%' THEN tokens * CASE WHEN token_type = 'input' THEN 3.0 WHEN token_type = 'output' THEN 15.0 WHEN token_type = 'cacheRead' THEN 0.3 WHEN token_type = 'cacheWrite' THEN 3.75 ELSE 0 END / 1000000.0
-    -- Claude Haiku
-    WHEN model LIKE 'claude-haiku%' OR model LIKE 'claude-3%haiku%' THEN tokens * CASE WHEN token_type = 'input' THEN 0.80 WHEN token_type = 'output' THEN 4.0 WHEN token_type = 'cacheRead' THEN 0.08 WHEN token_type = 'cacheWrite' THEN 1.0 ELSE 0 END / 1000000.0
-    -- Gemini Flash Lite
-    WHEN model LIKE 'gemini%flash%lite%' THEN tokens * CASE WHEN token_type = 'input' THEN 0.075 WHEN token_type = 'output' THEN 0.3 ELSE 0 END / 1000000.0
-    -- Gemini Flash
-    WHEN model LIKE 'gemini%flash%' THEN tokens * CASE WHEN token_type = 'input' THEN 0.075 WHEN token_type = 'output' THEN 0.3 ELSE 0 END / 1000000.0
-    -- Gemini Pro
-    WHEN model LIKE 'gemini%pro%' THEN tokens * CASE WHEN token_type = 'input' THEN 1.25 WHEN token_type = 'output' THEN 5.0 ELSE 0 END / 1000000.0
-    ELSE 0
-  END`;
+/** Cost SQL expression — uses OpenRouter pricing cache, falls back to hardcoded defaults. */
+function costExpr(): string {
+  return buildCostSQL();
+}
 
 function parseSince(since?: string): number | null {
   if (!since) return null;
@@ -87,7 +75,7 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
     otel_costs AS (
       SELECT session_id,
              SUM(tokens) as total_tokens,
-             SUM(${COST_CASE_EXPR}) as total_cost
+             SUM(${costExpr()}) as total_cost
       FROM resolved_tokens
       GROUP BY session_id
     )
@@ -245,7 +233,7 @@ export function costBreakdown(
            SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
            SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
            SUM(tokens) as total_tokens,
-           SUM(${COST_CASE_EXPR}) as total_cost
+           SUM(${costExpr()}) as total_cost
     FROM resolved_tokens
     GROUP BY ${groupExpr}
     ORDER BY total_tokens DESC
@@ -471,7 +459,7 @@ export function activitySummary(opts: { since?: string } = {}) {
       .prepare(`
       WITH ${resolvedMetricsCTE(`AND session_id = ?`)}
       SELECT SUM(tokens) as tokens,
-             SUM(${COST_CASE_EXPR}) as cost
+             SUM(${costExpr()}) as cost
       FROM resolved_tokens
     `)
       .get(s.session_id) as { tokens: number; cost: number } | undefined;

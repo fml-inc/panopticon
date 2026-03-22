@@ -8,6 +8,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { config, ensureDataDir } from "./config.js";
+import { refreshPricing } from "./db/pricing.js";
 import { pruneEstimate, pruneExecute } from "./db/prune.js";
 import {
   activitySummary,
@@ -410,7 +411,15 @@ async function installClaudeCode(
   ensureDataDir();
   getDb();
   closeDb();
-  console.log(`      ${config.dbPath}\n`);
+  console.log(`      ${config.dbPath}`);
+
+  // Fetch model pricing from OpenRouter (non-blocking if it fails)
+  const pricing = await refreshPricing();
+  console.log(
+    pricing
+      ? `      Cached pricing for ${Object.keys(pricing.models).length} models\n`
+      : "      Could not fetch pricing (will use defaults)\n",
+  );
 
   console.log("[3/7] Setting up local marketplace...");
   fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
@@ -965,6 +974,22 @@ program
   .description("Show database row counts for each table")
   .action(() => {
     output(dbStats());
+  });
+
+program
+  .command("refresh-pricing")
+  .description("Fetch latest model pricing from OpenRouter")
+  .action(async () => {
+    console.log("Fetching pricing from OpenRouter...");
+    const result = await refreshPricing();
+    if (result) {
+      console.log(
+        `Cached pricing for ${Object.keys(result.models).length} models`,
+      );
+    } else {
+      console.error("Failed to fetch pricing");
+      process.exit(1);
+    }
   });
 
 const permissions = program
