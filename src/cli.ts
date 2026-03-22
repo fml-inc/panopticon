@@ -25,6 +25,7 @@ import {
 import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
+import { readTomlFile, writeTomlFile } from "./toml.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -299,13 +300,13 @@ program
   .alias("setup")
   .description("Build, register plugin, init DB, configure shell")
   .option("--desktop", "Install as MCP server for Claude Desktop instead")
-  .option("--target <target>", "Target CLI: claude, gemini, all", "all")
+  .option("--target <target>", "Target CLI: claude, gemini, codex, all", "all")
   .option("--force", "Overwrite customized env vars with defaults")
   .option("--skip-build", "Skip the build step (internal)")
   .action(async (opts) => {
-    if (!["claude", "gemini", "all"].includes(opts.target)) {
+    if (!["claude", "gemini", "codex", "all"].includes(opts.target)) {
       console.error(
-        `Invalid target: ${opts.target}. Must be claude, gemini, or all.`,
+        `Invalid target: ${opts.target}. Must be claude, gemini, codex, or all.`,
       );
       process.exit(1);
     }
@@ -536,6 +537,69 @@ async function installClaudeCode(
     console.log("[4a/7] Skipping Gemini CLI settings...\n");
   }
 
+  if (target === "codex" || target === "all") {
+    console.log("[4b/7] Registering hooks in Codex CLI config...");
+    const codexConfig = readTomlFile(config.codexConfigPath);
+
+    // Hook handler binary
+    const hookBin = path.join(pluginRoot, "bin", "hook-handler");
+    const mcpBin = path.join(pluginRoot, "bin", "mcp-server");
+
+    // Codex hook event types to register (snake_case keys in TOML)
+    const codexHookEvents = [
+      "session_start",
+      "session_end",
+      "user_prompt_submit",
+      "pre_tool_use",
+      "post_tool_use",
+      "post_tool_use_failure",
+      "stop",
+    ];
+
+    // Ensure hooks section exists
+    const hooks = (codexConfig.hooks ?? {}) as Record<string, unknown[]>;
+
+    for (const event of codexHookEvents) {
+      const existing = (hooks[event] ?? []) as Array<Record<string, unknown>>;
+      // Remove existing panopticon entries
+      hooks[event] = existing.filter((h) => h.name !== "panopticon");
+      // Add panopticon hook
+      (hooks[event] as unknown[]).push({
+        name: "panopticon",
+        type: "command",
+        command: ["node", hookBin],
+        timeout: 10,
+      });
+    }
+    codexConfig.hooks = hooks;
+
+    // Configure API proxy
+    codexConfig.openai_base_url = `http://localhost:${config.proxyPort}/codex`;
+
+    // Configure OTel telemetry
+    codexConfig.telemetry = {
+      ...(codexConfig.telemetry as Record<string, unknown> | undefined),
+      otlp_exporter: "otlp-http",
+      otlp_endpoint: `http://localhost:${config.otlpPort}`,
+    };
+
+    // Register MCP server
+    const mcpServers = (codexConfig.mcp_servers ?? {}) as Record<
+      string,
+      unknown
+    >;
+    mcpServers.panopticon = {
+      command: "node",
+      args: [mcpBin],
+    };
+    codexConfig.mcp_servers = mcpServers;
+
+    writeTomlFile(config.codexConfigPath, codexConfig);
+    console.log(`      ${config.codexConfigPath}\n`);
+  } else {
+    console.log("[4b/7] Skipping Codex CLI settings...\n");
+  }
+
   console.log("[5/7] Adding CLI to PATH...");
   const localBin = path.join(os.homedir(), ".local", "bin");
   fs.mkdirSync(localBin, { recursive: true });
@@ -577,12 +641,13 @@ async function installClaudeCode(
   console.log("[7/7] Configuring shell environment...");
   configureShellEnv(force, target);
 
-  const assistant =
-    target === "all"
-      ? "Claude Code and Gemini CLI"
-      : target === "claude"
-        ? "Claude Code"
-        : "Gemini CLI";
+  const assistantNames: Record<string, string> = {
+    claude: "Claude Code",
+    gemini: "Gemini CLI",
+    codex: "Codex CLI",
+    all: "Claude Code, Gemini CLI, and Codex CLI",
+  };
+  const assistant = assistantNames[target] ?? target;
   console.log(`Done! Start a new ${assistant} session to activate.\n`);
   console.log("Verify with: panopticon status");
 }

@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { emitHookEventAsync, emitOtelLogs, emitOtelMetrics } from "./emit.js";
 import { anthropicParser } from "./formats/anthropic.js";
 import { openaiParser } from "./formats/openai.js";
+import { openaiResponsesParser } from "./formats/openai-responses.js";
 import type { ApiFormatParser, CapturedExchange } from "./formats/types.js";
 import { SessionTracker } from "./sessions.js";
 import {
@@ -11,6 +12,7 @@ import {
   createOpenaiAccumulator,
   isStreamingRequest,
 } from "./streaming.js";
+import { WebSocketMessageExtractor } from "./ws-capture.js";
 
 const UPSTREAM_ROUTES: Record<string, string> = {
   anthropic: "api.anthropic.com",
@@ -18,7 +20,11 @@ const UPSTREAM_ROUTES: Record<string, string> = {
   google: "generativelanguage.googleapis.com",
 };
 
-const FORMAT_PARSERS: ApiFormatParser[] = [anthropicParser, openaiParser];
+const FORMAT_PARSERS: ApiFormatParser[] = [
+  anthropicParser,
+  openaiParser,
+  openaiResponsesParser,
+];
 
 const sessions = new SessionTracker();
 
@@ -28,16 +34,32 @@ interface Route {
   path: string;
 }
 
-function parseRoute(url: string): Route | null {
+function parseRoute(
+  url: string,
+  headers?: http.IncomingHttpHeaders,
+): Route | null {
   // Match /vendor/rest-of-path
   const match = url.match(/^\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
   const vendor = match[1];
+  const path = match[2] ?? "/";
+
+  // Codex auto-detect: ChatGPT OAuth (JWT) vs API key route to different upstreams
+  if (vendor === "codex") {
+    const auth = headers?.authorization ?? "";
+    const isChatGptOAuth = auth.startsWith("Bearer eyJ");
+    return {
+      vendor: "codex",
+      upstream: isChatGptOAuth ? "chatgpt.com" : "api.openai.com",
+      path: isChatGptOAuth ? `/backend-api/codex${path}` : `/v1${path}`,
+    };
+  }
+
   const upstream = UPSTREAM_ROUTES[vendor];
   if (!upstream) return null;
 
-  return { vendor, upstream, path: match[2] ?? "/" };
+  return { vendor, upstream, path };
 }
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -276,6 +298,145 @@ function flattenHeaders(
   return flat;
 }
 
+function tunnelWebSocket(
+  req: http.IncomingMessage,
+  clientSocket: import("node:stream").Duplex,
+  head: Buffer,
+): void {
+  const url = req.url ?? "";
+  const route = parseRoute(url, req.headers);
+
+  if (!route) {
+    clientSocket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+    return;
+  }
+
+  // Track session for this vendor
+  const { sessionId, isNew } = sessions.getOrCreateSession(route.vendor, {});
+  if (isNew) {
+    emitHookEventAsync({
+      session_id: sessionId,
+      hook_event_name: "SessionStart",
+      source: "proxy",
+      vendor: route.vendor,
+    });
+  }
+
+  // Catch client socket errors early (before upstream upgrade completes)
+  clientSocket.on("error", (err) => {
+    console.error(`WebSocket client error (${route.vendor}):`, err.message);
+  });
+
+  // Forward headers, replacing host with upstream.
+  // Strip Sec-WebSocket-Extensions to disable permessage-deflate so the
+  // frame capture can read uncompressed text payloads.
+  const proxyHeaders: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (
+      key !== "host" &&
+      key !== "sec-websocket-extensions" &&
+      value !== undefined
+    ) {
+      proxyHeaders[key] = value;
+    }
+  }
+  proxyHeaders.host = route.upstream;
+
+  // Use https.request to perform the upstream WebSocket upgrade.
+  // Node's HTTP parser handles the 101 response; we get the raw socket back.
+  const proxyReq = https.request({
+    hostname: route.upstream,
+    port: 443,
+    path: route.path,
+    method: req.method,
+    headers: proxyHeaders,
+  });
+
+  proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+    // Reconstruct the 101 response for the client
+    let response = `HTTP/${proxyRes.httpVersion} ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
+    for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
+      response += `${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}\r\n`;
+    }
+    response += "\r\n";
+
+    clientSocket.write(response);
+    if (proxyHead.length > 0) clientSocket.write(proxyHead);
+    if (head.length > 0) proxySocket.write(head);
+
+    // Tap into WebSocket messages for capture while forwarding bytes unchanged.
+    // Client messages contain the request; server "response.completed" has the
+    // full response with usage data.
+    const clientExtractor = new WebSocketMessageExtractor();
+    const serverExtractor = new WebSocketMessageExtractor();
+    let pendingRequest: unknown;
+    let requestTimestamp = Date.now();
+
+    clientExtractor.onMessage = (msg) => {
+      try {
+        pendingRequest = JSON.parse(msg);
+        requestTimestamp = Date.now();
+      } catch {}
+    };
+
+    serverExtractor.onMessage = (msg) => {
+      try {
+        const event = JSON.parse(msg) as Record<string, unknown>;
+        if (event.type === "response.completed" && pendingRequest) {
+          const capture: CapturedExchange = {
+            vendor: route.vendor,
+            sessionId,
+            timestamp_ms: requestTimestamp,
+            request: {
+              path: route.path,
+              headers: flattenHeaders(req.headers),
+              body: pendingRequest,
+            },
+            response: {
+              status: 200,
+              body: event.response,
+            },
+            duration_ms: Date.now() - requestTimestamp,
+          };
+          processCapture(capture);
+          pendingRequest = undefined;
+        }
+      } catch {}
+    };
+
+    proxySocket.on("data", (chunk: Buffer) => {
+      serverExtractor.push(chunk);
+      clientSocket.write(chunk);
+    });
+    clientSocket.on("data", (chunk: Buffer) => {
+      clientExtractor.push(chunk);
+      proxySocket.write(chunk);
+    });
+
+    proxySocket.on("error", () => clientSocket.destroy());
+    proxySocket.on("close", () => clientSocket.destroy());
+    clientSocket.on("close", () => proxySocket.destroy());
+  });
+
+  proxyReq.on("error", (err) => {
+    console.error(`WebSocket upstream error (${route.vendor}):`, err.message);
+    clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+  });
+
+  proxyReq.on("response", (res) => {
+    // Upstream rejected the upgrade (non-101 response) — forward as-is
+    let response = `HTTP/${res.httpVersion} ${res.statusCode} ${res.statusMessage}\r\n`;
+    for (let i = 0; i < res.rawHeaders.length; i += 2) {
+      response += `${res.rawHeaders[i]}: ${res.rawHeaders[i + 1]}\r\n`;
+    }
+    response += "\r\n";
+    clientSocket.write(response);
+    res.pipe(clientSocket);
+  });
+
+  proxyReq.end();
+}
+
 export function createProxyServer(): http.Server {
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "";
@@ -294,13 +455,13 @@ export function createProxyServer(): http.Server {
       return;
     }
 
-    const route = parseRoute(url);
+    const route = parseRoute(url, req.headers);
     if (!route) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
           error: "unknown_route",
-          message: `Unknown path prefix. Use /anthropic/*, /openai/*, or /google/*`,
+          message: `Unknown path prefix. Use /anthropic/*, /openai/*, /codex/*, or /google/*`,
         }),
       );
       return;
@@ -333,6 +494,11 @@ export function createProxyServer(): http.Server {
     }
   });
 
+  // Handle WebSocket upgrades (e.g. Codex CLI uses WS for Responses API)
+  server.on("upgrade", (req, socket, head) => {
+    tunnelWebSocket(req, socket, head);
+  });
+
   return server;
 }
 
@@ -343,6 +509,15 @@ if (
   entryScript.endsWith("/proxy/server.ts")
 ) {
   const server = createProxyServer();
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.log(
+        `Proxy already running on ${config.proxyHost}:${config.proxyPort}`,
+      );
+      process.exit(0);
+    }
+    throw err;
+  });
   server.listen(config.proxyPort, config.proxyHost, () => {
     console.log(
       `Panopticon proxy listening on ${config.proxyHost}:${config.proxyPort}`,
