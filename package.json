@@ -27,8 +27,14 @@
     "panopticon": "./bin/panopticon"
   },
   "exports": {
-    "./sdk": "./dist/sdk.js",
-    "./db": "./dist/db.js"
+    "./sdk": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js"
+    },
+    "./db": {
+      "types": "./dist/db.d.ts",
+      "import": "./dist/db.js"
+    }
   },
   "scripts": {
     "build": "tsup",

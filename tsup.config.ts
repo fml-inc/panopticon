@@ -18,4 +18,5 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   shims: true,
+  dts: true,
 });
