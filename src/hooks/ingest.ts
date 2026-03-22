@@ -43,7 +43,8 @@ function loadAllowed(): AllowedList | null {
  */
 export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionId = data.session_id ?? "unknown";
-  let eventType = data.hook_event_name ?? "Unknown";
+  const rawEventType = data.hook_event_name ?? "Unknown";
+  let eventType = rawEventType;
   const toolName = data.tool_name ?? null;
   const timestampMs = Date.now();
 
@@ -130,6 +131,11 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
 
     if (decision) {
+      // Gemini CLI expects {decision, reason} at top level
+      if (rawEventType === "BeforeTool") {
+        return { decision: "allow", reason: decision.reason };
+      }
+      // Claude Code expects hookSpecificOutput format
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
