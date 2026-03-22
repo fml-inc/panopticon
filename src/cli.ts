@@ -143,7 +143,7 @@ function readStdin(): Promise<string> {
 // Shell environment configuration
 // ---------------------------------------------------------------------------
 
-function configureShellEnv(force: boolean, target = "claude") {
+function configureShellEnv(force: boolean, target = "claude", proxy = false) {
   const shellRc = path.join(
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
@@ -161,6 +161,7 @@ function configureShellEnv(force: boolean, target = "claude") {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
+    "ANTHROPIC_BASE_URL",
     "GEMINI_TELEMETRY_ENABLED",
     "GEMINI_TELEMETRY_TARGET",
     "GEMINI_TELEMETRY_USE_COLLECTOR",
@@ -197,6 +198,13 @@ function configureShellEnv(force: boolean, target = "claude") {
     ["OTEL_LOG_USER_PROMPTS", "export OTEL_LOG_USER_PROMPTS=1"],
     ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
   ];
+
+  if (proxy && (target === "claude" || target === "all")) {
+    wantedLines.push([
+      "ANTHROPIC_BASE_URL",
+      `export ANTHROPIC_BASE_URL=http://localhost:${config.proxyPort}/anthropic`,
+    ]);
+  }
 
   if (target === "gemini" || target === "all") {
     wantedLines.push(
@@ -301,6 +309,7 @@ program
   .description("Build, register plugin, init DB, configure shell")
   .option("--desktop", "Install as MCP server for Claude Desktop instead")
   .option("--target <target>", "Target CLI: claude, gemini, codex, all", "all")
+  .option("--proxy", "Also route API traffic through the panopticon proxy")
   .option("--force", "Overwrite customized env vars with defaults")
   .option("--skip-build", "Skip the build step (internal)")
   .action(async (opts) => {
@@ -373,7 +382,12 @@ async function installDesktop(
 
 async function installClaudeCode(
   pluginRoot: string,
-  opts: { force?: boolean; skipBuild?: boolean; target?: string },
+  opts: {
+    force?: boolean;
+    skipBuild?: boolean;
+    target?: string;
+    proxy?: boolean;
+  },
 ) {
   const force = opts.force ?? false;
   const target = opts.target ?? "claude";
@@ -573,8 +587,14 @@ async function installClaudeCode(
     }
     codexConfig.hooks = hooks;
 
-    // Configure API proxy
-    codexConfig.openai_base_url = `http://localhost:${config.proxyPort}/codex`;
+    // Configure API proxy (opt-in via --proxy)
+    if (opts.proxy) {
+      codexConfig.openai_base_url = `http://localhost:${config.proxyPort}/codex`;
+      console.log("      API proxy enabled (--proxy)");
+    } else {
+      // Remove proxy if previously installed
+      delete codexConfig.openai_base_url;
+    }
 
     // Configure OTel telemetry
     codexConfig.telemetry = {
@@ -639,7 +659,7 @@ async function installClaudeCode(
   console.log();
 
   console.log("[7/7] Configuring shell environment...");
-  configureShellEnv(force, target);
+  configureShellEnv(force, target, !!opts.proxy);
 
   const assistantNames: Record<string, string> = {
     claude: "Claude Code",
