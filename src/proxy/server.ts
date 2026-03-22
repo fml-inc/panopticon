@@ -437,12 +437,60 @@ function tunnelWebSocket(
   proxyReq.end();
 }
 
+/** Handle a proxy API request. Expects the URL to have a vendor prefix. */
+export async function handleProxyRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const url = req.url ?? "";
+
+  const route = parseRoute(url, req.headers);
+  if (!route) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: "unknown_route",
+        message: `Unknown vendor prefix. Use /anthropic/*, /openai/*, /codex/*, or /google/*`,
+      }),
+    );
+    return;
+  }
+
+  try {
+    const requestBody = await collectBody(req);
+
+    // Parse request body once — used for streaming detection and session tracking
+    let parsedReqBody: unknown;
+    let streaming = false;
+    try {
+      parsedReqBody = JSON.parse(requestBody.toString("utf-8"));
+      streaming = isStreamingRequest(parsedReqBody);
+    } catch {
+      parsedReqBody = {};
+    }
+
+    if (streaming) {
+      forwardStreaming(route, req, res, requestBody, parsedReqBody);
+    } else {
+      forwardNonStreaming(route, req, res, requestBody, parsedReqBody);
+    }
+  } catch (err) {
+    console.error("Proxy error:", err);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+/** Handle a WebSocket upgrade for proxy tunneling. */
+export { tunnelWebSocket };
+
 export function createProxyServer(): http.Server {
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "";
     const method = req.method ?? "";
 
-    // Health check
     if (url === "/health" && method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok", port: config.proxyPort }));
@@ -455,46 +503,9 @@ export function createProxyServer(): http.Server {
       return;
     }
 
-    const route = parseRoute(url, req.headers);
-    if (!route) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error: "unknown_route",
-          message: `Unknown path prefix. Use /anthropic/*, /openai/*, /codex/*, or /google/*`,
-        }),
-      );
-      return;
-    }
-
-    try {
-      const requestBody = await collectBody(req);
-
-      // Parse request body once — used for streaming detection and session tracking
-      let parsedReqBody: unknown;
-      let streaming = false;
-      try {
-        parsedReqBody = JSON.parse(requestBody.toString("utf-8"));
-        streaming = isStreamingRequest(parsedReqBody);
-      } catch {
-        parsedReqBody = {};
-      }
-
-      if (streaming) {
-        forwardStreaming(route, req, res, requestBody, parsedReqBody);
-      } else {
-        forwardNonStreaming(route, req, res, requestBody, parsedReqBody);
-      }
-    } catch (err) {
-      console.error("Proxy error:", err);
-      if (!res.headersSent) {
-        res.writeHead(500);
-        res.end();
-      }
-    }
+    await handleProxyRequest(req, res);
   });
 
-  // Handle WebSocket upgrades (e.g. Codex CLI uses WS for Responses API)
   server.on("upgrade", (req, socket, head) => {
     tunnelWebSocket(req, socket, head);
   });

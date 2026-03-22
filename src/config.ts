@@ -16,9 +16,21 @@ const MARKETPLACE_DIR = path.join(
   "claude-plugins",
 );
 
+const DEFAULT_PORT = 4318;
+
 export const config = {
   dataDir: DATA_DIR,
   dbPath: path.join(DATA_DIR, "data.db"),
+  // Unified server port — replaces separate OTLP and proxy ports
+  port: parseInt(
+    process.env.PANOPTICON_PORT ??
+      process.env.PANOPTICON_OTLP_PORT ??
+      String(DEFAULT_PORT),
+    10,
+  ),
+  host: process.env.PANOPTICON_HOST ?? "127.0.0.1",
+  serverPidFile: path.join(DATA_DIR, "panopticon.pid"),
+  // Legacy — kept for backward compat during transition
   pidFile: path.join(DATA_DIR, "otlp-receiver.pid"),
   otlpPort: parseInt(process.env.PANOPTICON_OTLP_PORT ?? "4318", 10),
   otlpHost: process.env.PANOPTICON_OTLP_HOST ?? "0.0.0.0",

@@ -1,96 +1,28 @@
 #!/usr/bin/env node
 
+/**
+ * Hook handler — thin stdin→HTTP→stdout bridge.
+ *
+ * Reads JSON from stdin (same format Claude Code / Gemini CLI / Codex CLI send),
+ * POSTs it to the unified panopticon server at /hooks, and relays the response
+ * to stdout. Falls back to direct DB write if the server is unreachable.
+ */
+
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { autoPrune } from "../db/prune.js";
-import {
-  insertHookEvent,
-  upsertSessionCwd,
-  upsertSessionRepository,
-} from "../db/store.js";
 import { openLogFd } from "../log.js";
-import { resolveRepoFromCwd } from "../repo.js";
+import { type HookInput, processHookEvent } from "./ingest.js";
 
-interface HookInput {
-  session_id: string;
-  hook_event_name: string;
-  cwd?: string;
-  repository?: string;
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-// --- Chain-aware Bash permission enforcement ---
-
-import { checkBashPermission } from "./permissions.js";
-
-const ALLOWED_PATH = path.join(config.dataDir, "permissions", "allowed.json");
-
-interface AllowedList {
-  bash_commands: string[];
-  tools: string[];
-}
-
-function loadAllowed(): AllowedList | null {
-  try {
-    return JSON.parse(fs.readFileSync(ALLOWED_PATH, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-function isReceiverRunning(): boolean {
-  if (!fs.existsSync(config.pidFile)) return false;
-  const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    // Stale PID file
-    try {
-      fs.unlinkSync(config.pidFile);
-    } catch {}
-    return false;
-  }
-}
-
-function startReceiver(): void {
-  ensureDataDir();
-
-  const serverScript = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "otlp",
-    "server.js",
-  );
-
-  const logFd = openLogFd("otlp");
-
-  const child = spawn("node", [serverScript], {
-    detached: true,
-    stdio: ["ignore", logFd, logFd],
-    env: {
-      ...process.env,
-      PANOPTICON_OTLP_PORT: String(config.otlpPort),
-    },
-  });
-
-  if (child.pid) {
-    fs.writeFileSync(config.pidFile, String(child.pid));
-  }
-  child.unref();
-  fs.closeSync(logFd);
-}
-
-function isProxyRunning(): boolean {
-  if (!fs.existsSync(config.proxyPidFile)) return false;
+function isServerRunning(): boolean {
+  if (!fs.existsSync(config.serverPidFile)) return false;
   const pid = parseInt(
-    fs.readFileSync(config.proxyPidFile, "utf-8").trim(),
+    fs.readFileSync(config.serverPidFile, "utf-8").trim(),
     10,
   );
   try {
@@ -98,35 +30,34 @@ function isProxyRunning(): boolean {
     return true;
   } catch {
     try {
-      fs.unlinkSync(config.proxyPidFile);
+      fs.unlinkSync(config.serverPidFile);
     } catch {}
     return false;
   }
 }
 
-function startProxy(): void {
+function startServer(): void {
   ensureDataDir();
 
   const serverScript = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
-    "proxy",
     "server.js",
   );
 
-  const logFd = openLogFd("proxy");
+  const logFd = openLogFd("server");
 
   const child = spawn("node", [serverScript], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     env: {
       ...process.env,
-      PANOPTICON_PROXY_PORT: String(config.proxyPort),
+      PANOPTICON_PORT: String(config.port),
     },
   });
 
   if (child.pid) {
-    fs.writeFileSync(config.proxyPidFile, String(child.pid));
+    fs.writeFileSync(config.serverPidFile, String(child.pid));
   }
   child.unref();
   fs.closeSync(logFd);
@@ -148,6 +79,43 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf-8");
 }
 
+function postToServer(data: HookInput): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(data);
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port: config.port,
+        path: "/hooks",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+        timeout: 5000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString("utf-8")));
+          } catch {
+            resolve({});
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("timeout"));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
 async function main() {
   try {
     const input = await readStdin();
@@ -156,128 +124,31 @@ async function main() {
     }
 
     const data: HookInput = JSON.parse(input);
+    const eventType = data.hook_event_name ?? "Unknown";
 
-    const sessionId = data.session_id ?? "unknown";
-    let eventType = data.hook_event_name ?? "Unknown";
-    const toolName = data.tool_name ?? null;
-    const timestampMs = Date.now();
-
-    // Normalize Gemini CLI event types to Claude Code equivalents
-    if (eventType === "BeforeTool") eventType = "PreToolUse";
-    else if (eventType === "AfterTool") eventType = "PostToolUse";
-    else if (eventType === "BeforeModel") {
-      eventType = "UserPromptSubmit";
-      // Extract user_prompt from Gemini's llm_request format
-      const messages = (data as any).llm_request?.messages;
-      if (Array.isArray(messages)) {
-        const lastUser = [...messages]
-          .reverse()
-          .find((m: any) => m.role === "user");
-        if (lastUser?.content) {
-          const text =
-            typeof lastUser.content === "string"
-              ? lastUser.content
-              : Array.isArray(lastUser.content)
-                ? lastUser.content
-                    .filter((p: any) => p.type === "text")
-                    .map((p: any) => p.text)
-                    .join("\n")
-                : "";
-          if (text) (data as any).user_prompt = text;
-        }
-      }
-    }
-
-    // On SessionStart, ensure background processes are running
-    if (eventType === "SessionStart") {
-      if (!isReceiverRunning()) startReceiver();
-      if (!isProxyRunning()) startProxy();
+    // On SessionStart, ensure the unified server is running
+    if (eventType === "SessionStart" || eventType === "session_start") {
+      if (!isServerRunning()) startServer();
       tryAutoPrune();
-      refreshIfStale().catch(() => {}); // non-blocking pricing refresh
+      refreshIfStale().catch(() => {});
     }
 
-    // Resolve repository at capture time
-    let repo = data.repository ?? null;
-    if (!repo) {
-      // Try file_path / path from tool_input
-      const toolInput = data.tool_input;
-      if (toolInput && typeof toolInput === "object") {
-        const filePath =
-          (toolInput as Record<string, unknown>).file_path ??
-          (toolInput as Record<string, unknown>).path;
-        if (typeof filePath === "string" && path.isAbsolute(filePath)) {
-          repo = resolveRepoFromCwd(path.dirname(filePath));
-        }
-      }
-    }
-    if (!repo && data.cwd) {
-      repo = resolveRepoFromCwd(data.cwd as string);
-    }
-
-    // Capture the shell's PWD — may differ from data.cwd if Claude Code
-    // changed its internal working directory after launch.
+    // Capture shell PWD
     const shellPwd = process.env.PWD ?? undefined;
-    const payload = shellPwd ? { ...data, shell_pwd: shellPwd } : data;
+    if (shellPwd) data.shell_pwd = shellPwd;
 
-    insertHookEvent({
-      session_id: sessionId,
-      event_type: eventType,
-      timestamp_ms: timestampMs,
-      cwd: data.cwd,
-      repository: repo ?? undefined,
-      tool_name: toolName ?? undefined,
-      payload,
-    });
-
-    // Populate session junction tables
-    if (repo) {
-      upsertSessionRepository(sessionId, repo, timestampMs);
-    }
-    if (data.cwd) {
-      upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+    // Try posting to the server; fall back to direct DB write
+    let result: Record<string, unknown>;
+    try {
+      result = await postToServer(data);
+    } catch {
+      // Server unreachable — fall back to direct processing
+      result = processHookEvent(data);
     }
 
-    // Permission enforcement via allowed.json
-    if (eventType === "PreToolUse" && toolName) {
-      let decision: { allow: true; reason: string } | null = null;
-
-      // Always auto-allow panopticon's own MCP tools
-      if (toolName.startsWith("mcp__plugin_panopticon_panopticon__")) {
-        decision = { allow: true, reason: "Panopticon tool (always allowed)" };
-      } else {
-        const allowed = loadAllowed();
-        if (allowed) {
-          if (toolName === "Bash") {
-            // Chain-aware enforcement for Bash commands
-            const command = data.tool_input?.command;
-            if (typeof command === "string" && allowed.bash_commands?.length) {
-              decision = checkBashPermission(command, allowed.bash_commands);
-            }
-          } else if (allowed.tools?.includes(toolName)) {
-            // Exact match for non-Bash tools
-            decision = { allow: true, reason: `Tool "${toolName}" is allowed` };
-          }
-        }
-      }
-
-      if (decision) {
-        process.stdout.write(
-          JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "allow",
-              permissionDecisionReason: decision.reason,
-            },
-          }),
-        );
-      }
-    }
-    // Output empty JSON for Gemini CLI hooks (expects JSON response)
-    if (!process.stdout.bytesWritten) {
-      process.stdout.write("{}");
-    }
+    process.stdout.write(JSON.stringify(result));
   } catch (err) {
-    // Silently fail — hooks must not block Claude Code or Gemini CLI
+    // Silently fail — hooks must not block the calling CLI
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);
     }
