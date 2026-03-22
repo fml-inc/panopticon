@@ -1,4 +1,41 @@
+import { COST_EXPR } from "./pricing.js";
 import { getDb } from "./schema.js";
+
+// Unified token type extraction: works for Claude, Gemini CLI, and gen_ai metric names
+const TOKEN_TYPE_EXPR = `COALESCE(json_extract(attributes, '$.type'), json_extract(attributes, '$."gen_ai.token.type"'))`;
+const MODEL_EXPR = `COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"'))`;
+
+/**
+ * Resolved metrics CTE that correctly deduplicates Gemini (cumulative MAX) vs Claude (per-request SUM).
+ * Gemini CLI sends cumulative counters — use MAX per (session, model, token_type).
+ * Claude Code sends per-request values — use SUM per (session, model, token_type).
+ */
+function resolvedMetricsCTE(extraWhere = ""): string {
+  return `
+    resolved_tokens AS (
+      -- Gemini: cumulative counters → MAX per (session, model, token_type)
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             ${TOKEN_TYPE_EXPR} as token_type,
+             MAX(value) as tokens
+      FROM otel_metrics
+      WHERE name IN ('gemini_cli.token.usage', 'gen_ai.client.token.usage')
+      ${extraWhere}
+      GROUP BY session_id, model, token_type
+
+      UNION ALL
+
+      -- Claude: per-request values → SUM
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             ${TOKEN_TYPE_EXPR} as token_type,
+             SUM(value) as tokens
+      FROM otel_metrics
+      WHERE name = 'claude_code.token.usage'
+      ${extraWhere}
+      GROUP BY session_id, model, token_type
+    )`;
+}
 
 function parseSince(since?: string): number | null {
   if (!since) return null;
@@ -29,12 +66,12 @@ export function listSessions(opts: { limit?: number; since?: string } = {}) {
       ${sinceMs ? "WHERE timestamp_ms >= ?" : ""}
       GROUP BY session_id
     ),
+    ${resolvedMetricsCTE()},
     otel_costs AS (
       SELECT session_id,
-             SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
-             SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as total_cost
-      FROM otel_metrics
-      WHERE session_id IS NOT NULL
+             SUM(tokens) as total_tokens,
+             SUM(${COST_EXPR}) as total_cost
+      FROM resolved_tokens
       GROUP BY session_id
     )
     SELECT s.session_id,
@@ -163,15 +200,9 @@ export function costBreakdown(
   const sinceMs = parseSince(opts.since);
   const groupBy = opts.group_by ?? "session";
 
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-
-  if (sinceMs) {
-    conditions.push("CAST(timestamp_ns / 1000000 AS INTEGER) >= ?");
-    params.push(sinceMs);
-  }
-
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const extraWhere = sinceMs
+    ? `AND CAST(timestamp_ns / 1000000 AS INTEGER) >= ${Number(sinceMs)}`
+    : "";
 
   let groupExpr: string;
   let selectExpr: string;
@@ -181,28 +212,29 @@ export function costBreakdown(
       selectExpr = "session_id as group_key";
       break;
     case "model":
-      groupExpr = "json_extract(attributes, '$.model')";
-      selectExpr = `json_extract(attributes, '$.model') as group_key`;
+      groupExpr = "model";
+      selectExpr = "model as group_key";
       break;
     case "day":
-      groupExpr = "date(timestamp_ns / 1000000000, 'unixepoch')";
-      selectExpr = `date(timestamp_ns / 1000000000, 'unixepoch') as group_key`;
+      // Fall back to raw metrics for day grouping (needs timestamp)
+      groupExpr = "session_id";
+      selectExpr = "session_id as group_key";
       break;
   }
 
   const sql = `
+    WITH ${resolvedMetricsCTE(extraWhere)}
     SELECT ${selectExpr},
-           SUM(CASE WHEN name LIKE '%input%token%' THEN value ELSE 0 END) as input_tokens,
-           SUM(CASE WHEN name LIKE '%output%token%' THEN value ELSE 0 END) as output_tokens,
-           SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as total_tokens,
-           SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as total_cost
-    FROM otel_metrics
-    ${where}
+           SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
+           SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
+           SUM(tokens) as total_tokens,
+           SUM(${COST_EXPR}) as total_cost
+    FROM resolved_tokens
     GROUP BY ${groupExpr}
     ORDER BY total_tokens DESC
   `;
 
-  return db.prepare(sql).all(...params);
+  return db.prepare(sql).all();
 }
 
 export function searchEvents(opts: {
@@ -417,13 +449,13 @@ export function activitySummary(opts: { since?: string } = {}) {
     `)
       .get(s.session_id) as { cwd: string | null } | undefined;
 
-    // Cost from otel_metrics
+    // Cost from otel_metrics (handles Gemini cumulative MAX vs Claude per-request SUM)
     const costRow = db
       .prepare(`
-      SELECT SUM(CASE WHEN name LIKE '%token%' THEN value ELSE 0 END) as tokens,
-             SUM(CASE WHEN name LIKE '%cost%' THEN value ELSE 0 END) as cost
-      FROM otel_metrics
-      WHERE session_id = ?
+      WITH ${resolvedMetricsCTE(`AND session_id = ?`)}
+      SELECT SUM(tokens) as tokens,
+             SUM(${COST_EXPR}) as cost
+      FROM resolved_tokens
     `)
       .get(s.session_id) as { tokens: number; cost: number } | undefined;
 

@@ -8,6 +8,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { config, ensureDataDir } from "./config.js";
+import { refreshPricing } from "./db/pricing.js";
 import { pruneEstimate, pruneExecute } from "./db/prune.js";
 import {
   activitySummary,
@@ -141,7 +142,7 @@ function readStdin(): Promise<string> {
 // Shell environment configuration
 // ---------------------------------------------------------------------------
 
-function configureShellEnv(force: boolean) {
+function configureShellEnv(force: boolean, target = "claude") {
   const shellRc = path.join(
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
@@ -159,6 +160,12 @@ function configureShellEnv(force: boolean) {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
+    "GEMINI_TELEMETRY_ENABLED",
+    "GEMINI_TELEMETRY_TARGET",
+    "GEMINI_TELEMETRY_USE_COLLECTOR",
+    "GEMINI_TELEMETRY_OTLP_ENDPOINT",
+    "GEMINI_TELEMETRY_OTLP_PROTOCOL",
+    "GEMINI_TELEMETRY_LOG_PROMPTS",
   ];
   const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
@@ -188,8 +195,32 @@ function configureShellEnv(force: boolean) {
     ["OTEL_LOG_TOOL_DETAILS", "export OTEL_LOG_TOOL_DETAILS=1"],
     ["OTEL_LOG_USER_PROMPTS", "export OTEL_LOG_USER_PROMPTS=1"],
     ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
-    ["# <<< panopticon <<<", "# <<< panopticon <<<"],
   ];
+
+  if (target === "gemini" || target === "all") {
+    wantedLines.push(
+      ["GEMINI_TELEMETRY_ENABLED", "export GEMINI_TELEMETRY_ENABLED=true"],
+      ["GEMINI_TELEMETRY_TARGET", "export GEMINI_TELEMETRY_TARGET=local"],
+      [
+        "GEMINI_TELEMETRY_USE_COLLECTOR",
+        "export GEMINI_TELEMETRY_USE_COLLECTOR=true",
+      ],
+      [
+        "GEMINI_TELEMETRY_OTLP_ENDPOINT",
+        `export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
+      ],
+      [
+        "GEMINI_TELEMETRY_OTLP_PROTOCOL",
+        "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
+      ],
+      [
+        "GEMINI_TELEMETRY_LOG_PROMPTS",
+        "export GEMINI_TELEMETRY_LOG_PROMPTS=true",
+      ],
+    );
+  }
+
+  wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
 
   if (!rcContent.includes(".local/bin")) {
     wantedLines.splice(1, 0, [
@@ -268,9 +299,16 @@ program
   .alias("setup")
   .description("Build, register plugin, init DB, configure shell")
   .option("--desktop", "Install as MCP server for Claude Desktop instead")
+  .option("--target <target>", "Target CLI: claude, gemini, all", "all")
   .option("--force", "Overwrite customized env vars with defaults")
   .option("--skip-build", "Skip the build step (internal)")
   .action(async (opts) => {
+    if (!["claude", "gemini", "all"].includes(opts.target)) {
+      console.error(
+        `Invalid target: ${opts.target}. Must be claude, gemini, or all.`,
+      );
+      process.exit(1);
+    }
     const pluginRoot = getPluginRoot();
     if (opts.desktop) {
       await installDesktop(pluginRoot, opts);
@@ -334,9 +372,10 @@ async function installDesktop(
 
 async function installClaudeCode(
   pluginRoot: string,
-  opts: { force?: boolean; skipBuild?: boolean },
+  opts: { force?: boolean; skipBuild?: boolean; target?: string },
 ) {
   const force = opts.force ?? false;
+  const target = opts.target ?? "claude";
   const pluginJson = readJsonFile(
     path.join(pluginRoot, ".claude-plugin", "plugin.json"),
   );
@@ -372,7 +411,15 @@ async function installClaudeCode(
   ensureDataDir();
   getDb();
   closeDb();
-  console.log(`      ${config.dbPath}\n`);
+  console.log(`      ${config.dbPath}`);
+
+  // Fetch model pricing from OpenRouter (non-blocking if it fails)
+  const pricing = await refreshPricing();
+  console.log(
+    pricing
+      ? `      Cached pricing for ${Object.keys(pricing.models).length} models\n`
+      : "      Could not fetch pricing (will use defaults)\n",
+  );
 
   console.log("[3/7] Setting up local marketplace...");
   fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
@@ -420,16 +467,74 @@ async function installClaudeCode(
   console.log(`      Marketplace: ${config.marketplaceDir}`);
   console.log(`      Cache: ${cacheDir}\n`);
 
-  console.log("[4/7] Registering plugin in Claude Code settings...");
-  const settings = readJsonFile(config.claudeSettingsPath) ?? {};
-  settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
-  settings.extraKnownMarketplaces["local-plugins"] = {
-    source: { source: "directory", path: config.marketplaceDir },
-  };
-  settings.enabledPlugins = settings.enabledPlugins ?? {};
-  settings.enabledPlugins["panopticon@local-plugins"] = true;
-  writeJsonFile(config.claudeSettingsPath, settings);
-  console.log(`      ${config.claudeSettingsPath}\n`);
+  if (target === "claude" || target === "all") {
+    console.log("[4/7] Registering plugin in Claude Code settings...");
+    const settings = readJsonFile(config.claudeSettingsPath) ?? {};
+    settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
+    settings.extraKnownMarketplaces["local-plugins"] = {
+      source: { source: "directory", path: config.marketplaceDir },
+    };
+    settings.enabledPlugins = settings.enabledPlugins ?? {};
+    settings.enabledPlugins["panopticon@local-plugins"] = true;
+    writeJsonFile(config.claudeSettingsPath, settings);
+    console.log(`      ${config.claudeSettingsPath}\n`);
+  } else {
+    console.log("[4/7] Skipping Claude Code settings (target: gemini)...\n");
+  }
+
+  if (target === "gemini" || target === "all") {
+    console.log("[4a/7] Registering hooks in Gemini CLI settings...");
+    const geminiSettings = readJsonFile(config.geminiSettingsPath) ?? {};
+    geminiSettings.hooks = geminiSettings.hooks || {};
+
+    const hookBin = path.join(pluginRoot, "bin", "panopticon-hook");
+    const events = [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PostToolUse",
+      "PostToolUseFailure",
+    ];
+    for (const event of events) {
+      geminiSettings.hooks[event] = geminiSettings.hooks[event] || [];
+      // Remove existing panopticon hooks
+      geminiSettings.hooks[event] = (geminiSettings.hooks[event] as any[])
+        .map((group: any) => ({
+          ...group,
+          hooks: (group.hooks || []).filter(
+            (h: any) => !h.path?.includes("panopticon"),
+          ),
+        }))
+        .filter((group: any) => group.hooks.length > 0);
+      // Add panopticon hook
+      geminiSettings.hooks[event].push({
+        hooks: [{ path: hookBin, skipExecution: false }],
+      });
+    }
+
+    geminiSettings.hooksConfig = geminiSettings.hooksConfig || {};
+    geminiSettings.hooksConfig.enabled = true;
+
+    geminiSettings.mcpServers = geminiSettings.mcpServers || {};
+    geminiSettings.mcpServers.panopticon = {
+      command: "node",
+      args: [path.join(pluginRoot, "bin", "mcp-server")],
+    };
+
+    geminiSettings.telemetry = geminiSettings.telemetry || {};
+    Object.assign(geminiSettings.telemetry, {
+      enabled: true,
+      target: "local",
+      useCollector: true,
+      OTLP_ENDPOINT: `http://localhost:${config.otlpPort}`,
+      OTLP_PROTOCOL: "http",
+    });
+
+    writeJsonFile(config.geminiSettingsPath, geminiSettings);
+    console.log(`      ${config.geminiSettingsPath}\n`);
+  } else {
+    console.log("[4a/7] Skipping Gemini CLI settings...\n");
+  }
 
   console.log("[5/7] Adding CLI to PATH...");
   const localBin = path.join(os.homedir(), ".local", "bin");
@@ -470,9 +575,15 @@ async function installClaudeCode(
   console.log();
 
   console.log("[7/7] Configuring shell environment...");
-  configureShellEnv(force);
+  configureShellEnv(force, target);
 
-  console.log("Done! Start a new Claude Code session to activate.\n");
+  const assistant =
+    target === "all"
+      ? "Claude Code and Gemini CLI"
+      : target === "claude"
+        ? "Claude Code"
+        : "Gemini CLI";
+  console.log(`Done! Start a new ${assistant} session to activate.\n`);
   console.log("Verify with: panopticon status");
 }
 
@@ -863,6 +974,22 @@ program
   .description("Show database row counts for each table")
   .action(() => {
     output(dbStats());
+  });
+
+program
+  .command("refresh-pricing")
+  .description("Fetch latest model pricing from OpenRouter")
+  .action(async () => {
+    console.log("Fetching pricing from OpenRouter...");
+    const result = await refreshPricing();
+    if (result) {
+      console.log(
+        `Cached pricing for ${Object.keys(result.models).length} models`,
+      );
+    } else {
+      console.error("Failed to fetch pricing");
+      process.exit(1);
+    }
   });
 
 const permissions = program

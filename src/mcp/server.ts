@@ -30,7 +30,7 @@ const server = new McpServer({
 
 server.tool(
   "panopticon_sessions",
-  "List recent Claude Code sessions with stats (event count, tools used, cost)",
+  "List recent Claude Code & Gemini CLI sessions with stats (event count, tools used, cost)",
   {
     limit: z
       .number()
@@ -143,7 +143,7 @@ server.tool(
 
 server.tool(
   "panopticon_summary",
-  "Generate a summary of recent Claude Code activity — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates, daily reports, and progress reviews.",
+  "Generate a summary of recent Claude Code & Gemini CLI activity — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates, daily reports, and progress reviews.",
   {
     since: z
       .string()
