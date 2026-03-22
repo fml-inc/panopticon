@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import { getDb } from "./schema.js";
 
 const PRICING_PATH = path.join(config.dataDir, "pricing.json");
-const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/models";
 
 interface ModelPricing {
