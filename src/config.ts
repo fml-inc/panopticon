@@ -7,6 +7,7 @@ const DATA_DIR =
   path.join(os.homedir(), ".local", "share", "panopticon");
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
+const CODEX_DIR = path.join(os.homedir(), ".codex");
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
 const MARKETPLACE_DIR = path.join(
   os.homedir(),
@@ -23,6 +24,8 @@ export const config = {
   otlpHost: process.env.PANOPTICON_OTLP_HOST ?? "0.0.0.0",
   claudeDir: CLAUDE_DIR,
   claudeSettingsPath: path.join(CLAUDE_DIR, "settings.json"),
+  codexDir: CODEX_DIR,
+  codexConfigPath: path.join(CODEX_DIR, "config.toml"),
   geminiDir: GEMINI_DIR,
   geminiSettingsPath: path.join(GEMINI_DIR, "settings.json"),
   marketplaceDir: MARKETPLACE_DIR,
