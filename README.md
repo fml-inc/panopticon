@@ -8,7 +8,7 @@
 
 <br>
 
-Self-contained observability for Claude Code. Captures native OpenTelemetry signals and hook events to SQLite, queryable via MCP from within Claude Code itself.
+Self-contained observability for AI coding tools. Captures OpenTelemetry signals, hook events, and API traffic from Claude Code, Gemini CLI, and Codex CLI — stored in SQLite, queryable via MCP.
 
 No Docker, no external services. Just Node.js.
 
@@ -46,55 +46,73 @@ panopticon install
 
 This builds the project, registers it as a Claude Code plugin, initializes the database, symlinks the CLI to `~/.local/bin`, and configures OTel environment variables in your shell. Start a new Claude Code session to activate.
 
-Use `panopticon install --force` to overwrite customized environment variables with defaults.
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--target <t>` | Target CLI: `claude`, `gemini`, `codex`, or `all` (default: `all`) |
+| `--proxy` | Route API traffic through the panopticon proxy |
+| `--desktop` | Install as MCP server for Claude Desktop instead |
+| `--force` | Overwrite customized env vars with defaults |
 
 ## How it works
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Claude Code                     │
-│                                                  │
-│  ┌──────────┐           ┌──────────────┐         │
-│  │ OTel SDK │ HTTP/     │ Plugin Hooks │ stdin   │
-│  │          │ protobuf  │ (hooks.json) │ JSON    │
-│  └────┬─────┘           └──────┬───────┘         │
-└───────┼────────────────────────┼─────────────────┘
-        │                        │
-        ▼                        ▼
-┌───────────────┐      ┌─────────────────┐
-│ OTLP Receiver │      │  Hook Handler   │
-│ :4318         │      │  (bin/hook)     │
-│ /v1/logs      │      │                 │
-│ /v1/metrics   │      │                 │
-└───────┬───────┘      └────────┬────────┘
-        │                       │
-        ▼                       ▼
-┌─────────────────────────────────────┐
-│           SQLite (WAL mode)         │
-│  ~/.local/share/panopticon/data.db  │
-│                                     │
-│  otel_logs | otel_metrics | hooks   │
-└──────────────────┬──────────────────┘
-                   │
-                   ▼
-          ┌────────────────┐
-          │   MCP Server   │
-          │   (stdio)      │
-          │                │
-          │ panopticon_*   │
-          │ query tools    │
-          └────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│            Claude Code / Gemini CLI / Codex CLI              │
+│                                                              │
+│  ┌──────────┐     ┌──────────────┐     ┌──────────────────┐  │
+│  │ OTel SDK │     │ Plugin Hooks │     │ API requests     │  │
+│  │          │     │ (hooks.json) │     │ (--proxy mode)   │  │
+│  └────┬─────┘     └──────┬───────┘     └────────┬─────────┘  │
+└───────┼──────────────────┼──────────────────────┼────────────┘
+        │                  │                      │
+        ▼                  ▼                      ▼
+┌──────────────────────────────────────────────────────────────┐
+│              Unified Panopticon Server (:4318)               │
+│                                                              │
+│  /v1/logs, /v1/metrics   /hooks       /proxy/anthropic       │
+│  (OTLP ingest)           (hook JSON)  /proxy/openai          │
+│                                       /proxy/google          │
+│                                       /proxy/codex (ws)      │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+                       ▼
+          ┌─────────────────────────┐
+          │    SQLite (WAL mode)    │
+          │  ~/.local/share/        │
+          │    panopticon/data.db   │
+          └────────────┬────────────┘
+                       │
+                       ▼
+              ┌────────────────┐
+              │   MCP Server   │
+              │   (stdio)      │
+              │                │
+              │ panopticon_*   │
+              │ query tools    │
+              └────────────────┘
 ```
 
-**Three data pipelines feed one database:**
+**Four data pipelines feed one database:**
 
 1. **Hook events** — Plugin hooks capture SessionStart, tool use (pre/post), prompts, subagent lifecycle, and session end. Rich payloads including tool inputs and outputs.
 
-2. **OTel logs** — Native Claude Code events: `user_prompt`, `api_request`, `tool_result`, `tool_decision`, `api_error`. Includes cost, token counts, durations, model info.
+2. **OTel logs** — Native telemetry events: `user_prompt`, `api_request`, `tool_result`, `tool_decision`, `api_error`. Includes cost, token counts, durations, model info.
 
 3. **OTel metrics** — Time series: `token.usage`, `cost.usage`, `session.count`, `active_time.total`, `lines_of_code.count`, `commit.count`, `pull_request.count`.
 
-All three are correlated by `session_id`.
+4. **API proxy** — Transparent HTTP/WebSocket proxy for Anthropic, OpenAI, Google AI, and Codex APIs. Captures request/response pairs and emits them as hook events and OTel data. Enable with `panopticon install --proxy`.
+
+All pipelines are correlated by `session_id`.
+
+## Supported tools
+
+| Tool | Hooks | OTel | Proxy |
+|------|-------|------|-------|
+| Claude Code | Plugin hooks via `hooks.json` | Native OTel SDK | Anthropic API |
+| Gemini CLI | Hooks via `settings.json` | Native OTel SDK | — |
+| Codex CLI | Hooks via `config.toml` | — | WebSocket proxy |
 
 ## MCP tools
 
@@ -112,82 +130,107 @@ Once the plugin is loaded, these tools are available to Claude:
 | `panopticon_get_event` | Fetch full untruncated details for a specific event by source and ID |
 | `panopticon_query` | Raw read-only SQL against the database |
 | `panopticon_status` | Database row counts |
+| `panopticon_permissions_show` | Show current permission approvals and allowed tools/commands |
+| `panopticon_permissions_apply` | Apply permission rules (allowed tools/commands via PreToolUse hook) |
 
 ## CLI
 
 ```
 panopticon install          Build, register plugin, init DB, configure shell
+  --target <t>              Target CLI: claude, gemini, codex, all (default: all)
+  --proxy                   Route API traffic through the panopticon proxy
+  --desktop                 Install as MCP server for Claude Desktop
   --force                   Overwrite customized env vars with defaults
-panopticon start            Start the OTLP receiver (background)
-panopticon stop             Stop the OTLP receiver
-panopticon status           Show receiver/sync status, DB stats, watermarks
-panopticon logs [daemon]    View daemon logs (otlp, sync, mcp)
-  -f, --follow                Follow log output (like tail -f)
-  -n <lines>                  Number of lines to show (default 50)
+
+panopticon start            Start the server (background)
+panopticon stop             Stop the server
+panopticon status           Show server status and database stats
+
+panopticon logs [daemon]    View daemon logs (server, otlp, mcp, proxy)
+  -f, --follow              Follow log output (like tail -f)
+  -n <lines>                Number of lines to show (default 50)
+
+panopticon sessions         List recent sessions with stats
+  --limit <n>               Max sessions to return (default 20)
+  --since <duration>        Time filter (e.g. "24h", "7d")
+panopticon timeline <id>    Chronological events for a session
+panopticon tools            Per-tool usage aggregates
+panopticon costs            Token usage and cost breakdowns
+  --group-by <g>            Group by session, model, or day
+panopticon summary          Activity summary
+panopticon plans            List plans from ExitPlanMode events
+panopticon search <query>   Full-text search across all events
+panopticon event <src> <id> Get full details for a specific event
+panopticon query <sql>      Raw read-only SQL query
+panopticon db-stats         Show database row counts
+
 panopticon prune            Delete old data from the database
-  --older-than 30d            Max age (default: 30d)
-  --synced-only               Only delete rows already synced
-  --dry-run                   Show estimate without deleting
-  --vacuum                    Reclaim disk space after pruning
-  --yes                       Skip confirmation prompt
-panopticon sync setup       Configure sync targets (interactive)
-panopticon sync start       Start the sync daemon (background)
-panopticon sync stop        Stop the sync daemon
-panopticon sync status      Show per-target sync progress and watermarks
-panopticon sync reset [t]   Reset sync watermarks (all or per-target)
+  --older-than 30d          Max age (default: 30d)
+  --dry-run                 Show estimate without deleting
+  --vacuum                  Reclaim disk space after pruning
+  --yes                     Skip confirmation prompt
+
+panopticon refresh-pricing  Fetch latest model pricing from OpenRouter
+panopticon permissions show Show current approval rules
+panopticon permissions apply Apply permission rules (JSON from stdin)
 ```
 
-The OTLP receiver auto-starts on `SessionStart` via hook, so manual start/stop is rarely needed.
+The server auto-starts on `SessionStart` via hook, so manual start/stop is rarely needed.
 
-## Logs
+## SDK
 
-Daemon stdout/stderr is written to `~/Library/Logs/panopticon/`:
+For programmatic use with the Claude Agent SDK:
 
-- `otlp-receiver.log` — OTLP receiver
-- `sync.log` — Sync daemon
-- `mcp-server.log` — MCP server (stderr only; stdout is the MCP protocol)
+```js
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { observe } from "@fml-inc/panopticon/sdk";
 
-These are also visible in Console.app. macOS manages the directory — no manual cleanup needed.
-
-## Sync
-
-The sync daemon pushes local data to one or more remote backends. Run `panopticon sync setup` to configure interactively.
-
-Config lives at `~/.local/share/panopticon/sync.json`:
-
-```json
-{
-  "backendType": "fml",
-  "targets": [
-    { "name": "prod", "url": "https://api.example.com" }
-  ],
-  "allowedOrgs": ["my-org"],
-  "orgDirs": { "/Users/me/work/my-org": "my-org" },
-  "batchSize": 20,
-  "intervalMs": 30000
+for await (const msg of observe(query({ prompt: "..." }))) {
+  // use msg normally — panopticon captures everything in the background
 }
 ```
 
-- **backendType** — `"fml"` (default) posts to FML Convex endpoints. `"otlp"` posts logs and metrics in standard OTLP wire format (`/v1/logs`, `/v1/metrics`).
-- **targets** — Multiple backends with independent per-table watermarks.
-- **allowedOrgs** — Only sync data from these GitHub orgs. Use `"*"` for all. Empty list = sync nothing (fail-closed).
-- **orgDirs** — Map local directories to org names for non-git workspaces.
+Requires a running panopticon server.
 
-Authentication uses a GitHub token via `PANOPTICON_GITHUB_TOKEN` or `gh auth token`.
+## Logs
+
+Daemon stdout/stderr is written to platform-specific log directories:
+
+| Platform | Path |
+|----------|------|
+| macOS | `~/Library/Logs/panopticon/` |
+| Linux | `~/.local/state/panopticon/logs/` |
+| Windows | `%LOCALAPPDATA%/panopticon/logs/` |
+
+Log files: `server.log`, `otlp-receiver.log`, `mcp-server.log`, `proxy.log`.
+
+On macOS these are also visible in Console.app.
 
 ## Configuration
 
 **Environment variables** set by `panopticon install` in your shell profile:
 
 ```bash
-CLAUDE_CODE_ENABLE_TELEMETRY=1           # Required to enable OTel
+# Claude Code OTel
+CLAUDE_CODE_ENABLE_TELEMETRY=1
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_METRICS_EXPORTER=otlp
 OTEL_LOGS_EXPORTER=otlp
-OTEL_LOG_TOOL_DETAILS=1                  # Include MCP/skill names in events
-OTEL_LOG_USER_PROMPTS=1                  # Include prompt content in events
-OTEL_METRIC_EXPORT_INTERVAL=10000        # Flush metrics every 10s
+OTEL_LOG_TOOL_DETAILS=1
+OTEL_LOG_USER_PROMPTS=1
+OTEL_METRIC_EXPORT_INTERVAL=10000
+
+# Gemini CLI OTel (when --target gemini or all)
+GEMINI_TELEMETRY_ENABLED=true
+GEMINI_TELEMETRY_TARGET=local
+GEMINI_TELEMETRY_USE_COLLECTOR=true
+GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318
+GEMINI_TELEMETRY_OTLP_PROTOCOL=http
+GEMINI_TELEMETRY_LOG_PROMPTS=true
+
+# Proxy mode (when --proxy)
+ANTHROPIC_BASE_URL=http://localhost:4318/proxy/anthropic
 ```
 
 **Server configuration:**
@@ -195,17 +238,23 @@ OTEL_METRIC_EXPORT_INTERVAL=10000        # Flush metrics every 10s
 | Env var | Default | Description |
 |---|---|---|
 | `PANOPTICON_DATA_DIR` | `~/.local/share/panopticon` | Data directory |
-| `PANOPTICON_OTLP_PORT` | `4318` | OTLP receiver port |
-| `PANOPTICON_OTLP_HOST` | `0.0.0.0` | OTLP receiver bind address |
-| `PANOPTICON_GITHUB_TOKEN` | — | GitHub token for sync authentication |
+| `PANOPTICON_PORT` | `4318` | Unified server port |
+| `PANOPTICON_HOST` | `127.0.0.1` | Server bind address |
 
 ## Database
 
-SQLite with WAL mode at `~/.local/share/panopticon/data.db`. Three tables:
+SQLite with WAL mode at `~/.local/share/panopticon/data.db`.
 
-- `otel_logs` — OTel log records (api_request, tool_result, user_prompt, etc.)
-- `otel_metrics` — OTel metric data points (token usage, cost, active time, etc.)
-- `hook_events` — Plugin hook events with full payloads (tool inputs/outputs)
+| Table | Description |
+|-------|-------------|
+| `otel_logs` | OTel log records (api_request, tool_result, user_prompt, etc.) |
+| `otel_metrics` | OTel metric data points (token usage, cost, active time, etc.) |
+| `hook_events` | Plugin hook events with full payloads (tool inputs/outputs) |
+| `hook_events_fts` | FTS5 full-text search index on hook payloads |
+| `session_repositories` | Maps sessions to GitHub repositories |
+| `session_cwds` | Maps sessions to working directories |
+| `model_pricing` | Cached model pricing from OpenRouter |
+| `schema_meta` | Internal schema version tracking |
 
 Query directly:
 
@@ -222,6 +271,7 @@ pnpm install       # Install dependencies
 pnpm dev           # Watch mode (tsup)
 pnpm check         # Lint (Biome)
 pnpm typecheck     # Type check
+pnpm test          # Run tests (Vitest)
 panopticon install # Rebuild and update plugin cache
 ```
 
@@ -233,22 +283,40 @@ After rebuilding, run `panopticon install` to sync changes to the plugin cache. 
 
 ```
 src/
-├── cli.ts              CLI entry point (install, start/stop, prune, sync, logs)
+├── cli.ts              CLI entry point (install, start/stop, query commands)
+├── server.ts           Unified HTTP server (hooks, OTLP, proxy — single port)
+├── sdk.ts              Claude Agent SDK shim (observe() wrapper)
 ├── config.ts           Paths, ports, defaults
-├── log.ts              Log file paths + fd opener (~/Library/Logs/panopticon/)
+├── log.ts              Log file paths (macOS/Linux/Windows)
+├── repo.ts             Git repository detection
+├── toml.ts             TOML read/write (for Codex config)
 ├── db/
-│   ├── schema.ts       SQLite schema, migrations, WAL + incremental auto-vacuum
-│   ├── query.ts        Query helpers for MCP tools
-│   └── prune.ts        Data retention / pruning
+│   ├── schema.ts       SQLite schema, migrations, WAL + auto-vacuum
+│   ├── query.ts        Query helpers for MCP tools and CLI
+│   ├── store.ts        Data storage (insert hooks, OTel, sessions)
+│   ├── prune.ts        Data retention / pruning
+│   └── pricing.ts      Model pricing cache (OpenRouter)
 ├── hooks/
-│   └── handler.ts      Hook event ingestion (stdin JSON → gzipped SQLite)
+│   ├── handler.ts      Hook event handler (stdin JSON → server)
+│   ├── ingest.ts       Hook processing and storage
+│   └── permissions.ts  PreToolUse permission enforcement
 ├── mcp/
-│   └── server.ts       MCP server with query tools
+│   ├── server.ts       MCP server with query tools
+│   └── permissions.ts  Permission management MCP tools
 ├── otlp/
-│   └── server.ts       HTTP OTLP receiver (protobuf + JSON)
-└── sync/
-    ├── daemon.ts        Background sync loop (multi-target, FML + OTLP backends)
-    ├── client.ts        HTTP client, batching, GitHub auth
-    ├── mapper.ts        DB rows → API payloads
-    └── state.ts         Per-target watermark persistence
+│   ├── server.ts       HTTP OTLP receiver (protobuf + JSON)
+│   ├── decode-logs.ts  OTel log record decoding
+│   ├── decode-metrics.ts OTel metric decoding
+│   └── proto.ts        Protocol buffer definitions
+└── proxy/
+    ├── server.ts       API proxy (Anthropic, OpenAI, Google, Codex)
+    ├── emit.ts         Event emission from proxy captures
+    ├── streaming.ts    SSE stream accumulation
+    ├── ws-capture.ts   WebSocket message capture (Codex)
+    ├── sessions.ts     Proxy session tracking
+    └── formats/
+        ├── types.ts      Format parser interface
+        ├── anthropic.ts  Anthropic Messages API parser
+        ├── openai.ts     OpenAI Chat Completions parser
+        └── openai-responses.ts  OpenAI Responses API parser
 ```
