@@ -661,17 +661,136 @@ program
     }
   });
 
+// ---------------------------------------------------------------------------
+// Proxy commands
+// ---------------------------------------------------------------------------
+
+const proxyCmd = program
+  .command("proxy")
+  .description("Manage the API proxy for multi-vendor capture");
+
+proxyCmd
+  .command("start")
+  .description("Start proxy daemon (background)")
+  .action(async () => {
+    ensureDataDir();
+
+    if (fs.existsSync(config.proxyPidFile)) {
+      const pid = parseInt(
+        fs.readFileSync(config.proxyPidFile, "utf-8").trim(),
+        10,
+      );
+      try {
+        process.kill(pid, 0);
+        console.log(`Proxy already running (PID ${pid})`);
+        return;
+      } catch {
+        fs.unlinkSync(config.proxyPidFile);
+      }
+    }
+
+    const serverScript = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "proxy",
+      "server.js",
+    );
+    const logFd = openLogFd("proxy");
+
+    const child = spawn("node", [serverScript], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: {
+        ...process.env,
+        PANOPTICON_PROXY_PORT: String(config.proxyPort),
+      },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      child.on("error", (err) => {
+        reject(new Error(`Failed to start: ${err.message}`));
+      });
+      setTimeout(() => {
+        if (child.pid) {
+          fs.writeFileSync(config.proxyPidFile, String(child.pid));
+          child.unref();
+          fs.closeSync(logFd);
+          console.log(
+            `Proxy started (PID ${child.pid}) on :${config.proxyPort}`,
+          );
+          console.log(`Log: ${logPaths.proxy}`);
+          console.log();
+          console.log("Routes:");
+          console.log("  /anthropic/* → https://api.anthropic.com/*");
+          console.log("  /openai/*    → https://api.openai.com/*");
+          console.log(
+            "  /google/*    → https://generativelanguage.googleapis.com/*",
+          );
+          resolve();
+        } else {
+          fs.closeSync(logFd);
+          reject(new Error("Failed to start proxy"));
+        }
+      }, 500);
+    });
+  });
+
+proxyCmd
+  .command("stop")
+  .description("Stop proxy daemon")
+  .action(() => {
+    if (!fs.existsSync(config.proxyPidFile)) {
+      console.log("Proxy is not running (no PID file)");
+      return;
+    }
+    const pid = parseInt(
+      fs.readFileSync(config.proxyPidFile, "utf-8").trim(),
+      10,
+    );
+    try {
+      process.kill(pid, "SIGTERM");
+      fs.unlinkSync(config.proxyPidFile);
+      console.log(`Proxy stopped (PID ${pid})`);
+    } catch {
+      fs.unlinkSync(config.proxyPidFile);
+      console.log("Proxy was not running (stale PID file removed)");
+    }
+  });
+
+proxyCmd
+  .command("status")
+  .description("Show proxy status")
+  .action(() => {
+    const proxy = isProcessRunning(config.proxyPidFile);
+    console.log(
+      `Proxy: ${proxy.running ? `running (PID ${proxy.pid}, port ${config.proxyPort})` : "stopped"}`,
+    );
+    if (proxy.running) {
+      console.log();
+      console.log("Configure your AI tools to use the proxy:");
+      console.log(
+        `  Anthropic tools: ANTHROPIC_BASE_URL=http://localhost:${config.proxyPort}/anthropic`,
+      );
+      console.log(
+        `  OpenAI tools:    OPENAI_API_BASE=http://localhost:${config.proxyPort}/openai`,
+      );
+    }
+  });
+
 program
   .command("status")
   .description("Show receiver status and database stats")
   .action(() => {
     const receiver = isProcessRunning(config.pidFile);
+    const proxy = isProcessRunning(config.proxyPidFile);
 
     console.log("Panopticon Status");
     console.log("=================");
     console.log();
     console.log(
       `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
+    );
+    console.log(
+      `Proxy:         ${proxy.running ? `running (PID ${proxy.pid}, port ${config.proxyPort})` : "stopped"}`,
     );
     console.log(`Database: ${config.dbPath}`);
 

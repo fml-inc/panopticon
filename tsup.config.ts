@@ -6,6 +6,7 @@ export default defineConfig({
     "hooks/handler": "src/hooks/handler.ts",
     "mcp/server": "src/mcp/server.ts",
     "otlp/server": "src/otlp/server.ts",
+    "proxy/server": "src/proxy/server.ts",
   },
   format: ["esm"],
   target: "node22",

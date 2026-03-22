@@ -40,6 +40,10 @@ export const config = {
   ),
   autoMaxSizeMb: 1000,
   autoMaxAgeDays: 90,
+  proxyPort: parseInt(process.env.PANOPTICON_PROXY_PORT ?? "4320", 10),
+  proxyHost: process.env.PANOPTICON_PROXY_HOST ?? "127.0.0.1",
+  proxyPidFile: path.join(DATA_DIR, "proxy.pid"),
+  proxyIdleSessionMs: 30 * 60 * 1000,
 } as const;
 
 export function ensureDataDir(): void {
