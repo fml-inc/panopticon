@@ -87,6 +87,51 @@ function startReceiver(): void {
   fs.closeSync(logFd);
 }
 
+function isProxyRunning(): boolean {
+  if (!fs.existsSync(config.proxyPidFile)) return false;
+  const pid = parseInt(
+    fs.readFileSync(config.proxyPidFile, "utf-8").trim(),
+    10,
+  );
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    try {
+      fs.unlinkSync(config.proxyPidFile);
+    } catch {}
+    return false;
+  }
+}
+
+function startProxy(): void {
+  ensureDataDir();
+
+  const serverScript = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "proxy",
+    "server.js",
+  );
+
+  const logFd = openLogFd("proxy");
+
+  const child = spawn("node", [serverScript], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: {
+      ...process.env,
+      PANOPTICON_PROXY_PORT: String(config.proxyPort),
+    },
+  });
+
+  if (child.pid) {
+    fs.writeFileSync(config.proxyPidFile, String(child.pid));
+  }
+  child.unref();
+  fs.closeSync(logFd);
+}
+
 function tryAutoPrune(): void {
   try {
     autoPrune(config.autoMaxAgeDays, config.autoMaxSizeMb);
@@ -146,6 +191,7 @@ async function main() {
     // On SessionStart, ensure background processes are running
     if (eventType === "SessionStart") {
       if (!isReceiverRunning()) startReceiver();
+      if (!isProxyRunning()) startProxy();
       tryAutoPrune();
       refreshIfStale().catch(() => {}); // non-blocking pricing refresh
     }
