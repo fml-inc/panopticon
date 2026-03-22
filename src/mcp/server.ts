@@ -267,7 +267,7 @@ server.tool(
   `Execute a read-only SQL query against the panopticon database.
 
 Schema:
-  hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, payload JSON)
+  hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, user_prompt, file_path, command, plan, allowed_prompts, payload BLOB)
   otel_logs(id, timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, attributes JSON, resource_attributes JSON, session_id, prompt_id, trace_id, span_id)
   otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)`,
   {

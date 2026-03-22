@@ -33,6 +33,11 @@ export interface HookEventRow {
   cwd?: string;
   repository?: string;
   tool_name?: string;
+  user_prompt?: string;
+  file_path?: string;
+  command?: string;
+  plan?: string;
+  allowed_prompts?: string;
   payload: unknown;
 }
 
@@ -47,8 +52,10 @@ const INSERT_METRIC_SQL = `
 `;
 
 const INSERT_HOOK_SQL = `
-  INSERT INTO hook_events (session_id, event_type, timestamp_ms, cwd, repository, tool_name, payload)
-  VALUES (@session_id, @event_type, @timestamp_ms, @cwd, @repository, @tool_name, @payload)
+  INSERT INTO hook_events (session_id, event_type, timestamp_ms, cwd, repository, tool_name,
+                           user_prompt, file_path, command, plan, allowed_prompts, payload)
+  VALUES (@session_id, @event_type, @timestamp_ms, @cwd, @repository, @tool_name,
+          @user_prompt, @file_path, @command, @plan, @allowed_prompts, @payload)
 `;
 
 export function insertOtelLogs(rows: OtelLogRow[]): void {
@@ -120,9 +127,69 @@ export function upsertSessionCwd(
   ).run(sessionId, cwd, timestampMs);
 }
 
+/** Fields that are already stored as columns or are noise — strip from payload before compression. */
+const STRIP_TOP_LEVEL = new Set([
+  "session_id",
+  "hook_event_name",
+  "tool_name",
+  "cwd",
+  "repository",
+  "transcript_path",
+  "permission_mode",
+  "tool_use_id",
+  "prompt",
+  "user_prompt",
+]);
+
+const STRIP_TOOL_INPUT = new Set([
+  "file_path",
+  "command",
+  "plan",
+  "allowedPrompts",
+]);
+
+function extractStr(
+  obj: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const v = obj?.[key];
+  return typeof v === "string" ? v : undefined;
+}
+
 export function insertHookEvent(row: HookEventRow): void {
   const db = getDb();
-  const json = JSON.stringify(row.payload);
+  const data = row.payload as Record<string, unknown>;
+  const toolInput = data.tool_input as Record<string, unknown> | undefined;
+
+  // Extract high-value fields into columns
+  const userPrompt = extractStr(data, "prompt");
+  const filePath = extractStr(toolInput, "file_path");
+  const command = extractStr(toolInput, "command");
+  const plan = extractStr(toolInput, "plan");
+  const allowedPrompts = toolInput?.allowedPrompts
+    ? JSON.stringify(toolInput.allowedPrompts)
+    : undefined;
+
+  // Full JSON for FTS (before stripping)
+  const fullJson = JSON.stringify(data);
+
+  // Strip redundant / extracted fields from payload before compression
+  const stripped: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (!STRIP_TOP_LEVEL.has(k)) stripped[k] = v;
+  }
+  if (toolInput) {
+    const ti: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(toolInput)) {
+      if (!STRIP_TOOL_INPUT.has(k)) ti[k] = v;
+    }
+    if (Object.keys(ti).length > 0) {
+      stripped.tool_input = ti;
+    } else {
+      delete stripped.tool_input;
+    }
+  }
+
   const insertWithFts = db.transaction(() => {
     db.prepare(INSERT_HOOK_SQL).run({
       session_id: row.session_id,
@@ -131,14 +198,19 @@ export function insertHookEvent(row: HookEventRow): void {
       cwd: row.cwd ?? null,
       repository: row.repository ?? null,
       tool_name: row.tool_name ?? null,
-      payload: gzipSync(Buffer.from(json)),
+      user_prompt: userPrompt ?? null,
+      file_path: filePath ?? null,
+      command: command ?? null,
+      plan: plan ?? null,
+      allowed_prompts: allowedPrompts ?? null,
+      payload: gzipSync(Buffer.from(JSON.stringify(stripped))),
     });
     const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
       id: number;
     };
     db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(
       id,
-      json,
+      fullJson,
     );
   });
   insertWithFts();
