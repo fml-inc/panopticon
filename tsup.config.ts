@@ -6,6 +6,8 @@ export default defineConfig({
     server: "src/server.ts",
     sdk: "src/sdk.ts",
     db: "src/db.ts",
+    types: "src/types.ts",
+    query: "src/query.ts",
     "hooks/handler": "src/hooks/handler.ts",
     "mcp/server": "src/mcp/server.ts",
     "otlp/server": "src/otlp/server.ts",

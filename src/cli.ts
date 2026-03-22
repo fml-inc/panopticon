@@ -955,13 +955,13 @@ program
   .option("--full", "Return full payloads instead of truncated")
   .action((sessionId, opts) => {
     const result = sessionTimeline({
-      session_id: sessionId,
-      event_types: opts.types,
+      sessionId,
+      eventTypes: opts.types,
       limit: opts.limit,
       offset: opts.offset,
-      full_payloads: opts.full,
+      fullPayloads: opts.full,
     });
-    output({ total: result.total, events: result.rows });
+    output(result);
   });
 
 program
@@ -985,7 +985,7 @@ program
   )
   .option("--group-by <key>", "Group by: session, model, or day")
   .action((opts) => {
-    output(costBreakdown({ since: opts.since, group_by: opts.groupBy }));
+    output(costBreakdown({ since: opts.since, groupBy: opts.groupBy }));
   });
 
 program
@@ -1033,13 +1033,13 @@ program
   .action((query, opts) => {
     const result = searchEvents({
       query,
-      event_types: opts.types,
+      eventTypes: opts.types,
       since: opts.since,
       limit: opts.limit,
       offset: opts.offset,
-      full_payloads: opts.full,
+      fullPayloads: opts.full,
     });
-    output({ total: result.total, results: result.rows });
+    output(result);
   });
 
 program
