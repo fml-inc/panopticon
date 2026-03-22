@@ -186,7 +186,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     ["CLAUDE_CODE_ENABLE_TELEMETRY", "export CLAUDE_CODE_ENABLE_TELEMETRY=1"],
     [
       "OTEL_EXPORTER_OTLP_ENDPOINT",
-      `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
+      `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.port}`,
     ],
     [
       "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -202,7 +202,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
   if (proxy && (target === "claude" || target === "all")) {
     wantedLines.push([
       "ANTHROPIC_BASE_URL",
-      `export ANTHROPIC_BASE_URL=http://localhost:${config.proxyPort}/anthropic`,
+      `export ANTHROPIC_BASE_URL=http://localhost:${config.port}/proxy/anthropic`,
     ]);
   }
 
@@ -216,7 +216,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
       ],
       [
         "GEMINI_TELEMETRY_OTLP_ENDPOINT",
-        `export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:${config.otlpPort}`,
+        `export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:${config.port}`,
       ],
       [
         "GEMINI_TELEMETRY_OTLP_PROTOCOL",
@@ -541,7 +541,7 @@ async function installClaudeCode(
       enabled: true,
       target: "local",
       useCollector: true,
-      OTLP_ENDPOINT: `http://localhost:${config.otlpPort}`,
+      OTLP_ENDPOINT: `http://localhost:${config.port}`,
       OTLP_PROTOCOL: "http",
     });
 
@@ -589,7 +589,7 @@ async function installClaudeCode(
 
     // Configure API proxy (opt-in via --proxy)
     if (opts.proxy) {
-      codexConfig.openai_base_url = `http://localhost:${config.proxyPort}/codex`;
+      codexConfig.openai_base_url = `http://localhost:${config.port}/proxy/codex`;
       console.log("      API proxy enabled (--proxy)");
     } else {
       // Remove proxy if previously installed
@@ -600,7 +600,7 @@ async function installClaudeCode(
     codexConfig.telemetry = {
       ...(codexConfig.telemetry as Record<string, unknown> | undefined),
       otlp_exporter: "otlp-http",
-      otlp_endpoint: `http://localhost:${config.otlpPort}`,
+      otlp_endpoint: `http://localhost:${config.port}`,
     };
 
     // Register MCP server
@@ -674,119 +674,50 @@ async function installClaudeCode(
 
 program
   .command("start")
-  .description("Start OTLP receiver (background)")
+  .description("Start panopticon server (background)")
   .action(async () => {
     ensureDataDir();
 
-    if (fs.existsSync(config.pidFile)) {
-      const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
-      try {
-        process.kill(pid, 0);
-        console.log(`OTLP receiver already running (PID ${pid})`);
-        return;
-      } catch {
-        fs.unlinkSync(config.pidFile);
-      }
-    }
-
-    const serverScript = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "otlp",
-      "server.js",
-    );
-    const logFd = openLogFd("otlp");
-
-    const child = spawn("node", [serverScript], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-      env: {
-        ...process.env,
-        PANOPTICON_OTLP_PORT: String(config.otlpPort),
-      },
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      child.on("error", (err) => {
-        reject(new Error(`Failed to start: ${err.message}`));
-      });
-      setTimeout(() => {
-        if (child.pid) {
-          fs.writeFileSync(config.pidFile, String(child.pid));
-          child.unref();
-          fs.closeSync(logFd);
-          console.log(
-            `OTLP receiver started (PID ${child.pid}) on :${config.otlpPort}`,
-          );
-          console.log(`Log: ${logPaths.otlp}`);
-          resolve();
-        } else {
-          fs.closeSync(logFd);
-          reject(new Error("Failed to start OTLP receiver"));
-        }
-      }, 500);
-    });
-  });
-
-program
-  .command("stop")
-  .description("Stop OTLP receiver")
-  .action(() => {
-    if (!fs.existsSync(config.pidFile)) {
-      console.log("OTLP receiver is not running (no PID file)");
-      return;
-    }
-    const pid = parseInt(fs.readFileSync(config.pidFile, "utf-8").trim(), 10);
-    try {
-      process.kill(pid, "SIGTERM");
-      fs.unlinkSync(config.pidFile);
-      console.log(`OTLP receiver stopped (PID ${pid})`);
-    } catch {
-      fs.unlinkSync(config.pidFile);
-      console.log("OTLP receiver was not running (stale PID file removed)");
-    }
-  });
-
-// ---------------------------------------------------------------------------
-// Proxy commands
-// ---------------------------------------------------------------------------
-
-const proxyCmd = program
-  .command("proxy")
-  .description("Manage the API proxy for multi-vendor capture");
-
-proxyCmd
-  .command("start")
-  .description("Start proxy daemon (background)")
-  .action(async () => {
-    ensureDataDir();
-
-    if (fs.existsSync(config.proxyPidFile)) {
+    // Check for already-running unified server
+    if (fs.existsSync(config.serverPidFile)) {
       const pid = parseInt(
-        fs.readFileSync(config.proxyPidFile, "utf-8").trim(),
+        fs.readFileSync(config.serverPidFile, "utf-8").trim(),
         10,
       );
       try {
         process.kill(pid, 0);
-        console.log(`Proxy already running (PID ${pid})`);
+        console.log(`Panopticon already running (PID ${pid})`);
         return;
       } catch {
-        fs.unlinkSync(config.proxyPidFile);
+        fs.unlinkSync(config.serverPidFile);
+      }
+    }
+
+    // Clean up legacy PID files from old separate daemons
+    for (const legacyPid of [config.pidFile, config.proxyPidFile]) {
+      if (fs.existsSync(legacyPid)) {
+        try {
+          const pid = parseInt(fs.readFileSync(legacyPid, "utf-8").trim(), 10);
+          process.kill(pid, "SIGTERM");
+        } catch {}
+        try {
+          fs.unlinkSync(legacyPid);
+        } catch {}
       }
     }
 
     const serverScript = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      "proxy",
       "server.js",
     );
-    const logFd = openLogFd("proxy");
+    const logFd = openLogFd("server");
 
     const child = spawn("node", [serverScript], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
       env: {
         ...process.env,
-        PANOPTICON_PROXY_PORT: String(config.proxyPort),
+        PANOPTICON_PORT: String(config.port),
       },
     });
 
@@ -796,86 +727,55 @@ proxyCmd
       });
       setTimeout(() => {
         if (child.pid) {
-          fs.writeFileSync(config.proxyPidFile, String(child.pid));
+          fs.writeFileSync(config.serverPidFile, String(child.pid));
           child.unref();
           fs.closeSync(logFd);
           console.log(
-            `Proxy started (PID ${child.pid}) on :${config.proxyPort}`,
+            `Panopticon started (PID ${child.pid}) on :${config.port}`,
           );
-          console.log(`Log: ${logPaths.proxy}`);
-          console.log();
-          console.log("Routes:");
-          console.log("  /anthropic/* → https://api.anthropic.com/*");
-          console.log("  /openai/*    → https://api.openai.com/*");
-          console.log(
-            "  /google/*    → https://generativelanguage.googleapis.com/*",
-          );
+          console.log(`Log: ${logPaths.server}`);
           resolve();
         } else {
           fs.closeSync(logFd);
-          reject(new Error("Failed to start proxy"));
+          reject(new Error("Failed to start panopticon server"));
         }
       }, 500);
     });
   });
 
-proxyCmd
+program
   .command("stop")
-  .description("Stop proxy daemon")
+  .description("Stop panopticon server")
   .action(() => {
-    if (!fs.existsSync(config.proxyPidFile)) {
-      console.log("Proxy is not running (no PID file)");
+    if (!fs.existsSync(config.serverPidFile)) {
+      console.log("Panopticon is not running (no PID file)");
       return;
     }
     const pid = parseInt(
-      fs.readFileSync(config.proxyPidFile, "utf-8").trim(),
+      fs.readFileSync(config.serverPidFile, "utf-8").trim(),
       10,
     );
     try {
       process.kill(pid, "SIGTERM");
-      fs.unlinkSync(config.proxyPidFile);
-      console.log(`Proxy stopped (PID ${pid})`);
+      fs.unlinkSync(config.serverPidFile);
+      console.log(`Panopticon stopped (PID ${pid})`);
     } catch {
-      fs.unlinkSync(config.proxyPidFile);
-      console.log("Proxy was not running (stale PID file removed)");
-    }
-  });
-
-proxyCmd
-  .command("status")
-  .description("Show proxy status")
-  .action(() => {
-    const proxy = isProcessRunning(config.proxyPidFile);
-    console.log(
-      `Proxy: ${proxy.running ? `running (PID ${proxy.pid}, port ${config.proxyPort})` : "stopped"}`,
-    );
-    if (proxy.running) {
-      console.log();
-      console.log("Configure your AI tools to use the proxy:");
-      console.log(
-        `  Anthropic tools: ANTHROPIC_BASE_URL=http://localhost:${config.proxyPort}/anthropic`,
-      );
-      console.log(
-        `  OpenAI tools:    OPENAI_API_BASE=http://localhost:${config.proxyPort}/openai`,
-      );
+      fs.unlinkSync(config.serverPidFile);
+      console.log("Panopticon was not running (stale PID file removed)");
     }
   });
 
 program
   .command("status")
-  .description("Show receiver status and database stats")
+  .description("Show server status and database stats")
   .action(() => {
-    const receiver = isProcessRunning(config.pidFile);
-    const proxy = isProcessRunning(config.proxyPidFile);
+    const server = isProcessRunning(config.serverPidFile);
 
     console.log("Panopticon Status");
     console.log("=================");
     console.log();
     console.log(
-      `OTLP Receiver: ${receiver.running ? `running (PID ${receiver.pid}, port ${config.otlpPort})` : "stopped"}`,
-    );
-    console.log(
-      `Proxy:         ${proxy.running ? `running (PID ${proxy.pid}, port ${config.proxyPort})` : "stopped"}`,
+      `Server: ${server.running ? `running (PID ${server.pid}, port ${config.port})` : "stopped"}`,
     );
     console.log(`Database: ${config.dbPath}`);
 

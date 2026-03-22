@@ -65,12 +65,82 @@ function sniffSignalFromBody(body: Buffer, protobuf: boolean): Signal | null {
   return null;
 }
 
+/** Handle an OTLP ingest request (logs, metrics, traces). */
+export async function handleOtlpRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const url = req.url ?? "";
+
+  try {
+    const body = await collectBody(req);
+
+    // Detect signal from URL path, or sniff body for Gemini CLI (sends to "/")
+    let signal = detectSignal(url);
+    if (!signal && (url === "/" || url === "")) {
+      signal = sniffSignalFromBody(body, isProtobuf(req));
+    }
+
+    if (signal === "logs") {
+      if (isProtobuf(req)) {
+        const rows = decodeLogs(body);
+        if (rows.length > 0) insertOtelLogs(rows);
+        const respBytes = ExportLogsServiceResponse.encode(
+          ExportLogsServiceResponse.create({}),
+        ).finish();
+        res.writeHead(200, { "Content-Type": "application/x-protobuf" });
+        res.end(Buffer.from(respBytes));
+      } else if (isJson(req)) {
+        const data = JSON.parse(body.toString("utf-8"));
+        const rows = jsonLogsToRows(data);
+        if (rows.length > 0) insertOtelLogs(rows);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      } else {
+        res.writeHead(415);
+        res.end();
+      }
+    } else if (signal === "metrics") {
+      if (isProtobuf(req)) {
+        const rows = decodeMetrics(body);
+        if (rows.length > 0) insertOtelMetrics(rows);
+        const respBytes = ExportMetricsServiceResponse.encode(
+          ExportMetricsServiceResponse.create({}),
+        ).finish();
+        res.writeHead(200, { "Content-Type": "application/x-protobuf" });
+        res.end(Buffer.from(respBytes));
+      } else if (isJson(req)) {
+        const data = JSON.parse(body.toString("utf-8"));
+        const rows = jsonMetricsToRows(data);
+        if (rows.length > 0) insertOtelMetrics(rows);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      } else {
+        res.writeHead(415);
+        res.end();
+      }
+    } else if (signal === "traces") {
+      // Accept but ignore traces for now
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{}");
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  } catch (err) {
+    console.error("OTLP handler error:", err);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 export function createOtlpServer(): http.Server {
-  const server = http.createServer(async (req, res) => {
+  return http.createServer(async (req, res) => {
     const url = req.url ?? "";
     const method = req.method ?? "";
 
-    // Health check
     if (url === "/health" && method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));
@@ -83,70 +153,8 @@ export function createOtlpServer(): http.Server {
       return;
     }
 
-    try {
-      const body = await collectBody(req);
-
-      // Detect signal from URL path, or sniff body for Gemini CLI (sends to "/")
-      let signal = detectSignal(url);
-      if (!signal && (url === "/" || url === "")) {
-        signal = sniffSignalFromBody(body, isProtobuf(req));
-      }
-
-      if (signal === "logs") {
-        if (isProtobuf(req)) {
-          const rows = decodeLogs(body);
-          if (rows.length > 0) insertOtelLogs(rows);
-          const respBytes = ExportLogsServiceResponse.encode(
-            ExportLogsServiceResponse.create({}),
-          ).finish();
-          res.writeHead(200, { "Content-Type": "application/x-protobuf" });
-          res.end(Buffer.from(respBytes));
-        } else if (isJson(req)) {
-          // JSON OTLP format — store raw for now
-          const data = JSON.parse(body.toString("utf-8"));
-          const rows = jsonLogsToRows(data);
-          if (rows.length > 0) insertOtelLogs(rows);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end("{}");
-        } else {
-          res.writeHead(415);
-          res.end();
-        }
-      } else if (signal === "metrics") {
-        if (isProtobuf(req)) {
-          const rows = decodeMetrics(body);
-          if (rows.length > 0) insertOtelMetrics(rows);
-          const respBytes = ExportMetricsServiceResponse.encode(
-            ExportMetricsServiceResponse.create({}),
-          ).finish();
-          res.writeHead(200, { "Content-Type": "application/x-protobuf" });
-          res.end(Buffer.from(respBytes));
-        } else if (isJson(req)) {
-          const data = JSON.parse(body.toString("utf-8"));
-          const rows = jsonMetricsToRows(data);
-          if (rows.length > 0) insertOtelMetrics(rows);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end("{}");
-        } else {
-          res.writeHead(415);
-          res.end();
-        }
-      } else if (signal === "traces") {
-        // Accept but ignore traces for now
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end("{}");
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
-    } catch (err) {
-      console.error("OTLP handler error:", err);
-      res.writeHead(500);
-      res.end();
-    }
+    await handleOtlpRequest(req, res);
   });
-
-  return server;
 }
 
 // Minimal JSON OTLP log parsing (fallback for JSON content-type)

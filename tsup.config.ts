@@ -3,6 +3,8 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     cli: "src/cli.ts",
+    server: "src/server.ts",
+    sdk: "src/sdk.ts",
     "hooks/handler": "src/hooks/handler.ts",
     "mcp/server": "src/mcp/server.ts",
     "otlp/server": "src/otlp/server.ts",

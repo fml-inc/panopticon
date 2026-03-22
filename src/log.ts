@@ -26,6 +26,7 @@ function getLogDir(): string {
 const LOG_DIR = getLogDir();
 
 export const logPaths = {
+  server: path.join(LOG_DIR, "server.log"),
   otlp: path.join(LOG_DIR, "otlp-receiver.log"),
   mcp: path.join(LOG_DIR, "mcp-server.log"),
   proxy: path.join(LOG_DIR, "proxy.log"),
