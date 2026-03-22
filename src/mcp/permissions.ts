@@ -1,0 +1,121 @@
+import fs from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import { config } from "../config.js";
+
+const PERMISSIONS_DIR = path.join(config.dataDir, "permissions");
+const APPROVALS_PATH = path.join(PERMISSIONS_DIR, "approvals.json");
+const ALLOWED_PATH = path.join(PERMISSIONS_DIR, "allowed.json");
+const BACKUPS_DIR = path.join(PERMISSIONS_DIR, "backups");
+
+const DEFAULT_APPROVALS = {
+  approved_categories: ["safe"],
+  denied_categories: [] as string[],
+  custom_overrides: {} as Record<string, string>,
+  last_run: null as string | null,
+};
+
+function readJson(filePath: string): any {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+export function permissionsShow() {
+  const approvals = readJson(APPROVALS_PATH) ?? DEFAULT_APPROVALS;
+  const allowed = readJson(ALLOWED_PATH) ?? {
+    bash_commands: [],
+    tools: [],
+  };
+
+  return {
+    approvals,
+    approvals_path: APPROVALS_PATH,
+    allowed,
+    allowed_path: ALLOWED_PATH,
+  };
+}
+
+export const categorySchema = z.object({
+  status: z.enum(["approved", "denied", "skipped"]),
+  patterns: z.array(z.string()),
+  observed_commands: z.array(z.string()),
+  call_count: z.number(),
+});
+
+export type CategoryEntry = z.infer<typeof categorySchema>;
+
+export interface PermissionsApplyParams {
+  repository?: string;
+  approved_categories: string[];
+  denied_categories: string[];
+  custom_overrides?: Record<string, string>;
+  permissions: string[];
+  categories: Record<string, CategoryEntry>;
+}
+
+export function permissionsApply({
+  repository,
+  approved_categories,
+  denied_categories,
+  custom_overrides,
+  permissions,
+  categories,
+}: PermissionsApplyParams) {
+  const now = new Date().toISOString();
+  const results: string[] = [];
+
+  // Split permissions into Bash commands and non-Bash tool names
+  const bashPattern = /^Bash\((.+?)[\s:]\*\)$/;
+  const bashCommands: string[] = [];
+  const tools: string[] = [];
+
+  for (const p of permissions) {
+    const match = p.match(bashPattern);
+    if (match) {
+      bashCommands.push(match[1]);
+    } else {
+      tools.push(p);
+    }
+  }
+
+  // 1. Write allowed.json — single file for all hook-based enforcement
+  fs.mkdirSync(PERMISSIONS_DIR, { recursive: true });
+  fs.writeFileSync(
+    ALLOWED_PATH,
+    `${JSON.stringify({ bash_commands: bashCommands, tools, updated: now }, null, 2)}\n`,
+  );
+  results.push(
+    `Allowed list written to ${ALLOWED_PATH} (${bashCommands.length} Bash commands, ${tools.length} tools)`,
+  );
+
+  // 2. Save approvals state
+  const approvals = {
+    approved_categories: [...new Set(["safe", ...approved_categories])],
+    denied_categories: [...new Set(denied_categories)],
+    custom_overrides: custom_overrides ?? {},
+    last_run: now,
+  };
+  fs.writeFileSync(APPROVALS_PATH, `${JSON.stringify(approvals, null, 2)}\n`);
+  results.push(`Approvals saved to ${APPROVALS_PATH}`);
+
+  // 3. Create backup
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+  const dateStr = now.slice(0, 10);
+  const timeStr = now.slice(11, 19).replace(/:/g, "");
+  const backupPath = path.join(BACKUPS_DIR, `${dateStr}_${timeStr}.json`);
+  const backup = {
+    timestamp: now,
+    repository,
+    skill_version: "4",
+    categories,
+    generated_permissions: permissions,
+    approvals_state: approvals,
+  };
+  fs.writeFileSync(backupPath, `${JSON.stringify(backup, null, 2)}\n`);
+  results.push(`Backup saved to ${backupPath}`);
+
+  return { success: true as const, details: results };
+}

@@ -28,19 +28,16 @@ interface HookInput {
 
 import { checkBashPermission } from "./permissions.js";
 
-const ALLOWED_COMMANDS_PATH = path.join(
-  config.dataDir,
-  "permissions",
-  "allowed_commands.json",
-);
+const ALLOWED_PATH = path.join(config.dataDir, "permissions", "allowed.json");
 
-interface AllowedCommands {
+interface AllowedList {
   bash_commands: string[];
+  tools: string[];
 }
 
-function loadAllowedCommands(): AllowedCommands | null {
+function loadAllowed(): AllowedList | null {
   try {
-    return JSON.parse(fs.readFileSync(ALLOWED_COMMANDS_PATH, "utf-8"));
+    return JSON.parse(fs.readFileSync(ALLOWED_PATH, "utf-8"));
   } catch {
     return null;
   }
@@ -166,25 +163,39 @@ async function main() {
       upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
     }
 
-    // Chain-aware permission enforcement for Bash commands
-    if (eventType === "PreToolUse" && toolName === "Bash") {
-      const command = data.tool_input?.command;
-      if (typeof command === "string") {
-        const allowed = loadAllowedCommands();
-        const result = allowed?.bash_commands?.length
-          ? checkBashPermission(command, allowed.bash_commands)
-          : null;
-        if (result) {
-          process.stdout.write(
-            JSON.stringify({
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse",
-                permissionDecision: "allow",
-                permissionDecisionReason: result.reason,
-              },
-            }),
-          );
+    // Permission enforcement via allowed.json
+    if (eventType === "PreToolUse" && toolName) {
+      let decision: { allow: true; reason: string } | null = null;
+
+      // Always auto-allow panopticon's own MCP tools
+      if (toolName.startsWith("mcp__plugin_panopticon_panopticon__")) {
+        decision = { allow: true, reason: "Panopticon tool (always allowed)" };
+      } else {
+        const allowed = loadAllowed();
+        if (allowed) {
+          if (toolName === "Bash") {
+            // Chain-aware enforcement for Bash commands
+            const command = data.tool_input?.command;
+            if (typeof command === "string" && allowed.bash_commands?.length) {
+              decision = checkBashPermission(command, allowed.bash_commands);
+            }
+          } else if (allowed.tools?.includes(toolName)) {
+            // Exact match for non-Bash tools
+            decision = { allow: true, reason: `Tool "${toolName}" is allowed` };
+          }
         }
+      }
+
+      if (decision) {
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "allow",
+              permissionDecisionReason: decision.reason,
+            },
+          }),
+        );
       }
     }
   } catch (err) {
