@@ -37,6 +37,14 @@ export {
 export { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 // ── Repo ──────────────────────────────────────────────────────────────────────
 export { resolveRepoFromCwd } from "./repo.js";
+// ── Scanner ──────────────────────────────────────────────────────────────────
+export {
+  type ClaudeCodeConfig,
+  type ConfigLayer,
+  readConfig,
+  writeFile,
+  writeSettings,
+} from "./scanner.js";
 // ── Server ────────────────────────────────────────────────────────────────────
 export { createUnifiedServer } from "./server.js";
 // ── Setup / Install ───────────────────────────────────────────────────────────

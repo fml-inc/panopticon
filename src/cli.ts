@@ -6,7 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { Command } from "commander";
+import { Command, type OptionValues } from "commander";
+
+type Opts = OptionValues;
+
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing } from "./db/pricing.js";
 import { pruneEstimate, pruneExecute } from "./db/prune.js";
@@ -312,7 +315,7 @@ program
   .option("--proxy", "Also route API traffic through the panopticon proxy")
   .option("--force", "Overwrite customized env vars with defaults")
   .option("--skip-build", "Skip the build step (internal)")
-  .action(async (opts) => {
+  .action(async (opts: Opts) => {
     if (!["claude", "gemini", "codex", "all"].includes(opts.target)) {
       console.error(
         `Invalid target: ${opts.target}. Must be claude, gemini, codex, or all.`,
@@ -879,7 +882,7 @@ program
   .argument("[daemon]", "Daemon name (otlp, mcp)", "otlp")
   .option("-f, --follow", "Follow log output (like tail -f)")
   .option("-n, --lines <count>", "Number of lines to show", "50")
-  .action(async (daemon: string, opts) => {
+  .action(async (daemon: string, opts: Opts) => {
     if (!DAEMON_NAMES.includes(daemon as DaemonName)) {
       console.error(`Unknown daemon: ${daemon}`);
       console.log(`Available: ${DAEMON_NAMES.join(", ")}`);
@@ -925,7 +928,7 @@ program
   .option("--dry-run", "Show estimate without deleting")
   .option("--vacuum", "Reclaim disk space after pruning")
   .option("--yes", "Skip confirmation prompt")
-  .action(async (opts) => {
+  .action(async (opts: Opts) => {
     const ageMs = parseAge(opts.olderThan);
     const cutoffMs = Date.now() - ageMs;
     const cutoffDate = new Date(cutoffMs).toISOString();
@@ -1000,7 +1003,7 @@ program
     "--since <duration>",
     'Time filter: ISO date or relative like "24h", "7d", "30m"',
   )
-  .action((opts) => {
+  .action((opts: Opts) => {
     output(listSessions({ limit: opts.limit, since: opts.since }));
   });
 
@@ -1012,7 +1015,7 @@ program
   .option("--limit <n>", "Max events to return (default 20)", parseInt)
   .option("--offset <n>", "Number of events to skip", parseInt)
   .option("--full", "Return full payloads instead of truncated")
-  .action((sessionId, opts) => {
+  .action((sessionId: string, opts: Opts) => {
     const result = sessionTimeline({
       sessionId,
       eventTypes: opts.types,
@@ -1031,7 +1034,7 @@ program
     'Time filter: ISO date or relative like "24h", "7d"',
   )
   .option("--session <id>", "Filter to a specific session")
-  .action((opts) => {
+  .action((opts: Opts) => {
     output(toolStats({ since: opts.since, session_id: opts.session }));
   });
 
@@ -1043,7 +1046,7 @@ program
     'Time filter: ISO date or relative like "24h", "7d"',
   )
   .option("--group-by <key>", "Group by: session, model, or day")
-  .action((opts) => {
+  .action((opts: Opts) => {
     output(costBreakdown({ since: opts.since, groupBy: opts.groupBy }));
   });
 
@@ -1054,7 +1057,7 @@ program
     "--since <duration>",
     'Time window (default "24h"). ISO date or relative like "24h", "7d"',
   )
-  .action((opts) => {
+  .action((opts: Opts) => {
     output(activitySummary({ since: opts.since }));
   });
 
@@ -1067,7 +1070,7 @@ program
     'Time filter: ISO date or relative like "24h", "7d"',
   )
   .option("--limit <n>", "Max plans to return (default 20)", parseInt)
-  .action((opts) => {
+  .action((opts: Opts) => {
     output(
       listPlans({
         session_id: opts.session,
@@ -1089,7 +1092,7 @@ program
   .option("--limit <n>", "Max results (default 20)", parseInt)
   .option("--offset <n>", "Number of results to skip", parseInt)
   .option("--full", "Return full payloads instead of truncated")
-  .action((query, opts) => {
+  .action((query: string, opts: Opts) => {
     const result = searchEvents({
       query,
       eventTypes: opts.types,
@@ -1106,7 +1109,7 @@ program
   .description("Get full details for a specific event by source and ID")
   .argument("<source>", "Event source: hook or otel")
   .argument("<id>", "Event ID from search/timeline results")
-  .action((source, id) => {
+  .action((source: string, id: string) => {
     if (source !== "hook" && source !== "otel") {
       console.error(`Invalid source: ${source} (must be "hook" or "otel")`);
       process.exit(1);
@@ -1123,11 +1126,11 @@ program
   .command("query")
   .description("Execute a read-only SQL query against the database")
   .argument("<sql>", "SQL query (SELECT/WITH/PRAGMA only)")
-  .action((sql) => {
+  .action((sql: string) => {
     try {
       output(rawQuery(sql));
-    } catch (err: any) {
-      console.error(`Error: ${err.message}`);
+    } catch (err: unknown) {
+      console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
     }
   });
@@ -1178,7 +1181,7 @@ permissions
 // Run
 // ---------------------------------------------------------------------------
 
-program.parseAsync().catch((err) => {
-  console.error("Error:", err.message);
+program.parseAsync().catch((err: unknown) => {
+  console.error("Error:", (err as Error).message);
   process.exit(1);
 });
