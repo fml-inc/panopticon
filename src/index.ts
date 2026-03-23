@@ -25,6 +25,14 @@ export {
 // ── Database ──────────────────────────────────────────────────────────────────
 export { closeDb, getDb } from "./db/schema.js";
 export type { HookEventRow, OtelLogRow, OtelMetricRow } from "./db/store.js";
+// ── Doctor ────────────────────────────────────────────────────────────────────
+export {
+  type CheckResult,
+  type DoctorResult,
+  doctor,
+  type RecentError,
+  type RecentEvent,
+} from "./doctor.js";
 // ── Permissions ───────────────────────────────────────────────────────────────
 export { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 // ── Server ────────────────────────────────────────────────────────────────────
