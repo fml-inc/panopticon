@@ -35,6 +35,8 @@ export {
 } from "./doctor.js";
 // ── Permissions ───────────────────────────────────────────────────────────────
 export { permissionsApply, permissionsShow } from "./mcp/permissions.js";
+// ── Repo ──────────────────────────────────────────────────────────────────────
+export { resolveRepoFromCwd } from "./repo.js";
 // ── Server ────────────────────────────────────────────────────────────────────
 export { createUnifiedServer } from "./server.js";
 // ── Setup / Install ───────────────────────────────────────────────────────────
