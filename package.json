@@ -27,6 +27,10 @@
     "panopticon": "./bin/panopticon"
   },
   "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./sdk": {
       "types": "./dist/sdk.d.ts",
       "import": "./dist/sdk.js"
@@ -46,6 +50,22 @@
     "./server": {
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js"
+    },
+    "./setup": {
+      "types": "./dist/setup.d.ts",
+      "import": "./dist/setup.js"
+    },
+    "./prune": {
+      "types": "./dist/prune.d.ts",
+      "import": "./dist/prune.js"
+    },
+    "./pricing": {
+      "types": "./dist/pricing.d.ts",
+      "import": "./dist/pricing.js"
+    },
+    "./permissions": {
+      "types": "./dist/permissions.d.ts",
+      "import": "./dist/permissions.js"
     }
   },
   "scripts": {
