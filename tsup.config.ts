@@ -14,6 +14,7 @@ export default defineConfig({
     prune: "src/db/prune.ts",
     pricing: "src/db/pricing.ts",
     permissions: "src/mcp/permissions.ts",
+    scanner: "src/scanner.ts",
     index: "src/index.ts",
     "hooks/handler": "src/hooks/handler.ts",
     "mcp/server": "src/mcp/server.ts",

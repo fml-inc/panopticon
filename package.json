@@ -74,6 +74,10 @@
     "./repo": {
       "types": "./dist/repo.d.ts",
       "import": "./dist/repo.js"
+    },
+    "./scanner": {
+      "types": "./dist/scanner.d.ts",
+      "import": "./dist/scanner.js"
     }
   },
   "scripts": {
