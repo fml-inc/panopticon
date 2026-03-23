@@ -10,6 +10,7 @@ export default defineConfig({
     query: "src/query.ts",
     setup: "src/setup.ts",
     doctor: "src/doctor.ts",
+    repo: "src/repo.ts",
     prune: "src/db/prune.ts",
     pricing: "src/db/pricing.ts",
     permissions: "src/mcp/permissions.ts",
