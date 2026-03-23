@@ -766,6 +766,65 @@ program
   });
 
 program
+  .command("doctor")
+  .description("Check system health, server, database, and configuration")
+  .option("--json", "Output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const { doctor } = await import("./doctor.js");
+    const result = await doctor();
+
+    if (opts.json) {
+      output(result);
+      return;
+    }
+
+    console.log(
+      `System: ${result.system.os} · Node ${result.system.node}${result.system.sandbox ? " · Sandbox" : ""}`,
+    );
+    console.log();
+
+    for (const check of result.checks) {
+      const icon =
+        check.status === "ok"
+          ? "\x1b[32m✓\x1b[0m"
+          : check.status === "warn"
+            ? "\x1b[33m!\x1b[0m"
+            : "\x1b[31m✗\x1b[0m";
+      console.log(`  ${icon}  ${check.label.padEnd(12)} ${check.detail}`);
+    }
+
+    console.log();
+    const passed = result.checks.filter((c) => c.status === "ok").length;
+    const warned = result.checks.filter((c) => c.status === "warn").length;
+    const failed = result.checks.filter((c) => c.status === "fail").length;
+    const parts: string[] = [];
+    if (passed > 0) parts.push(`\x1b[32m${passed} passed\x1b[0m`);
+    if (warned > 0)
+      parts.push(`\x1b[33m${warned} warning${warned > 1 ? "s" : ""}\x1b[0m`);
+    if (failed > 0) parts.push(`\x1b[31m${failed} failed\x1b[0m`);
+    console.log(`  ${parts.join(", ")}`);
+
+    if (result.recentErrors.length > 0) {
+      console.log();
+      console.log("  Recent errors:");
+      for (const err of result.recentErrors) {
+        console.log(`    [${err.id}] ${err.body}`);
+      }
+    }
+
+    if (result.recentEvents.length > 0) {
+      console.log();
+      console.log("  Recent events:");
+      for (const evt of result.recentEvents) {
+        const tool = evt.toolName ? ` (${evt.toolName})` : "";
+        console.log(`    ${evt.eventType}${tool} — ${evt.timestamp}`);
+      }
+    }
+
+    console.log();
+  });
+
+program
   .command("status")
   .description("Show server status and database stats")
   .action(() => {

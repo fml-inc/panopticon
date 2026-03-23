@@ -9,6 +9,7 @@ export default defineConfig({
     types: "src/types.ts",
     query: "src/query.ts",
     setup: "src/setup.ts",
+    doctor: "src/doctor.ts",
     prune: "src/db/prune.ts",
     pricing: "src/db/pricing.ts",
     permissions: "src/mcp/permissions.ts",
