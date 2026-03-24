@@ -79,8 +79,8 @@ curl -sf -X POST "$GRAFANA_URL/api/dashboards/db" \
         "id": 6, "title": "Recent Prompts", "type": "logs",
         "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
         "datasource": { "type": "loki", "uid": "loki" },
-        "targets": [{ "refId": "A", "expr": "{service_name=\"panopticon\"} | event_type = \"UserPromptSubmit\"", "maxLines": 50 }],
-        "options": { "showLabels": true, "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true }
+        "targets": [{ "refId": "A", "expr": "{service_name=\"panopticon\"} | event_type = \"UserPromptSubmit\" | line_format \"{{.prompt}}\"", "maxLines": 50 }],
+        "options": { "showLabels": false, "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true, "showCommonLabels": false }
       },
       {
         "id": 7, "title": "Tool Failures", "type": "timeseries",
