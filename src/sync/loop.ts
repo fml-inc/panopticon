@@ -72,7 +72,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     if (stopping) return;
     const delay = hadWork ? catchUpMs : idleMs;
     timer = setTimeout(() => {
-      tick().catch(() => {});
+      tick().catch((err) => log(`Tick error: ${err}`));
     }, delay);
     if (!opts.keepAlive && timer.unref) {
       timer.unref();
@@ -87,6 +87,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     if (rows.length === 0) return false;
 
     const filtered = rows.filter((r) => shouldSync(r.repository, opts));
+    log(
+      `hook_events: ${filtered.length} merged events (watermark ${wm} → ${maxId})`,
+    );
     const batches = chunk(filtered, postBatchSize);
 
     for (const batch of batches) {
@@ -111,6 +114,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     const { rows, maxId } = readUnmatchedOtelLogs(wm, batchSize);
     if (rows.length === 0) return false;
 
+    log(
+      `otel_logs: ${rows.length} unmatched logs (watermark ${wm} → ${maxId})`,
+    );
     const filtered = rows.filter((r) => {
       const repo =
         (r.resourceAttributes?.["repository.full_name"] as string) ?? null;
@@ -140,6 +146,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     const { rows, maxId } = readMetrics(wm, batchSize);
     if (rows.length === 0) return false;
 
+    log(`otel_metrics: ${rows.length} metrics (watermark ${wm} → ${maxId})`);
     const filtered = rows.filter((r) => {
       const repo =
         (r.resourceAttributes?.["repository.full_name"] as string) ?? null;
@@ -194,14 +201,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     syncing = true;
     let hasMore = false;
     try {
-      const db = getDb();
-      if (!db) {
-        log("Database not available, will retry");
-      } else {
-        hasMore = await runOnce();
-      }
+      getDb(); // ensure DB is accessible
+      hasMore = await runOnce();
     } catch (err) {
-      log(`Cycle error: ${err instanceof Error ? err.message : err}`);
+      log(
+        `Cycle error: ${err instanceof Error ? (err.stack ?? err.message) : err}`,
+      );
     } finally {
       syncing = false;
     }
@@ -216,7 +221,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       if (timer || syncing) return;
       stopping = false;
       log("Starting sync");
-      tick().catch(() => {});
+      tick().catch((err) => log(`Tick error: ${err}`));
     },
     stop() {
       stopping = true;
