@@ -52,6 +52,70 @@ function getPluginRoot(): string {
   return dir;
 }
 
+const INSTALL_DIR = path.join(
+  os.homedir(),
+  ".local",
+  "share",
+  "panopticon-app",
+);
+
+function isTransientLocation(pluginRoot: string): boolean {
+  if (fs.existsSync(path.join(pluginRoot, "tsup.config.ts"))) return false;
+  if (pluginRoot === INSTALL_DIR) return false;
+  return true;
+}
+
+function stopExistingDaemons(): void {
+  const pidFiles = [config.serverPidFile, config.pidFile];
+  for (const pidFile of pidFiles) {
+    try {
+      const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+      process.kill(pid, "SIGTERM");
+      fs.unlinkSync(pidFile);
+    } catch {}
+  }
+}
+
+function installToLocalDir(sourceRoot: string): string {
+  console.log("[0/7] Installing to ~/.local/share/panopticon-app/...");
+
+  stopExistingDaemons();
+
+  if (fs.existsSync(INSTALL_DIR)) {
+    fs.rmSync(INSTALL_DIR, { recursive: true });
+  }
+  fs.mkdirSync(INSTALL_DIR, { recursive: true });
+
+  for (const entry of fs.readdirSync(sourceRoot)) {
+    if (entry === "node_modules") continue;
+    const src = path.join(sourceRoot, entry);
+    const dest = path.join(INSTALL_DIR, entry);
+    fs.cpSync(src, dest, { recursive: true });
+  }
+
+  console.log("      Installing dependencies...");
+  const env = { ...process.env };
+  delete env.npm_config_registry;
+
+  execSync("npm install --production --no-package-lock", {
+    cwd: INSTALL_DIR,
+    stdio: "pipe",
+    timeout: 120_000,
+    env,
+  });
+
+  // Ensure bin scripts are executable
+  const binDir = path.join(INSTALL_DIR, "bin");
+  if (fs.existsSync(binDir)) {
+    for (const file of fs.readdirSync(binDir)) {
+      fs.chmodSync(path.join(binDir, file), 0o755);
+    }
+  }
+
+  console.log(`      Installed to ${INSTALL_DIR}\n`);
+  return INSTALL_DIR;
+}
+
 function readJsonFile(filePath: string): any {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf-8"));
@@ -394,14 +458,11 @@ async function installClaudeCode(
 ) {
   const force = opts.force ?? false;
   const target = opts.target ?? "claude";
-  const pluginJson = readJsonFile(
-    path.join(pluginRoot, ".claude-plugin", "plugin.json"),
-  );
-  const version = pluginJson?.version ?? "0.1.0";
 
   console.log("Installing panopticon...\n");
 
-  if (!opts.skipBuild) {
+  const hasBuildConfig = fs.existsSync(path.join(pluginRoot, "tsup.config.ts"));
+  if (!opts.skipBuild && hasBuildConfig) {
     console.log("[1/7] Building...");
     try {
       execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
@@ -423,7 +484,27 @@ async function installClaudeCode(
       env: process.env,
     });
     process.exit(result.status ?? 1);
+  } else if (isTransientLocation(pluginRoot)) {
+    installToLocalDir(pluginRoot);
+    const installedCli = path.join(INSTALL_DIR, "bin", "panopticon");
+    const args = [installedCli, "install", "--skip-build"];
+    if (force) args.push("--force");
+    if (target !== "all") args.push("--target", target);
+    if (opts.proxy) args.push("--proxy");
+    const result = spawnSync(process.argv[0], args, {
+      stdio: "inherit",
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    process.exit(result.status ?? 1);
+  } else {
+    console.log("[1/7] Already installed, skipping.\n");
   }
+
+  const pluginJson = readJsonFile(
+    path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+  );
+  const version = pluginJson?.version ?? "0.1.0";
 
   console.log("[2/7] Initializing database...");
   ensureDataDir();
