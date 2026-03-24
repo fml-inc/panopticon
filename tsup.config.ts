@@ -35,6 +35,7 @@ export default defineConfig({
     "mcp/server": "src/mcp/server.ts",
     "otlp/server": "src/otlp/server.ts",
     "proxy/server": "src/proxy/server.ts",
+    "sync/index": "src/sync/index.ts",
   },
   format: ["esm"],
   target: "node22",
