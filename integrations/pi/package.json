@@ -1,0 +1,13 @@
+{
+  "name": "@panopticon/pi-extension",
+  "version": "0.1.0",
+  "description": "Panopticon telemetry extension for Pi coding agent",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  }
+}
