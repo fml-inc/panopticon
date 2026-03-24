@@ -25,15 +25,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Lint & format
-        run: pnpm biome ci src/
-
-      - name: Type check
-        run: pnpm tsc --noEmit
-
-      - name: Build
-        run: pnpm run build
-
       - name: Set dev version (non-tag builds)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
@@ -57,6 +48,15 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}+${COMMIT_SHA}"
           pnpm pkg set "version=${VERSION}"
           echo "Publishing release version: ${VERSION}"
+
+      - name: Lint & format
+        run: pnpm biome ci src/
+
+      - name: Type check
+        run: pnpm tsc --noEmit
+
+      - name: Build
+        run: pnpm run build
 
       - name: Publish to GitHub Packages
         run: pnpm publish --no-git-checks --access restricted

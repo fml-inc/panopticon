@@ -4,6 +4,7 @@ import { defineConfig } from "tsup";
 
 function getPanopticonVersion(): string {
   const { version } = JSON.parse(readFileSync("package.json", "utf-8"));
+  if (version?.includes("+")) return version;
   try {
     const sha = execSync("git rev-parse --short HEAD", {
       encoding: "utf-8",

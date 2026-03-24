@@ -83,17 +83,33 @@ function installToLocalDir(sourceRoot: string): string {
 
   stopExistingDaemons();
 
+  // If reinstalling from INSTALL_DIR itself (--force), stage to a temp dir first
+  let effectiveSource = sourceRoot;
+  let tempDir: string | null = null;
+  if (sourceRoot === INSTALL_DIR) {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-reinstall-"));
+    for (const entry of fs.readdirSync(sourceRoot)) {
+      if (entry === "node_modules") continue;
+      fs.cpSync(path.join(sourceRoot, entry), path.join(tempDir, entry), {
+        recursive: true,
+      });
+    }
+    effectiveSource = tempDir;
+  }
+
   if (fs.existsSync(INSTALL_DIR)) {
     fs.rmSync(INSTALL_DIR, { recursive: true });
   }
   fs.mkdirSync(INSTALL_DIR, { recursive: true });
 
-  for (const entry of fs.readdirSync(sourceRoot)) {
+  for (const entry of fs.readdirSync(effectiveSource)) {
     if (entry === "node_modules") continue;
-    const src = path.join(sourceRoot, entry);
+    const src = path.join(effectiveSource, entry);
     const dest = path.join(INSTALL_DIR, entry);
     fs.cpSync(src, dest, { recursive: true });
   }
+
+  if (tempDir) fs.rmSync(tempDir, { recursive: true });
 
   console.log("      Installing dependencies...");
   const env = { ...process.env };
@@ -404,47 +420,79 @@ program
   .command("update")
   .description("Update panopticon to the latest version")
   .action(async () => {
-    const pkgPath = path.join(INSTALL_DIR, "package.json");
-    const currentVersion = fs.existsSync(pkgPath)
-      ? (JSON.parse(fs.readFileSync(pkgPath, "utf-8")).dependencies?.[
-          "@fml-inc/panopticon"
-        ] ?? "unknown")
-      : "unknown";
+    const currentVersion =
+      typeof __PANOPTICON_VERSION__ !== "undefined"
+        ? __PANOPTICON_VERSION__
+        : "unknown";
 
     console.log(`Current: ${currentVersion}`);
     console.log("Checking for updates...\n");
+
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-update-"),
+    );
 
     try {
       const env = { ...process.env };
       delete env.npm_config_registry;
 
-      execSync("npm install @fml-inc/panopticon@latest --save", {
+      // Download the latest package
+      execSync("npm pack @fml-inc/panopticon@latest --pack-destination .", {
+        cwd: tempDir,
+        stdio: "pipe",
+        timeout: 120_000,
+        env,
+      });
+
+      const tgz = fs.readdirSync(tempDir).find((f) => f.endsWith(".tgz"));
+      if (!tgz) throw new Error("Failed to download package");
+
+      execSync(`tar xzf ${tgz}`, { cwd: tempDir, stdio: "pipe" });
+      const packageDir = path.join(tempDir, "package");
+
+      const newPkg = JSON.parse(
+        fs.readFileSync(path.join(packageDir, "package.json"), "utf-8"),
+      );
+      const newVersion = newPkg.version ?? "unknown";
+
+      if (newVersion === currentVersion.split("+")[0]) {
+        console.log("Already on the latest version.");
+        return;
+      }
+
+      console.log(`Updating: ${currentVersion} -> ${newVersion}\n`);
+
+      stopExistingDaemons();
+
+      if (fs.existsSync(INSTALL_DIR)) {
+        fs.rmSync(INSTALL_DIR, { recursive: true });
+      }
+      fs.renameSync(packageDir, INSTALL_DIR);
+
+      console.log("Installing dependencies...");
+      execSync("npm install --omit=dev --no-package-lock", {
         cwd: INSTALL_DIR,
         stdio: "pipe",
         timeout: 120_000,
         env,
       });
+
+      const binDir = path.join(INSTALL_DIR, "bin");
+      if (fs.existsSync(binDir)) {
+        for (const file of fs.readdirSync(binDir)) {
+          fs.chmodSync(path.join(binDir, file), 0o755);
+        }
+      }
+
+      console.log(
+        `\nUpdated to ${newVersion}. Run \`panopticon install --skip-build\` to reconfigure.`,
+      );
     } catch (err: any) {
       console.error("Update failed:", err.stderr?.toString() ?? err.message);
       process.exit(1);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
-
-    const newVersion = fs.existsSync(pkgPath)
-      ? (JSON.parse(fs.readFileSync(pkgPath, "utf-8")).dependencies?.[
-          "@fml-inc/panopticon"
-        ] ?? "unknown")
-      : "unknown";
-
-    if (newVersion === currentVersion) {
-      console.log("Already on the latest version.");
-    } else {
-      console.log(`Updated: ${currentVersion} -> ${newVersion}`);
-    }
-
-    // Re-run install to restart daemons with new code
-    console.log("");
-    const pluginRoot = getPluginRoot();
-    await installClaudeCode(pluginRoot, { skipBuild: true });
   });
 
 async function installDesktop(
