@@ -2,9 +2,50 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const DATA_DIR =
-  process.env.PANOPTICON_DATA_DIR ??
-  path.join(os.homedir(), ".local", "share", "panopticon");
+function defaultDataDir(): string {
+  switch (process.platform) {
+    case "darwin":
+      return path.join(
+        os.homedir(),
+        "Library",
+        "Application Support",
+        "panopticon",
+      );
+    case "win32":
+      return path.join(
+        process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+        "panopticon",
+      );
+    default:
+      return path.join(os.homedir(), ".local", "share", "panopticon");
+  }
+}
+
+function resolveDataDir(): string {
+  if (process.env.PANOPTICON_DATA_DIR) return process.env.PANOPTICON_DATA_DIR;
+
+  const dataDir = defaultDataDir();
+  const legacyDir = path.join(os.homedir(), ".local", "share", "panopticon");
+
+  // Migrate from legacy XDG path on non-Linux platforms
+  if (
+    dataDir !== legacyDir &&
+    fs.existsSync(path.join(legacyDir, "data.db")) &&
+    !fs.existsSync(path.join(dataDir, "data.db"))
+  ) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    for (const file of fs.readdirSync(legacyDir)) {
+      fs.renameSync(path.join(legacyDir, file), path.join(dataDir, file));
+    }
+    try {
+      fs.rmdirSync(legacyDir);
+    } catch {}
+  }
+
+  return dataDir;
+}
+
+const DATA_DIR = resolveDataDir();
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const CODEX_DIR = path.join(os.homedir(), ".codex");
