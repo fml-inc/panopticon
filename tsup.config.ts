@@ -1,4 +1,18 @@
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
+
+function getPanopticonVersion(): string {
+  const { version } = JSON.parse(readFileSync("package.json", "utf-8"));
+  try {
+    const sha = execSync("git rev-parse --short HEAD", {
+      encoding: "utf-8",
+    }).trim();
+    return `${version}+${sha}`;
+  } catch {
+    return version ?? "unknown";
+  }
+}
 
 export default defineConfig({
   entry: {
@@ -24,6 +38,9 @@ export default defineConfig({
   format: ["esm"],
   target: "node22",
   platform: "node",
+  define: {
+    __PANOPTICON_VERSION__: JSON.stringify(getPanopticonVersion()),
+  },
   splitting: true,
   clean: true,
   sourcemap: true,

@@ -11,7 +11,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
@@ -20,14 +19,11 @@ import { autoPrune } from "../db/prune.js";
 import { openLogFd } from "../log.js";
 import { type HookInput, processHookEvent } from "./ingest.js";
 
+declare const __PANOPTICON_VERSION__: string;
 function getAgentVersion(): string | undefined {
-  try {
-    const require = createRequire(import.meta.url);
-    const pkg = require("../../package.json");
-    return pkg.version;
-  } catch {
-    return undefined;
-  }
+  return typeof __PANOPTICON_VERSION__ !== "undefined"
+    ? __PANOPTICON_VERSION__
+    : undefined;
 }
 
 function isServerRunning(): boolean {
