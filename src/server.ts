@@ -3,6 +3,9 @@ import { config } from "./config.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
 import { handleOtlpRequest } from "./otlp/server.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
+import { loadSyncConfig } from "./sync/config.js";
+import { createSyncLoop } from "./sync/loop.js";
+import type { SyncHandle } from "./sync/types.js";
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -88,6 +91,8 @@ export function createUnifiedServer(): http.Server {
 const entryScript = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   const server = createUnifiedServer();
+  let syncHandle: SyncHandle | null = null;
+
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
       console.log(
@@ -99,17 +104,21 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   });
   server.listen(config.port, config.host, () => {
     console.log(`Panopticon server listening on ${config.host}:${config.port}`);
-    console.log("Routes:");
-    console.log("  /hooks           — hook event ingest");
-    console.log("  /v1/logs         — OTel log ingest");
-    console.log("  /v1/metrics      — OTel metric ingest");
-    console.log("  /proxy/anthropic — Anthropic API proxy");
-    console.log("  /proxy/openai    — OpenAI API proxy");
-    console.log("  /proxy/codex     — Codex API proxy (auth-aware)");
-    console.log("  /proxy/google    — Google AI API proxy");
+
+    // Start sync if targets are configured
+    const syncConfig = loadSyncConfig();
+    if (syncConfig.targets.length > 0) {
+      console.log(`Sync: ${syncConfig.targets.map((t) => t.name).join(", ")}`);
+      syncHandle = createSyncLoop({
+        targets: syncConfig.targets,
+        filter: syncConfig.filter,
+      });
+      syncHandle.start();
+    }
   });
 
   const shutdown = () => {
+    syncHandle?.stop();
     server.close();
     process.exit(0);
   };

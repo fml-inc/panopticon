@@ -30,6 +30,7 @@ import {
 import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
+import { addTarget, listTargets, removeTarget } from "./sync/config.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 
 // ---------------------------------------------------------------------------
@@ -1166,12 +1167,45 @@ program
 
 program
   .command("sync")
-  .description("(Migrated to fml-plugin)")
-  .action(() => {
-    console.log(
-      "Sync has been migrated to the fml-plugin. Run `fml-plugin sync setup` to configure.",
-    );
-  });
+  .description("Manage sync targets (OTLP export)")
+  .addCommand(
+    new Command("add")
+      .description("Add or update a sync target")
+      .argument("<name>", "Target name")
+      .argument("<url>", "OTLP endpoint base URL")
+      .option("--token <token>", "Bearer token for auth")
+      .action((name: string, url: string, opts: Opts) => {
+        addTarget({ name, url, token: opts.token ?? undefined });
+        console.log(`Added sync target "${name}" → ${url}`);
+        console.log("Restart panopticon to activate.");
+      }),
+  )
+  .addCommand(
+    new Command("remove")
+      .description("Remove a sync target")
+      .argument("<name>", "Target name")
+      .action((name: string) => {
+        if (removeTarget(name)) {
+          console.log(`Removed sync target "${name}"`);
+          console.log("Restart panopticon to apply.");
+        } else {
+          console.log(`No target named "${name}"`);
+        }
+      }),
+  )
+  .addCommand(
+    new Command("list").description("List sync targets").action(() => {
+      const targets = listTargets();
+      if (targets.length === 0) {
+        console.log("No sync targets configured.");
+        return;
+      }
+      for (const t of targets) {
+        const auth = t.token ? " (token)" : "";
+        console.log(`  ${t.name} → ${t.url}${auth}`);
+      }
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Query commands
