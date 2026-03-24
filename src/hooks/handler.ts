@@ -133,9 +133,11 @@ async function main() {
       refreshIfStale().catch(() => {});
     }
 
-    // Capture shell PWD
-    const shellPwd = process.env.PWD ?? undefined;
-    if (shellPwd) data.shell_pwd = shellPwd;
+    // Capture shell PWD (prefer what Claude Code sends over handler's own PWD)
+    if (!data.shell_pwd) {
+      const shellPwd = process.env.PWD ?? undefined;
+      if (shellPwd) data.shell_pwd = shellPwd;
+    }
 
     // Try posting to the server; fall back to direct DB write
     let result: Record<string, unknown>;

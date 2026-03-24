@@ -9,6 +9,10 @@ import {
 import { resolveRepoFromCwd } from "../repo.js";
 import { checkBashPermission } from "./permissions.js";
 
+// Last resolved repo per session — used as fallback for events without paths
+// (e.g. Stop, UserPromptSubmit). Long-lived in the server process.
+const lastSessionRepo = new Map<string, string>();
+
 export interface HookInput {
   session_id: string;
   hook_event_name: string;
@@ -35,6 +39,74 @@ function loadAllowed(): AllowedList | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Extract the shell_pwd from hook event data.
+ * Claude Code may send it at the top level or nested in tool_input.
+ */
+export function extractShellPwd(data: HookInput): string | null {
+  if (typeof data.shell_pwd === "string") return data.shell_pwd;
+  if (typeof data.tool_input?.shell_pwd === "string")
+    return data.tool_input.shell_pwd;
+  return null;
+}
+
+/**
+ * Resolve the repository for an event, trying multiple sources in priority order:
+ * 1. Explicit repository field
+ * 2. shell_pwd (actual cwd at event time)
+ * 3. tool_input.file_path / path
+ * 4. Session cwd
+ * 5. Last resolved repo for this session (cumulative cache)
+ */
+export function resolveEventRepo(
+  data: HookInput,
+  resolveFn: (dir: string) => string | null = resolveRepoFromCwd,
+): string | null {
+  const sessionId = data.session_id ?? "unknown";
+
+  let repo = data.repository ?? null;
+
+  if (!repo) {
+    const shellPwd = extractShellPwd(data);
+    if (shellPwd) {
+      repo = resolveFn(shellPwd);
+    }
+  }
+
+  if (!repo) {
+    const toolInput = data.tool_input;
+    if (toolInput && typeof toolInput === "object") {
+      const filePath =
+        (toolInput as Record<string, unknown>).file_path ??
+        (toolInput as Record<string, unknown>).path;
+      if (typeof filePath === "string" && path.isAbsolute(filePath)) {
+        repo = resolveFn(path.dirname(filePath));
+      }
+    }
+  }
+
+  if (!repo && data.cwd) {
+    repo = resolveFn(data.cwd as string);
+  }
+
+  // Fallback: use the last resolved repo for this session
+  if (!repo) {
+    repo = lastSessionRepo.get(sessionId) ?? null;
+  }
+
+  // Cache for future events in this session
+  if (repo) {
+    lastSessionRepo.set(sessionId, repo);
+  }
+
+  return repo;
+}
+
+/** Clear the session repo cache (for testing). */
+export function _resetSessionRepoCache(): void {
+  lastSessionRepo.clear();
 }
 
 /**
@@ -74,22 +146,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
   }
 
-  // Resolve repository at capture time
-  let repo = data.repository ?? null;
-  if (!repo) {
-    const toolInput = data.tool_input;
-    if (toolInput && typeof toolInput === "object") {
-      const filePath =
-        (toolInput as Record<string, unknown>).file_path ??
-        (toolInput as Record<string, unknown>).path;
-      if (typeof filePath === "string" && path.isAbsolute(filePath)) {
-        repo = resolveRepoFromCwd(path.dirname(filePath));
-      }
-    }
-  }
-  if (!repo && data.cwd) {
-    repo = resolveRepoFromCwd(data.cwd as string);
-  }
+  const repo = resolveEventRepo(data);
 
   insertHookEvent({
     session_id: sessionId,
