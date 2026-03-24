@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+declare const __PANOPTICON_VERSION__: string;
+
 import { execSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -360,7 +362,11 @@ const program = new Command();
 program
   .name("panopticon")
   .description("Observability for Claude Code")
-  .version("0.1.0");
+  .version(
+    typeof __PANOPTICON_VERSION__ !== "undefined"
+      ? __PANOPTICON_VERSION__
+      : "dev",
+  );
 
 program.hook("postAction", () => {
   closeDb();
@@ -392,6 +398,53 @@ program
     } else {
       await installClaudeCode(pluginRoot, opts);
     }
+  });
+
+program
+  .command("update")
+  .description("Update panopticon to the latest version")
+  .action(async () => {
+    const pkgPath = path.join(INSTALL_DIR, "package.json");
+    const currentVersion = fs.existsSync(pkgPath)
+      ? (JSON.parse(fs.readFileSync(pkgPath, "utf-8")).dependencies?.[
+          "@fml-inc/panopticon"
+        ] ?? "unknown")
+      : "unknown";
+
+    console.log(`Current: ${currentVersion}`);
+    console.log("Checking for updates...\n");
+
+    try {
+      const env = { ...process.env };
+      delete env.npm_config_registry;
+
+      execSync("npm install @fml-inc/panopticon@latest --save", {
+        cwd: INSTALL_DIR,
+        stdio: "pipe",
+        timeout: 120_000,
+        env,
+      });
+    } catch (err: any) {
+      console.error("Update failed:", err.stderr?.toString() ?? err.message);
+      process.exit(1);
+    }
+
+    const newVersion = fs.existsSync(pkgPath)
+      ? (JSON.parse(fs.readFileSync(pkgPath, "utf-8")).dependencies?.[
+          "@fml-inc/panopticon"
+        ] ?? "unknown")
+      : "unknown";
+
+    if (newVersion === currentVersion) {
+      console.log("Already on the latest version.");
+    } else {
+      console.log(`Updated: ${currentVersion} -> ${newVersion}`);
+    }
+
+    // Re-run install to restart daemons with new code
+    console.log("");
+    const pluginRoot = getPluginRoot();
+    await installClaudeCode(pluginRoot, { skipBuild: true });
   });
 
 async function installDesktop(
@@ -484,7 +537,7 @@ async function installClaudeCode(
       env: process.env,
     });
     process.exit(result.status ?? 1);
-  } else if (isTransientLocation(pluginRoot)) {
+  } else if (isTransientLocation(pluginRoot) || force) {
     installToLocalDir(pluginRoot);
     const installedCli = path.join(INSTALL_DIR, "bin", "panopticon");
     const args = [installedCli, "install", "--skip-build"];
