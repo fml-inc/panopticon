@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
@@ -18,6 +19,16 @@ import { refreshIfStale } from "../db/pricing.js";
 import { autoPrune } from "../db/prune.js";
 import { openLogFd } from "../log.js";
 import { type HookInput, processHookEvent } from "./ingest.js";
+
+function getAgentVersion(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require("../../package.json");
+    return pkg.version;
+  } catch {
+    return undefined;
+  }
+}
 
 function isServerRunning(): boolean {
   if (!fs.existsSync(config.serverPidFile)) return false;
@@ -132,6 +143,10 @@ async function main() {
       tryAutoPrune();
       refreshIfStale().catch(() => {});
     }
+
+    // Tag with agent version for observability
+    const agentVersion = getAgentVersion();
+    if (agentVersion) data.agent_version = agentVersion;
 
     // Capture shell PWD (prefer what Claude Code sends over handler's own PWD)
     if (!data.shell_pwd) {
