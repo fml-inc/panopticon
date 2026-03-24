@@ -127,15 +127,22 @@ export interface OtlpNumberDataPoint {
   attributes: OtlpKeyValue[];
 }
 
+export interface OtlpMetric {
+  name: string;
+  unit?: string;
+  gauge?: { dataPoints: OtlpNumberDataPoint[] };
+  sum?: {
+    dataPoints: OtlpNumberDataPoint[];
+    aggregationTemporality: number; // 1=CUMULATIVE, 2=DELTA
+    isMonotonic: boolean;
+  };
+}
+
 export interface OtlpResourceMetrics {
   resourceMetrics: Array<{
     resource: { attributes: OtlpKeyValue[] };
     scopeMetrics: Array<{
-      metrics: Array<{
-        name: string;
-        unit?: string;
-        gauge: { dataPoints: OtlpNumberDataPoint[] };
-      }>;
+      metrics: OtlpMetric[];
     }>;
   }>;
 }

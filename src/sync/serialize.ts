@@ -4,6 +4,7 @@ import type {
   OtlpAnyValue,
   OtlpKeyValue,
   OtlpLogRecord,
+  OtlpMetric,
   OtlpNumberDataPoint,
   OtlpResourceLogs,
   OtlpResourceMetrics,
@@ -197,7 +198,11 @@ export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
       attrs: OtlpKeyValue[];
       metrics: Map<
         string,
-        { unit: string | null; points: OtlpNumberDataPoint[] }
+        {
+          unit: string | null;
+          metricType: string | null;
+          points: OtlpNumberDataPoint[];
+        }
       >;
     }
   >();
@@ -212,7 +217,11 @@ export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
     }
     const session = sessions.get(sessionId)!;
     if (!session.metrics.has(m.name)) {
-      session.metrics.set(m.name, { unit: m.unit, points: [] });
+      session.metrics.set(m.name, {
+        unit: m.unit,
+        metricType: m.metricType,
+        points: [],
+      });
     }
     session.metrics.get(m.name)!.points.push({
       timeUnixNano: String(m.timestampNs),
@@ -227,11 +236,16 @@ export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
       scopeMetrics: [
         {
           metrics: Array.from(s.metrics.entries()).map(
-            ([name, { unit, points }]) => ({
-              name,
-              ...(unit ? { unit } : {}),
-              gauge: { dataPoints: points },
-            }),
+            ([name, { unit, points }]): OtlpMetric => {
+              // Always emit as gauge. Our stored values are per-request
+              // deltas, not cumulative sums, so gauge is the correct
+              // OTLP type for Prometheus compatibility.
+              return {
+                name,
+                ...(unit ? { unit } : {}),
+                gauge: { dataPoints: points },
+              };
+            },
           ),
         },
       ],
