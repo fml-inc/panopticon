@@ -5,6 +5,13 @@ import { syncAwarePrune } from "./db/sync-prune.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
 import { handleOtlpRequest } from "./otlp/server.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
+import {
+  addBreadcrumb,
+  captureException,
+  flushSentry,
+  initSentry,
+  setTag,
+} from "./sentry.js";
 import { createSyncLoop } from "./sync/loop.js";
 import type { SyncHandle } from "./sync/types.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -35,11 +42,17 @@ export function createUnifiedServer(): http.Server {
       try {
         const body = await collectBody(req);
         const data: HookInput = JSON.parse(body.toString("utf-8"));
+        addBreadcrumb("hooks", `${data.hook_event_name ?? "unknown"} event`, {
+          session_id: data.session_id,
+          tool_name: data.tool_name,
+          vendor: data.vendor ?? data.source,
+        });
         const result = processHookEvent(data);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       } catch (err) {
         console.error("Hook ingest error:", err);
+        captureException(err, { component: "hooks" });
         if (!res.headersSent) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "hook ingest failed" }));
@@ -53,6 +66,7 @@ export function createUnifiedServer(): http.Server {
       method === "POST" &&
       (url.startsWith("/v1/") || url === "/" || url === "")
     ) {
+      addBreadcrumb("otlp", `OTLP ingest ${url}`, undefined, "debug");
       await handleOtlpRequest(req, res);
       return;
     }
@@ -64,6 +78,7 @@ export function createUnifiedServer(): http.Server {
         res.end();
         return;
       }
+      addBreadcrumb("proxy", `Proxy ${url}`);
       // Strip /proxy prefix so the proxy handler sees /anthropic/*, /openai/*, etc.
       req.url = url.slice(6);
       await handleProxyRequest(req, res);
@@ -97,14 +112,19 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   function runPrune(): void {
     try {
       const cfg = loadUnifiedConfig();
+      addBreadcrumb("prune", "Running scheduled prune", undefined, "debug");
       autoPrune(cfg.retention.maxAgeDays, cfg.retention.maxSizeMb);
       if (cfg.sync.targets.length > 0 && cfg.retention.syncedMaxAgeDays) {
         syncAwarePrune(cfg.sync.targets, cfg.retention);
       }
     } catch (err) {
       console.error("Prune error:", err);
+      captureException(err, { component: "prune" });
     }
   }
+
+  const sentryActive = initSentry();
+  if (sentryActive) console.log("Sentry: enabled");
 
   const server = createUnifiedServer();
   let syncHandle: SyncHandle | null = null;
@@ -117,6 +137,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
       );
       process.exit(0);
     }
+    captureException(err, { component: "server" });
     throw err;
   });
   server.listen(config.port, config.host, () => {
@@ -127,6 +148,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     // Start sync if targets are configured
     if (cfg.sync.targets.length > 0) {
       console.log(`Sync: ${cfg.sync.targets.map((t) => t.name).join(", ")}`);
+      setTag("sync_targets", cfg.sync.targets.length);
       syncHandle = createSyncLoop({
         targets: cfg.sync.targets,
         filter: cfg.sync.filter,
@@ -141,9 +163,10 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     pruneTimer.unref();
   });
 
-  const shutdown = () => {
+  const shutdown = async () => {
     if (pruneTimer) clearInterval(pruneTimer);
     syncHandle?.stop();
+    await flushSentry();
     server.close();
     process.exit(0);
   };

@@ -1,4 +1,5 @@
 import { getDb } from "../db/schema.js";
+import { addBreadcrumb, captureException } from "../sentry.js";
 import { chunk, postOtlp } from "./post.js";
 import { readHookEvents, readMetrics, readOtelLogs } from "./reader.js";
 import {
@@ -85,6 +86,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
     const filtered = rows.filter((r) => shouldSync(r.repository, opts));
     log(`hook_events: ${filtered.length} events (watermark ${wm} → ${maxId})`);
+    addBreadcrumb(
+      "sync",
+      `hook_events: ${filtered.length} to ${target.name}`,
+      { watermark: wm, maxId, target: target.name },
+      "debug",
+    );
     const batches = chunk(filtered, postBatchSize);
 
     for (const batch of batches) {
@@ -110,6 +117,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     if (rows.length === 0) return false;
 
     log(`otel_logs: ${rows.length} logs (watermark ${wm} → ${maxId})`);
+    addBreadcrumb(
+      "sync",
+      `otel_logs: ${rows.length} to ${target.name}`,
+      { watermark: wm, maxId, target: target.name },
+      "debug",
+    );
     const filtered = rows.filter((r) => {
       const repo =
         (r.resourceAttributes?.["repository.full_name"] as string) ?? null;
@@ -140,6 +153,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     if (rows.length === 0) return false;
 
     log(`otel_metrics: ${rows.length} metrics (watermark ${wm} → ${maxId})`);
+    addBreadcrumb(
+      "sync",
+      `otel_metrics: ${rows.length} to ${target.name}`,
+      { watermark: wm, maxId, target: target.name },
+      "debug",
+    );
     const filtered = rows.filter((r) => {
       const repo =
         (r.resourceAttributes?.["repository.full_name"] as string) ?? null;
@@ -183,6 +202,10 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         log(
           `Error syncing to ${target.name}: ${err instanceof Error ? err.message : err}`,
         );
+        captureException(err, {
+          component: "sync",
+          target: target.name,
+        });
       }
     }
 
@@ -200,6 +223,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       log(
         `Cycle error: ${err instanceof Error ? (err.stack ?? err.message) : err}`,
       );
+      captureException(err, { component: "sync" });
     } finally {
       syncing = false;
     }

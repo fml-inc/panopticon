@@ -1,6 +1,7 @@
 import http from "node:http";
 import { config } from "../config.js";
 import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
+import { addBreadcrumb, captureException } from "../sentry.js";
 import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
 import {
@@ -84,7 +85,15 @@ export async function handleOtlpRequest(
     if (signal === "logs") {
       if (isProtobuf(req)) {
         const rows = decodeLogs(body);
-        if (rows.length > 0) insertOtelLogs(rows);
+        if (rows.length > 0) {
+          addBreadcrumb(
+            "otlp",
+            `Ingested ${rows.length} log records`,
+            { format: "protobuf" },
+            "debug",
+          );
+          insertOtelLogs(rows);
+        }
         const respBytes = ExportLogsServiceResponse.encode(
           ExportLogsServiceResponse.create({}),
         ).finish();
@@ -93,7 +102,15 @@ export async function handleOtlpRequest(
       } else if (isJson(req)) {
         const data = JSON.parse(body.toString("utf-8"));
         const rows = jsonLogsToRows(data);
-        if (rows.length > 0) insertOtelLogs(rows);
+        if (rows.length > 0) {
+          addBreadcrumb(
+            "otlp",
+            `Ingested ${rows.length} log records`,
+            { format: "json" },
+            "debug",
+          );
+          insertOtelLogs(rows);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
       } else {
@@ -129,6 +146,7 @@ export async function handleOtlpRequest(
     }
   } catch (err) {
     console.error("OTLP handler error:", err);
+    captureException(err, { component: "otlp", url });
     if (!res.headersSent) {
       res.writeHead(500);
       res.end();
