@@ -220,6 +220,101 @@ describe("target shell env vars", () => {
     const codex = getTarget("codex")!;
     expect(codex.shellEnv.envVars(4318, false)).toEqual([]);
   });
+
+  it("openclaw emits no shell env vars", () => {
+    const openclaw = getTarget("openclaw")!;
+    expect(openclaw.shellEnv.envVars(4318, false)).toEqual([]);
+  });
+});
+
+describe("openclaw target adapter", () => {
+  const openclaw = getTarget("openclaw")!;
+
+  it("is registered", () => {
+    expect(openclaw).toBeDefined();
+    expect(targetIds()).toContain("openclaw");
+  });
+
+  it("has correct display name", () => {
+    expect(openclaw.detect.displayName).toBe("OpenClaw");
+  });
+
+  it("maps command:new to SessionStart", () => {
+    expect(openclaw.events.eventMap["command:new"]).toBe("SessionStart");
+  });
+
+  it("maps command:reset to SessionEnd", () => {
+    expect(openclaw.events.eventMap["command:reset"]).toBe("SessionEnd");
+  });
+
+  it("maps tool_result_persist to PostToolUse", () => {
+    expect(openclaw.events.eventMap.tool_result_persist).toBe("PostToolUse");
+  });
+
+  it("formats permission response as flat decision/reason", () => {
+    expect(
+      openclaw.events.formatPermissionResponse({
+        allow: true,
+        reason: "allowed",
+      }),
+    ).toEqual({ decision: "allow", reason: "allowed" });
+  });
+
+  it("proxies to api.moonshot.ai with openai accumulator", () => {
+    expect(openclaw.proxy).toBeDefined();
+    expect(openclaw.proxy!.upstreamHost).toBe("api.moonshot.ai");
+    expect(openclaw.proxy!.accumulatorType).toBe("openai");
+  });
+
+  it("applyInstallConfig enables diagnostics-otel plugin", () => {
+    const result = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 4318 },
+    );
+    const plugins = result.plugins as Record<string, unknown>;
+    expect((plugins.allow as string[]).includes("diagnostics-otel")).toBe(true);
+    expect(
+      (plugins.entries as Record<string, unknown>)["diagnostics-otel"],
+    ).toEqual({ enabled: true });
+  });
+
+  it("applyInstallConfig sets OTLP endpoint", () => {
+    const result = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 9999 },
+    );
+    const otel = (result.diagnostics as Record<string, unknown>).otel as Record<
+      string,
+      unknown
+    >;
+    expect(otel.enabled).toBe(true);
+    expect(otel.endpoint).toBe("http://localhost:9999");
+  });
+
+  it("applyInstallConfig preserves existing config", () => {
+    const existing = {
+      agents: { defaults: { model: { primary: "moonshot/kimi-k2.5" } } },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+    });
+    expect((result.agents as Record<string, unknown>).defaults).toEqual({
+      model: { primary: "moonshot/kimi-k2.5" },
+    });
+  });
+
+  it("applyInstallConfig does not duplicate plugin allow entries", () => {
+    const existing = {
+      plugins: { allow: ["diagnostics-otel", "other-plugin"] },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+    });
+    const allow = (result.plugins as Record<string, unknown>).allow as string[];
+    expect(allow.filter((p) => p === "diagnostics-otel")).toHaveLength(1);
+  });
 });
 
 describe("target otel specs", () => {
