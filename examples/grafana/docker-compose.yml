@@ -1,11 +1,8 @@
 # Grafana OTEL LGTM stack for Panopticon sync.
+# See README.md in this directory for full setup instructions.
 #
-# Start:  docker compose -f examples/docker-compose.yml up -d
-# Stop:   docker compose -f examples/docker-compose.yml down
-# Grafana: http://localhost:3001 (admin / admin)
-#
-# Then run the sync:
-#   npx tsx examples/sync-to-grafana.ts
+# Quick:  ./examples/grafana/setup.sh
+# Manual: docker compose -f examples/grafana/docker-compose.yml up -d
 
 services:
   otel-lgtm:
