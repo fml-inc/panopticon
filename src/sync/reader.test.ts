@@ -176,6 +176,28 @@ describe("readOtelLogs", () => {
     expect(rows[1].body).toBe("claude_code.api_error");
   });
 
+  it("advances watermark past filtered rows when hooksInstalled=true", () => {
+    // 5 hook-covered rows followed by 1 api_request
+    insertOtelLog(1, "claude_code.user_prompt", msToNs(BASE_MS));
+    insertOtelLog(2, "claude_code.tool_decision", msToNs(BASE_MS + 1));
+    insertOtelLog(3, "claude_code.tool_decision", msToNs(BASE_MS + 2));
+    insertOtelLog(4, "claude_code.tool_result", msToNs(BASE_MS + 3));
+    insertOtelLog(5, "claude_code.tool_result", msToNs(BASE_MS + 4));
+    insertOtelLog(6, "claude_code.api_request", msToNs(BASE_MS + 5));
+
+    // With limit=5, the scan covers ids 1-5 (all filtered) but maxId should
+    // still advance to 5 so the next read starts from there
+    const { rows, maxId } = readOtelLogs(0, 5, true);
+    expect(rows).toHaveLength(0); // all 5 scanned rows are filtered
+    expect(maxId).toBe(5); // watermark advances past filtered block
+
+    // Second read picks up the api_request
+    const { rows: rows2, maxId: maxId2 } = readOtelLogs(maxId, 5, true);
+    expect(rows2).toHaveLength(1);
+    expect(rows2[0].body).toBe("claude_code.api_request");
+    expect(maxId2).toBe(6);
+  });
+
   it("preserves prompt_id and attributes", () => {
     insertOtelLog(1, "claude_code.api_request", msToNs(BASE_MS), "Bash", "p-1");
 

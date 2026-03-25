@@ -121,6 +121,14 @@ function mapOtelRows(rawRows: RawOtelLogRow[]): OtelLogRecord[] {
  * When hooksInstalled is true, filters out body types that hooks cover
  * (tool_decision, tool_result, user_prompt) to avoid double-counting.
  */
+/**
+ * Read OTLP logs in batches.
+ * When hooksInstalled is true, filters out body types that hooks cover
+ * (tool_decision, tool_result, user_prompt) to avoid double-counting.
+ *
+ * maxId advances to the highest id scanned (not just the highest returned),
+ * so the watermark skips past blocks of filtered rows without stalling.
+ */
 export function readOtelLogs(
   afterId: number,
   limit: number,
@@ -128,15 +136,42 @@ export function readOtelLogs(
 ): { rows: OtelLogRecord[]; maxId: number } {
   const db = getDb();
 
-  const rawRows = hooksInstalled
-    ? (db
-        .prepare(FILTERED_LOGS_SQL)
-        .all(afterId, ...HOOK_COVERED_BODIES, limit) as RawOtelLogRow[])
-    : (db.prepare(ALL_LOGS_SQL).all(afterId, limit) as RawOtelLogRow[]);
+  if (!hooksInstalled) {
+    const rawRows = db
+      .prepare(ALL_LOGS_SQL)
+      .all(afterId, limit) as RawOtelLogRow[];
+    const rows = mapOtelRows(rawRows);
+    const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+    return { rows, maxId };
+  }
+
+  // When filtering, we need the max id from the unfiltered range so the
+  // watermark advances past blocks of hook-covered rows.
+  const scanMaxId = (
+    db
+      .prepare(
+        "SELECT MAX(id) as m FROM (SELECT id FROM otel_logs WHERE id > ? ORDER BY id LIMIT ?)",
+      )
+      .get(afterId, limit) as { m: number | null }
+  ).m;
+
+  if (scanMaxId == null) return { rows: [], maxId: afterId };
+
+  // Only return filtered rows within the scanned range (id <= scanMaxId),
+  // not beyond it — otherwise we'd skip ahead of the scan window.
+  const rawRows = db
+    .prepare(
+      `SELECT id, timestamp_ns, body, attributes, resource_attributes,
+              severity_text, session_id, prompt_id, trace_id, span_id
+       FROM otel_logs
+       WHERE id > ? AND id <= ?
+         AND body NOT IN (${HOOK_COVERED_BODIES.map(() => "?").join(", ")})
+       ORDER BY id`,
+    )
+    .all(afterId, scanMaxId, ...HOOK_COVERED_BODIES) as RawOtelLogRow[];
 
   const rows = mapOtelRows(rawRows);
-  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
-  return { rows, maxId };
+  return { rows, maxId: scanMaxId };
 }
 
 // ── Metrics ──────────────────────────────────────────────────────────────────

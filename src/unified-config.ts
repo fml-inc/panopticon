@@ -67,7 +67,8 @@ export function loadUnifiedConfig(): UnifiedConfig {
 
 export function saveUnifiedConfig(cfg: UnifiedConfig): void {
   ensureDataDir();
-  fs.writeFileSync(configPath(), `${JSON.stringify(cfg, null, 2)}\n`);
+  const p = configPath();
+  fs.writeFileSync(p, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
 }
 
 // ── Convenience ──────────────────────────────────────────────────────────────
