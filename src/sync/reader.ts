@@ -78,16 +78,6 @@ const ALL_LOGS_SQL = `
   LIMIT ?
 `;
 
-const FILTERED_LOGS_SQL = `
-  SELECT id, timestamp_ns, body, attributes, resource_attributes,
-         severity_text, session_id, prompt_id, trace_id, span_id
-  FROM otel_logs
-  WHERE id > ?
-    AND body NOT IN (${HOOK_COVERED_BODIES.map(() => "?").join(", ")})
-  ORDER BY id
-  LIMIT ?
-`;
-
 interface RawOtelLogRow {
   id: number;
   timestamp_ns: number;
