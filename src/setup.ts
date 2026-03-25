@@ -7,9 +7,11 @@
 
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
+import { allVendors } from "./vendors/index.js";
 
 /**
  * Initialize the panopticon database — creates the data directory,
@@ -33,7 +35,7 @@ export async function fetchPricing(): Promise<number | null> {
 export interface ShellEnvOptions {
   /** Overwrite user-customized env vars (default false) */
   force?: boolean;
-  /** Target CLI: "claude", "gemini", "codex", or "all" (default "claude") */
+  /** Target CLI vendor id or "all" (default "claude") */
   target?: string;
   /** Also configure API proxy (default false) */
   proxy?: boolean;
@@ -41,7 +43,7 @@ export interface ShellEnvOptions {
 
 /**
  * Configure shell environment variables (.zshrc / .bashrc) so that
- * Claude Code, Gemini CLI, and/or Codex CLI send telemetry to panopticon.
+ * coding tools send telemetry to panopticon.
  *
  * Returns the path to the shell rc file that was updated.
  */
@@ -58,8 +60,15 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     ? fs.readFileSync(shellRc, "utf-8")
     : "";
 
+  // Collect all known vendor env var names for detection/cleanup
+  const allVendorVarNames = new Set<string>();
+  for (const v of allVendors()) {
+    for (const [varName] of v.shellEnv.envVars(config.port, true)) {
+      allVendorVarNames.add(varName);
+    }
+  }
+
   const PANOPTICON_VARS = [
-    "CLAUDE_CODE_ENABLE_TELEMETRY",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_METRICS_EXPORTER",
@@ -67,13 +76,7 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
-    "ANTHROPIC_BASE_URL",
-    "GEMINI_TELEMETRY_ENABLED",
-    "GEMINI_TELEMETRY_TARGET",
-    "GEMINI_TELEMETRY_USE_COLLECTOR",
-    "GEMINI_TELEMETRY_OTLP_ENDPOINT",
-    "GEMINI_TELEMETRY_OTLP_PROTOCOL",
-    "GEMINI_TELEMETRY_LOG_PROMPTS",
+    ...allVendorVarNames,
   ];
   const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
@@ -87,9 +90,9 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     return false;
   };
 
+  // Build the wanted env vars: shared OTEL vars + vendor-specific vars
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
-    ["CLAUDE_CODE_ENABLE_TELEMETRY", "export CLAUDE_CODE_ENABLE_TELEMETRY=1"],
     [
       "OTEL_EXPORTER_OTLP_ENDPOINT",
       `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.port}`,
@@ -105,34 +108,19 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
   ];
 
-  if (proxy && (target === "claude" || target === "all")) {
-    wantedLines.push([
-      "ANTHROPIC_BASE_URL",
-      `export ANTHROPIC_BASE_URL=http://localhost:${config.port}/proxy/anthropic`,
-    ]);
-  }
+  // Add vendor-specific env vars for targeted vendors
+  const targetVendorList =
+    target === "all"
+      ? allVendors()
+      : allVendors().filter((v) => v.id === target);
 
-  if (target === "gemini" || target === "all") {
-    wantedLines.push(
-      ["GEMINI_TELEMETRY_ENABLED", "export GEMINI_TELEMETRY_ENABLED=true"],
-      ["GEMINI_TELEMETRY_TARGET", "export GEMINI_TELEMETRY_TARGET=local"],
-      [
-        "GEMINI_TELEMETRY_USE_COLLECTOR",
-        "export GEMINI_TELEMETRY_USE_COLLECTOR=true",
-      ],
-      [
-        "GEMINI_TELEMETRY_OTLP_ENDPOINT",
-        `export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:${config.port}`,
-      ],
-      [
-        "GEMINI_TELEMETRY_OTLP_PROTOCOL",
-        "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
-      ],
-      [
-        "GEMINI_TELEMETRY_LOG_PROMPTS",
-        "export GEMINI_TELEMETRY_LOG_PROMPTS=true",
-      ],
-    );
+  for (const vendor of targetVendorList) {
+    for (const [varName, value] of vendor.shellEnv.envVars(
+      config.port,
+      proxy,
+    )) {
+      wantedLines.push([varName, `export ${varName}=${value}`]);
+    }
   }
 
   wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
@@ -189,6 +177,3 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
 
 // Re-export config for convenience (port, paths, etc.)
 export { config } from "./config.js";
-
-// Need path import for configureShellEnv
-import path from "node:path";

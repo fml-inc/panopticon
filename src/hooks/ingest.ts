@@ -7,6 +7,8 @@ import {
   upsertSessionRepository,
 } from "../db/store.js";
 import { resolveRepoFromCwd } from "../repo.js";
+import { allVendors } from "../vendors/index.js";
+import type { VendorAdapter } from "../vendors/types.js";
 import { checkBashPermission } from "./permissions.js";
 
 // Last resolved repo per session — used as fallback for events without paths
@@ -113,6 +115,37 @@ export function _resetSessionRepoCache(): void {
  * Process a hook event: normalize, store, and optionally enforce permissions.
  * Returns a JSON-serializable response body (permission decision or {}).
  */
+/**
+ * Resolve which vendor adapter sent this event, using the source/vendor
+ * field or by matching the raw event name against vendor eventMaps.
+ */
+function resolveVendor(data: HookInput): VendorAdapter | undefined {
+  const source = data.source ?? data.vendor;
+  if (source) {
+    for (const v of allVendors()) {
+      if (v.id === source) return v;
+    }
+  }
+  // Fall back: check if the raw event name appears in any vendor's eventMap
+  const rawEvent = data.hook_event_name;
+  if (rawEvent) {
+    let matched: VendorAdapter | undefined;
+    for (const v of allVendors()) {
+      if (rawEvent in v.events.eventMap) {
+        if (matched) {
+          console.warn(
+            `[panopticon] Event "${rawEvent}" claimed by both "${matched.id}" and "${v.id}" — using "${matched.id}"`,
+          );
+          break;
+        }
+        matched = v;
+      }
+    }
+    if (matched) return matched;
+  }
+  return undefined;
+}
+
 export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionId = data.session_id ?? "unknown";
   const rawEventType = data.hook_event_name ?? "Unknown";
@@ -120,29 +153,13 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   const toolName = data.tool_name ?? null;
   const timestampMs = Date.now();
 
-  // Normalize Gemini CLI event types to Claude Code equivalents
-  if (eventType === "BeforeTool") eventType = "PreToolUse";
-  else if (eventType === "AfterTool") eventType = "PostToolUse";
-  else if (eventType === "BeforeModel") {
-    eventType = "UserPromptSubmit";
-    // Extract user_prompt from Gemini's llm_request format
-    const messages = (data as any).llm_request?.messages;
-    if (Array.isArray(messages)) {
-      const lastUser = [...messages]
-        .reverse()
-        .find((m: any) => m.role === "user");
-      if (lastUser?.content) {
-        const text =
-          typeof lastUser.content === "string"
-            ? lastUser.content
-            : Array.isArray(lastUser.content)
-              ? lastUser.content
-                  .filter((p: any) => p.type === "text")
-                  .map((p: any) => p.text)
-                  .join("\n")
-              : "";
-        if (text) (data as any).user_prompt = text;
-      }
+  // Resolve vendor and normalize event type + payload via adapter
+  const vendor = resolveVendor(data);
+  if (vendor) {
+    const mapped = vendor.events.eventMap[eventType];
+    if (mapped) eventType = mapped;
+    if (vendor.events.normalizePayload) {
+      data = vendor.events.normalizePayload(data);
     }
   }
 
@@ -188,11 +205,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
 
     if (decision) {
-      // Gemini CLI expects {decision, reason} at top level
-      if (rawEventType === "BeforeTool") {
-        return { decision: "allow", reason: decision.reason };
+      // Use vendor adapter to format the response, fall back to Claude Code format
+      if (vendor) {
+        return vendor.events.formatPermissionResponse(decision);
       }
-      // Claude Code expects hookSpecificOutput format
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",

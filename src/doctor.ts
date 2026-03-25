@@ -10,6 +10,7 @@ import os from "node:os";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
+import { allVendors } from "./vendors/index.js";
 
 export interface CheckResult {
   label: string;
@@ -146,42 +147,14 @@ export async function doctor(): Promise<DoctorResult> {
   // 4. Coding tool integration
   const tools: Array<{ name: string; dir: string; configured: boolean }> = [];
 
-  // Claude Code
-  const claudeDir = path.join(os.homedir(), ".claude");
-  if (fs.existsSync(claudeDir)) {
-    const settingsPath = path.join(claudeDir, "settings.json");
-    let configured = false;
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      const plugins = settings.enabledPlugins ?? {};
-      configured =
-        !!plugins["panopticon@local-plugins"] || !!plugins["fml@local-plugins"];
-    } catch {}
-    tools.push({ name: "Claude Code", dir: claudeDir, configured });
-  }
-
-  // Gemini CLI
-  const geminiDir = path.join(os.homedir(), ".gemini");
-  if (fs.existsSync(geminiDir)) {
-    const settingsPath = path.join(geminiDir, "settings.json");
-    let configured = false;
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      configured = !!settings.telemetry?.enabled;
-    } catch {}
-    tools.push({ name: "Gemini CLI", dir: geminiDir, configured });
-  }
-
-  // Codex CLI
-  const codexDir = path.join(os.homedir(), ".codex");
-  if (fs.existsSync(codexDir)) {
-    const configPath = path.join(codexDir, "config.toml");
-    let configured = false;
-    try {
-      const content = fs.readFileSync(configPath, "utf-8");
-      configured = content.includes("panopticon");
-    } catch {}
-    tools.push({ name: "Codex CLI", dir: codexDir, configured });
+  for (const vendor of allVendors()) {
+    if (vendor.detect.isInstalled()) {
+      tools.push({
+        name: vendor.detect.displayName,
+        dir: vendor.config.dir,
+        configured: vendor.detect.isConfigured(),
+      });
+    }
   }
 
   if (tools.length === 0) {
