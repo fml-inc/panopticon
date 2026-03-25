@@ -59,7 +59,7 @@ Options:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│            Claude Code / Gemini CLI / Codex CLI              │
+│       Claude Code / Gemini CLI / Codex CLI / Pi Agent        │
 │                                                              │
 │  ┌──────────┐     ┌──────────────┐     ┌──────────────────┐  │
 │  │ OTel SDK │     │ Plugin Hooks │     │ API requests     │  │
@@ -82,16 +82,16 @@ Options:
           │    SQLite (WAL mode)    │
           │  ~/.local/share/        │
           │    panopticon/data.db   │
-          └────────────┬────────────┘
-                       │
-                       ▼
-              ┌────────────────┐
-              │   MCP Server   │
-              │   (stdio)      │
-              │                │
-              │ panopticon_*   │
-              │ query tools    │
-              └────────────────┘
+          └─────┬─────────────┬─────┘
+                │             │
+                ▼             ▼
+       ┌────────────┐  ┌───────────────┐
+       │ MCP Server │  │  Sync Loop    │
+       │  (stdio)   │  │  (optional)   │
+       │            │  │               │
+       │ panopticon │  │ merge → OTLP  │
+       │ query tools│  │ → remote POST │
+       └────────────┘  └───────────────┘
 ```
 
 **Four data pipelines feed one database:**
@@ -106,6 +106,8 @@ Options:
 
 All pipelines are correlated by `session_id`.
 
+5. **Sync** — Optional OTLP export that tails the local SQLite and POSTs merged events to a remote OTLP receiver. Merges hook events with their OTLP counterparts at sync time to produce unified records. Enable via the `@fml-inc/panopticon/sync` API.
+
 ## Supported tools
 
 | Tool | Hooks | OTel | Proxy |
@@ -113,6 +115,7 @@ All pipelines are correlated by `session_id`.
 | Claude Code | Plugin hooks via `hooks.json` | Native OTel SDK | Anthropic API |
 | Gemini CLI | Hooks via `settings.json` | Native OTel SDK | — |
 | Codex CLI | Hooks via `config.toml` | — | WebSocket proxy |
+| Pi | Extension events via `@panopticon/pi-extension` | — | Anthropic, OpenAI, Google AI |
 
 ## MCP tools
 
@@ -191,6 +194,47 @@ for await (const msg of observe(query({ prompt: "..." }))) {
 ```
 
 Requires a running panopticon server.
+
+## Sync
+
+Export telemetry from the local SQLite to any remote OTLP receiver. Useful for syncing sandbox/VM agent data to a central instance, or forwarding to Grafana, Honeycomb, Datadog, etc.
+
+```js
+import { createSyncLoop } from "@fml-inc/panopticon/sync";
+
+const sync = createSyncLoop({
+  targets: [{
+    name: "central",
+    url: "https://otlp.example.com",
+    token: "my-bearer-token",
+  }],
+  filter: { includeRepos: ["my-org/*"] },
+});
+
+sync.start();
+// sync.stop() to shut down
+```
+
+The sync loop:
+- Tails `hook_events`, `otel_logs`, and `otel_metrics` tables using watermarks
+- Merges hook events with their OTLP counterparts at sync time (e.g. `UserPromptSubmit` hook + `claude_code.user_prompt` OTLP log → one unified OTLP log record)
+- Serializes everything as standard OTLP JSON and POSTs to `{url}/v1/logs` and `{url}/v1/metrics`
+- Retries with exponential backoff; catches up at 1s intervals, idles at 30s
+- Watermarks stored in `{dataDir}/sync-watermarks.db` (separate from main data.db)
+
+## Integrations
+
+### Pi coding agent
+
+A Pi extension that sends session events to the local Panopticon server, giving Pi the same telemetry depth as Claude Code and Gemini CLI.
+
+```bash
+pi install /path/to/panopticon/integrations/pi
+```
+
+Captures: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SessionEnd`. Fire-and-forget — never blocks the agent.
+
+See [`integrations/pi/`](integrations/pi/) for details.
 
 ## Logs
 
@@ -308,15 +352,27 @@ src/
 │   ├── decode-logs.ts  OTel log record decoding
 │   ├── decode-metrics.ts OTel metric decoding
 │   └── proto.ts        Protocol buffer definitions
-└── proxy/
-    ├── server.ts       API proxy (Anthropic, OpenAI, Google, Codex)
-    ├── emit.ts         Event emission from proxy captures
-    ├── streaming.ts    SSE stream accumulation
-    ├── ws-capture.ts   WebSocket message capture (Codex)
-    ├── sessions.ts     Proxy session tracking
-    └── formats/
-        ├── types.ts      Format parser interface
-        ├── anthropic.ts  Anthropic Messages API parser
-        ├── openai.ts     OpenAI Chat Completions parser
-        └── openai-responses.ts  OpenAI Responses API parser
+├── sync/
+│   ├── index.ts        Public API (createSyncLoop, resetWatermarks)
+│   ├── types.ts        Interfaces (SyncTarget, SyncOptions, MergedEvent, OTLP types)
+│   ├── loop.ts         Poll loop with debounced scheduling
+│   ├── reader.ts       Batch reads from SQLite + hook↔OTLP merge SQL
+│   ├── serialize.ts    Convert rows → OTLP JSON (resourceLogs, resourceMetrics)
+│   ├── watermark.ts    Watermark persistence (sync-watermarks.db)
+│   └── post.ts         HTTP POST with retry + exponential backoff
+├── proxy/
+│   ├── server.ts       API proxy (Anthropic, OpenAI, Google, Codex)
+│   ├── emit.ts         Event emission from proxy captures
+│   ├── streaming.ts    SSE stream accumulation
+│   ├── ws-capture.ts   WebSocket message capture (Codex)
+│   ├── sessions.ts     Proxy session tracking
+│   └── formats/
+│       ├── types.ts      Format parser interface
+│       ├── anthropic.ts  Anthropic Messages API parser
+│       ├── openai.ts     OpenAI Chat Completions parser
+│       └── openai-responses.ts  OpenAI Responses API parser
+integrations/
+└── pi/
+    ├── index.ts        Pi coding agent extension
+    └── package.json    Pi package manifest
 ```

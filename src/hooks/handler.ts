@@ -15,7 +15,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
-import { autoPrune } from "../db/prune.js";
 import { openLogFd } from "../log.js";
 import { type HookInput, processHookEvent } from "./ingest.js";
 
@@ -68,14 +67,6 @@ function startServer(): void {
   }
   child.unref();
   fs.closeSync(logFd);
-}
-
-function tryAutoPrune(): void {
-  try {
-    autoPrune(config.autoMaxAgeDays, config.autoMaxSizeMb);
-  } catch {
-    // Never fail the hook due to pruning
-  }
 }
 
 async function readStdin(): Promise<string> {
@@ -136,7 +127,6 @@ async function main() {
     // On SessionStart, ensure the unified server is running
     if (eventType === "SessionStart" || eventType === "session_start") {
       if (!isServerRunning()) startServer();
-      tryAutoPrune();
       refreshIfStale().catch(() => {});
     }
 
