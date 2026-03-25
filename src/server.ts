@@ -66,7 +66,6 @@ export function createUnifiedServer(): http.Server {
       method === "POST" &&
       (url.startsWith("/v1/") || url === "/" || url === "")
     ) {
-      addBreadcrumb("otlp", `OTLP ingest ${url}`, undefined, "debug");
       await handleOtlpRequest(req, res);
       return;
     }
@@ -112,7 +111,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   function runPrune(): void {
     try {
       const cfg = loadUnifiedConfig();
-      addBreadcrumb("prune", "Running scheduled prune", undefined, "debug");
+      addBreadcrumb("prune", "Running scheduled prune");
       autoPrune(cfg.retention.maxAgeDays, cfg.retention.maxSizeMb);
       if (cfg.sync.targets.length > 0 && cfg.retention.syncedMaxAgeDays) {
         syncAwarePrune(cfg.sync.targets, cfg.retention);

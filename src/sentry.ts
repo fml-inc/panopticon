@@ -134,10 +134,18 @@ export function initSentry(): boolean {
       return event;
     },
 
-    // Filter noisy breadcrumbs
+    // Reduce breadcrumb noise
+    maxBreadcrumbs: 30,
     beforeBreadcrumb(breadcrumb) {
-      // Drop debug-level console breadcrumbs
+      // Drop debug-level console breadcrumbs (sync log lines, etc.)
       if (breadcrumb.category === "console" && breadcrumb.level === "debug") {
+        return null;
+      }
+      // Drop routine outbound HTTP to sync targets (keep errors only)
+      if (
+        breadcrumb.category === "http" &&
+        breadcrumb.data?.status_code === 200
+      ) {
         return null;
       }
       return breadcrumb;
