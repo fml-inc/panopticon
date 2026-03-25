@@ -1,0 +1,16 @@
+FROM node:22-slim
+
+WORKDIR /app
+
+# Install pnpm and production dependencies
+COPY package.json pnpm-lock.yaml ./
+RUN npm install -g pnpm && pnpm install --prod --frozen-lockfile
+
+# Copy built artifacts
+COPY dist/ dist/
+COPY bin/ bin/
+
+# The server reads config from PANOPTICON_DATA_DIR (set via env)
+EXPOSE 4318
+
+CMD ["node", "dist/server.js"]
