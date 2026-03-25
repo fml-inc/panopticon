@@ -97,6 +97,33 @@ describe("unified config", () => {
     expect(ret.maxSizeMb).toBe(800);
   });
 
+  it("hooksInstalled defaults to undefined when not set", () => {
+    const cfg = loadUnifiedConfig();
+    expect(cfg.hooksInstalled).toBeUndefined();
+  });
+
+  it("hooksInstalled round-trips through save/load", () => {
+    saveUnifiedConfig({
+      hooksInstalled: true,
+      sync: { targets: [] },
+      retention: { maxAgeDays: 90, maxSizeMb: 1000 },
+    });
+    const cfg = loadUnifiedConfig();
+    expect(cfg.hooksInstalled).toBe(true);
+  });
+
+  it("hooksInstalled is preserved when missing from file", () => {
+    fs.writeFileSync(
+      path.join(config.dataDir, "config.json"),
+      JSON.stringify({
+        sync: { targets: [] },
+        retention: { maxAgeDays: 90, maxSizeMb: 1000 },
+      }),
+    );
+    const cfg = loadUnifiedConfig();
+    expect(cfg.hooksInstalled).toBeUndefined();
+  });
+
   it("handles corrupt config.json gracefully", () => {
     fs.writeFileSync(path.join(config.dataDir, "config.json"), "not json{{{");
     const cfg = loadUnifiedConfig();
