@@ -10,6 +10,12 @@ import os from "node:os";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
+import {
+  closeWatermarkDb,
+  readWatermark,
+  watermarkKey,
+} from "./sync/watermark.js";
+import { loadUnifiedConfig } from "./unified-config.js";
 import { allVendors } from "./vendors/index.js";
 
 export interface CheckResult {
@@ -227,7 +233,44 @@ export async function doctor(): Promise<DoctorResult> {
     }
   }
 
-  // 5. Recent events and errors (informational, not checks)
+  // 6. Sync targets
+  try {
+    const cfg = loadUnifiedConfig();
+    const targets = cfg.sync.targets;
+    if (targets.length === 0) {
+      checks.push({
+        label: "Sync",
+        status: "ok",
+        detail: "No targets configured",
+      });
+    } else {
+      const tables = ["hook_events", "otel_logs", "otel_metrics"];
+      const targetDetails: string[] = [];
+      for (const t of targets) {
+        const watermarks = tables.map((table) =>
+          readWatermark(watermarkKey(table, t.name)),
+        );
+        const minWm = Math.min(...watermarks);
+        const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
+        targetDetails.push(`${t.name} → ${t.url} (${wmLabel})`);
+      }
+      closeWatermarkDb();
+
+      checks.push({
+        label: "Sync",
+        status: "ok",
+        detail: `${targets.length} target${targets.length > 1 ? "s" : ""}: ${targetDetails.join("; ")}`,
+      });
+    }
+  } catch {
+    checks.push({
+      label: "Sync",
+      status: "warn",
+      detail: "Could not read sync config",
+    });
+  }
+
+  // 7. Recent events and errors (informational, not checks)
   let recentEvents: RecentEvent[] = [];
   let recentErrors: RecentError[] = [];
 

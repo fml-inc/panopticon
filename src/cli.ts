@@ -31,7 +31,13 @@ import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 import { addTarget, listTargets, removeTarget } from "./sync/config.js";
+import {
+  closeWatermarkDb,
+  readWatermark,
+  watermarkKey,
+} from "./sync/watermark.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
+import { loadUnifiedConfig } from "./unified-config.js";
 import { allVendors, getVendor, vendorIds } from "./vendors/index.js";
 
 // ---------------------------------------------------------------------------
@@ -958,6 +964,28 @@ program
       }
     } else {
       console.log("Database: not initialized (run 'panopticon setup')");
+    }
+
+    // Sync targets
+    try {
+      const cfg = loadUnifiedConfig();
+      const targets = cfg.sync.targets;
+      if (targets.length > 0) {
+        console.log();
+        console.log("Sync targets:");
+        const tables = ["hook_events", "otel_logs", "otel_metrics"];
+        for (const t of targets) {
+          const watermarks = tables.map((table) =>
+            readWatermark(watermarkKey(table, t.name)),
+          );
+          const minWm = Math.min(...watermarks);
+          const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
+          console.log(`  ${t.name} → ${t.url} (${wmLabel})`);
+        }
+        closeWatermarkDb();
+      }
+    } catch {
+      // Sync not configured or watermark DB not available
     }
   });
 
