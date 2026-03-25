@@ -1,6 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-import { config, ensureDataDir } from "../config.js";
+import { loadUnifiedConfig, saveUnifiedConfig } from "../unified-config.js";
 import type { SyncFilter, SyncTarget } from "./types.js";
 
 export interface SyncConfig {
@@ -8,47 +6,38 @@ export interface SyncConfig {
   filter?: SyncFilter;
 }
 
-const SYNC_CONFIG_FILE = "sync.json";
-
-function syncConfigPath(): string {
-  return path.join(config.dataDir, SYNC_CONFIG_FILE);
-}
-
 export function loadSyncConfig(): SyncConfig {
-  const p = syncConfigPath();
-  try {
-    const raw = fs.readFileSync(p, "utf-8");
-    return JSON.parse(raw) as SyncConfig;
-  } catch {
-    return { targets: [] };
-  }
+  const cfg = loadUnifiedConfig();
+  return { targets: cfg.sync.targets, filter: cfg.sync.filter };
 }
 
-export function saveSyncConfig(cfg: SyncConfig): void {
-  ensureDataDir();
-  fs.writeFileSync(syncConfigPath(), `${JSON.stringify(cfg, null, 2)}\n`);
+export function saveSyncConfig(syncCfg: SyncConfig): void {
+  const cfg = loadUnifiedConfig();
+  cfg.sync.targets = syncCfg.targets;
+  cfg.sync.filter = syncCfg.filter;
+  saveUnifiedConfig(cfg);
 }
 
 export function addTarget(target: SyncTarget): void {
-  const cfg = loadSyncConfig();
-  const existing = cfg.targets.findIndex((t) => t.name === target.name);
+  const cfg = loadUnifiedConfig();
+  const existing = cfg.sync.targets.findIndex((t) => t.name === target.name);
   if (existing >= 0) {
-    cfg.targets[existing] = target;
+    cfg.sync.targets[existing] = target;
   } else {
-    cfg.targets.push(target);
+    cfg.sync.targets.push(target);
   }
-  saveSyncConfig(cfg);
+  saveUnifiedConfig(cfg);
 }
 
 export function removeTarget(name: string): boolean {
-  const cfg = loadSyncConfig();
-  const before = cfg.targets.length;
-  cfg.targets = cfg.targets.filter((t) => t.name !== name);
-  if (cfg.targets.length === before) return false;
-  saveSyncConfig(cfg);
+  const cfg = loadUnifiedConfig();
+  const before = cfg.sync.targets.length;
+  cfg.sync.targets = cfg.sync.targets.filter((t) => t.name !== name);
+  if (cfg.sync.targets.length === before) return false;
+  saveUnifiedConfig(cfg);
   return true;
 }
 
 export function listTargets(): SyncTarget[] {
-  return loadSyncConfig().targets;
+  return loadUnifiedConfig().sync.targets;
 }

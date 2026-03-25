@@ -25,6 +25,7 @@ export {
 // ── Database ──────────────────────────────────────────────────────────────────
 export { closeDb, getDb } from "./db/schema.js";
 export type { HookEventRow, OtelLogRow, OtelMetricRow } from "./db/store.js";
+export { syncAwarePrune } from "./db/sync-prune.js";
 // ── Doctor ────────────────────────────────────────────────────────────────────
 export {
   type CheckResult,
@@ -68,3 +69,11 @@ export type {
   SpendingResult,
   TimelineEvent,
 } from "./types.js";
+// ── Config ───────────────────────────────────────────────────────────────────
+export {
+  loadRetentionConfig,
+  loadUnifiedConfig,
+  type RetentionConfig,
+  saveUnifiedConfig,
+  type UnifiedConfig,
+} from "./unified-config.js";

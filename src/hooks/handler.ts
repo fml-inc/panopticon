@@ -16,7 +16,9 @@ import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { autoPrune } from "../db/prune.js";
+import { syncAwarePrune } from "../db/sync-prune.js";
 import { openLogFd } from "../log.js";
+import { loadUnifiedConfig } from "../unified-config.js";
 import { type HookInput, processHookEvent } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
@@ -72,7 +74,11 @@ function startServer(): void {
 
 function tryAutoPrune(): void {
   try {
-    autoPrune(config.autoMaxAgeDays, config.autoMaxSizeMb);
+    const cfg = loadUnifiedConfig();
+    autoPrune(cfg.retention.maxAgeDays, cfg.retention.maxSizeMb);
+    if (cfg.sync.targets.length > 0) {
+      syncAwarePrune(cfg.sync.targets, cfg.retention);
+    }
   } catch {
     // Never fail the hook due to pruning
   }

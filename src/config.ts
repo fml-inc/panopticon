@@ -94,8 +94,6 @@ export const config = {
     "local-plugins",
     "panopticon",
   ),
-  autoMaxSizeMb: 1000,
-  autoMaxAgeDays: 90,
   proxyPort: parseInt(process.env.PANOPTICON_PROXY_PORT ?? "4320", 10),
   proxyHost: process.env.PANOPTICON_PROXY_HOST ?? "127.0.0.1",
   proxyPidFile: path.join(DATA_DIR, "proxy.pid"),
