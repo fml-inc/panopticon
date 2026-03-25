@@ -95,6 +95,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@sentry/node": "^10.46.0",
     "better-sqlite3": "^11.0.0",
     "commander": "^14.0.3",
     "protobufjs": "^7.0.0",

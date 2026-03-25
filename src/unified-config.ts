@@ -16,6 +16,9 @@ export interface UnifiedConfig {
   /** Whether panopticon hooks are installed (plugin mode). When true, OTLP sync
    *  filters out body types that hooks already cover to avoid double-counting. */
   hooksInstalled?: boolean;
+  /** Sentry DSN for error reporting. When set, uncaught exceptions and key
+   *  error paths are reported to Sentry. */
+  sentryDsn?: string;
   sync: {
     targets: SyncTarget[];
     filter?: SyncFilter;
@@ -51,6 +54,7 @@ function mergeDefaults(raw: Partial<UnifiedConfig>): UnifiedConfig {
   };
   return {
     hooksInstalled: raw.hooksInstalled,
+    sentryDsn: raw.sentryDsn,
     sync: raw.sync ?? { targets: [] },
     retention,
   };

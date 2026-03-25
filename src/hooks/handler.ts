@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { openLogFd } from "../log.js";
+import { addBreadcrumb, captureException, initSentry } from "../sentry.js";
 import { type HookInput, processHookEvent } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
@@ -124,6 +125,11 @@ async function main() {
     const data: HookInput = JSON.parse(input);
     const eventType = data.hook_event_name ?? "Unknown";
 
+    addBreadcrumb("hook-handler", `Processing ${eventType}`, {
+      session_id: data.session_id,
+      tool_name: data.tool_name,
+    });
+
     // On SessionStart, ensure the unified server is running
     if (eventType === "SessionStart" || eventType === "session_start") {
       if (!isServerRunning()) startServer();
@@ -152,6 +158,7 @@ async function main() {
     process.stdout.write(JSON.stringify(result));
   } catch (err) {
     // Silently fail — hooks must not block the calling CLI
+    captureException(err, { component: "hook-handler", event_type: "unknown" });
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);
     }
@@ -159,4 +166,5 @@ async function main() {
   }
 }
 
+initSentry();
 main();

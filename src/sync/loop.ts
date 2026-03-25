@@ -1,4 +1,5 @@
 import { getDb } from "../db/schema.js";
+import { captureException } from "../sentry.js";
 import { chunk, postOtlp } from "./post.js";
 import { readHookEvents, readMetrics, readOtelLogs } from "./reader.js";
 import {
@@ -183,6 +184,10 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         log(
           `Error syncing to ${target.name}: ${err instanceof Error ? err.message : err}`,
         );
+        captureException(err, {
+          component: "sync",
+          target: target.name,
+        });
       }
     }
 
@@ -200,6 +205,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       log(
         `Cycle error: ${err instanceof Error ? (err.stack ?? err.message) : err}`,
       );
+      captureException(err, { component: "sync" });
     } finally {
       syncing = false;
     }

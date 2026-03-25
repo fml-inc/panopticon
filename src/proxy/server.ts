@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { config } from "../config.js";
+import { addBreadcrumb, captureException } from "../sentry.js";
 import { allVendors, getVendor } from "../vendors/index.js";
 import { emitHookEventAsync, emitOtelLogs, emitOtelMetrics } from "./emit.js";
 import { anthropicParser } from "./formats/anthropic.js";
@@ -212,6 +213,12 @@ function forwardNonStreaming(
 
   upstreamReq.on("error", (err) => {
     console.error(`Upstream error (${route.vendor}):`, err.message);
+    addBreadcrumb(
+      "proxy",
+      `Upstream error: ${route.vendor}`,
+      { vendor: route.vendor, upstream: route.upstream, error: err.message },
+      "error",
+    );
     if (!clientRes.headersSent) {
       clientRes.writeHead(502);
       clientRes.end(
@@ -306,6 +313,12 @@ function forwardStreaming(
 
   upstreamReq.on("error", (err) => {
     console.error(`Upstream error (${route.vendor}):`, err.message);
+    addBreadcrumb(
+      "proxy",
+      `Upstream error: ${route.vendor}`,
+      { vendor: route.vendor, upstream: route.upstream, error: err.message },
+      "error",
+    );
     if (!clientRes.headersSent) {
       clientRes.writeHead(502);
       clientRes.end(
@@ -508,6 +521,7 @@ export async function handleProxyRequest(
     }
   } catch (err) {
     console.error("Proxy error:", err);
+    captureException(err, { component: "proxy", path: url });
     if (!res.headersSent) {
       res.writeHead(500);
       res.end();

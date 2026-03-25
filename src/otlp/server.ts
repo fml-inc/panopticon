@@ -1,6 +1,7 @@
 import http from "node:http";
 import { config } from "../config.js";
 import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
+import { captureException } from "../sentry.js";
 import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
 import {
@@ -129,6 +130,7 @@ export async function handleOtlpRequest(
     }
   } catch (err) {
     console.error("OTLP handler error:", err);
+    captureException(err, { component: "otlp", url });
     if (!res.headersSent) {
       res.writeHead(500);
       res.end();

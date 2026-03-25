@@ -270,7 +270,20 @@ export async function doctor(): Promise<DoctorResult> {
     });
   }
 
-  // 7. Recent events and errors (informational, not checks)
+  // 7. Sentry
+  try {
+    const cfg = loadUnifiedConfig();
+    const dsn = process.env.PANOPTICON_SENTRY_DSN ?? cfg.sentryDsn;
+    checks.push({
+      label: "Sentry",
+      status: dsn ? "ok" : "ok",
+      detail: dsn ? "Configured" : "Not configured (optional)",
+    });
+  } catch {
+    // Non-critical
+  }
+
+  // 8. Recent events and errors (informational, not checks)
   let recentEvents: RecentEvent[] = [];
   let recentErrors: RecentError[] = [];
 
