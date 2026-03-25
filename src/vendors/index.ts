@@ -21,3 +21,4 @@ export type {
 import "./claude.js";
 import "./gemini.js";
 import "./codex.js";
+import "./openclaw.js";
