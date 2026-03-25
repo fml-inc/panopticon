@@ -7,8 +7,6 @@ export interface SyncPruneResult {
   hook_events: number;
   otel_logs: number;
   otel_metrics: number;
-  session_repositories: number;
-  session_cwds: number;
 }
 
 /**
@@ -47,8 +45,6 @@ export function syncAwarePrune(
     hook_events: 0,
     otel_logs: 0,
     otel_metrics: 0,
-    session_repositories: 0,
-    session_cwds: 0,
   };
 
   if (!retention.syncedMaxAgeDays || targets.length === 0) {
@@ -89,16 +85,8 @@ export function syncAwarePrune(
         .run(metricsMinWm, cutoffNs).changes;
     }
 
-    // -- session metadata (uses hook_events cutoff as proxy) --
-    if (hookMinWm > 0) {
-      result.session_repositories = db
-        .prepare("DELETE FROM session_repositories WHERE first_seen_ms < ?")
-        .run(cutoffMs).changes;
-
-      result.session_cwds = db
-        .prepare("DELETE FROM session_cwds WHERE first_seen_ms < ?")
-        .run(cutoffMs).changes;
-    }
+    // Session metadata (session_repositories, session_cwds) is local-only —
+    // not synced to remote targets. Left to regular time/size-based pruneExecute.
   });
 
   tx();

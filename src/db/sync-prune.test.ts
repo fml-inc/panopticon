@@ -63,17 +63,6 @@ function insertOtelMetric(
   ).run(id, timestampNs, "token_usage", 100, sessionId);
 }
 
-function insertSessionRepo(
-  sessionId: string,
-  repository: string,
-  firstSeenMs: number,
-): void {
-  const db = getDb();
-  db.prepare(
-    "INSERT INTO session_repositories (session_id, repository, first_seen_ms) VALUES (?, ?, ?)",
-  ).run(sessionId, repository, firstSeenMs);
-}
-
 function countRows(table: string): number {
   return (
     getDb().prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }
@@ -214,19 +203,6 @@ describe("sync-prune", () => {
       const result = syncAwarePrune(targets, retention);
       expect(result.otel_metrics).toBe(1);
       expect(countRows("otel_metrics")).toBe(1);
-    });
-
-    it("cleans up session_repositories when hook_events are pruned", () => {
-      insertHookEvent(1, oldMs, "sess-old");
-      insertSessionRepo("sess-old", "org/repo", oldMs);
-      insertSessionRepo("sess-new", "org/repo2", recentMs);
-
-      writeWatermark(watermarkKey("hook_events", "target-a"), 5);
-      writeWatermark(watermarkKey("hook_events", "target-b"), 5);
-
-      const result = syncAwarePrune(targets, retention);
-      expect(result.session_repositories).toBe(1);
-      expect(countRows("session_repositories")).toBe(1);
     });
 
     it("handles all tables independently", () => {

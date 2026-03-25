@@ -263,15 +263,15 @@ describe("integration: unified config + sync-aware retention", () => {
       expect(result.hook_events).toBe(3);
       expect(result.otel_logs).toBe(2);
       expect(result.otel_metrics).toBe(1);
-      expect(result.session_repositories).toBe(1);
-      expect(result.session_cwds).toBe(1);
 
       // Recent session (2 days) should survive — it's synced but newer than 7 days
       expect(countRows("hook_events")).toBe(3);
       expect(countRows("otel_logs")).toBe(2);
       expect(countRows("otel_metrics")).toBe(1);
-      expect(countRows("session_repositories")).toBe(1);
-      expect(countRows("session_cwds")).toBe(1);
+
+      // Session metadata is local-only — not touched by sync-aware prune
+      expect(countRows("session_repositories")).toBe(2);
+      expect(countRows("session_cwds")).toBe(2);
     });
 
     it("does not prune when one target is behind", () => {
