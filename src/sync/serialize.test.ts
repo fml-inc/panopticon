@@ -83,6 +83,7 @@ function makeEvent(overrides: Partial<MergedEvent> = {}): MergedEvent {
     userPrompt: null,
     filePath: null,
     command: "ls",
+    otelTimestampNs: null,
     otelAttributes: null,
     otelResourceAttributes: null,
     otelSeverityText: null,

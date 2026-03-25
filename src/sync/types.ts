@@ -52,6 +52,7 @@ export interface MergedEvent {
   filePath: string | null;
   command: string | null;
   // From OTLP counterpart (null if unmerged)
+  otelTimestampNs: number | null;
   otelAttributes: Record<string, unknown> | null;
   otelResourceAttributes: Record<string, unknown> | null;
   otelSeverityText: string | null;

@@ -76,6 +76,7 @@ const MERGE_SQL = `
     AND (
       b.tool_name IS NULL
       OR json_extract(l.attributes, '$.tool_name') = b.tool_name
+      OR (b.tool_name LIKE 'mcp!_%!_%' ESCAPE '!' AND json_extract(l.attributes, '$.tool_name') = 'mcp_tool')
     )
   ORDER BY b.id
 `;
@@ -97,24 +98,19 @@ export function readMergedEvents(
       // Keep the one with closest OTLP timestamp
       if (
         raw.otel_timestamp_ns != null &&
-        existing.otelPromptId == null // existing had no match
+        existing.otelTimestampNs == null // existing had no match
       ) {
         // Replace with this one
       } else if (
         raw.otel_timestamp_ns != null &&
-        existing.otelPromptId != null
+        existing.otelTimestampNs != null
       ) {
+        const hookNs = BigInt(raw.timestamp_ms) * 1_000_000n;
         const existingDelta = Math.abs(
-          Number(
-            BigInt(existing.timestampMs) * 1_000_000n -
-              BigInt(raw.otel_timestamp_ns),
-          ),
+          Number(hookNs - BigInt(existing.otelTimestampNs)),
         );
         const newDelta = Math.abs(
-          Number(
-            BigInt(raw.timestamp_ms) * 1_000_000n -
-              BigInt(raw.otel_timestamp_ns),
-          ),
+          Number(hookNs - BigInt(raw.otel_timestamp_ns)),
         );
         if (newDelta >= existingDelta) continue; // existing is closer, skip
       } else {
@@ -134,6 +130,7 @@ export function readMergedEvents(
       userPrompt: raw.user_prompt,
       filePath: raw.file_path,
       command: raw.command,
+      otelTimestampNs: raw.otel_timestamp_ns,
       otelAttributes: parseJson(raw.otel_attributes),
       otelResourceAttributes: parseJson(raw.otel_resource_attributes),
       otelSeverityText: raw.otel_severity_text,
