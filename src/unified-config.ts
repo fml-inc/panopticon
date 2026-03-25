@@ -13,6 +13,9 @@ export interface RetentionConfig {
 }
 
 export interface UnifiedConfig {
+  /** Whether panopticon hooks are installed (plugin mode). When true, OTLP sync
+   *  filters out body types that hooks already cover to avoid double-counting. */
+  hooksInstalled?: boolean;
   sync: {
     targets: SyncTarget[];
     filter?: SyncFilter;
@@ -47,6 +50,7 @@ function mergeDefaults(raw: Partial<UnifiedConfig>): UnifiedConfig {
     ...(raw.retention ?? {}),
   };
   return {
+    hooksInstalled: raw.hooksInstalled,
     sync: raw.sync ?? { targets: [] },
     retention,
   };

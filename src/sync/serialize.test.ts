@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   mapToKvList,
-  serializeMergedEvents,
+  serializeHookEvents,
   serializeMetrics,
-  serializeUnmatchedLogs,
+  serializeOtelLogs,
   toAnyValue,
 } from "./serialize.js";
-import type { MergedEvent, MetricRow, UnmatchedOtelLog } from "./types.js";
+import type { HookEventRecord, MetricRow, OtelLogRecord } from "./types.js";
 
 // ── toAnyValue ───────────────────────────────────────────────────────────────
 
@@ -68,9 +68,9 @@ describe("mapToKvList", () => {
   });
 });
 
-// ── serializeMergedEvents ────────────────────────────────────────────────────
+// ── serializeHookEvents ──────────────────────────────────────────────────────
 
-function makeEvent(overrides: Partial<MergedEvent> = {}): MergedEvent {
+function makeEvent(overrides: Partial<HookEventRecord> = {}): HookEventRecord {
   return {
     hookId: 1,
     sessionId: "sess-1",
@@ -83,20 +83,13 @@ function makeEvent(overrides: Partial<MergedEvent> = {}): MergedEvent {
     userPrompt: null,
     filePath: null,
     command: "ls",
-    otelTimestampNs: null,
-    otelAttributes: null,
-    otelResourceAttributes: null,
-    otelSeverityText: null,
-    otelPromptId: null,
-    otelTraceId: null,
-    otelSpanId: null,
     ...overrides,
   };
 }
 
-describe("serializeMergedEvents", () => {
+describe("serializeHookEvents", () => {
   it("produces valid OTLP resourceLogs structure", () => {
-    const result = serializeMergedEvents([makeEvent()]);
+    const result = serializeHookEvents([makeEvent()]);
 
     expect(result.resourceLogs).toHaveLength(1);
     const rl = result.resourceLogs[0];
@@ -112,7 +105,7 @@ describe("serializeMergedEvents", () => {
   });
 
   it("sets timeUnixNano as nanosecond string", () => {
-    const result = serializeMergedEvents([
+    const result = serializeHookEvents([
       makeEvent({ timestampMs: 1700000000000 }),
     ]);
     const record = result.resourceLogs[0].scopeLogs[0].logRecords[0];
@@ -120,7 +113,7 @@ describe("serializeMergedEvents", () => {
   });
 
   it("sets body to event type", () => {
-    const result = serializeMergedEvents([
+    const result = serializeHookEvents([
       makeEvent({ eventType: "PreToolUse" }),
     ]);
     const record = result.resourceLogs[0].scopeLogs[0].logRecords[0];
@@ -128,7 +121,7 @@ describe("serializeMergedEvents", () => {
   });
 
   it("includes tool_name and cwd in attributes", () => {
-    const result = serializeMergedEvents([makeEvent()]);
+    const result = serializeHookEvents([makeEvent()]);
     const attrs = result.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
     const keys = attrs.map((a) => a.key);
     expect(keys).toContain("tool_name");
@@ -136,24 +129,8 @@ describe("serializeMergedEvents", () => {
     expect(keys).toContain("event_type");
   });
 
-  it("merges OTLP attributes when present", () => {
-    const result = serializeMergedEvents([
-      makeEvent({
-        otelAttributes: { duration_ms: 150, cost_usd: 0.05 },
-        otelTraceId: "abc123",
-        otelPromptId: "prompt-1",
-      }),
-    ]);
-    const record = result.resourceLogs[0].scopeLogs[0].logRecords[0];
-    const keys = record.attributes.map((a) => a.key);
-    expect(keys).toContain("duration_ms");
-    expect(keys).toContain("cost_usd");
-    expect(keys).toContain("prompt.id");
-    expect(record.traceId).toBe("abc123");
-  });
-
   it("groups events by session+repository", () => {
-    const result = serializeMergedEvents([
+    const result = serializeHookEvents([
       makeEvent({ sessionId: "s1", repository: "org/a" }),
       makeEvent({ hookId: 2, sessionId: "s1", repository: "org/a" }),
       makeEvent({ hookId: 3, sessionId: "s2", repository: "org/b" }),
@@ -164,30 +141,11 @@ describe("serializeMergedEvents", () => {
     );
     expect(counts.sort()).toEqual([1, 2]);
   });
-
-  it("skips redundant OTLP attribute keys", () => {
-    const result = serializeMergedEvents([
-      makeEvent({
-        otelAttributes: {
-          "session.id": "dup",
-          "event.name": "dup",
-          actual_data: "keep",
-        },
-      }),
-    ]);
-    const keys =
-      result.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
-        (a) => a.key,
-      );
-    expect(keys).toContain("actual_data");
-    expect(keys).not.toContain("session.id");
-    expect(keys).not.toContain("event.name");
-  });
 });
 
-// ── serializeUnmatchedLogs ───────────────────────────────────────────────────
+// ── serializeOtelLogs ────────────────────────────────────────────────────────
 
-function makeLog(overrides: Partial<UnmatchedOtelLog> = {}): UnmatchedOtelLog {
+function makeLog(overrides: Partial<OtelLogRecord> = {}): OtelLogRecord {
   return {
     id: 1,
     timestampNs: 1700000000000000000,
@@ -203,9 +161,9 @@ function makeLog(overrides: Partial<UnmatchedOtelLog> = {}): UnmatchedOtelLog {
   };
 }
 
-describe("serializeUnmatchedLogs", () => {
+describe("serializeOtelLogs", () => {
   it("produces valid OTLP resourceLogs", () => {
-    const result = serializeUnmatchedLogs([makeLog()]);
+    const result = serializeOtelLogs([makeLog()]);
     expect(result.resourceLogs).toHaveLength(1);
     const record = result.resourceLogs[0].scopeLogs[0].logRecords[0];
     expect(record.body).toEqual({ stringValue: "claude_code.api_request" });
@@ -215,7 +173,7 @@ describe("serializeUnmatchedLogs", () => {
   });
 
   it("includes prompt.id in attributes", () => {
-    const result = serializeUnmatchedLogs([makeLog()]);
+    const result = serializeOtelLogs([makeLog()]);
     const keys =
       result.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
         (a) => a.key,

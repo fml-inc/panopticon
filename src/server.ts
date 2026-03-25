@@ -130,6 +130,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
       syncHandle = createSyncLoop({
         targets: cfg.sync.targets,
         filter: cfg.sync.filter,
+        hooksInstalled: cfg.hooksInstalled,
       });
       syncHandle.start();
     }

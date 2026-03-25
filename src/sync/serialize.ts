@@ -1,6 +1,7 @@
 import type {
-  MergedEvent,
+  HookEventRecord,
   MetricRow,
+  OtelLogRecord,
   OtlpAnyValue,
   OtlpKeyValue,
   OtlpLogRecord,
@@ -8,7 +9,6 @@ import type {
   OtlpNumberDataPoint,
   OtlpResourceLogs,
   OtlpResourceMetrics,
-  UnmatchedOtelLog,
 } from "./types.js";
 
 // ── AnyValue encoding ────────────────────────────────────────────────────────
@@ -53,8 +53,6 @@ function kv(key: string, val: unknown): OtlpKeyValue {
 
 // ── Resource grouping ────────────────────────────────────────────────────────
 
-type ResourceKey = string; // "sessionId:repository"
-
 function resourceKey(sessionId: string, repository: string | null): string {
   return `${sessionId}:${repository ?? ""}`;
 }
@@ -71,12 +69,11 @@ function resourceAttributes(
   return attrs;
 }
 
-// ── Merged events → OTLP logs ───────────────────────────────────────────────
+// ── Hook events → OTLP logs ─────────────────────────────────────────────────
 
-function mergedEventToLogRecord(event: MergedEvent): OtlpLogRecord {
+function hookEventToLogRecord(event: HookEventRecord): OtlpLogRecord {
   const attrs: OtlpKeyValue[] = [kv("event_type", event.eventType)];
 
-  // Hook fields
   if (event.toolName) attrs.push(kv("tool_name", event.toolName));
   if (event.cwd) attrs.push(kv("cwd", event.cwd));
   if (event.userPrompt) attrs.push(kv("prompt", event.userPrompt));
@@ -84,39 +81,18 @@ function mergedEventToLogRecord(event: MergedEvent): OtlpLogRecord {
   if (event.command) attrs.push(kv("command", event.command));
   if (event.payload) attrs.push(kv("hook.payload", event.payload));
 
-  // OTLP counterpart fields
-  if (event.otelPromptId) attrs.push(kv("prompt.id", event.otelPromptId));
-
-  // Merge OTLP attributes (skip keys we already have)
-  if (event.otelAttributes) {
-    const existing = new Set(attrs.map((a) => a.key));
-    // Also skip redundant OTLP keys that duplicate hook data
-    existing.add("session.id");
-    existing.add("event.name");
-    existing.add("event.sequence");
-    existing.add("event.timestamp");
-
-    for (const [k, v] of Object.entries(event.otelAttributes)) {
-      if (!existing.has(k)) attrs.push(kv(k, v));
-    }
-  }
-
-  const record: OtlpLogRecord = {
+  return {
     timeUnixNano: String(event.timestampMs * 1_000_000),
     body: { stringValue: event.eventType },
     attributes: attrs,
   };
-
-  if (event.otelSeverityText) record.severityText = event.otelSeverityText;
-  if (event.otelTraceId) record.traceId = event.otelTraceId;
-  if (event.otelSpanId) record.spanId = event.otelSpanId;
-
-  return record;
 }
 
-export function serializeMergedEvents(events: MergedEvent[]): OtlpResourceLogs {
+export function serializeHookEvents(
+  events: HookEventRecord[],
+): OtlpResourceLogs {
   const groups = new Map<
-    ResourceKey,
+    string,
     { attrs: OtlpKeyValue[]; records: OtlpLogRecord[] }
   >();
 
@@ -128,7 +104,7 @@ export function serializeMergedEvents(events: MergedEvent[]): OtlpResourceLogs {
         records: [],
       });
     }
-    groups.get(key)!.records.push(mergedEventToLogRecord(event));
+    groups.get(key)!.records.push(hookEventToLogRecord(event));
   }
 
   return {
@@ -139,9 +115,9 @@ export function serializeMergedEvents(events: MergedEvent[]): OtlpResourceLogs {
   };
 }
 
-// ── Unmatched OTLP logs → OTLP logs ─────────────────────────────────────────
+// ── OTLP logs → OTLP logs ───────────────────────────────────────────────────
 
-function unmatchedLogToRecord(log: UnmatchedOtelLog): OtlpLogRecord {
+function otelLogToRecord(log: OtelLogRecord): OtlpLogRecord {
   const record: OtlpLogRecord = {
     timeUnixNano: String(log.timestampNs),
     body: { stringValue: log.body ?? "" },
@@ -158,11 +134,9 @@ function unmatchedLogToRecord(log: UnmatchedOtelLog): OtlpLogRecord {
   return record;
 }
 
-export function serializeUnmatchedLogs(
-  logs: UnmatchedOtelLog[],
-): OtlpResourceLogs {
+export function serializeOtelLogs(logs: OtelLogRecord[]): OtlpResourceLogs {
   const groups = new Map<
-    ResourceKey,
+    string,
     { attrs: OtlpKeyValue[]; records: OtlpLogRecord[] }
   >();
 
@@ -177,7 +151,7 @@ export function serializeUnmatchedLogs(
         records: [],
       });
     }
-    groups.get(key)!.records.push(unmatchedLogToRecord(log));
+    groups.get(key)!.records.push(otelLogToRecord(log));
   }
 
   return {
@@ -191,7 +165,6 @@ export function serializeUnmatchedLogs(
 // ── Metrics → OTLP metrics ──────────────────────────────────────────────────
 
 export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
-  // Group by session, then by metric name
   const sessions = new Map<
     string,
     {
@@ -236,16 +209,11 @@ export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
       scopeMetrics: [
         {
           metrics: Array.from(s.metrics.entries()).map(
-            ([name, { unit, points }]): OtlpMetric => {
-              // Always emit as gauge. Our stored values are per-request
-              // deltas, not cumulative sums, so gauge is the correct
-              // OTLP type for Prometheus compatibility.
-              return {
-                name,
-                ...(unit ? { unit } : {}),
-                gauge: { dataPoints: points },
-              };
-            },
+            ([name, { unit, points }]): OtlpMetric => ({
+              name,
+              ...(unit ? { unit } : {}),
+              gauge: { dataPoints: points },
+            }),
           ),
         },
       ],

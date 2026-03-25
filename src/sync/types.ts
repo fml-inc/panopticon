@@ -19,6 +19,8 @@ export interface SyncFilter {
 export interface SyncOptions {
   targets: SyncTarget[];
   filter?: SyncFilter;
+  /** When true, OTLP logs that hooks cover (tool_decision, tool_result, user_prompt) are filtered out */
+  hooksInstalled?: boolean;
   /** Max rows read from SQLite per batch (default 2000) */
   batchSize?: number;
   /** Max records per HTTP POST (default 25) */
@@ -38,8 +40,8 @@ export interface SyncHandle {
   stop: () => void;
 }
 
-/** Hook event row merged with its OTLP counterpart (if any). */
-export interface MergedEvent {
+/** Hook event record for sync. */
+export interface HookEventRecord {
   hookId: number;
   sessionId: string;
   eventType: string;
@@ -51,18 +53,10 @@ export interface MergedEvent {
   userPrompt: string | null;
   filePath: string | null;
   command: string | null;
-  // From OTLP counterpart (null if unmerged)
-  otelTimestampNs: number | null;
-  otelAttributes: Record<string, unknown> | null;
-  otelResourceAttributes: Record<string, unknown> | null;
-  otelSeverityText: string | null;
-  otelPromptId: string | null;
-  otelTraceId: string | null;
-  otelSpanId: string | null;
 }
 
-/** OTLP log with no hook counterpart (api_request, api_error, etc.) */
-export interface UnmatchedOtelLog {
+/** OTLP log record for sync. */
+export interface OtelLogRecord {
   id: number;
   timestampNs: number;
   body: string | null;

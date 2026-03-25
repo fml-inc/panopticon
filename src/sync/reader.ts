@@ -1,12 +1,5 @@
 import { getDb } from "../db/schema.js";
-import type { MergedEvent, MetricRow, UnmatchedOtelLog } from "./types.js";
-
-/** OTLP body types that get merged with hook events. */
-const MERGED_OTEL_BODIES = [
-  "claude_code.user_prompt",
-  "claude_code.tool_decision",
-  "claude_code.tool_result",
-];
+import type { HookEventRecord, MetricRow, OtelLogRecord } from "./types.js";
 
 function parseJson(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null;
@@ -18,135 +11,82 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
   }
 }
 
-// ── Merged events ────────────────────────────────────────────────────────────
+// ── Hook events ──────────────────────────────────────────────────────────────
 
-interface RawMergedRow {
-  id: number;
-  session_id: string;
-  event_type: string;
-  timestamp_ms: number;
-  cwd: string | null;
-  repository: string | null;
-  tool_name: string | null;
-  payload: string | null;
-  user_prompt: string | null;
-  file_path: string | null;
-  command: string | null;
-  otel_log_id: number | null;
-  otel_timestamp_ns: number | null;
-  otel_body: string | null;
-  otel_attributes: string | null;
-  otel_resource_attributes: string | null;
-  otel_severity_text: string | null;
-  otel_prompt_id: string | null;
-  otel_trace_id: string | null;
-  otel_span_id: string | null;
-}
-
-const MERGE_SQL = `
-  WITH batch AS (
-    SELECT id, session_id, event_type, timestamp_ms, cwd, repository,
-           tool_name, decompress(payload) as payload,
-           user_prompt, file_path, command
-    FROM hook_events
-    WHERE id > ?
-    ORDER BY id
-    LIMIT ?
-  )
-  SELECT b.*,
-         l.id AS otel_log_id,
-         l.timestamp_ns AS otel_timestamp_ns,
-         l.body AS otel_body,
-         l.attributes AS otel_attributes,
-         l.resource_attributes AS otel_resource_attributes,
-         l.severity_text AS otel_severity_text,
-         l.prompt_id AS otel_prompt_id,
-         l.trace_id AS otel_trace_id,
-         l.span_id AS otel_span_id
-  FROM batch b
-  LEFT JOIN otel_logs l
-    ON l.session_id = b.session_id
-    AND l.body = CASE b.event_type
-      WHEN 'UserPromptSubmit' THEN 'claude_code.user_prompt'
-      WHEN 'PreToolUse' THEN 'claude_code.tool_decision'
-      WHEN 'PostToolUse' THEN 'claude_code.tool_result'
-      WHEN 'PostToolUseFailure' THEN 'claude_code.tool_result'
-    END
-    AND ABS(CAST(l.timestamp_ns / 1000000 AS INTEGER) - b.timestamp_ms) < 100
-    AND (
-      b.tool_name IS NULL
-      OR json_extract(l.attributes, '$.tool_name') = b.tool_name
-      OR (b.tool_name LIKE 'mcp!_%!_%' ESCAPE '!' AND json_extract(l.attributes, '$.tool_name') = 'mcp_tool')
-    )
-  ORDER BY b.id
+const HOOK_EVENTS_SQL = `
+  SELECT id, session_id, event_type, timestamp_ms, cwd, repository,
+         tool_name, decompress(payload) as payload,
+         user_prompt, file_path, command
+  FROM hook_events
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
 `;
 
-export function readMergedEvents(
+export function readHookEvents(
   afterId: number,
   limit: number,
-): { rows: MergedEvent[]; maxId: number } {
+): { rows: HookEventRecord[]; maxId: number } {
   const db = getDb();
-  const rawRows = db.prepare(MERGE_SQL).all(afterId, limit) as RawMergedRow[];
+  const rawRows = db.prepare(HOOK_EVENTS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    event_type: string;
+    timestamp_ms: number;
+    cwd: string | null;
+    repository: string | null;
+    tool_name: string | null;
+    payload: string | null;
+    user_prompt: string | null;
+    file_path: string | null;
+    command: string | null;
+  }>;
 
-  // Deduplicate: if multiple OTLP logs matched one hook event (shouldn't
-  // happen but defensive), keep the one with the closest timestamp.
-  const seen = new Map<number, MergedEvent>();
+  const rows: HookEventRecord[] = rawRows.map((r) => ({
+    hookId: r.id,
+    sessionId: r.session_id,
+    eventType: r.event_type,
+    timestampMs: r.timestamp_ms,
+    cwd: r.cwd,
+    repository: r.repository,
+    toolName: r.tool_name,
+    payload: parseJson(r.payload),
+    userPrompt: r.user_prompt,
+    filePath: r.file_path,
+    command: r.command,
+  }));
 
-  for (const raw of rawRows) {
-    const existing = seen.get(raw.id);
-    if (existing) {
-      // Keep the one with closest OTLP timestamp
-      if (
-        raw.otel_timestamp_ns != null &&
-        existing.otelTimestampNs == null // existing had no match
-      ) {
-        // Replace with this one
-      } else if (
-        raw.otel_timestamp_ns != null &&
-        existing.otelTimestampNs != null
-      ) {
-        const hookNs = BigInt(raw.timestamp_ms) * 1_000_000n;
-        const existingDelta = Math.abs(
-          Number(hookNs - BigInt(existing.otelTimestampNs)),
-        );
-        const newDelta = Math.abs(
-          Number(hookNs - BigInt(raw.otel_timestamp_ns)),
-        );
-        if (newDelta >= existingDelta) continue; // existing is closer, skip
-      } else {
-        continue; // no improvement
-      }
-    }
-
-    seen.set(raw.id, {
-      hookId: raw.id,
-      sessionId: raw.session_id,
-      eventType: raw.event_type,
-      timestampMs: raw.timestamp_ms,
-      cwd: raw.cwd,
-      repository: raw.repository,
-      toolName: raw.tool_name,
-      payload: parseJson(raw.payload),
-      userPrompt: raw.user_prompt,
-      filePath: raw.file_path,
-      command: raw.command,
-      otelTimestampNs: raw.otel_timestamp_ns,
-      otelAttributes: parseJson(raw.otel_attributes),
-      otelResourceAttributes: parseJson(raw.otel_resource_attributes),
-      otelSeverityText: raw.otel_severity_text,
-      otelPromptId: raw.otel_prompt_id,
-      otelTraceId: raw.otel_trace_id,
-      otelSpanId: raw.otel_span_id,
-    });
-  }
-
-  const rows = Array.from(seen.values());
   const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
-
   return { rows, maxId };
 }
 
-// ── Unmatched OTLP logs ──────────────────────────────────────────────────────
+// ── OTLP logs ────────────────────────────────────────────────────────────────
+
+/** Body types that hooks already cover — filtered out when hooks are installed. */
+const HOOK_COVERED_BODIES = [
+  "claude_code.user_prompt",
+  "claude_code.tool_decision",
+  "claude_code.tool_result",
+];
+
+const ALL_LOGS_SQL = `
+  SELECT id, timestamp_ns, body, attributes, resource_attributes,
+         severity_text, session_id, prompt_id, trace_id, span_id
+  FROM otel_logs
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+const FILTERED_LOGS_SQL = `
+  SELECT id, timestamp_ns, body, attributes, resource_attributes,
+         severity_text, session_id, prompt_id, trace_id, span_id
+  FROM otel_logs
+  WHERE id > ?
+    AND body NOT IN (${HOOK_COVERED_BODIES.map(() => "?").join(", ")})
+  ORDER BY id
+  LIMIT ?
+`;
 
 interface RawOtelLogRow {
   id: number;
@@ -161,26 +101,8 @@ interface RawOtelLogRow {
   span_id: string | null;
 }
 
-const UNMATCHED_LOGS_SQL = `
-  SELECT id, timestamp_ns, body, attributes, resource_attributes,
-         severity_text, session_id, prompt_id, trace_id, span_id
-  FROM otel_logs
-  WHERE id > ?
-    AND body NOT IN (${MERGED_OTEL_BODIES.map(() => "?").join(", ")})
-  ORDER BY id
-  LIMIT ?
-`;
-
-export function readUnmatchedOtelLogs(
-  afterId: number,
-  limit: number,
-): { rows: UnmatchedOtelLog[]; maxId: number } {
-  const db = getDb();
-  const rawRows = db
-    .prepare(UNMATCHED_LOGS_SQL)
-    .all(afterId, ...MERGED_OTEL_BODIES, limit) as RawOtelLogRow[];
-
-  const rows: UnmatchedOtelLog[] = rawRows.map((r) => ({
+function mapOtelRows(rawRows: RawOtelLogRow[]): OtelLogRecord[] {
+  return rawRows.map((r) => ({
     id: r.id,
     timestampNs: r.timestamp_ns,
     body: r.body,
@@ -192,24 +114,32 @@ export function readUnmatchedOtelLogs(
     traceId: r.trace_id,
     spanId: r.span_id,
   }));
+}
 
+/**
+ * Read OTLP logs in batches.
+ * When hooksInstalled is true, filters out body types that hooks cover
+ * (tool_decision, tool_result, user_prompt) to avoid double-counting.
+ */
+export function readOtelLogs(
+  afterId: number,
+  limit: number,
+  hooksInstalled: boolean,
+): { rows: OtelLogRecord[]; maxId: number } {
+  const db = getDb();
+
+  const rawRows = hooksInstalled
+    ? (db
+        .prepare(FILTERED_LOGS_SQL)
+        .all(afterId, ...HOOK_COVERED_BODIES, limit) as RawOtelLogRow[])
+    : (db.prepare(ALL_LOGS_SQL).all(afterId, limit) as RawOtelLogRow[]);
+
+  const rows = mapOtelRows(rawRows);
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
   return { rows, maxId };
 }
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
-
-interface RawMetricRow {
-  id: number;
-  timestamp_ns: number;
-  name: string;
-  value: number;
-  metric_type: string | null;
-  unit: string | null;
-  attributes: string | null;
-  resource_attributes: string | null;
-  session_id: string | null;
-}
 
 const METRICS_SQL = `
   SELECT id, timestamp_ns, name, value, metric_type, unit,
@@ -225,7 +155,17 @@ export function readMetrics(
   limit: number,
 ): { rows: MetricRow[]; maxId: number } {
   const db = getDb();
-  const rawRows = db.prepare(METRICS_SQL).all(afterId, limit) as RawMetricRow[];
+  const rawRows = db.prepare(METRICS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    timestamp_ns: number;
+    name: string;
+    value: number;
+    metric_type: string | null;
+    unit: string | null;
+    attributes: string | null;
+    resource_attributes: string | null;
+    session_id: string | null;
+  }>;
 
   const rows: MetricRow[] = rawRows.map((r) => ({
     id: r.id,
