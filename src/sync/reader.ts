@@ -106,12 +106,15 @@ export function readMergedEvents(
       ) {
         const existingDelta = Math.abs(
           Number(
-            BigInt(existing.timestampMs * 1_000_000) -
+            BigInt(existing.timestampMs) * 1_000_000n -
               BigInt(raw.otel_timestamp_ns),
           ),
         );
         const newDelta = Math.abs(
-          raw.timestamp_ms * 1_000_000 - raw.otel_timestamp_ns,
+          Number(
+            BigInt(raw.timestamp_ms) * 1_000_000n -
+              BigInt(raw.otel_timestamp_ns),
+          ),
         );
         if (newDelta >= existingDelta) continue; // existing is closer, skip
       } else {

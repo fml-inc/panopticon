@@ -45,12 +45,15 @@ export function writeWatermark(key: string, value: number): void {
   ).run(key, value);
 }
 
+const SYNCED_TABLES = ["hook_events", "otel_logs", "otel_metrics"];
+
 export function resetWatermarks(targetName?: string): void {
   const db = getWatermarkDb();
   if (targetName) {
-    db.prepare("DELETE FROM watermarks WHERE key LIKE ?").run(
-      `%:${targetName}`,
-    );
+    const stmt = db.prepare("DELETE FROM watermarks WHERE key = ?");
+    for (const table of SYNCED_TABLES) {
+      stmt.run(watermarkKey(table, targetName));
+    }
   } else {
     db.prepare("DELETE FROM watermarks").run();
   }
