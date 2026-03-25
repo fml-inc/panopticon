@@ -10,6 +10,13 @@ import os from "node:os";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
+import {
+  closeWatermarkDb,
+  readWatermark,
+  watermarkKey,
+} from "./sync/watermark.js";
+import { loadUnifiedConfig } from "./unified-config.js";
+import { allVendors } from "./vendors/index.js";
 
 export interface CheckResult {
   label: string;
@@ -146,42 +153,14 @@ export async function doctor(): Promise<DoctorResult> {
   // 4. Coding tool integration
   const tools: Array<{ name: string; dir: string; configured: boolean }> = [];
 
-  // Claude Code
-  const claudeDir = path.join(os.homedir(), ".claude");
-  if (fs.existsSync(claudeDir)) {
-    const settingsPath = path.join(claudeDir, "settings.json");
-    let configured = false;
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      const plugins = settings.enabledPlugins ?? {};
-      configured =
-        !!plugins["panopticon@local-plugins"] || !!plugins["fml@local-plugins"];
-    } catch {}
-    tools.push({ name: "Claude Code", dir: claudeDir, configured });
-  }
-
-  // Gemini CLI
-  const geminiDir = path.join(os.homedir(), ".gemini");
-  if (fs.existsSync(geminiDir)) {
-    const settingsPath = path.join(geminiDir, "settings.json");
-    let configured = false;
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      configured = !!settings.telemetry?.enabled;
-    } catch {}
-    tools.push({ name: "Gemini CLI", dir: geminiDir, configured });
-  }
-
-  // Codex CLI
-  const codexDir = path.join(os.homedir(), ".codex");
-  if (fs.existsSync(codexDir)) {
-    const configPath = path.join(codexDir, "config.toml");
-    let configured = false;
-    try {
-      const content = fs.readFileSync(configPath, "utf-8");
-      configured = content.includes("panopticon");
-    } catch {}
-    tools.push({ name: "Codex CLI", dir: codexDir, configured });
+  for (const vendor of allVendors()) {
+    if (vendor.detect.isInstalled()) {
+      tools.push({
+        name: vendor.detect.displayName,
+        dir: vendor.config.dir,
+        configured: vendor.detect.isConfigured(),
+      });
+    }
   }
 
   if (tools.length === 0) {
@@ -254,7 +233,44 @@ export async function doctor(): Promise<DoctorResult> {
     }
   }
 
-  // 5. Recent events and errors (informational, not checks)
+  // 6. Sync targets
+  try {
+    const cfg = loadUnifiedConfig();
+    const targets = cfg.sync.targets;
+    if (targets.length === 0) {
+      checks.push({
+        label: "Sync",
+        status: "ok",
+        detail: "No targets configured",
+      });
+    } else {
+      const tables = ["hook_events", "otel_logs", "otel_metrics"];
+      const targetDetails: string[] = [];
+      for (const t of targets) {
+        const watermarks = tables.map((table) =>
+          readWatermark(watermarkKey(table, t.name)),
+        );
+        const minWm = Math.min(...watermarks);
+        const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
+        targetDetails.push(`${t.name} → ${t.url} (${wmLabel})`);
+      }
+      closeWatermarkDb();
+
+      checks.push({
+        label: "Sync",
+        status: "ok",
+        detail: `${targets.length} target${targets.length > 1 ? "s" : ""}: ${targetDetails.join("; ")}`,
+      });
+    }
+  } catch {
+    checks.push({
+      label: "Sync",
+      status: "warn",
+      detail: "Could not read sync config",
+    });
+  }
+
+  // 7. Recent events and errors (informational, not checks)
   let recentEvents: RecentEvent[] = [];
   let recentErrors: RecentError[] = [];
 

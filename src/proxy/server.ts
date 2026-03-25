@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { config } from "../config.js";
+import { allVendors, getVendor } from "../vendors/index.js";
 import { emitHookEventAsync, emitOtelLogs, emitOtelMetrics } from "./emit.js";
 import { anthropicParser } from "./formats/anthropic.js";
 import { openaiParser } from "./formats/openai.js";
@@ -14,11 +15,33 @@ import {
 } from "./streaming.js";
 import { WebSocketMessageExtractor } from "./ws-capture.js";
 
-const UPSTREAM_ROUTES: Record<string, string> = {
-  anthropic: "api.anthropic.com",
-  openai: "api.openai.com",
-  google: "generativelanguage.googleapis.com",
-};
+// Build upstream route table from vendor adapters that have proxy specs,
+// plus static entries for vendors without full adapters (e.g. openai, google)
+function buildUpstreamRoutes(): Record<string, string> {
+  const routes: Record<string, string> = {};
+  for (const v of allVendors()) {
+    if (v.proxy && typeof v.proxy.upstreamHost === "string") {
+      routes[v.id] = v.proxy.upstreamHost;
+    }
+  }
+  // Static routes for API-only vendors (not CLI tools with full adapters)
+  if (!routes.openai) routes.openai = "api.openai.com";
+  if (!routes.google) routes.google = "generativelanguage.googleapis.com";
+  return routes;
+}
+
+const UPSTREAM_ROUTES = buildUpstreamRoutes();
+
+// Pre-compute known route prefixes for error messages
+const KNOWN_ROUTES_MSG = [
+  ...Object.keys(UPSTREAM_ROUTES),
+  ...allVendors()
+    .filter((v) => v.proxy && typeof v.proxy.upstreamHost === "function")
+    .map((v) => v.id),
+]
+  .filter((v, i, a) => a.indexOf(v) === i)
+  .map((v) => `/${v}/*`)
+  .join(", ");
 
 const FORMAT_PARSERS: ApiFormatParser[] = [
   anthropicParser,
@@ -42,24 +65,32 @@ function parseRoute(
   const match = url.match(/^\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
-  const vendor = match[1];
-  const path = match[2] ?? "/";
+  const vendorId = match[1];
+  const requestPath = match[2] ?? "/";
 
-  // Codex auto-detect: ChatGPT OAuth (JWT) vs API key route to different upstreams
-  if (vendor === "codex") {
-    const auth = headers?.authorization ?? "";
-    const isChatGptOAuth = auth.startsWith("Bearer eyJ");
-    return {
-      vendor: "codex",
-      upstream: isChatGptOAuth ? "chatgpt.com" : "api.openai.com",
-      path: isChatGptOAuth ? `/backend-api/codex${path}` : `/v1${path}`,
-    };
+  // Check vendor adapter for dynamic routing (e.g. Codex JWT auto-detect)
+  const vendorAdapter = getVendor(vendorId);
+  if (vendorAdapter?.proxy) {
+    const { proxy } = vendorAdapter;
+    const flatHeaders = flattenHeaders(headers ?? {});
+
+    const upstream =
+      typeof proxy.upstreamHost === "function"
+        ? proxy.upstreamHost(flatHeaders)
+        : proxy.upstreamHost;
+
+    const finalPath = proxy.rewritePath
+      ? proxy.rewritePath(requestPath, flatHeaders)
+      : requestPath;
+
+    return { vendor: vendorId, upstream, path: finalPath };
   }
 
-  const upstream = UPSTREAM_ROUTES[vendor];
+  // Fall back to static route table
+  const upstream = UPSTREAM_ROUTES[vendorId];
   if (!upstream) return null;
 
-  return { vendor, upstream, path };
+  return { vendor: vendorId, upstream, path: requestPath };
 }
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -215,8 +246,9 @@ function forwardStreaming(
     });
   }
 
+  const vendorSpec = getVendor(route.vendor);
   const accumulator =
-    route.vendor === "anthropic"
+    vendorSpec?.proxy?.accumulatorType === "anthropic"
       ? createAnthropicAccumulator()
       : createOpenaiAccumulator();
 
@@ -450,7 +482,7 @@ export async function handleProxyRequest(
     res.end(
       JSON.stringify({
         error: "unknown_route",
-        message: `Unknown vendor prefix. Use /anthropic/*, /openai/*, /codex/*, or /google/*`,
+        message: `Unknown vendor prefix. Known: ${KNOWN_ROUTES_MSG}`,
       }),
     );
     return;
@@ -536,6 +568,16 @@ if (
     console.log("Routes:");
     for (const [prefix, host] of Object.entries(UPSTREAM_ROUTES)) {
       console.log(`  /${prefix}/* → https://${host}/*`);
+    }
+    // Show dynamic-routed vendors not in the static table
+    for (const v of allVendors()) {
+      if (
+        v.proxy &&
+        typeof v.proxy.upstreamHost === "function" &&
+        !UPSTREAM_ROUTES[v.id]
+      ) {
+        console.log(`  /${v.id}/* → (dynamic)`);
+      }
     }
   });
 

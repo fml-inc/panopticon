@@ -50,7 +50,7 @@ Options:
 
 | Flag | Description |
 |------|-------------|
-| `--target <t>` | Target CLI: `claude`, `gemini`, `codex`, or `all` (default: `all`) |
+| `--target <t>` | Target CLI: any registered vendor id (e.g. `claude`, `gemini`, `codex`) or `all` (default: `all`) |
 | `--proxy` | Route API traffic through the panopticon proxy |
 | `--desktop` | Install as MCP server for Claude Desktop instead |
 | `--force` | Overwrite customized env vars with defaults |
@@ -117,6 +117,8 @@ All pipelines are correlated by `session_id`.
 | Codex CLI | Hooks via `config.toml` | — | WebSocket proxy |
 | Pi | Extension events via `@panopticon/pi-extension` | — | Anthropic, OpenAI, Google AI |
 
+Each CLI tool is implemented as a **vendor adapter** in `src/vendors/`. To add support for a new tool, create a single adapter file that declares the tool's config paths, hook events, shell env vars, event normalization rules, detection logic, and proxy routing — then register it in `src/vendors/index.ts`. See [Architecture](#architecture) for details.
+
 ## MCP tools
 
 Once the plugin is loaded, these tools are available to Claude:
@@ -140,7 +142,7 @@ Once the plugin is loaded, these tools are available to Claude:
 
 ```
 panopticon install          Build, register plugin, init DB, configure shell
-  --target <t>              Target CLI: claude, gemini, codex, all (default: all)
+  --target <t>              Target CLI: any vendor id or all (default: all)
   --proxy                   Route API traffic through the panopticon proxy
   --desktop                 Install as MCP server for Claude Desktop
   --force                   Overwrite customized env vars with defaults
@@ -255,8 +257,7 @@ On macOS these are also visible in Console.app.
 **Environment variables** set by `panopticon install` in your shell profile:
 
 ```bash
-# Claude Code OTel
-CLAUDE_CODE_ENABLE_TELEMETRY=1
+# Shared OTel (always set)
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_METRICS_EXPORTER=otlp
@@ -265,17 +266,18 @@ OTEL_LOG_TOOL_DETAILS=1
 OTEL_LOG_USER_PROMPTS=1
 OTEL_METRIC_EXPORT_INTERVAL=10000
 
-# Gemini CLI OTel (when --target gemini or all)
-GEMINI_TELEMETRY_ENABLED=true
-GEMINI_TELEMETRY_TARGET=local
-GEMINI_TELEMETRY_USE_COLLECTOR=true
-GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318
-GEMINI_TELEMETRY_OTLP_PROTOCOL=http
-GEMINI_TELEMETRY_LOG_PROMPTS=true
-
-# Proxy mode (when --proxy)
-ANTHROPIC_BASE_URL=http://localhost:4318/proxy/anthropic
+# Vendor-specific (set per --target)
+CLAUDE_CODE_ENABLE_TELEMETRY=1           # Claude Code
+ANTHROPIC_BASE_URL=http://localhost:4318/proxy/anthropic  # Claude Code (--proxy)
+GEMINI_TELEMETRY_ENABLED=true            # Gemini CLI
+GEMINI_TELEMETRY_TARGET=local            # Gemini CLI
+GEMINI_TELEMETRY_USE_COLLECTOR=true      # Gemini CLI
+GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318  # Gemini CLI
+GEMINI_TELEMETRY_OTLP_PROTOCOL=http     # Gemini CLI
+GEMINI_TELEMETRY_LOG_PROMPTS=true        # Gemini CLI
 ```
+
+Vendor-specific env vars are declared by each vendor adapter in `src/vendors/`. New vendors can add their own vars without modifying the shell env configuration logic.
 
 **Server configuration:**
 
@@ -330,10 +332,17 @@ src/
 ├── cli.ts              CLI entry point (install, start/stop, query commands)
 ├── server.ts           Unified HTTP server (hooks, OTLP, proxy — single port)
 ├── sdk.ts              Claude Agent SDK shim (observe() wrapper)
-├── config.ts           Paths, ports, defaults
+├── config.ts           Panopticon paths, ports, defaults
 ├── log.ts              Log file paths (macOS/Linux/Windows)
 ├── repo.ts             Git repository detection
 ├── toml.ts             TOML read/write (for Codex config)
+├── vendors/
+│   ├── types.ts        VendorAdapter interface (config, hooks, events, detect, proxy)
+│   ├── registry.ts     Map-based vendor registry (register, get, all)
+│   ├── index.ts        Barrel — re-exports + registers all built-in vendors
+│   ├── claude.ts       Claude Code adapter
+│   ├── gemini.ts       Gemini CLI adapter
+│   └── codex.ts        Codex CLI adapter
 ├── db/
 │   ├── schema.ts       SQLite schema, migrations, WAL + auto-vacuum
 │   ├── query.ts        Query helpers for MCP tools and CLI
@@ -342,7 +351,7 @@ src/
 │   └── pricing.ts      Model pricing cache (OpenRouter)
 ├── hooks/
 │   ├── handler.ts      Hook event handler (stdin JSON → server)
-│   ├── ingest.ts       Hook processing and storage
+│   ├── ingest.ts       Hook processing — uses vendor adapters for normalization
 │   └── permissions.ts  PreToolUse permission enforcement
 ├── mcp/
 │   ├── server.ts       MCP server with query tools
@@ -361,9 +370,9 @@ src/
 │   ├── watermark.ts    Watermark persistence (sync-watermarks.db)
 │   └── post.ts         HTTP POST with retry + exponential backoff
 ├── proxy/
-│   ├── server.ts       API proxy (Anthropic, OpenAI, Google, Codex)
+│   ├── server.ts       API proxy — routes built from vendor registry
 │   ├── emit.ts         Event emission from proxy captures
-│   ├── streaming.ts    SSE stream accumulation
+│   ├── streaming.ts    SSE stream accumulation (Anthropic + OpenAI)
 │   ├── ws-capture.ts   WebSocket message capture (Codex)
 │   ├── sessions.ts     Proxy session tracking
 │   └── formats/
@@ -376,3 +385,18 @@ integrations/
     ├── index.ts        Pi coding agent extension
     └── package.json    Pi package manifest
 ```
+
+### Vendor adapters
+
+Each supported coding tool is a self-contained adapter in `src/vendors/`. An adapter declares:
+
+| Concern | What it specifies |
+|---------|-------------------|
+| **Config** | Directory, config file path, format (JSON/TOML) |
+| **Hooks** | Event names, install-time config merge (`applyInstallConfig`) |
+| **Shell env** | Vendor-specific env vars for the shell profile |
+| **Events** | Event name mapping to canonical types, payload normalization, permission response format |
+| **Detection** | Display name, `isInstalled()`, `isConfigured()` for doctor |
+| **Proxy** | Upstream host (static or dynamic), path rewriting, accumulator type |
+
+To add a new vendor, create `src/vendors/<name>.ts`, implement `VendorAdapter`, call `registerVendor()`, and add the import to `src/vendors/index.ts`. All consumers (install, doctor, hooks, proxy, shell env) pick it up automatically.

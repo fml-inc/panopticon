@@ -31,7 +31,14 @@ import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 import { addTarget, listTargets, removeTarget } from "./sync/config.js";
+import {
+  closeWatermarkDb,
+  readWatermark,
+  watermarkKey,
+} from "./sync/watermark.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
+import { loadUnifiedConfig } from "./unified-config.js";
+import { allVendors, getVendor, vendorIds } from "./vendors/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -238,8 +245,16 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     ? fs.readFileSync(shellRc, "utf-8")
     : "";
 
+  // Collect all known vendor env var names for detection/cleanup
+  const allVendorVarNames = new Set<string>();
+  for (const v of allVendors()) {
+    for (const [varName] of v.shellEnv.envVars(config.port, true)) {
+      allVendorVarNames.add(varName);
+    }
+  }
+
+  // Shared OTEL vars + all vendor-specific vars
   const PANOPTICON_VARS = [
-    "CLAUDE_CODE_ENABLE_TELEMETRY",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_METRICS_EXPORTER",
@@ -247,13 +262,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
-    "ANTHROPIC_BASE_URL",
-    "GEMINI_TELEMETRY_ENABLED",
-    "GEMINI_TELEMETRY_TARGET",
-    "GEMINI_TELEMETRY_USE_COLLECTOR",
-    "GEMINI_TELEMETRY_OTLP_ENDPOINT",
-    "GEMINI_TELEMETRY_OTLP_PROTOCOL",
-    "GEMINI_TELEMETRY_LOG_PROMPTS",
+    ...allVendorVarNames,
   ];
   const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
@@ -267,9 +276,9 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     return false;
   };
 
+  // Build the wanted env vars: shared OTEL vars + vendor-specific vars
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
-    ["CLAUDE_CODE_ENABLE_TELEMETRY", "export CLAUDE_CODE_ENABLE_TELEMETRY=1"],
     [
       "OTEL_EXPORTER_OTLP_ENDPOINT",
       `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.port}`,
@@ -285,34 +294,19 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
   ];
 
-  if (proxy && (target === "claude" || target === "all")) {
-    wantedLines.push([
-      "ANTHROPIC_BASE_URL",
-      `export ANTHROPIC_BASE_URL=http://localhost:${config.port}/proxy/anthropic`,
-    ]);
-  }
+  // Add vendor-specific env vars for targeted vendors
+  const targetVendorList =
+    target === "all"
+      ? allVendors()
+      : allVendors().filter((v) => v.id === target);
 
-  if (target === "gemini" || target === "all") {
-    wantedLines.push(
-      ["GEMINI_TELEMETRY_ENABLED", "export GEMINI_TELEMETRY_ENABLED=true"],
-      ["GEMINI_TELEMETRY_TARGET", "export GEMINI_TELEMETRY_TARGET=local"],
-      [
-        "GEMINI_TELEMETRY_USE_COLLECTOR",
-        "export GEMINI_TELEMETRY_USE_COLLECTOR=true",
-      ],
-      [
-        "GEMINI_TELEMETRY_OTLP_ENDPOINT",
-        `export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:${config.port}`,
-      ],
-      [
-        "GEMINI_TELEMETRY_OTLP_PROTOCOL",
-        "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
-      ],
-      [
-        "GEMINI_TELEMETRY_LOG_PROMPTS",
-        "export GEMINI_TELEMETRY_LOG_PROMPTS=true",
-      ],
-    );
+  for (const vendor of targetVendorList) {
+    for (const [varName, value] of vendor.shellEnv.envVars(
+      config.port,
+      proxy,
+    )) {
+      wantedLines.push([varName, `export ${varName}=${value}`]);
+    }
   }
 
   wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
@@ -398,14 +392,19 @@ program
   .alias("setup")
   .description("Build, register plugin, init DB, configure shell")
   .option("--desktop", "Install as MCP server for Claude Desktop instead")
-  .option("--target <target>", "Target CLI: claude, gemini, codex, all", "all")
+  .option(
+    "--target <target>",
+    `Target CLI: ${vendorIds().join(", ")}, all`,
+    "all",
+  )
   .option("--proxy", "Also route API traffic through the panopticon proxy")
   .option("--force", "Overwrite customized env vars with defaults")
   .option("--skip-build", "Skip the build step (internal)")
   .action(async (opts: Opts) => {
-    if (!["claude", "gemini", "codex", "all"].includes(opts.target)) {
+    const validTargets = [...vendorIds(), "all"];
+    if (!validTargets.includes(opts.target)) {
       console.error(
-        `Invalid target: ${opts.target}. Must be claude, gemini, codex, or all.`,
+        `Invalid target: ${opts.target}. Must be ${validTargets.join(", ")}.`,
       );
       process.exit(1);
     }
@@ -668,142 +667,53 @@ async function installClaudeCode(
   console.log(`      Marketplace: ${config.marketplaceDir}`);
   console.log(`      Cache: ${cacheDir}\n`);
 
-  if (target === "claude" || target === "all") {
-    console.log("[4/7] Registering plugin in Claude Code settings...");
-    const settings = readJsonFile(config.claudeSettingsPath) ?? {};
-    settings.extraKnownMarketplaces = settings.extraKnownMarketplaces ?? {};
-    settings.extraKnownMarketplaces["local-plugins"] = {
-      source: { source: "directory", path: config.marketplaceDir },
-    };
-    settings.enabledPlugins = settings.enabledPlugins ?? {};
-    settings.enabledPlugins["panopticon@local-plugins"] = true;
-    writeJsonFile(config.claudeSettingsPath, settings);
-    console.log(`      ${config.claudeSettingsPath}\n`);
-  } else {
-    console.log("[4/7] Skipping Claude Code settings (target: gemini)...\n");
-  }
+  // Register hooks/config for each targeted vendor
+  const targetVendors =
+    target === "all"
+      ? allVendors()
+      : ([getVendor(target)].filter(
+          Boolean,
+        ) as import("./vendors/types.js").VendorAdapter[]);
 
-  if (target === "gemini" || target === "all") {
-    console.log("[4a/7] Registering hooks in Gemini CLI settings...");
-    const geminiSettings = readJsonFile(config.geminiSettingsPath) ?? {};
-    geminiSettings.hooks = geminiSettings.hooks || {};
+  for (const vendor of targetVendors) {
+    console.log(
+      `[4/7] Registering panopticon in ${vendor.detect.displayName}...`,
+    );
 
-    const hookBin = path.join(pluginRoot, "bin", "panopticon-hook");
-    const events = [
-      "SessionStart",
-      "UserPromptSubmit",
-      "PreToolUse",
-      "PostToolUse",
-      "PostToolUseFailure",
-    ];
-    for (const event of events) {
-      geminiSettings.hooks[event] = geminiSettings.hooks[event] || [];
-      // Remove existing panopticon hooks
-      geminiSettings.hooks[event] = (geminiSettings.hooks[event] as any[])
-        .map((group: any) => ({
-          ...group,
-          hooks: (group.hooks || []).filter(
-            (h: any) => !h.path?.includes("panopticon"),
-          ),
-        }))
-        .filter((group: any) => group.hooks.length > 0);
-      // Add panopticon hook
-      geminiSettings.hooks[event].push({
-        hooks: [{ path: hookBin, skipExecution: false }],
-      });
+    // Read existing config
+    let existingConfig: Record<string, unknown>;
+    if (vendor.config.configFormat === "toml") {
+      existingConfig = readTomlFile(vendor.config.configPath);
+    } else {
+      existingConfig = readJsonFile(vendor.config.configPath) ?? {};
     }
 
-    geminiSettings.hooksConfig = geminiSettings.hooksConfig || {};
-    geminiSettings.hooksConfig.enabled = true;
-
-    geminiSettings.mcpServers = geminiSettings.mcpServers || {};
-    geminiSettings.mcpServers.panopticon = {
-      command: "node",
-      args: [path.join(pluginRoot, "bin", "mcp-server")],
-    };
-
-    geminiSettings.telemetry = geminiSettings.telemetry || {};
-    Object.assign(geminiSettings.telemetry, {
-      enabled: true,
-      target: "local",
-      useCollector: true,
-      OTLP_ENDPOINT: `http://localhost:${config.port}`,
-      OTLP_PROTOCOL: "http",
+    // Apply vendor-specific install config
+    const updatedConfig = vendor.hooks.applyInstallConfig(existingConfig, {
+      pluginRoot,
+      port: config.port,
+      proxy: !!opts.proxy,
     });
 
-    writeJsonFile(config.geminiSettingsPath, geminiSettings);
-    console.log(`      ${config.geminiSettingsPath}\n`);
-  } else {
-    console.log("[4a/7] Skipping Gemini CLI settings...\n");
+    // Write back
+    if (vendor.config.configFormat === "toml") {
+      writeTomlFile(vendor.config.configPath, updatedConfig);
+    } else {
+      writeJsonFile(vendor.config.configPath, updatedConfig);
+    }
+
+    if (opts.proxy && vendor.id === "codex") {
+      console.log("      API proxy enabled (--proxy)");
+    }
+    console.log(`      ${vendor.config.configPath}\n`);
   }
 
-  if (target === "codex" || target === "all") {
-    console.log("[4b/7] Registering hooks in Codex CLI config...");
-    const codexConfig = readTomlFile(config.codexConfigPath);
-
-    // Hook handler binary
-    const hookBin = path.join(pluginRoot, "bin", "hook-handler");
-    const mcpBin = path.join(pluginRoot, "bin", "mcp-server");
-
-    // Codex hook event types to register (snake_case keys in TOML)
-    const codexHookEvents = [
-      "session_start",
-      "session_end",
-      "user_prompt_submit",
-      "pre_tool_use",
-      "post_tool_use",
-      "post_tool_use_failure",
-      "stop",
-    ];
-
-    // Ensure hooks section exists
-    const hooks = (codexConfig.hooks ?? {}) as Record<string, unknown[]>;
-
-    for (const event of codexHookEvents) {
-      const existing = (hooks[event] ?? []) as Array<Record<string, unknown>>;
-      // Remove existing panopticon entries
-      hooks[event] = existing.filter((h) => h.name !== "panopticon");
-      // Add panopticon hook
-      (hooks[event] as unknown[]).push({
-        name: "panopticon",
-        type: "command",
-        command: ["node", hookBin],
-        timeout: 10,
-      });
-    }
-    codexConfig.hooks = hooks;
-
-    // Configure API proxy (opt-in via --proxy)
-    if (opts.proxy) {
-      codexConfig.openai_base_url = `http://localhost:${config.port}/proxy/codex`;
-      console.log("      API proxy enabled (--proxy)");
-    } else {
-      // Remove proxy if previously installed
-      delete codexConfig.openai_base_url;
-    }
-
-    // Configure OTel telemetry
-    codexConfig.telemetry = {
-      ...(codexConfig.telemetry as Record<string, unknown> | undefined),
-      otlp_exporter: "otlp-http",
-      otlp_endpoint: `http://localhost:${config.port}`,
-    };
-
-    // Register MCP server
-    const mcpServers = (codexConfig.mcp_servers ?? {}) as Record<
-      string,
-      unknown
-    >;
-    mcpServers.panopticon = {
-      command: "node",
-      args: [mcpBin],
-    };
-    codexConfig.mcp_servers = mcpServers;
-
-    writeTomlFile(config.codexConfigPath, codexConfig);
-    console.log(`      ${config.codexConfigPath}\n`);
-  } else {
-    console.log("[4b/7] Skipping Codex CLI settings...\n");
+  // Log skipped vendors
+  const skippedVendors = allVendors().filter(
+    (v) => !targetVendors.some((tv) => tv.id === v.id),
+  );
+  for (const vendor of skippedVendors) {
+    console.log(`[4/7] Skipping ${vendor.detect.displayName} settings...\n`);
   }
 
   console.log("[5/7] Adding CLI to PATH...");
@@ -847,13 +757,12 @@ async function installClaudeCode(
   console.log("[7/7] Configuring shell environment...");
   configureShellEnv(force, target, !!opts.proxy);
 
-  const assistantNames: Record<string, string> = {
-    claude: "Claude Code",
-    gemini: "Gemini CLI",
-    codex: "Codex CLI",
-    all: "Claude Code, Gemini CLI, and Codex CLI",
-  };
-  const assistant = assistantNames[target] ?? target;
+  const assistant =
+    target === "all"
+      ? allVendors()
+          .map((v) => v.detect.displayName)
+          .join(", ")
+      : (getVendor(target)?.detect.displayName ?? target);
   console.log(`Done! Start a new ${assistant} session to activate.\n`);
   console.log("Verify with: panopticon status");
 }
@@ -1055,6 +964,28 @@ program
       }
     } else {
       console.log("Database: not initialized (run 'panopticon setup')");
+    }
+
+    // Sync targets
+    try {
+      const cfg = loadUnifiedConfig();
+      const targets = cfg.sync.targets;
+      if (targets.length > 0) {
+        console.log();
+        console.log("Sync targets:");
+        const tables = ["hook_events", "otel_logs", "otel_metrics"];
+        for (const t of targets) {
+          const watermarks = tables.map((table) =>
+            readWatermark(watermarkKey(table, t.name)),
+          );
+          const minWm = Math.min(...watermarks);
+          const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
+          console.log(`  ${t.name} → ${t.url} (${wmLabel})`);
+        }
+        closeWatermarkDb();
+      }
+    } catch {
+      // Sync not configured or watermark DB not available
     }
   });
 
