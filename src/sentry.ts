@@ -22,6 +22,94 @@ function getVersion(): string {
     : "dev";
 }
 
+// ── Scrubbing & Filtering (exported for testing) ────────────────────────────
+
+/** Fields in breadcrumb data that may contain user content. */
+const SCRUBBED_BREADCRUMB_FIELDS = [
+  "prompt",
+  "user_prompt",
+  "content",
+  "body",
+  "command",
+  "file_content",
+  "stdin",
+];
+
+/** Local variable names that may contain secrets. */
+const SENSITIVE_VAR_PATTERNS = [
+  "token",
+  "secret",
+  "password",
+  "dsn",
+  "prompt",
+  "body",
+];
+
+/** Strip sensitive data from a Sentry event before it leaves the machine. */
+export function scrubEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent | null {
+  // Scrub breadcrumb data that might contain user prompts or file contents
+  if (event.breadcrumbs) {
+    for (const bc of event.breadcrumbs) {
+      if (bc.data) {
+        for (const key of SCRUBBED_BREADCRUMB_FIELDS) {
+          if (key in bc.data) {
+            bc.data[key] = "[scrubbed]";
+          }
+        }
+        // Scrub authorization headers
+        if (bc.data.headers && typeof bc.data.headers === "object") {
+          const headers = bc.data.headers as Record<string, unknown>;
+          if (headers.authorization) headers.authorization = "[scrubbed]";
+          if (headers.Authorization) headers.Authorization = "[scrubbed]";
+        }
+      }
+    }
+  }
+
+  // Scrub request data if present
+  if (event.request?.headers) {
+    delete event.request.headers.authorization;
+    delete event.request.headers.cookie;
+  }
+
+  // Scrub local variables that might contain sensitive data
+  if (event.exception?.values) {
+    for (const ex of event.exception.values) {
+      if (ex.stacktrace?.frames) {
+        for (const frame of ex.stacktrace.frames) {
+          if (frame.vars) {
+            for (const key of Object.keys(frame.vars)) {
+              const lk = key.toLowerCase();
+              if (SENSITIVE_VAR_PATTERNS.some((p) => lk.includes(p))) {
+                frame.vars[key] = "[scrubbed]";
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return event;
+}
+
+/** Filter out noisy breadcrumbs that would drown signal. */
+export function filterBreadcrumb(
+  breadcrumb: Sentry.Breadcrumb,
+): Sentry.Breadcrumb | null {
+  // Drop debug-level console breadcrumbs (sync log lines, etc.)
+  if (breadcrumb.category === "console" && breadcrumb.level === "debug") {
+    return null;
+  }
+  // Drop routine outbound HTTP to sync targets (keep errors only)
+  if (breadcrumb.category === "http" && breadcrumb.data?.status_code === 200) {
+    return null;
+  }
+  return breadcrumb;
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+
 /**
  * Initialize Sentry if a DSN is available. Safe to call multiple times —
  * subsequent calls are no-ops. Returns true if Sentry is active.
@@ -66,90 +154,9 @@ export function initSentry(): boolean {
       },
     },
 
-    // Strip sensitive data before it leaves the machine
-    beforeSend(event) {
-      // Scrub breadcrumb data that might contain user prompts or file contents
-      if (event.breadcrumbs) {
-        for (const bc of event.breadcrumbs) {
-          if (bc.data) {
-            // Remove fields that could contain user content
-            for (const key of [
-              "prompt",
-              "user_prompt",
-              "content",
-              "body",
-              "command",
-              "file_content",
-              "stdin",
-            ]) {
-              if (key in bc.data) {
-                bc.data[key] = "[scrubbed]";
-              }
-            }
-            // Scrub authorization headers
-            if (bc.data.headers && typeof bc.data.headers === "object") {
-              const headers = bc.data.headers as Record<string, unknown>;
-              if (headers.authorization) {
-                headers.authorization = "[scrubbed]";
-              }
-              if (headers.Authorization) {
-                headers.Authorization = "[scrubbed]";
-              }
-            }
-          }
-        }
-      }
-
-      // Scrub request data if present
-      if (event.request?.headers) {
-        delete event.request.headers.authorization;
-        delete event.request.headers.cookie;
-      }
-
-      // Scrub local variables that might contain sensitive data
-      if (event.exception?.values) {
-        for (const ex of event.exception.values) {
-          if (ex.stacktrace?.frames) {
-            for (const frame of ex.stacktrace.frames) {
-              if (frame.vars) {
-                for (const key of Object.keys(frame.vars)) {
-                  const lk = key.toLowerCase();
-                  if (
-                    lk.includes("token") ||
-                    lk.includes("secret") ||
-                    lk.includes("password") ||
-                    lk.includes("dsn") ||
-                    lk.includes("prompt") ||
-                    lk.includes("body")
-                  ) {
-                    frame.vars[key] = "[scrubbed]";
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      return event;
-    },
-
-    // Reduce breadcrumb noise
+    beforeSend: scrubEvent,
     maxBreadcrumbs: 30,
-    beforeBreadcrumb(breadcrumb) {
-      // Drop debug-level console breadcrumbs (sync log lines, etc.)
-      if (breadcrumb.category === "console" && breadcrumb.level === "debug") {
-        return null;
-      }
-      // Drop routine outbound HTTP to sync targets (keep errors only)
-      if (
-        breadcrumb.category === "http" &&
-        breadcrumb.data?.status_code === 200
-      ) {
-        return null;
-      }
-      return breadcrumb;
-    },
+    beforeBreadcrumb: filterBreadcrumb,
   });
 
   return true;
