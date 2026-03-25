@@ -137,9 +137,9 @@ describe("integration: unified config + sync-aware retention", () => {
     fs.rmSync(config.dataDir, { recursive: true, force: true });
   });
 
-  // ── Config migration ────────────────────────────────────────────────────
+  // ── Unified config ──────────────────────────────────────────────────────
 
-  describe("config migration", () => {
+  describe("unified config", () => {
     it("sync CLI commands work through unified config", () => {
       // Simulate user running: panopticon sync add grafana http://grafana:14318
       addTarget({ name: "grafana", url: "http://grafana:14318", token: "tok" });
@@ -165,37 +165,6 @@ describe("integration: unified config + sync-aware retention", () => {
       removeTarget("datadog");
       expect(listTargets()).toHaveLength(1);
       expect(loadUnifiedConfig().sync.targets).toHaveLength(1);
-    });
-
-    it("migrates legacy sync.json then CLI commands use config.json", () => {
-      // Write a legacy sync.json as if from an older panopticon version
-      fs.writeFileSync(
-        path.join(config.dataDir, "sync.json"),
-        JSON.stringify({
-          targets: [{ name: "prod", url: "http://prod:4318" }],
-          filter: { includeRepos: ["org/*"] },
-        }),
-      );
-
-      // First load triggers migration
-      const targets = listTargets();
-      expect(targets).toHaveLength(1);
-      expect(targets[0].name).toBe("prod");
-
-      // sync.json is gone, backup exists
-      expect(fs.existsSync(path.join(config.dataDir, "sync.json"))).toBe(false);
-      expect(fs.existsSync(path.join(config.dataDir, "sync.json.bak"))).toBe(
-        true,
-      );
-
-      // Adding a new target writes to config.json (not sync.json)
-      addTarget({ name: "staging", url: "http://staging:4318" });
-      expect(listTargets()).toHaveLength(2);
-      expect(fs.existsSync(path.join(config.dataDir, "sync.json"))).toBe(false);
-
-      // Filter was preserved
-      const cfg = loadUnifiedConfig();
-      expect(cfg.sync.filter?.includeRepos).toEqual(["org/*"]);
     });
 
     it("retention config round-trips through unified config", () => {

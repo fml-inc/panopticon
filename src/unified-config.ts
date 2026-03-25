@@ -34,15 +34,9 @@ function defaultConfig(): UnifiedConfig {
 // ── Paths ────────────────────────────────────────────────────────────────────
 
 const CONFIG_FILE = "config.json";
-const LEGACY_SYNC_FILE = "sync.json";
-const LEGACY_SYNC_BACKUP = "sync.json.bak";
 
 function configPath(): string {
   return path.join(config.dataDir, CONFIG_FILE);
-}
-
-function legacySyncPath(): string {
-  return path.join(config.dataDir, LEGACY_SYNC_FILE);
 }
 
 // ── Load / Save ──────────────────────────────────────────────────────────────
@@ -59,40 +53,12 @@ function mergeDefaults(raw: Partial<UnifiedConfig>): UnifiedConfig {
 }
 
 export function loadUnifiedConfig(): UnifiedConfig {
-  const p = configPath();
-
-  // 1. config.json exists → read + merge defaults
-  if (fs.existsSync(p)) {
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
-      return mergeDefaults(raw);
-    } catch {
-      return defaultConfig();
-    }
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath(), "utf-8"));
+    return mergeDefaults(raw);
+  } catch {
+    return defaultConfig();
   }
-
-  // 2. Migrate from legacy sync.json
-  const legacy = legacySyncPath();
-  if (fs.existsSync(legacy)) {
-    try {
-      const raw = JSON.parse(fs.readFileSync(legacy, "utf-8"));
-      const cfg: UnifiedConfig = {
-        sync: {
-          targets: raw.targets ?? [],
-          filter: raw.filter,
-        },
-        retention: { ...DEFAULT_RETENTION },
-      };
-      saveUnifiedConfig(cfg);
-      fs.renameSync(legacy, path.join(config.dataDir, LEGACY_SYNC_BACKUP));
-      return cfg;
-    } catch {
-      return defaultConfig();
-    }
-  }
-
-  // 3. Nothing on disk
-  return defaultConfig();
 }
 
 export function saveUnifiedConfig(cfg: UnifiedConfig): void {

@@ -74,54 +74,6 @@ describe("unified config", () => {
     expect(cfg.retention.maxSizeMb).toBe(1000);
   });
 
-  it("migrates sync.json to config.json", () => {
-    const syncPath = path.join(config.dataDir, "sync.json");
-    fs.writeFileSync(
-      syncPath,
-      JSON.stringify({
-        targets: [{ name: "grafana", url: "http://grafana:14318" }],
-        filter: { includeRepos: ["org/*"] },
-      }),
-    );
-
-    const cfg = loadUnifiedConfig();
-
-    // Data migrated correctly
-    expect(cfg.sync.targets).toHaveLength(1);
-    expect(cfg.sync.targets[0].name).toBe("grafana");
-    expect(cfg.sync.filter?.includeRepos).toEqual(["org/*"]);
-    expect(cfg.retention.maxAgeDays).toBe(90);
-
-    // config.json created
-    expect(fs.existsSync(path.join(config.dataDir, "config.json"))).toBe(true);
-
-    // sync.json renamed to .bak
-    expect(fs.existsSync(syncPath)).toBe(false);
-    expect(fs.existsSync(path.join(config.dataDir, "sync.json.bak"))).toBe(
-      true,
-    );
-  });
-
-  it("does not clobber existing config.json during migration", () => {
-    // Write both files — config.json should win
-    fs.writeFileSync(
-      path.join(config.dataDir, "config.json"),
-      JSON.stringify({
-        sync: { targets: [{ name: "real", url: "http://real" }] },
-        retention: { maxAgeDays: 10, maxSizeMb: 100 },
-      }),
-    );
-    fs.writeFileSync(
-      path.join(config.dataDir, "sync.json"),
-      JSON.stringify({ targets: [{ name: "stale", url: "http://stale" }] }),
-    );
-
-    const cfg = loadUnifiedConfig();
-    expect(cfg.sync.targets[0].name).toBe("real");
-    // sync.json should still be there (not migrated)
-    expect(fs.existsSync(path.join(config.dataDir, "sync.json"))).toBe(true);
-  });
-
   it("save and load round-trips", () => {
     const original = {
       sync: {
@@ -150,11 +102,5 @@ describe("unified config", () => {
     const cfg = loadUnifiedConfig();
     expect(cfg.sync.targets).toEqual([]);
     expect(cfg.retention.maxAgeDays).toBe(90);
-  });
-
-  it("handles corrupt sync.json gracefully during migration", () => {
-    fs.writeFileSync(path.join(config.dataDir, "sync.json"), "broken");
-    const cfg = loadUnifiedConfig();
-    expect(cfg.sync.targets).toEqual([]);
   });
 });

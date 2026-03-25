@@ -1,11 +1,13 @@
 import http from "node:http";
 import { config } from "./config.js";
+import { autoPrune } from "./db/prune.js";
+import { syncAwarePrune } from "./db/sync-prune.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
 import { handleOtlpRequest } from "./otlp/server.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
-import { loadSyncConfig } from "./sync/config.js";
 import { createSyncLoop } from "./sync/loop.js";
 import type { SyncHandle } from "./sync/types.js";
+import { loadUnifiedConfig } from "./unified-config.js";
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -90,8 +92,23 @@ export function createUnifiedServer(): http.Server {
 // When run directly, start the unified server
 const entryScript = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
+  const PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+  function runPrune(): void {
+    try {
+      const cfg = loadUnifiedConfig();
+      autoPrune(cfg.retention.maxAgeDays, cfg.retention.maxSizeMb);
+      if (cfg.sync.targets.length > 0 && cfg.retention.syncedMaxAgeDays) {
+        syncAwarePrune(cfg.sync.targets, cfg.retention);
+      }
+    } catch (err) {
+      console.error("Prune error:", err);
+    }
+  }
+
   const server = createUnifiedServer();
   let syncHandle: SyncHandle | null = null;
+  let pruneTimer: ReturnType<typeof setInterval> | null = null;
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
@@ -105,19 +122,26 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   server.listen(config.port, config.host, () => {
     console.log(`Panopticon server listening on ${config.host}:${config.port}`);
 
+    const cfg = loadUnifiedConfig();
+
     // Start sync if targets are configured
-    const syncConfig = loadSyncConfig();
-    if (syncConfig.targets.length > 0) {
-      console.log(`Sync: ${syncConfig.targets.map((t) => t.name).join(", ")}`);
+    if (cfg.sync.targets.length > 0) {
+      console.log(`Sync: ${cfg.sync.targets.map((t) => t.name).join(", ")}`);
       syncHandle = createSyncLoop({
-        targets: syncConfig.targets,
-        filter: syncConfig.filter,
+        targets: cfg.sync.targets,
+        filter: cfg.sync.filter,
       });
       syncHandle.start();
     }
+
+    // Run prune on startup, then hourly
+    runPrune();
+    pruneTimer = setInterval(runPrune, PRUNE_INTERVAL_MS);
+    pruneTimer.unref();
   });
 
   const shutdown = () => {
+    if (pruneTimer) clearInterval(pruneTimer);
     syncHandle?.stop();
     server.close();
     process.exit(0);
