@@ -17,7 +17,7 @@ import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { logPaths, openLogFd } from "../log.js";
 import { addBreadcrumb, captureException, initSentry } from "../sentry.js";
-import { type HookInput, processHookEvent } from "./ingest.js";
+import type { HookInput } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
 function getAgentVersion(): string | undefined {
@@ -176,19 +176,17 @@ async function main() {
       if (shellPwd) data.shell_pwd = shellPwd;
     }
 
-    // Try posting to the server; fall back to direct DB write
+    // Post to the panopticon server. If unreachable, drop the event —
+    // direct DB writes add latency, risk lock contention, and mask a
+    // misconfigured server. The server auto-starts on SessionStart above.
     let result: Record<string, unknown>;
     try {
       logHook("posting to server", { port: config.port });
       result = await postToServer(data);
       logHook("server post succeeded", { resultKeys: Object.keys(result) });
     } catch {
-      // Server unreachable — fall back to direct processing
-      logHook("server post failed, falling back to direct processing");
-      result = processHookEvent(data);
-      logHook("direct processing succeeded", {
-        resultKeys: Object.keys(result),
-      });
+      logHook("server post failed, dropping event");
+      result = {};
     }
 
     process.stdout.write(JSON.stringify(result));
