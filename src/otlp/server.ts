@@ -1,6 +1,4 @@
-import fs from "node:fs";
 import http from "node:http";
-import path from "node:path";
 import { config } from "../config.js";
 import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
 import { captureException } from "../sentry.js";
@@ -8,37 +6,8 @@ import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
 import {
   ExportLogsServiceResponse,
-  ExportMetricsServiceRequest,
   ExportMetricsServiceResponse,
 } from "./proto.js";
-
-/** Dump raw protobuf to a debug file for inspection. Enabled via PANOPTICON_OTLP_DEBUG=1 */
-function debugDumpProtobuf(
-  signal: string,
-  body: Buffer,
-  req: http.IncomingMessage,
-): void {
-  if (!process.env.PANOPTICON_OTLP_DEBUG) return;
-  try {
-    const debugDir = path.join(config.dataDir, "otlp-debug");
-    fs.mkdirSync(debugDir, { recursive: true });
-    const ts = Date.now();
-
-    // Raw bytes
-    fs.writeFileSync(path.join(debugDir, `${ts}-${signal}.bin`), body);
-
-    // Decoded JSON (metrics only for now — that's where the mystery is)
-    if (signal === "metrics" && isProtobuf(req)) {
-      const decoded = ExportMetricsServiceRequest.decode(body);
-      fs.writeFileSync(
-        path.join(debugDir, `${ts}-${signal}.json`),
-        JSON.stringify(decoded, null, 2),
-      );
-    }
-  } catch (err) {
-    console.error("OTLP debug dump error:", err);
-  }
-}
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -112,8 +81,6 @@ export async function handleOtlpRequest(
     if (!signal && (url === "/" || url === "")) {
       signal = sniffSignalFromBody(body, isProtobuf(req));
     }
-
-    debugDumpProtobuf(signal ?? "unknown", body, req);
 
     if (signal === "logs") {
       if (isProtobuf(req)) {

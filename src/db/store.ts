@@ -124,9 +124,12 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
   const db = getDb();
   const stmt = db.prepare(INSERT_METRIC_SQL);
 
-  // Cache inferred session IDs per batch to avoid repeated queries
-  let inferredSessionId: string | null | undefined;
-  let inferredForService: string | undefined;
+  // Cache inferred session IDs keyed by service name. Within a single batch,
+  // all metrics for one service.name get the same inferred session. This is
+  // correct when one client emits one batch per session (the common case).
+  // If two sessions for the same service interleave in one batch, the later
+  // session's metrics will be mis-attributed — acceptable given the rarity.
+  const inferCache = new Map<string, string | null>();
 
   const insertMany = db.transaction((rows: OtelMetricRow[]) => {
     for (const row of rows) {
@@ -134,15 +137,13 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
 
       if (!sessionId && row.resource_attributes) {
         const service = row.resource_attributes["service.name"] as string;
-        if (service !== inferredForService) {
-          inferredSessionId = inferSessionId(
-            db,
-            row.timestamp_ns,
-            row.resource_attributes,
+        if (!inferCache.has(service)) {
+          inferCache.set(
+            service,
+            inferSessionId(db, row.timestamp_ns, row.resource_attributes),
           );
-          inferredForService = service;
         }
-        sessionId = inferredSessionId ?? null;
+        sessionId = inferCache.get(service) ?? null;
       }
 
       stmt.run({
@@ -231,19 +232,6 @@ export function upsertSession(row: SessionUpsert): void {
   });
 }
 
-/** Fields that are already stored as columns or are noise — strip from payload before compression.
- *  Temporarily disabled to aid debugging Codex payload differences. */
-const STRIP_TOP_LEVEL = new Set<string>();
-const STRIP_TOOL_INPUT = new Set<string>();
-
-// Original sets for re-enabling later:
-// const STRIP_TOP_LEVEL = new Set([
-//   "session_id", "hook_event_name", "tool_name", "cwd", "repository",
-//   "source", "target", "transcript_path", "permission_mode",
-//   "prompt", "user_prompt", "tool_result", "tool_response",
-// ]);
-// const STRIP_TOOL_INPUT = new Set(["file_path", "command", "plan", "allowedPrompts"]);
-
 function extractStr(
   obj: Record<string, unknown> | undefined,
   key: string,
@@ -257,13 +245,12 @@ export function insertHookEvent(row: HookEventRow): void {
   const data = row.payload as Record<string, unknown>;
   const toolInput = data.tool_input as Record<string, unknown> | undefined;
 
-  // Extract high-value fields into columns
+  // Extract high-value fields into columns for indexed queries
   const userPrompt =
     extractStr(data, "prompt") ?? extractStr(data, "user_prompt");
   const filePath = extractStr(toolInput, "file_path");
   const command = extractStr(toolInput, "command");
   const plan = extractStr(toolInput, "plan");
-  // Extract tool result/response (Claude sends tool_result, Gemini sends tool_response)
   const toolResultRaw = data.tool_result ?? data.tool_response;
   const toolResult = toolResultRaw
     ? typeof toolResultRaw === "string"
@@ -274,25 +261,7 @@ export function insertHookEvent(row: HookEventRow): void {
     ? JSON.stringify(toolInput.allowedPrompts)
     : undefined;
 
-  // Full JSON for FTS (before stripping)
   const fullJson = JSON.stringify(data);
-
-  // Strip redundant / extracted fields from payload before compression
-  const stripped: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (!STRIP_TOP_LEVEL.has(k)) stripped[k] = v;
-  }
-  if (toolInput) {
-    const ti: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(toolInput)) {
-      if (!STRIP_TOOL_INPUT.has(k)) ti[k] = v;
-    }
-    if (Object.keys(ti).length > 0) {
-      stripped.tool_input = ti;
-    } else {
-      delete stripped.tool_input;
-    }
-  }
 
   const insertWithFts = db.transaction(() => {
     db.prepare(INSERT_HOOK_SQL).run({
@@ -309,7 +278,7 @@ export function insertHookEvent(row: HookEventRow): void {
       tool_result: toolResult ?? null,
       plan: plan ?? null,
       allowed_prompts: allowedPrompts ?? null,
-      payload: gzipSync(Buffer.from(JSON.stringify(stripped))),
+      payload: gzipSync(Buffer.from(fullJson)),
     });
     const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
       id: number;

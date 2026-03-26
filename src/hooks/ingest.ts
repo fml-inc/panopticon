@@ -218,7 +218,9 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
     }
   }
 
-  // 4. Model-based detection — the model name reliably distinguishes clients
+  // 4. Model-based detection (last resort) — assumes OpenAI models only come
+  //    from Codex. If other OpenAI-consuming tools start sending hook events,
+  //    they'll need an explicit source/target field to distinguish themselves.
   const model = typeof data.model === "string" ? data.model : null;
   if (model) {
     if (/^(gpt-|o[1-9]|chatgpt-)/.test(model)) {

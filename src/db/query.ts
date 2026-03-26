@@ -244,60 +244,6 @@ export function listSessions(
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
-/**
- * Fields extracted from payload into columns during storage (see STRIP_TOP_LEVEL
- * and STRIP_TOOL_INPUT in store.ts). Queries must reconstitute them to return
- * complete payloads.
- */
-interface ExtractedColumns {
-  // structural (row-level)
-  session_id: string;
-  event_type: string;
-  tool_name: string | null;
-  cwd: string | null;
-  // extracted top-level
-  user_prompt: string | null;
-  tool_result: string | null;
-  // extracted from tool_input
-  file_path: string | null;
-  command: string | null;
-  plan: string | null;
-  allowed_prompts: string | null;
-}
-
-/** Merge extracted columns back into a parsed payload object. */
-function reconstitute(parsed: unknown, cols: ExtractedColumns): unknown {
-  if (!parsed || typeof parsed !== "object") parsed = {};
-  const obj = { ...(parsed as Record<string, unknown>) };
-
-  // Top-level fields
-  if (cols.user_prompt) obj.prompt = cols.user_prompt;
-  if (cols.tool_result) obj.tool_result = cols.tool_result;
-
-  // tool_input fields
-  const existing = (obj.tool_input as Record<string, unknown>) ?? {};
-  let tiChanged = false;
-  if (cols.file_path) {
-    existing.file_path = cols.file_path;
-    tiChanged = true;
-  }
-  if (cols.command) {
-    existing.command = cols.command;
-    tiChanged = true;
-  }
-  if (cols.plan) {
-    existing.plan = cols.plan;
-    tiChanged = true;
-  }
-  if (cols.allowed_prompts) {
-    existing.allowedPrompts = parseJson(cols.allowed_prompts);
-    tiChanged = true;
-  }
-  if (tiChanged) obj.tool_input = existing;
-
-  return obj;
-}
-
 interface RawTimelineRow {
   source: string;
   id: number;
@@ -308,11 +254,6 @@ interface RawTimelineRow {
   cwd: string | null;
   payload: string | null;
   user_prompt: string | null;
-  file_path: string | null;
-  command: string | null;
-  tool_result: string | null;
-  plan: string | null;
-  allowed_prompts: string | null;
   body: string | null;
   attributes: string | null;
   severity_text: string | null;
@@ -337,8 +278,7 @@ export function sessionTimeline(opts: {
 
   let hookSql = `
     SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, cwd, ${payloadCol} as payload,
-           user_prompt, file_path, command, tool_result, plan, allowed_prompts,
+           tool_name, cwd, ${payloadCol} as payload, user_prompt,
            NULL as body, NULL as attributes, NULL as severity_text
     FROM hook_events
     WHERE session_id = ?
@@ -353,9 +293,7 @@ export function sessionTimeline(opts: {
   let otelSql = `
     SELECT 'otel' as source, id, session_id, ${OTEL_EVENT_TYPE} as event_type,
            ${OTEL_TIMESTAMP_MS} as timestamp_ms,
-           NULL as tool_name, NULL as cwd, NULL as payload,
-           NULL as user_prompt, NULL as file_path, NULL as command, NULL as tool_result,
-           NULL as plan, NULL as allowed_prompts,
+           NULL as tool_name, NULL as cwd, NULL as payload, NULL as user_prompt,
            ${OTEL_EVENT_TYPE} as body, ${attrsCol} as attributes, severity_text
     FROM otel_logs
     WHERE session_id = ?
@@ -399,7 +337,7 @@ export function sessionTimeline(opts: {
     let payload: unknown = null;
 
     if (row.source === "hook") {
-      payload = reconstitute(parseJson(row.payload), row);
+      payload = parseJson(row.payload);
       if (row.user_prompt) {
         promptPreview = row.user_prompt.slice(0, 300);
       }
@@ -562,12 +500,6 @@ interface RawSearchRow {
   tool_name: string | null;
   cwd: string | null;
   payload: string | null;
-  user_prompt: string | null;
-  file_path: string | null;
-  command: string | null;
-  tool_result: string | null;
-  plan: string | null;
-  allowed_prompts: string | null;
 }
 
 export function searchEvents(opts: {
@@ -610,8 +542,7 @@ export function searchEvents(opts: {
 
   const hookSql = `
     SELECT 'hook' as source, h.id, h.session_id, h.event_type, h.timestamp_ms,
-           h.tool_name, h.cwd, ${hookPayloadCol} as payload,
-           h.user_prompt, h.file_path, h.command, h.tool_result, h.plan, h.allowed_prompts
+           h.tool_name, h.cwd, ${hookPayloadCol} as payload
     FROM hook_events h
     WHERE ${hookConditions.join(" AND ")}
   `;
@@ -632,9 +563,7 @@ export function searchEvents(opts: {
     SELECT 'otel' as source, o.id, o.session_id,
            COALESCE(o.body, json_extract(o.attributes, '$."event.name"')) as event_type,
            CASE WHEN o.timestamp_ns > 0 THEN CAST(o.timestamp_ns / 1000000 AS INTEGER) ELSE CAST(strftime('%s', json_extract(o.attributes, '$."event.timestamp"')) AS INTEGER) * 1000 END as timestamp_ms,
-           NULL as tool_name, NULL as cwd, ${otelAttrsCol} as payload,
-           NULL as user_prompt, NULL as file_path, NULL as command, NULL as tool_result,
-           NULL as plan, NULL as allowed_prompts
+           NULL as tool_name, NULL as cwd, ${otelAttrsCol} as payload
     FROM otel_logs o
     WHERE ${otelConditions.join(" AND ")}
   `;
@@ -655,13 +584,7 @@ export function searchEvents(opts: {
     .all(...hookParams, ...otelParams, limit, offset) as RawSearchRow[];
 
   const results: SearchMatch[] = rows.map((row) => {
-    let snippet: string;
-    if (row.source === "hook") {
-      const full = reconstitute(parseJson(row.payload), row);
-      snippet = JSON.stringify(full);
-    } else {
-      snippet = row.payload ?? row.event_type ?? "";
-    }
+    const snippet = row.payload ?? row.event_type ?? "";
     const matchType =
       row.event_type === "UserPromptSubmit"
         ? "prompt"
@@ -753,9 +676,11 @@ export function activitySummary(
 
     const costRow = db
       .prepare(
-        `WITH ${resolvedMetricsCTE("AND session_id = ?")} SELECT SUM(tokens) as tokens, SUM(${COST_EXPR}) as cost FROM resolved_tokens`,
+        `WITH ${resolvedMetricsCTE("AND session_id = @sid")} SELECT SUM(tokens) as tokens, SUM(${COST_EXPR}) as cost FROM resolved_tokens`,
       )
-      .get(s.session_id) as { tokens: number; cost: number } | undefined;
+      .get({ sid: s.session_id }) as
+      | { tokens: number; cost: number }
+      | undefined;
 
     const sessionCost = costRow?.cost ?? 0;
     const sessionTokens = costRow?.tokens ?? 0;
