@@ -45,7 +45,12 @@ const gemini: TargetAdapter = {
           .filter((group) => (group.hooks as unknown[]).length > 0);
         // Add panopticon hook
         (hooks[event] as unknown[]).push({
-          hooks: [{ type: "command", command: hookBin }],
+          hooks: [
+            {
+              type: "command",
+              command: `node ${hookBin} gemini ${opts.port}${opts.proxy ? " --proxy" : ""}`,
+            },
+          ],
         });
       }
       settings.hooks = hooks;
@@ -183,6 +188,16 @@ const gemini: TargetAdapter = {
   proxy: {
     upstreamHost: "generativelanguage.googleapis.com",
     accumulatorType: "openai",
+  },
+
+  otel: {
+    serviceName: "gemini-cli",
+    metrics: {
+      metricNames: ["gemini_cli.token.usage", "gen_ai.client.token.usage"],
+      aggregation: "MAX",
+      tokenTypeAttrs: ['$."gen_ai.token.type"'],
+      modelAttrs: ['$."gen_ai.response.model"'],
+    },
   },
 };
 

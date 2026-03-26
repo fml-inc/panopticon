@@ -82,7 +82,7 @@ function startServer(): void {
 }
 
 /** Poll the server until it responds or timeout (default 3s). */
-async function waitForServer(timeoutMs = 3000): Promise<boolean> {
+async function waitForServer(port: number, timeoutMs = 3000): Promise<boolean> {
   const start = Date.now();
   const interval = 50;
   while (Date.now() - start < timeoutMs) {
@@ -91,7 +91,7 @@ async function waitForServer(timeoutMs = 3000): Promise<boolean> {
         const req = http.request(
           {
             hostname: "127.0.0.1",
-            port: config.port,
+            port,
             path: "/health",
             method: "GET",
             timeout: 500,
@@ -124,13 +124,16 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf-8");
 }
 
-function postToServer(data: HookInput): Promise<Record<string, unknown>> {
+function postToServer(
+  data: HookInput,
+  port: number,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
     const req = http.request(
       {
         hostname: "127.0.0.1",
-        port: config.port,
+        port,
         path: "/hooks",
         method: "POST",
         headers: {
@@ -161,12 +164,53 @@ function postToServer(data: HookInput): Promise<Record<string, unknown>> {
   });
 }
 
-async function main() {
+/** Parse CLI args: `node hook-handler [target] [port] [--proxy]` */
+function parseArgs(argv: string[]): {
+  targetId?: string;
+  port: number;
+  proxy: boolean;
+} {
+  const args = argv.slice(2);
+  let targetId: string | undefined;
+  let port = config.port;
+  let proxy = false;
+
+  for (const arg of args) {
+    if (arg === "--proxy") {
+      proxy = true;
+    } else if (/^\d+$/.test(arg)) {
+      port = parseInt(arg, 10);
+    } else if (arg && !arg.startsWith("-")) {
+      targetId = arg;
+    }
+  }
+
+  return { targetId, port, proxy };
+}
+
+/**
+ * Run the hook handler.
+ *
+ * CLI args set at install time provide:
+ *   - targetId: which CLI invoked us (e.g. "gemini", "codex")
+ *   - port: the panopticon server port to POST to
+ *   - proxy: whether the API proxy is active for this target
+ */
+export async function runHandler(opts: {
+  targetId?: string;
+  port: number;
+  proxy: boolean;
+}): Promise<void> {
+  const { targetId, port, proxy } = opts;
+
   try {
     logHook("hook-handler invoked", {
       pid: process.pid,
       cwd: process.cwd(),
       pwd: process.env.PWD,
+      target: targetId,
+      port,
+      proxy,
     });
 
     const input = await readStdin();
@@ -178,16 +222,27 @@ async function main() {
     logHook("stdin received", { bytes: Buffer.byteLength(input) });
 
     const data: HookInput = JSON.parse(input);
+
+    // Inject context from CLI args set at install time
+    if (targetId && !data.source && !data.target) {
+      data.source = targetId;
+    }
+    if (proxy) {
+      data.proxy_enabled = true;
+    }
+
     const eventType = data.hook_event_name ?? "Unknown";
     logHook("event parsed", {
       eventType,
       sessionId: data.session_id,
       toolName: data.tool_name,
+      source: data.source,
     });
 
     addBreadcrumb("hook-handler", `Processing ${eventType}`, {
       session_id: data.session_id,
       tool_name: data.tool_name,
+      source: data.source,
     });
 
     // On SessionStart, ensure the unified server is running
@@ -197,7 +252,7 @@ async function main() {
       if (!serverRunning) {
         logHook("starting server");
         startServer();
-        const ready = await waitForServer();
+        const ready = await waitForServer(port);
         logHook("server readiness", { ready });
       }
       refreshIfStale().catch(() => {});
@@ -218,8 +273,8 @@ async function main() {
     // misconfigured server. The server auto-starts on SessionStart above.
     let result: Record<string, unknown>;
     try {
-      logHook("posting to server", { port: config.port });
-      result = await postToServer(data);
+      logHook("posting to server", { port });
+      result = await postToServer(data, port);
       logHook("server post succeeded", { resultKeys: Object.keys(result) });
     } catch {
       logHook("server post failed, dropping event");
@@ -243,4 +298,7 @@ async function main() {
 }
 
 initSentry();
-main();
+// CLI args are set at install time: `node hook-handler <target> <port> [--proxy]`
+// When invoked without args (e.g. by Claude Code's plugin system), falls back
+// to config defaults and server-side target detection.
+runHandler(parseArgs(process.argv));

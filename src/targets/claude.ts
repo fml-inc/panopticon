@@ -111,6 +111,19 @@ const claude: TargetAdapter = {
     upstreamHost: "api.anthropic.com",
     accumulatorType: "anthropic",
   },
+
+  otel: {
+    metrics: {
+      metricNames: ["claude_code.token.usage"],
+      aggregation: "SUM",
+      tokenTypeAttrs: ["$.type"],
+      modelAttrs: ["$.model"],
+    },
+  },
+
+  ident: {
+    modelPatterns: [/^claude-/],
+  },
 };
 
 registerTarget(claude);

@@ -58,7 +58,8 @@ const codex: TargetAdapter = {
       // Write hooks.json (the format the new hooks engine expects)
       const hooksFile = readHooksJson();
       const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
-      const command = `node ${hookBin}`;
+      const proxyFlag = opts.proxy ? " --proxy" : "";
+      const command = `node ${hookBin} codex ${opts.port}${proxyFlag}`;
       for (const event of HOOK_EVENTS) {
         const groups = (hooks[event] ?? []) as Array<Record<string, unknown>>;
         // Remove existing panopticon groups
@@ -213,6 +214,32 @@ const codex: TargetAdapter = {
         return false;
       }
     },
+  },
+
+  otel: {
+    serviceName: "codex_cli_rs",
+    metrics: {
+      metricNames: ["codex.turn.token_usage"],
+      aggregation: "SUM",
+      tokenTypeAttrs: ["$.token_type"],
+      modelAttrs: ["$.model"],
+      tokenTypeMap: {
+        cached_input: "cacheRead",
+        reasoning_output: "output",
+      },
+      excludeTokenTypes: ["total"],
+    },
+    logFields: {
+      eventTypeExprs: ["body", `json_extract(attributes, '$."event.name"')`],
+      timestampMsExprs: [
+        "CAST(timestamp_ns / 1000000 AS INTEGER)",
+        `CAST(strftime('%s', json_extract(attributes, '$."event.timestamp"')) AS INTEGER) * 1000`,
+      ],
+    },
+  },
+
+  ident: {
+    modelPatterns: [/^(gpt-|o[1-9]|chatgpt-)/],
   },
 
   proxy: {

@@ -96,6 +96,46 @@ export interface TargetDetectSpec {
   isConfigured(): boolean;
 }
 
+// ── OTel Telemetry Schema ────────────────────────────────────────────────────
+
+export interface MetricSpec {
+  /** OTel metric name(s) this target emits for token usage */
+  metricNames: string[];
+  /** Aggregation function: 'SUM' for per-request deltas, 'MAX' for cumulative counters */
+  aggregation: "SUM" | "MAX";
+  /** JSON paths to extract token type from metric attributes (first non-null wins) */
+  tokenTypeAttrs: string[];
+  /** JSON paths to extract model name from metric attributes (first non-null wins) */
+  modelAttrs: string[];
+  /** Remap token_type values before aggregation, e.g. { cached_input: 'cacheRead' } */
+  tokenTypeMap?: Record<string, string>;
+  /** Token type values to exclude (e.g. 'total' to avoid double-counting) */
+  excludeTokenTypes?: string[];
+}
+
+export interface OtelLogFieldSpec {
+  /** SQL expressions to extract event type from otel_logs (COALESCEd). Default: ['body'] */
+  eventTypeExprs?: string[];
+  /** SQL expressions to extract timestamp in ms from otel_logs. Default: ['CAST(timestamp_ns / 1000000 AS INTEGER)'] */
+  timestampMsExprs?: string[];
+}
+
+export interface TargetOtelSpec {
+  /** OTel service.name this target emits. Used for session inference when metrics lack session_id. */
+  serviceName?: string;
+  /** Token usage metric declaration. Undefined means no token metrics. */
+  metrics?: MetricSpec;
+  /** How to extract event type and timestamp from otel_logs rows. */
+  logFields?: OtelLogFieldSpec;
+}
+
+// ── Target Identification ────────────────────────────────────────────────────
+
+export interface TargetIdentSpec {
+  /** Model-name regex patterns for last-resort target identification from hook payloads */
+  modelPatterns?: RegExp[];
+}
+
 // ── Proxy (optional — not all targets use the proxy) ────────────────────────
 
 export interface TargetProxySpec {
@@ -122,4 +162,8 @@ export interface TargetAdapter {
   detect: TargetDetectSpec;
   /** Proxy spec is optional — not every target routes through the proxy */
   proxy?: TargetProxySpec;
+  /** OTel telemetry schema — how this target emits metrics and logs */
+  otel?: TargetOtelSpec;
+  /** How to identify this target from hook payloads when no explicit source field is present */
+  ident?: TargetIdentSpec;
 }
