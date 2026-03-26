@@ -186,6 +186,19 @@ assert_db_zero() {
   fi
 }
 
+# Assert CLI output contains a pattern (case-insensitive extended regex)
+# Usage: assert_output_match <output> <pattern> <description>
+assert_output_match() {
+  local output="$1"
+  local pattern="$2"
+  local desc="$3"
+  if echo "$output" | grep -qiE "$pattern" 2>/dev/null; then
+    log_pass "$desc"
+  else
+    log_fail "$desc — pattern '${pattern}' not found in output"
+  fi
+}
+
 # Dump database state for debugging on failure
 dump_db_debug() {
   log_info "Database debug dump:"
