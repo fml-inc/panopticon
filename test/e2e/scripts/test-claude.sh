@@ -293,5 +293,101 @@ assert_db_not_empty \
    LIMIT 1;" \
   "Proxy: api_request log has vendor, duration_ms, status fields"
 
+# ─── Phase 7: Query Data via Panopticon MCP ───────────────────────────────────
+log_phase 7 "Query Data via Panopticon MCP"
+
+SESSIONS_BEFORE=$(sqlite3 "$DB_PATH" "SELECT COUNT(DISTINCT session_id) FROM hook_events;" 2>/dev/null || echo "0")
+log_info "Sessions in DB before MCP queries: ${SESSIONS_BEFORE}"
+
+# ── 7a: panopticon_sessions + panopticon_session_timeline ─────────────────────
+# Tests: session listing returns our 2 sessions, timeline returns chronological events
+
+log_info "MCP Query 1: List sessions then get timeline for one"
+MCP_Q1_OUT=$(claude --print \
+  "You MUST call the panopticon_sessions MCP tool to list recent sessions. Then take the first session_id from the result and call panopticon_session_timeline with that session_id. Tell me: how many sessions exist, what session_id you inspected, and what event types appear in its timeline. Do NOT use any tools other than panopticon MCP tools." \
+  --max-turns 4 2>&1 || true)
+sleep 3
+log_info "MCP Q1 output (first 500 chars): ${MCP_Q1_OUT:0:500}"
+
+assert_output_match "$MCP_Q1_OUT" "session" \
+  "MCP panopticon_sessions: response mentions sessions"
+assert_output_match "$MCP_Q1_OUT" "(timeline|event|SessionStart|UserPromptSubmit|PreToolUse|PostToolUse)" \
+  "MCP panopticon_session_timeline: response mentions event types or timeline"
+
+# ── 7b: panopticon_search — full-text search ──────────────────────────────────
+# Tests: FTS5 trigram search finds our test prompt content
+
+log_info "MCP Query 2: Full-text search for 'README'"
+MCP_Q2_OUT=$(claude --print \
+  "You MUST call the panopticon_search MCP tool with the query 'README'. Tell me: how many total matches were found, what event types matched, and a brief snippet from the first match. Do NOT use any tools other than panopticon MCP tools." \
+  --max-turns 3 2>&1 || true)
+sleep 3
+log_info "MCP Q2 output (first 500 chars): ${MCP_Q2_OUT:0:500}"
+
+assert_output_match "$MCP_Q2_OUT" "(README|match|result|found)" \
+  "MCP panopticon_search: response references search results"
+assert_output_match "$MCP_Q2_OUT" "(UserPromptSubmit|PreToolUse|PostToolUse|prompt|tool)" \
+  "MCP panopticon_search: response mentions event types from matches"
+
+# ── 7c: panopticon_tool_stats + panopticon_costs ──────────────────────────────
+# Tests: tool aggregation counts and cost/token queries return rational data
+
+log_info "MCP Query 3: Tool stats and cost breakdown"
+MCP_Q3_OUT=$(claude --print \
+  "You MUST call the panopticon_tool_stats MCP tool AND the panopticon_costs MCP tool. Tell me: which tools were used and their call counts, and the total tokens and cost. Do NOT use any tools other than panopticon MCP tools." \
+  --max-turns 4 2>&1 || true)
+sleep 3
+log_info "MCP Q3 output (first 500 chars): ${MCP_Q3_OUT:0:500}"
+
+assert_output_match "$MCP_Q3_OUT" "(tool|Read|Write|Bash|Edit|Glob|Grep)" \
+  "MCP panopticon_tool_stats: response mentions tool names"
+assert_output_match "$MCP_Q3_OUT" "(token|cost|usage|input|output)" \
+  "MCP panopticon_costs: response mentions tokens or costs"
+
+# ── 7d: panopticon_summary — activity overview ────────────────────────────────
+# Tests: summary aggregation returns session counts, top tools, token totals
+
+log_info "MCP Query 4: Activity summary"
+MCP_Q4_OUT=$(claude --print \
+  "You MUST call the panopticon_summary MCP tool. Tell me: how many total sessions, what the top tools used were, total tokens, and total cost. Do NOT use any tools other than panopticon MCP tools." \
+  --max-turns 3 2>&1 || true)
+sleep 3
+log_info "MCP Q4 output (first 500 chars): ${MCP_Q4_OUT:0:500}"
+
+assert_output_match "$MCP_Q4_OUT" "(session|summary|activity)" \
+  "MCP panopticon_summary: response mentions sessions or activity"
+assert_output_match "$MCP_Q4_OUT" "(tool|token|cost)" \
+  "MCP panopticon_summary: response mentions tools, tokens, or costs"
+
+# ── 7e: Verify MCP query sessions were tracked ───────────────────────────────
+# The MCP query sessions themselves should appear as new sessions in the DB
+
+sleep 5
+SESSIONS_AFTER=$(sqlite3 "$DB_PATH" "SELECT COUNT(DISTINCT session_id) FROM hook_events;" 2>/dev/null || echo "0")
+log_info "Sessions in DB after MCP queries: ${SESSIONS_AFTER} (was ${SESSIONS_BEFORE})"
+
+assert_db_count \
+  "SELECT COUNT(DISTINCT session_id) FROM hook_events;" \
+  $((SESSIONS_BEFORE + 1)) \
+  "hook_events: MCP query sessions created new session records"
+
+# Panopticon MCP tool calls should appear as tool events in hook_events
+assert_db_not_empty \
+  "SELECT 1 FROM hook_events
+   WHERE event_type IN ('PreToolUse', 'PostToolUse')
+     AND tool_name LIKE '%panopticon%'
+   LIMIT 1;" \
+  "hook_events: panopticon MCP tool calls recorded in database"
+
+# At least one specific panopticon tool name should be recorded
+assert_db_not_empty \
+  "SELECT 1 FROM hook_events
+   WHERE tool_name LIKE '%panopticon_sessions%'
+      OR tool_name LIKE '%panopticon_search%'
+      OR tool_name LIKE '%panopticon_tool_stats%'
+      OR tool_name LIKE '%panopticon_summary%'
+   LIMIT 1;" \
+  "hook_events: specific panopticon MCP tool names recorded"
+
 # ─── Summary ────────────────────────────────────────────────────────────────
 print_summary
