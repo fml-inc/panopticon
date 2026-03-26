@@ -28,6 +28,8 @@ function buildUpstreamRoutes(): Record<string, string> {
   // Static routes for API-only targets (not CLI tools with full adapters)
   if (!routes.openai) routes.openai = "api.openai.com";
   if (!routes.google) routes.google = "generativelanguage.googleapis.com";
+  // Alias: Claude adapter registers as "claude" but ANTHROPIC_BASE_URL uses /proxy/anthropic
+  if (!routes.anthropic) routes.anthropic = "api.anthropic.com";
   return routes;
 }
 
