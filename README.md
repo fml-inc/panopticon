@@ -1,5 +1,7 @@
 # Panopticon
 
+Don't merge this
+
 <div align="center">
   <img src="panopticon.jpg" alt="Panopticon — Willey Reveley, 1791" width="480">
   <br>
@@ -76,18 +78,18 @@ All three are correlated by `session_id`.
 
 Once the plugin is loaded, these tools are available to Claude:
 
-| Tool | Description |
-|------|-------------|
-| `panopticon_sessions` | List recent sessions with stats (event count, tools used, cost) |
-| `panopticon_session_timeline` | Chronological events for a session (hooks + OTel merged) |
-| `panopticon_tool_stats` | Per-tool aggregates: call count, success/failure |
-| `panopticon_costs` | Token/cost breakdowns by session, model, or day |
-| `panopticon_summary` | Activity summary for a time window (sessions, prompts, tools, files, costs) |
-| `panopticon_plans` | Plans created via ExitPlanMode with full markdown content |
-| `panopticon_search` | Full-text search across hook payloads (FTS5) and OTel log bodies |
-| `panopticon_get_event` | Fetch full untruncated details for a specific event by source and ID |
-| `panopticon_query` | Raw read-only SQL against the database |
-| `panopticon_status` | Database row counts |
+| Tool                          | Description                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `panopticon_sessions`         | List recent sessions with stats (event count, tools used, cost)             |
+| `panopticon_session_timeline` | Chronological events for a session (hooks + OTel merged)                    |
+| `panopticon_tool_stats`       | Per-tool aggregates: call count, success/failure                            |
+| `panopticon_costs`            | Token/cost breakdowns by session, model, or day                             |
+| `panopticon_summary`          | Activity summary for a time window (sessions, prompts, tools, files, costs) |
+| `panopticon_plans`            | Plans created via ExitPlanMode with full markdown content                   |
+| `panopticon_search`           | Full-text search across hook payloads (FTS5) and OTel log bodies            |
+| `panopticon_get_event`        | Fetch full untruncated details for a specific event by source and ID        |
+| `panopticon_query`            | Raw read-only SQL against the database                                      |
+| `panopticon_status`           | Database row counts                                                         |
 
 ## CLI
 
@@ -134,9 +136,7 @@ Config lives at `~/.local/share/panopticon/sync.json`:
 ```json
 {
   "backendType": "fml",
-  "targets": [
-    { "name": "prod", "url": "https://api.example.com" }
-  ],
+  "targets": [{ "name": "prod", "url": "https://api.example.com" }],
   "allowedOrgs": ["my-org"],
   "orgDirs": { "/Users/me/work/my-org": "my-org" },
   "batchSize": 20,
@@ -168,12 +168,12 @@ OTEL_METRIC_EXPORT_INTERVAL=10000        # Flush metrics every 10s
 
 **Server configuration:**
 
-| Env var | Default | Description |
-|---|---|---|
-| `PANOPTICON_DATA_DIR` | `~/.local/share/panopticon` | Data directory |
-| `PANOPTICON_OTLP_PORT` | `4318` | OTLP receiver port |
-| `PANOPTICON_OTLP_HOST` | `0.0.0.0` | OTLP receiver bind address |
-| `PANOPTICON_GITHUB_TOKEN` | — | GitHub token for sync authentication |
+| Env var                   | Default                     | Description                          |
+| ------------------------- | --------------------------- | ------------------------------------ |
+| `PANOPTICON_DATA_DIR`     | `~/.local/share/panopticon` | Data directory                       |
+| `PANOPTICON_OTLP_PORT`    | `4318`                      | OTLP receiver port                   |
+| `PANOPTICON_OTLP_HOST`    | `0.0.0.0`                   | OTLP receiver bind address           |
+| `PANOPTICON_GITHUB_TOKEN` | —                           | GitHub token for sync authentication |
 
 ## Database
 
