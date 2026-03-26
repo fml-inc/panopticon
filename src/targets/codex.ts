@@ -58,7 +58,8 @@ const codex: TargetAdapter = {
       // Write hooks.json (the format the new hooks engine expects)
       const hooksFile = readHooksJson();
       const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
-      const command = `node ${hookBin} codex`;
+      const proxyFlag = opts.proxy ? " --proxy" : "";
+      const command = `node ${hookBin} codex ${opts.port}${proxyFlag}`;
       for (const event of HOOK_EVENTS) {
         const groups = (hooks[event] ?? []) as Array<Record<string, unknown>>;
         // Remove existing panopticon groups

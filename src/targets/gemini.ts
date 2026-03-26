@@ -45,7 +45,12 @@ const gemini: TargetAdapter = {
           .filter((group) => (group.hooks as unknown[]).length > 0);
         // Add panopticon hook
         (hooks[event] as unknown[]).push({
-          hooks: [{ type: "command", command: `node ${hookBin} gemini` }],
+          hooks: [
+            {
+              type: "command",
+              command: `node ${hookBin} gemini ${opts.port}${opts.proxy ? " --proxy" : ""}`,
+            },
+          ],
         });
       }
       settings.hooks = hooks;
