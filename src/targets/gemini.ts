@@ -2,12 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { HookInput } from "../hooks/ingest.js";
-import { registerVendor } from "./registry.js";
-import type { VendorAdapter } from "./types.js";
+import { registerTarget } from "./registry.js";
+import type { TargetAdapter } from "./types.js";
 
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
 
-const gemini: VendorAdapter = {
+const gemini: TargetAdapter = {
   id: "gemini",
 
   config: {
@@ -17,16 +17,11 @@ const gemini: VendorAdapter = {
   },
 
   hooks: {
-    events: [
-      "SessionStart",
-      "UserPromptSubmit",
-      "PreToolUse",
-      "PostToolUse",
-      "PostToolUseFailure",
-    ],
+    // Gemini's native event names
+    events: ["SessionStart", "BeforeModel", "BeforeTool", "AfterTool"],
     applyInstallConfig(existing, opts) {
       const settings = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "panopticon-hook");
+      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Deep-copy hooks to avoid mutating the input
@@ -35,26 +30,25 @@ const gemini: VendorAdapter = {
       );
       for (const event of this.events) {
         hooks[event] = hooks[event] || [];
-        // Remove existing panopticon hooks
+        // Remove existing panopticon hooks (check both old and new format)
         hooks[event] = (hooks[event] as Array<Record<string, unknown>>)
           .map((group) => ({
             ...group,
             hooks: (
               (group.hooks as Array<Record<string, unknown>>) || []
-            ).filter((h) => !(h.path as string)?.includes("panopticon")),
+            ).filter(
+              (h) =>
+                !(h.command as string)?.includes("panopticon") &&
+                !(h.path as string)?.includes("panopticon"),
+            ),
           }))
           .filter((group) => (group.hooks as unknown[]).length > 0);
         // Add panopticon hook
         (hooks[event] as unknown[]).push({
-          hooks: [{ path: hookBin, skipExecution: false }],
+          hooks: [{ type: "command", command: hookBin }],
         });
       }
       settings.hooks = hooks;
-
-      // Enable hooks
-      settings.hooksConfig =
-        (settings.hooksConfig as Record<string, unknown>) || {};
-      (settings.hooksConfig as Record<string, unknown>).enabled = true;
 
       // Register MCP server
       settings.mcpServers =
@@ -70,10 +64,50 @@ const gemini: VendorAdapter = {
       Object.assign(settings.telemetry as Record<string, unknown>, {
         enabled: true,
         target: "local",
-        useCollector: true,
-        OTLP_ENDPOINT: `http://localhost:${opts.port}`,
-        OTLP_PROTOCOL: "http",
+        otlpProtocol: "http",
+        otlpEndpoint: `http://localhost:${opts.port}`,
       });
+
+      return settings;
+    },
+    removeInstallConfig(existing) {
+      const settings = { ...existing };
+
+      // Remove panopticon hooks from each event (check both old and new format)
+      const hooks = settings.hooks as Record<string, unknown[]> | undefined;
+      if (hooks) {
+        for (const event of Object.keys(hooks)) {
+          hooks[event] = (hooks[event] as Array<Record<string, unknown>>)
+            .map((group) => ({
+              ...group,
+              hooks: (
+                (group.hooks as Array<Record<string, unknown>>) || []
+              ).filter(
+                (h) =>
+                  !(h.command as string)?.includes("panopticon") &&
+                  !(h.path as string)?.includes("panopticon"),
+              ),
+            }))
+            .filter((group) => (group.hooks as unknown[]).length > 0);
+          if ((hooks[event] as unknown[]).length === 0) delete hooks[event];
+        }
+        if (Object.keys(hooks).length === 0) delete settings.hooks;
+      }
+
+      // Remove hooksConfig if empty
+      delete settings.hooksConfig;
+
+      // Remove MCP server
+      const servers = settings.mcpServers as
+        | Record<string, unknown>
+        | undefined;
+      if (servers) {
+        delete servers.panopticon;
+        if (Object.keys(servers).length === 0) delete settings.mcpServers;
+      }
+
+      // Remove telemetry config
+      delete settings.telemetry;
 
       return settings;
     },
@@ -152,4 +186,4 @@ const gemini: VendorAdapter = {
   },
 };
 
-registerVendor(gemini);
+registerTarget(gemini);

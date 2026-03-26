@@ -2,12 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
-import { registerVendor } from "./registry.js";
-import type { VendorAdapter } from "./types.js";
+import { registerTarget } from "./registry.js";
+import type { TargetAdapter } from "./types.js";
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 
-const claude: VendorAdapter = {
+const claude: TargetAdapter = {
   id: "claude",
 
   config: {
@@ -35,6 +35,26 @@ const claude: VendorAdapter = {
       (settings.enabledPlugins as Record<string, unknown>)[
         "panopticon@local-plugins"
       ] = true;
+      return settings;
+    },
+    removeInstallConfig(existing) {
+      const settings = { ...existing };
+      const marketplaces = settings.extraKnownMarketplaces as
+        | Record<string, unknown>
+        | undefined;
+      if (marketplaces) {
+        delete marketplaces["local-plugins"];
+        if (Object.keys(marketplaces).length === 0)
+          delete settings.extraKnownMarketplaces;
+      }
+      const plugins = settings.enabledPlugins as
+        | Record<string, unknown>
+        | undefined;
+      if (plugins) {
+        delete plugins["panopticon@local-plugins"];
+        delete plugins["fml@local-plugins"];
+        if (Object.keys(plugins).length === 0) delete settings.enabledPlugins;
+      }
       return settings;
     },
   },
@@ -93,4 +113,4 @@ const claude: VendorAdapter = {
   },
 };
 
-registerVendor(claude);
+registerTarget(claude);

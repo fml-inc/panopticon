@@ -80,6 +80,10 @@
     "./sync": {
       "types": "./dist/sync/index.d.ts",
       "import": "./dist/sync/index.js"
+    },
+    "./targets": {
+      "types": "./dist/targets.d.ts",
+      "import": "./dist/targets.js"
     }
   },
   "scripts": {
@@ -88,10 +92,9 @@
     "check": "biome check src/",
     "check:fix": "biome check --write src/",
     "format": "biome format --write src/",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "prepare": "lefthook install"
+    "test": "vitest run --exclude '.claude/**'",
+    "test:watch": "vitest --exclude '.claude/**'",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

@@ -36,6 +36,7 @@ export default defineConfig({
     "otlp/server": "src/otlp/server.ts",
     "proxy/server": "src/proxy/server.ts",
     "sync/index": "src/sync/index.ts",
+    targets: "src/targets/index.ts",
   },
   format: ["esm"],
   target: "node22",

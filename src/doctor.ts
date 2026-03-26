@@ -15,8 +15,8 @@ import {
   readWatermark,
   watermarkKey,
 } from "./sync/watermark.js";
+import { allTargets } from "./targets/index.js";
 import { loadUnifiedConfig } from "./unified-config.js";
-import { allVendors } from "./vendors/index.js";
 
 export interface CheckResult {
   label: string;
@@ -153,12 +153,12 @@ export async function doctor(): Promise<DoctorResult> {
   // 4. Coding tool integration
   const tools: Array<{ name: string; dir: string; configured: boolean }> = [];
 
-  for (const vendor of allVendors()) {
-    if (vendor.detect.isInstalled()) {
+  for (const t of allTargets()) {
+    if (t.detect.isInstalled()) {
       tools.push({
-        name: vendor.detect.displayName,
-        dir: vendor.config.dir,
-        configured: vendor.detect.isConfigured(),
+        name: t.detect.displayName,
+        dir: t.config.dir,
+        configured: t.detect.isConfigured(),
       });
     }
   }

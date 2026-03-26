@@ -11,7 +11,7 @@ import path from "node:path";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
-import { allVendors } from "./vendors/index.js";
+import { allTargets } from "./targets/index.js";
 
 /**
  * Initialize the panopticon database — creates the data directory,
@@ -35,7 +35,7 @@ export async function fetchPricing(): Promise<number | null> {
 export interface ShellEnvOptions {
   /** Overwrite user-customized env vars (default false) */
   force?: boolean;
-  /** Target CLI vendor id or "all" (default "claude") */
+  /** Target CLI target id or "all" (default "claude") */
   target?: string;
   /** Also configure API proxy (default false) */
   proxy?: boolean;
@@ -60,11 +60,11 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     ? fs.readFileSync(shellRc, "utf-8")
     : "";
 
-  // Collect all known vendor env var names for detection/cleanup
-  const allVendorVarNames = new Set<string>();
-  for (const v of allVendors()) {
+  // Collect all known target env var names for detection/cleanup
+  const allTargetVarNames = new Set<string>();
+  for (const v of allTargets()) {
     for (const [varName] of v.shellEnv.envVars(config.port, true)) {
-      allVendorVarNames.add(varName);
+      allTargetVarNames.add(varName);
     }
   }
 
@@ -76,7 +76,7 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
-    ...allVendorVarNames,
+    ...allTargetVarNames,
   ];
   const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
@@ -90,7 +90,7 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     return false;
   };
 
-  // Build the wanted env vars: shared OTEL vars + vendor-specific vars
+  // Build the wanted env vars: shared OTEL vars + target-specific vars
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
     [
@@ -108,17 +108,14 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
     ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
   ];
 
-  // Add vendor-specific env vars for targeted vendors
-  const targetVendorList =
+  // Add target-specific env vars for selected targets
+  const selectedTargetList =
     target === "all"
-      ? allVendors()
-      : allVendors().filter((v) => v.id === target);
+      ? allTargets()
+      : allTargets().filter((v) => v.id === target);
 
-  for (const vendor of targetVendorList) {
-    for (const [varName, value] of vendor.shellEnv.envVars(
-      config.port,
-      proxy,
-    )) {
+  for (const t of selectedTargetList) {
+    for (const [varName, value] of t.shellEnv.envVars(config.port, proxy)) {
       wantedLines.push([varName, `export ${varName}=${value}`]);
     }
   }

@@ -50,7 +50,7 @@ Options:
 
 | Flag | Description |
 |------|-------------|
-| `--target <t>` | Target CLI: any registered vendor id (e.g. `claude`, `gemini`, `codex`) or `all` (default: `all`) |
+| `--target <t>` | Target CLI: any registered target id (e.g. `claude`, `gemini`, `codex`) or `all` (default: `all`) |
 | `--proxy` | Route API traffic through the panopticon proxy |
 | `--desktop` | Install as MCP server for Claude Desktop instead |
 | `--force` | Overwrite customized env vars with defaults |
@@ -117,7 +117,7 @@ All pipelines are correlated by `session_id`.
 | Codex CLI | Hooks via `config.toml` | — | WebSocket proxy |
 | Pi | Extension events via `@panopticon/pi-extension` | — | Anthropic, OpenAI, Google AI |
 
-Each CLI tool is implemented as a **vendor adapter** in `src/vendors/`. To add support for a new tool, create a single adapter file that declares the tool's config paths, hook events, shell env vars, event normalization rules, detection logic, and proxy routing — then register it in `src/vendors/index.ts`. See [Architecture](#architecture) for details.
+Each CLI tool is implemented as a **target adapter** in `src/targets/`. To add support for a new tool, create a single adapter file that declares the tool's config paths, hook events, shell env vars, event normalization rules, detection logic, and proxy routing — then register it in `src/targets/index.ts`. See [Architecture](#architecture) for details.
 
 ## MCP tools
 
@@ -142,7 +142,7 @@ Once the plugin is loaded, these tools are available to Claude:
 
 ```
 panopticon install          Build, register plugin, init DB, configure shell
-  --target <t>              Target CLI: any vendor id or all (default: all)
+  --target <t>              Target CLI: any target id or all (default: all)
   --proxy                   Route API traffic through the panopticon proxy
   --desktop                 Install as MCP server for Claude Desktop
   --force                   Overwrite customized env vars with defaults
@@ -266,7 +266,7 @@ OTEL_LOG_TOOL_DETAILS=1
 OTEL_LOG_USER_PROMPTS=1
 OTEL_METRIC_EXPORT_INTERVAL=10000
 
-# Vendor-specific (set per --target)
+# Target-specific (set per --target)
 CLAUDE_CODE_ENABLE_TELEMETRY=1           # Claude Code
 ANTHROPIC_BASE_URL=http://localhost:4318/proxy/anthropic  # Claude Code (--proxy)
 GEMINI_TELEMETRY_ENABLED=true            # Gemini CLI
@@ -277,7 +277,7 @@ GEMINI_TELEMETRY_OTLP_PROTOCOL=http     # Gemini CLI
 GEMINI_TELEMETRY_LOG_PROMPTS=true        # Gemini CLI
 ```
 
-Vendor-specific env vars are declared by each vendor adapter in `src/vendors/`. New vendors can add their own vars without modifying the shell env configuration logic.
+Target-specific env vars are declared by each target adapter in `src/targets/`. New targets can add their own vars without modifying the shell env configuration logic.
 
 **Server configuration:**
 
@@ -336,10 +336,10 @@ src/
 ├── log.ts              Log file paths (macOS/Linux/Windows)
 ├── repo.ts             Git repository detection
 ├── toml.ts             TOML read/write (for Codex config)
-├── vendors/
-│   ├── types.ts        VendorAdapter interface (config, hooks, events, detect, proxy)
-│   ├── registry.ts     Map-based vendor registry (register, get, all)
-│   ├── index.ts        Barrel — re-exports + registers all built-in vendors
+├── targets/
+│   ├── types.ts        TargetAdapter interface (config, hooks, events, detect, proxy)
+│   ├── registry.ts     Map-based target registry (register, get, all)
+│   ├── index.ts        Barrel — re-exports + registers all built-in targets
 │   ├── claude.ts       Claude Code adapter
 │   ├── gemini.ts       Gemini CLI adapter
 │   └── codex.ts        Codex CLI adapter
@@ -351,7 +351,7 @@ src/
 │   └── pricing.ts      Model pricing cache (OpenRouter)
 ├── hooks/
 │   ├── handler.ts      Hook event handler (stdin JSON → server)
-│   ├── ingest.ts       Hook processing — uses vendor adapters for normalization
+│   ├── ingest.ts       Hook processing — uses target adapters for normalization
 │   └── permissions.ts  PreToolUse permission enforcement
 ├── mcp/
 │   ├── server.ts       MCP server with query tools
@@ -370,7 +370,7 @@ src/
 │   ├── watermark.ts    Watermark persistence (sync-watermarks.db)
 │   └── post.ts         HTTP POST with retry + exponential backoff
 ├── proxy/
-│   ├── server.ts       API proxy — routes built from vendor registry
+│   ├── server.ts       API proxy — routes built from target registry
 │   ├── emit.ts         Event emission from proxy captures
 │   ├── streaming.ts    SSE stream accumulation (Anthropic + OpenAI)
 │   ├── ws-capture.ts   WebSocket message capture (Codex)
@@ -386,17 +386,17 @@ integrations/
     └── package.json    Pi package manifest
 ```
 
-### Vendor adapters
+### Target adapters
 
-Each supported coding tool is a self-contained adapter in `src/vendors/`. An adapter declares:
+Each supported coding tool is a self-contained adapter in `src/targets/`. An adapter declares:
 
 | Concern | What it specifies |
 |---------|-------------------|
 | **Config** | Directory, config file path, format (JSON/TOML) |
 | **Hooks** | Event names, install-time config merge (`applyInstallConfig`) |
-| **Shell env** | Vendor-specific env vars for the shell profile |
+| **Shell env** | Target-specific env vars for the shell profile |
 | **Events** | Event name mapping to canonical types, payload normalization, permission response format |
 | **Detection** | Display name, `isInstalled()`, `isConfigured()` for doctor |
 | **Proxy** | Upstream host (static or dynamic), path rewriting, accumulator type |
 
-To add a new vendor, create `src/vendors/<name>.ts`, implement `VendorAdapter`, call `registerVendor()`, and add the import to `src/vendors/index.ts`. All consumers (install, doctor, hooks, proxy, shell env) pick it up automatically.
+To add a new target, create `src/targets/<name>.ts`, implement `TargetAdapter`, call `registerTarget()`, and add the import to `src/targets/index.ts`. All consumers (install, doctor, hooks, proxy, shell env) pick it up automatically.
