@@ -11,11 +11,11 @@ export class SessionTracker {
   private sessions = new Map<string, SessionState>();
 
   getOrCreateSession(
-    vendor: string,
+    target: string,
     requestBody?: unknown,
   ): { sessionId: string; isNew: boolean } {
     const now = Date.now();
-    const existing = this.sessions.get(vendor);
+    const existing = this.sessions.get(target);
     const messageCount = countMessages(requestBody);
 
     // Detect new session from conversation context
@@ -31,9 +31,9 @@ export class SessionTracker {
     // New session
     const seq = existing ? existing.seq + 1 : 1;
     const date = new Date(now).toISOString().slice(0, 10).replace(/-/g, "");
-    const sessionId = `${vendor}-${date}-${String(seq).padStart(3, "0")}`;
+    const sessionId = `${target}-${date}-${String(seq).padStart(3, "0")}`;
 
-    this.sessions.set(vendor, {
+    this.sessions.set(target, {
       id: sessionId,
       lastRequestMs: now,
       lastMessageCount: messageCount,

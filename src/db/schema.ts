@@ -60,10 +60,25 @@ CREATE INDEX IF NOT EXISTS idx_hooks_type ON hook_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_hooks_tool ON hook_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_hooks_ts ON hook_events(timestamp_ms);
 
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id TEXT PRIMARY KEY,
+  target TEXT,
+  started_at_ms INTEGER,
+  ended_at_ms INTEGER,
+  cwd TEXT,
+  first_prompt TEXT,
+  permission_mode TEXT,
+  agent_version TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms);
+
 CREATE TABLE IF NOT EXISTS session_repositories (
   session_id TEXT NOT NULL,
   repository TEXT NOT NULL,
   first_seen_ms INTEGER NOT NULL,
+  git_user_name TEXT,
+  git_user_email TEXT,
   UNIQUE(session_id, repository)
 );
 CREATE INDEX IF NOT EXISTS idx_session_repos_session ON session_repositories(session_id);
@@ -145,6 +160,49 @@ const migrations: Migration[] = [
     version: 3,
     up(db: Database.Database) {
       db.exec("ALTER TABLE hook_events ADD COLUMN tool_result TEXT");
+    },
+  },
+  {
+    version: 4,
+    up: (db) => {
+      db.exec("ALTER TABLE hook_events ADD COLUMN target TEXT");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_hooks_target ON hook_events(target)",
+      );
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          target TEXT,
+          started_at_ms INTEGER,
+          ended_at_ms INTEGER,
+          cwd TEXT,
+          first_prompt TEXT,
+          permission_mode TEXT,
+          agent_version TEXT
+        )
+      `);
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms)",
+      );
+    },
+  },
+  {
+    version: 5,
+    up: (db) => {
+      const cols = db
+        .prepare("PRAGMA table_info(session_repositories)")
+        .all() as { name: string }[];
+      if (!cols.some((c) => c.name === "git_user_name")) {
+        db.exec(
+          "ALTER TABLE session_repositories ADD COLUMN git_user_name TEXT",
+        );
+        db.exec(
+          "ALTER TABLE session_repositories ADD COLUMN git_user_email TEXT",
+        );
+      }
     },
   },
 ];

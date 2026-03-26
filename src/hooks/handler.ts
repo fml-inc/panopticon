@@ -5,7 +5,7 @@
  *
  * Reads JSON from stdin (same format Claude Code / Gemini CLI / Codex CLI send),
  * POSTs it to the unified panopticon server at /hooks, and relays the response
- * to stdout. Falls back to direct DB write if the server is unreachable.
+ * to stdout. Drops events if the server is unreachable.
  */
 
 import { spawn } from "node:child_process";
@@ -79,6 +79,41 @@ function startServer(): void {
   }
   child.unref();
   fs.closeSync(logFd);
+}
+
+/** Poll the server until it responds or timeout (default 3s). */
+async function waitForServer(timeoutMs = 3000): Promise<boolean> {
+  const start = Date.now();
+  const interval = 50;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: config.port,
+            path: "/health",
+            method: "GET",
+            timeout: 500,
+          },
+          (res) => {
+            res.resume();
+            resolve();
+          },
+        );
+        req.on("error", reject);
+        req.on("timeout", () => {
+          req.destroy();
+          reject(new Error("timeout"));
+        });
+        req.end();
+      });
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  return false;
 }
 
 async function readStdin(): Promise<string> {
@@ -162,6 +197,8 @@ async function main() {
       if (!serverRunning) {
         logHook("starting server");
         startServer();
+        const ready = await waitForServer();
+        logHook("server readiness", { ready });
       }
       refreshIfStale().catch(() => {});
     }

@@ -282,16 +282,44 @@ assert_db_not_empty \
   "SELECT 1 FROM otel_logs WHERE body = 'api_request' AND attributes LIKE '%proxy%' LIMIT 1;" \
   "Proxy: api_request logs with source=proxy"
 
-# Proxy: log attributes contain required fields for proxy captures (model, vendor, duration_ms, status)
+# Proxy: log attributes contain required fields for proxy captures (model, target, duration_ms, status)
 assert_db_not_empty \
   "SELECT 1 FROM otel_logs
    WHERE body = 'api_request'
      AND attributes LIKE '%proxy%'
-     AND json_extract(attributes, '$.vendor') IS NOT NULL
+     AND json_extract(attributes, '$.target') IS NOT NULL
      AND json_extract(attributes, '$.duration_ms') IS NOT NULL
      AND json_extract(attributes, '$.status') IS NOT NULL
    LIMIT 1;" \
-  "Proxy: api_request log has vendor, duration_ms, status fields"
+  "Proxy: api_request log has target, duration_ms, status fields"
+
+# ── 6f: sessions table ────────────────────────────────────────────────────
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions LIMIT 1;" \
+  "sessions: table is populated"
+
+# Claude Code does not currently send source/target/model in hook payloads,
+# so target detection falls back to 'unknown' (see issue #73).
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE target IS NOT NULL LIMIT 1;" \
+  "sessions: target is populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE started_at_ms IS NOT NULL LIMIT 1;" \
+  "sessions: started_at_ms is populated"
+
+# ── 6g: hook_events.target column ─────────────────────────────────────────
+
+assert_db_zero \
+  "SELECT COUNT(*) FROM hook_events WHERE target IS NULL OR target = '';" \
+  "hook_events: target column is always populated"
+
+# Claude Code does not send source/target in hook payloads — target will be
+# 'unknown' until #73 is resolved. Just verify the column is non-null.
+assert_db_zero \
+  "SELECT COUNT(*) FROM hook_events WHERE target IS NULL OR target = '';" \
+  "hook_events: target column is never null/empty"
 
 # ─── Summary ────────────────────────────────────────────────────────────────
 print_summary

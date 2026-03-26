@@ -45,7 +45,7 @@ export function createUnifiedServer(): http.Server {
         addBreadcrumb("hooks", `${data.hook_event_name ?? "unknown"} event`, {
           session_id: data.session_id,
           tool_name: data.tool_name,
-          vendor: data.vendor ?? data.source,
+          target: data.target ?? data.source,
         });
         const result = processHookEvent(data);
         res.writeHead(200, { "Content-Type": "application/json" });

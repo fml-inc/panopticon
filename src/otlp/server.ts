@@ -166,25 +166,39 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
   for (const rl of data.resourceLogs ?? []) {
     const resourceAttrs = kvListToMap(rl.resource?.attributes);
     const resourceSessionId =
-      resourceAttrs["session.id"] ?? resourceAttrs["service.instance.id"];
+      resourceAttrs["session.id"] ??
+      resourceAttrs["conversation.id"] ??
+      resourceAttrs["service.instance.id"];
 
     for (const sl of rl.scopeLogs ?? []) {
       for (const lr of sl.logRecords ?? []) {
         const attrs = kvListToMap(lr.attributes);
+
+        // Codex sends event name in attrs["event.name"] with an empty body
+        const rawBody = extractJsonAnyValue(lr.body);
+        const body = rawBody ?? (attrs["event.name"] as string) ?? undefined;
+
+        // Codex sends timeUnixNano=0 with real time in attrs["event.timestamp"]
+        let timestamp_ns = parseInt(lr.timeUnixNano ?? "0", 10);
+        if (!timestamp_ns && typeof attrs["event.timestamp"] === "string") {
+          timestamp_ns =
+            new Date(attrs["event.timestamp"] as string).getTime() * 1_000_000;
+        }
+
         rows.push({
-          timestamp_ns: parseInt(lr.timeUnixNano ?? "0", 10),
+          timestamp_ns,
           observed_timestamp_ns: lr.observedTimeUnixNano
             ? parseInt(lr.observedTimeUnixNano, 10)
             : undefined,
           severity_number: lr.severityNumber,
           severity_text: lr.severityText,
-          body: extractJsonAnyValue(lr.body),
+          body,
           attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
           resource_attributes:
             Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
-          session_id: (attrs["session.id"] ?? resourceSessionId) as
-            | string
-            | undefined,
+          session_id: (attrs["session.id"] ??
+            attrs["conversation.id"] ??
+            resourceSessionId) as string | undefined,
           prompt_id: (attrs["prompt.id"] ?? attrs.prompt_id) as
             | string
             | undefined,
@@ -205,7 +219,9 @@ function jsonMetricsToRows(
   for (const rm of data.resourceMetrics ?? []) {
     const resourceAttrs = kvListToMap(rm.resource?.attributes);
     const resourceSessionId =
-      resourceAttrs["session.id"] ?? resourceAttrs["service.instance.id"];
+      resourceAttrs["session.id"] ??
+      resourceAttrs["conversation.id"] ??
+      resourceAttrs["service.instance.id"];
 
     for (const sm of rm.scopeMetrics ?? []) {
       for (const m of sm.metrics ?? []) {
@@ -235,9 +251,9 @@ function jsonMetricsToRows(
             attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
             resource_attributes:
               Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
-            session_id: (attrs["session.id"] ?? resourceSessionId) as
-              | string
-              | undefined,
+            session_id: (attrs["session.id"] ??
+              attrs["conversation.id"] ??
+              resourceSessionId) as string | undefined,
           });
         }
       }

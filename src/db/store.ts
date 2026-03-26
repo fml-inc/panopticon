@@ -33,6 +33,7 @@ export interface HookEventRow {
   cwd?: string;
   repository?: string;
   tool_name?: string;
+  target?: string;
   user_prompt?: string;
   file_path?: string;
   command?: string;
@@ -53,9 +54,9 @@ const INSERT_METRIC_SQL = `
 
 const INSERT_HOOK_SQL = `
   INSERT INTO hook_events (session_id, event_type, timestamp_ms, cwd, repository, tool_name,
-                           user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload)
+                           target, user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload)
   VALUES (@session_id, @event_type, @timestamp_ms, @cwd, @repository, @tool_name,
-          @user_prompt, @file_path, @command, @tool_result, @plan, @allowed_prompts, @payload)
+          @target, @user_prompt, @file_path, @command, @tool_result, @plan, @allowed_prompts, @payload)
 `;
 
 export function insertOtelLogs(rows: OtelLogRow[]): void {
@@ -83,11 +84,68 @@ export function insertOtelLogs(rows: OtelLogRow[]): void {
   insertMany(rows);
 }
 
+/**
+ * For metrics missing a session_id (e.g. Codex doesn't include conversation.id
+ * on metric datapoints), infer it from the most recent session whose time range
+ * overlaps the metric timestamp.  We scope by target to avoid cross-client
+ * misattribution and cache the result for the duration of the batch.
+ */
+function inferSessionId(
+  db: ReturnType<typeof getDb>,
+  timestampNs: number,
+  resourceAttrs: Record<string, unknown> | undefined,
+): string | null {
+  const serviceName = resourceAttrs?.["service.name"];
+  if (typeof serviceName !== "string") return null;
+
+  // Map service.name to target identifier used in the sessions table
+  let target: string | undefined;
+  if (serviceName === "codex_cli_rs") target = "codex";
+  else if (serviceName === "gemini-cli") target = "gemini";
+  // Claude Code already provides session.id — shouldn't reach here
+
+  if (!target) return null;
+
+  const metricMs = Math.floor(timestampNs / 1_000_000);
+
+  // Find the most recent session for this target that started before the metric
+  const row = db
+    .prepare(
+      `SELECT session_id FROM sessions
+       WHERE target = ? AND started_at_ms <= ?
+       ORDER BY started_at_ms DESC LIMIT 1`,
+    )
+    .get(target, metricMs) as { session_id: string } | undefined;
+
+  return row?.session_id ?? null;
+}
+
 export function insertOtelMetrics(rows: OtelMetricRow[]): void {
   const db = getDb();
   const stmt = db.prepare(INSERT_METRIC_SQL);
+
+  // Cache inferred session IDs keyed by service name. Within a single batch,
+  // all metrics for one service.name get the same inferred session. This is
+  // correct when one client emits one batch per session (the common case).
+  // If two sessions for the same service interleave in one batch, the later
+  // session's metrics will be mis-attributed — acceptable given the rarity.
+  const inferCache = new Map<string, string | null>();
+
   const insertMany = db.transaction((rows: OtelMetricRow[]) => {
     for (const row of rows) {
+      let sessionId = row.session_id ?? null;
+
+      if (!sessionId && row.resource_attributes) {
+        const service = row.resource_attributes["service.name"] as string;
+        if (!inferCache.has(service)) {
+          inferCache.set(
+            service,
+            inferSessionId(db, row.timestamp_ns, row.resource_attributes),
+          );
+        }
+        sessionId = inferCache.get(service) ?? null;
+      }
+
       stmt.run({
         timestamp_ns: row.timestamp_ns,
         name: row.name,
@@ -98,7 +156,7 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
         resource_attributes: row.resource_attributes
           ? JSON.stringify(row.resource_attributes)
           : null,
-        session_id: row.session_id ?? null,
+        session_id: sessionId,
       });
     }
   });
@@ -109,11 +167,22 @@ export function upsertSessionRepository(
   sessionId: string,
   repository: string,
   timestampMs: number,
+  gitIdentity?: { name: string | null; email: string | null },
 ): void {
   const db = getDb();
   db.prepare(
-    "INSERT INTO session_repositories (session_id, repository, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-  ).run(sessionId, repository, timestampMs);
+    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(session_id, repository) DO UPDATE SET
+       git_user_name = COALESCE(session_repositories.git_user_name, excluded.git_user_name),
+       git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email)`,
+  ).run(
+    sessionId,
+    repository,
+    timestampMs,
+    gitIdentity?.name ?? null,
+    gitIdentity?.email ?? null,
+  );
 }
 
 export function upsertSessionCwd(
@@ -127,28 +196,41 @@ export function upsertSessionCwd(
   ).run(sessionId, cwd, timestampMs);
 }
 
-/** Fields that are already stored as columns or are noise — strip from payload before compression. */
-const STRIP_TOP_LEVEL = new Set([
-  "session_id",
-  "hook_event_name",
-  "tool_name",
-  "cwd",
-  "repository",
-  "transcript_path",
-  "permission_mode",
-  "tool_use_id",
-  "prompt",
-  "user_prompt",
-  "tool_result",
-  "tool_response",
-]);
+export interface SessionUpsert {
+  session_id: string;
+  target?: string;
+  started_at_ms?: number;
+  ended_at_ms?: number;
+  cwd?: string;
+  first_prompt?: string;
+  permission_mode?: string;
+  agent_version?: string;
+}
 
-const STRIP_TOOL_INPUT = new Set([
-  "file_path",
-  "command",
-  "plan",
-  "allowedPrompts",
-]);
+export function upsertSession(row: SessionUpsert): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt, permission_mode, agent_version)
+     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt, @permission_mode, @agent_version)
+     ON CONFLICT(session_id) DO UPDATE SET
+       target = COALESCE(excluded.target, sessions.target),
+       started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
+       ended_at_ms = COALESCE(excluded.ended_at_ms, sessions.ended_at_ms),
+       cwd = COALESCE(excluded.cwd, sessions.cwd),
+       first_prompt = COALESCE(sessions.first_prompt, excluded.first_prompt),
+       permission_mode = COALESCE(excluded.permission_mode, sessions.permission_mode),
+       agent_version = COALESCE(excluded.agent_version, sessions.agent_version)`,
+  ).run({
+    session_id: row.session_id,
+    target: row.target ?? null,
+    started_at_ms: row.started_at_ms ?? null,
+    ended_at_ms: row.ended_at_ms ?? null,
+    cwd: row.cwd ?? null,
+    first_prompt: row.first_prompt ?? null,
+    permission_mode: row.permission_mode ?? null,
+    agent_version: row.agent_version ?? null,
+  });
+}
 
 function extractStr(
   obj: Record<string, unknown> | undefined,
@@ -163,13 +245,12 @@ export function insertHookEvent(row: HookEventRow): void {
   const data = row.payload as Record<string, unknown>;
   const toolInput = data.tool_input as Record<string, unknown> | undefined;
 
-  // Extract high-value fields into columns
+  // Extract high-value fields into columns for indexed queries
   const userPrompt =
     extractStr(data, "prompt") ?? extractStr(data, "user_prompt");
   const filePath = extractStr(toolInput, "file_path");
   const command = extractStr(toolInput, "command");
   const plan = extractStr(toolInput, "plan");
-  // Extract tool result/response (Claude sends tool_result, Gemini sends tool_response)
   const toolResultRaw = data.tool_result ?? data.tool_response;
   const toolResult = toolResultRaw
     ? typeof toolResultRaw === "string"
@@ -180,25 +261,7 @@ export function insertHookEvent(row: HookEventRow): void {
     ? JSON.stringify(toolInput.allowedPrompts)
     : undefined;
 
-  // Full JSON for FTS (before stripping)
   const fullJson = JSON.stringify(data);
-
-  // Strip redundant / extracted fields from payload before compression
-  const stripped: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (!STRIP_TOP_LEVEL.has(k)) stripped[k] = v;
-  }
-  if (toolInput) {
-    const ti: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(toolInput)) {
-      if (!STRIP_TOOL_INPUT.has(k)) ti[k] = v;
-    }
-    if (Object.keys(ti).length > 0) {
-      stripped.tool_input = ti;
-    } else {
-      delete stripped.tool_input;
-    }
-  }
 
   const insertWithFts = db.transaction(() => {
     db.prepare(INSERT_HOOK_SQL).run({
@@ -208,13 +271,14 @@ export function insertHookEvent(row: HookEventRow): void {
       cwd: row.cwd ?? null,
       repository: row.repository ?? null,
       tool_name: row.tool_name ?? null,
+      target: row.target ?? null,
       user_prompt: userPrompt ?? null,
       file_path: filePath ?? null,
       command: command ?? null,
       tool_result: toolResult ?? null,
       plan: plan ?? null,
       allowed_prompts: allowedPrompts ?? null,
-      payload: gzipSync(Buffer.from(JSON.stringify(stripped))),
+      payload: gzipSync(Buffer.from(fullJson)),
     });
     const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
       id: number;

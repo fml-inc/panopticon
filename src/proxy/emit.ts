@@ -10,7 +10,7 @@ export interface HookInput {
   tool_input?: Record<string, unknown>;
   prompt?: string;
   source?: string;
-  vendor?: string;
+  target?: string;
   [key: string]: unknown;
 }
 

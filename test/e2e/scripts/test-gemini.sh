@@ -244,5 +244,29 @@ assert_db_not_empty \
    LIMIT 1;" \
   "Cross-table: session_id correlates between hook_events and otel_metrics"
 
+# ── 6f: sessions table ────────────────────────────────────────────────────
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions LIMIT 1;" \
+  "sessions: table is populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE target = 'gemini' LIMIT 1;" \
+  "sessions: has target = 'gemini'"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE started_at_ms IS NOT NULL LIMIT 1;" \
+  "sessions: started_at_ms is populated"
+
+# ── 6g: hook_events.target column ─────────────────────────────────────────
+
+assert_db_zero \
+  "SELECT COUNT(*) FROM hook_events WHERE target IS NULL OR target = '';" \
+  "hook_events: target column is always populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM hook_events WHERE target = 'gemini' LIMIT 1;" \
+  "hook_events: target is 'gemini' for Gemini sessions"
+
 # ─── Summary ────────────────────────────────────────────────────────────────
 print_summary

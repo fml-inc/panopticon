@@ -11,6 +11,14 @@
  *   - null for genuinely absent data, never for source-dependent gaps
  */
 
+// ── Common ────────────────────────────────────────────────────────────────────
+
+export interface Repository {
+  name: string;
+  gitUserName: string | null;
+  gitUserEmail: string | null;
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 export interface Session {
@@ -21,10 +29,9 @@ export interface Session {
   toolCount: number;
   totalTokens: number;
   totalCost: number;
-  repositories: string[];
+  repositories: Repository[];
   cwd: string | null;
   firstPrompt: string | null;
-  githubUsername: string | null;
   eventTypeCounts: Record<string, number>;
 }
 
@@ -47,8 +54,7 @@ export interface TimelineEvent {
 export interface SessionTimelineResult {
   session: {
     sessionId: string;
-    githubUsername: string | null;
-    repositories: string[];
+    repositories: Repository[];
     cwd: string | null;
   } | null;
   events: TimelineEvent[];
@@ -66,7 +72,6 @@ export interface SpendingGroup {
   totalTokens: number;
   totalCost: number;
   sessionCount: number;
-  githubUsername: string | null;
 }
 
 export interface SpendingResult {
@@ -88,7 +93,7 @@ export interface ActivitySessionDetail {
   startedAt: string;
   durationMinutes: number;
   cwd: string | null;
-  repositories: string[];
+  repositories: Repository[];
   userPrompts: string[];
   toolsUsed: Array<{ tool: string; count: number }>;
   filesModified: string[];
@@ -106,7 +111,7 @@ export interface ActivitySummaryResult {
   topTools: Array<{ tool: string; count: number }>;
   eventTypeCounts: Record<string, number>;
   engineers: Array<{
-    githubUsername: string;
+    gitUserEmail: string;
     sessionCount: number;
     lastActiveAt: string;
   }>;
@@ -119,7 +124,6 @@ export interface ActivitySummaryResult {
 export interface SearchMatch {
   sessionId: string;
   timestamp: string;
-  githubUsername: string | null;
   matchType: string;
   matchSnippet: string;
   eventType: string | null;
