@@ -49,7 +49,7 @@ vi.mock("./config.js", () => {
 
 // Must import after mock
 import { config } from "./config.js";
-import { costBreakdown } from "./db/query.js";
+import { costBreakdown, searchEvents, sessionTimeline } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
 import {
   insertOtelMetrics,
@@ -1119,7 +1119,7 @@ describe("server integration", () => {
       expect(row.first_prompt).toBe("Fix the bug");
     });
 
-    it("updates ended_at_ms on Stop", () => {
+    it("sets ended_at_ms on Stop", () => {
       const db = getDb();
       const row = db
         .prepare(
@@ -1131,6 +1131,321 @@ describe("server integration", () => {
       };
 
       expect(row.ended_at_ms).toBeGreaterThanOrEqual(row.started_at_ms);
+    });
+  });
+
+  // ── Gemini OTel format & MAX aggregation ─────────────────────────────────
+
+  describe("Gemini OTel metrics (MAX aggregation)", () => {
+    const GEMINI_SESSION = "gemini-otel-sess-001";
+
+    beforeAll(() => {
+      const metricTs = Date.now();
+
+      // Create a Gemini session directly
+      upsertSession({
+        session_id: GEMINI_SESSION,
+        target: "gemini",
+        started_at_ms: metricTs - 120_000,
+      });
+
+      // Insert cumulative Gemini metrics — later datapoints supersede earlier ones
+      // Two readings of input (100 then 500), plus one output (200).
+      // MAX aggregation should pick input=500, not SUM=600.
+      const rows: OtelMetricRow[] = [
+        {
+          timestamp_ns: (metricTs - 30_000) * 1_000_000,
+          name: "gen_ai.client.token.usage",
+          value: 100,
+          metric_type: "gauge",
+          session_id: GEMINI_SESSION,
+          attributes: {
+            "gen_ai.token.type": "input",
+            "gen_ai.response.model": "gemini-2.5-pro",
+          },
+        },
+        {
+          timestamp_ns: metricTs * 1_000_000,
+          name: "gen_ai.client.token.usage",
+          value: 500,
+          metric_type: "gauge",
+          session_id: GEMINI_SESSION,
+          attributes: {
+            "gen_ai.token.type": "input",
+            "gen_ai.response.model": "gemini-2.5-pro",
+          },
+        },
+        {
+          timestamp_ns: metricTs * 1_000_000,
+          name: "gen_ai.client.token.usage",
+          value: 200,
+          metric_type: "gauge",
+          session_id: GEMINI_SESSION,
+          attributes: {
+            "gen_ai.token.type": "output",
+            "gen_ai.response.model": "gemini-2.5-pro",
+          },
+        },
+      ];
+      insertOtelMetrics(rows);
+    });
+
+    it("stores Gemini metrics", () => {
+      const db = getDb();
+      const rows = db
+        .prepare(
+          `SELECT session_id, value, json_extract(attributes, '$."gen_ai.token.type"') as token_type
+           FROM otel_metrics
+           WHERE name = 'gen_ai.client.token.usage' AND session_id = ?`,
+        )
+        .all(GEMINI_SESSION) as Array<{
+        session_id: string;
+        value: number;
+        token_type: string;
+      }>;
+
+      expect(rows.length).toBe(3);
+      expect(rows.every((r) => r.session_id === GEMINI_SESSION)).toBe(true);
+    });
+
+    it("uses MAX aggregation for Gemini cumulative counters in cost queries", () => {
+      // costBreakdown groups by session — the Gemini session should reflect
+      // MAX(500) for input, not SUM(100+500)=600
+      const result = costBreakdown({ since: "1h", groupBy: "session" });
+      expect(result).toBeDefined();
+
+      const geminiGroup = result.groups.find((g) => g.key === GEMINI_SESSION);
+      expect(geminiGroup).toBeDefined();
+      // input MAX(500) + output MAX(200) = 700, NOT SUM(100+500) + 200 = 800
+      expect(geminiGroup!.totalTokens).toBe(700);
+    });
+  });
+
+  // ── Gemini session inference ─────────────────────────────────────────────
+
+  describe("Gemini metric session inference", () => {
+    it("infers session_id from gemini-cli service.name", () => {
+      const sessionId = "gemini-infer-sess-only";
+      const metricTs = Date.now();
+
+      // Create a Gemini session — use a time that's clearly the most recent
+      upsertSession({
+        session_id: sessionId,
+        target: "gemini",
+        started_at_ms: metricTs - 1_000,
+      });
+
+      // Insert metric without session_id but with gemini service.name
+      const rows: OtelMetricRow[] = [
+        {
+          timestamp_ns: metricTs * 1_000_000,
+          name: "gemini_cli.token.usage",
+          value: 777,
+          metric_type: "gauge",
+          attributes: {
+            "gen_ai.token.type": "input",
+            "gen_ai.response.model": "gemini-2.5-flash",
+          },
+          resource_attributes: { "service.name": "gemini-cli" },
+        },
+      ];
+      insertOtelMetrics(rows);
+
+      const db = getDb();
+      const stored = db
+        .prepare(
+          "SELECT session_id FROM otel_metrics WHERE name = 'gemini_cli.token.usage' AND value = 777",
+        )
+        .get() as { session_id: string | null };
+
+      expect(stored.session_id).toBe(sessionId);
+    });
+  });
+
+  // ── Gemini target detection via eventMap ────────────────────────────────
+
+  describe("Gemini target detection", () => {
+    it("detects Gemini from eventMap (BeforeTool → PreToolUse)", async () => {
+      _resetSessionTargetCache();
+      const { status } = await post("/hooks", {
+        session_id: "target-test-gemini-eventmap",
+        hook_event_name: "BeforeTool",
+        tool_name: "shell",
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target, event_type FROM hook_events WHERE session_id = 'target-test-gemini-eventmap'",
+        )
+        .get() as { target: string; event_type: string };
+      expect(row.target).toBe("gemini");
+      // Event name should be normalized to canonical form
+      expect(row.event_type).toBe("PreToolUse");
+    });
+  });
+
+  // ── Model heuristic warning ────────────────────────────────────────────
+
+  describe("model-based target detection warning (#73)", () => {
+    it("logs a warning when target is resolved via model-name heuristic", async () => {
+      _resetSessionTargetCache();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await post("/hooks", {
+        session_id: "target-test-warn-model",
+        hook_event_name: "PreToolUse",
+        tool_name: "shell",
+        model: "gpt-4.1-mini",
+      });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("model-name heuristic"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("gpt-4.1-mini"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("codex"));
+
+      warnSpy.mockRestore();
+    });
+
+    it("does not warn when target is resolved via explicit source", async () => {
+      _resetSessionTargetCache();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await post("/hooks", {
+        session_id: "target-test-no-warn",
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        source: "claude",
+        model: "claude-sonnet-4-6-20250514",
+      });
+
+      const heuristicCalls = warnSpy.mock.calls.filter((args) =>
+        String(args[0]).includes("model-name heuristic"),
+      );
+      expect(heuristicCalls).toHaveLength(0);
+
+      warnSpy.mockRestore();
+    });
+  });
+
+  // ── Codex OTel logs in timeline/search queries ─────────────────────────
+
+  describe("Codex OTel log queries (otelLogExprs)", () => {
+    const CODEX_TIMELINE_SESSION = "codex-timeline-sess-001";
+
+    beforeAll(async () => {
+      // Create a Codex session with both hook events and OTel logs
+      await post("/hooks", {
+        session_id: CODEX_TIMELINE_SESSION,
+        hook_event_name: "SessionStart",
+        source: "codex",
+        cwd: "/workspace/codex-project",
+      });
+
+      // Insert Codex-style OTel logs with event.name in attributes
+      const codexTimestamp = "2026-03-26T20:30:00.000Z";
+      await post("/v1/logs", {
+        resourceLogs: [
+          {
+            resource: {
+              attributes: [
+                {
+                  key: "service.name",
+                  value: { stringValue: "codex_cli_rs" },
+                },
+                {
+                  key: "conversation.id",
+                  value: { stringValue: CODEX_TIMELINE_SESSION },
+                },
+              ],
+            },
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    timeUnixNano: "0",
+                    severityNumber: 9,
+                    severityText: "INFO",
+                    attributes: [
+                      {
+                        key: "event.name",
+                        value: { stringValue: "exec_apply" },
+                      },
+                      {
+                        key: "event.timestamp",
+                        value: { stringValue: codexTimestamp },
+                      },
+                      {
+                        key: "apply.command",
+                        value: { stringValue: "ls -la" },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    it("sessionTimeline returns Codex OTel events with correct event type and timestamp", () => {
+      const result = sessionTimeline({
+        sessionId: CODEX_TIMELINE_SESSION,
+        limit: 50,
+      });
+
+      expect(result.events.length).toBeGreaterThanOrEqual(2);
+
+      // Should have both hook and otel events
+      const otelEvents = result.events.filter(
+        (e) => e.eventType === "exec_apply",
+      );
+      expect(otelEvents.length).toBe(1);
+
+      // The timestamp should be derived from event.timestamp, not 0
+      const otelEvent = otelEvents[0];
+      const parsedTs = new Date(otelEvent.timestamp).getTime();
+      expect(parsedTs).toBeGreaterThan(0);
+    });
+
+    it("searchEvents finds Codex OTel events by attribute content", () => {
+      const result = searchEvents({
+        query: "exec_apply",
+        limit: 10,
+      });
+
+      const codexMatches = result.results.filter(
+        (r) => r.sessionId === CODEX_TIMELINE_SESSION,
+      );
+      expect(codexMatches.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── Multi-target cost breakdown ────────────────────────────────────────
+
+  describe("multi-target cost breakdown", () => {
+    it("costBreakdown aggregates across Claude, Codex, and Gemini targets", () => {
+      // Data was already seeded by previous tests:
+      // - Claude metrics from proxy capture pipeline
+      // - Codex metrics from "Codex OTel format" test
+      // - Gemini metrics from "Gemini OTel metrics" test
+      const result = costBreakdown({ since: "1h" });
+      expect(result).toBeDefined();
+      expect(result.groups.length).toBeGreaterThanOrEqual(1);
+      expect(result.totals.totalTokens).toBeGreaterThan(0);
+    });
+
+    it("costBreakdown grouped by model shows distinct models from different targets", () => {
+      const result = costBreakdown({ since: "1h", groupBy: "model" });
+      expect(result).toBeDefined();
+      const models = result.groups.map((g) => g.key);
+      // Should have at least one model from the test data
+      expect(models.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

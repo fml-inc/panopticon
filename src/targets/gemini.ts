@@ -21,7 +21,7 @@ const gemini: TargetAdapter = {
     events: ["SessionStart", "BeforeModel", "BeforeTool", "AfterTool"],
     applyInstallConfig(existing, opts) {
       const settings = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
+      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler-gemini");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Deep-copy hooks to avoid mutating the input
@@ -183,6 +183,16 @@ const gemini: TargetAdapter = {
   proxy: {
     upstreamHost: "generativelanguage.googleapis.com",
     accumulatorType: "openai",
+  },
+
+  otel: {
+    serviceName: "gemini-cli",
+    metrics: {
+      metricNames: ["gemini_cli.token.usage", "gen_ai.client.token.usage"],
+      aggregation: "MAX",
+      tokenTypeAttrs: ['$."gen_ai.token.type"'],
+      modelAttrs: ['$."gen_ai.response.model"'],
+    },
   },
 };
 

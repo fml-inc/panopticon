@@ -221,3 +221,93 @@ describe("target shell env vars", () => {
     expect(codex.shellEnv.envVars(4318, false)).toEqual([]);
   });
 });
+
+describe("target otel specs", () => {
+  it("claude declares SUM aggregation for claude_code.token.usage", () => {
+    const claude = getTarget("claude")!;
+    expect(claude.otel?.metrics).toBeDefined();
+    expect(claude.otel!.metrics!.metricNames).toEqual([
+      "claude_code.token.usage",
+    ]);
+    expect(claude.otel!.metrics!.aggregation).toBe("SUM");
+    expect(claude.otel!.metrics!.tokenTypeAttrs).toEqual(["$.type"]);
+    expect(claude.otel!.metrics!.modelAttrs).toEqual(["$.model"]);
+  });
+
+  it("claude has no serviceName (always provides session_id)", () => {
+    const claude = getTarget("claude")!;
+    expect(claude.otel?.serviceName).toBeUndefined();
+  });
+
+  it("gemini declares MAX aggregation for cumulative counters", () => {
+    const gemini = getTarget("gemini")!;
+    expect(gemini.otel?.metrics).toBeDefined();
+    expect(gemini.otel!.metrics!.metricNames).toEqual([
+      "gemini_cli.token.usage",
+      "gen_ai.client.token.usage",
+    ]);
+    expect(gemini.otel!.metrics!.aggregation).toBe("MAX");
+  });
+
+  it("gemini declares serviceName for session inference", () => {
+    const gemini = getTarget("gemini")!;
+    expect(gemini.otel?.serviceName).toBe("gemini-cli");
+  });
+
+  it("codex declares SUM aggregation with token type remapping", () => {
+    const codex = getTarget("codex")!;
+    expect(codex.otel?.metrics).toBeDefined();
+    expect(codex.otel!.metrics!.metricNames).toEqual([
+      "codex.turn.token_usage",
+    ]);
+    expect(codex.otel!.metrics!.aggregation).toBe("SUM");
+    expect(codex.otel!.metrics!.tokenTypeMap).toEqual({
+      cached_input: "cacheRead",
+      reasoning_output: "output",
+    });
+    expect(codex.otel!.metrics!.excludeTokenTypes).toEqual(["total"]);
+  });
+
+  it("codex declares serviceName for session inference", () => {
+    const codex = getTarget("codex")!;
+    expect(codex.otel?.serviceName).toBe("codex_cli_rs");
+  });
+
+  it("codex declares logFields for non-standard OTel event/timestamp extraction", () => {
+    const codex = getTarget("codex")!;
+    expect(codex.otel?.logFields).toBeDefined();
+    expect(codex.otel!.logFields!.eventTypeExprs!.length).toBeGreaterThan(1);
+    expect(codex.otel!.logFields!.timestampMsExprs!.length).toBeGreaterThan(1);
+  });
+
+  it("claude-desktop has no otel spec", () => {
+    const cd = getTarget("claude-desktop");
+    if (cd) {
+      expect(cd.otel).toBeUndefined();
+    }
+  });
+});
+
+describe("target ident specs", () => {
+  it("claude matches claude- model prefixes", () => {
+    const claude = getTarget("claude")!;
+    expect(claude.ident?.modelPatterns).toBeDefined();
+    expect(claude.ident!.modelPatterns![0].test("claude-3-opus")).toBe(true);
+    expect(claude.ident!.modelPatterns![0].test("gpt-4")).toBe(false);
+  });
+
+  it("codex matches OpenAI model prefixes", () => {
+    const codex = getTarget("codex")!;
+    expect(codex.ident?.modelPatterns).toBeDefined();
+    const re = codex.ident!.modelPatterns![0];
+    expect(re.test("gpt-4o")).toBe(true);
+    expect(re.test("o1-preview")).toBe(true);
+    expect(re.test("chatgpt-4o-latest")).toBe(true);
+    expect(re.test("claude-3-opus")).toBe(false);
+  });
+
+  it("gemini has no ident spec (identified via eventMap)", () => {
+    const gemini = getTarget("gemini")!;
+    expect(gemini.ident).toBeUndefined();
+  });
+});

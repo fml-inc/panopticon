@@ -161,12 +161,18 @@ function postToServer(data: HookInput): Promise<Record<string, unknown>> {
   });
 }
 
-async function main() {
+/**
+ * Run the hook handler. When targetId is provided (by per-target bin files),
+ * it is injected as data.source so the server can identify the sender without
+ * falling back to heuristics.
+ */
+export async function runHandler(targetId?: string): Promise<void> {
   try {
     logHook("hook-handler invoked", {
       pid: process.pid,
       cwd: process.cwd(),
       pwd: process.env.PWD,
+      target: targetId,
     });
 
     const input = await readStdin();
@@ -178,16 +184,24 @@ async function main() {
     logHook("stdin received", { bytes: Buffer.byteLength(input) });
 
     const data: HookInput = JSON.parse(input);
+
+    // Inject explicit source when invoked via a per-target hook handler
+    if (targetId && !data.source && !data.target) {
+      data.source = targetId;
+    }
+
     const eventType = data.hook_event_name ?? "Unknown";
     logHook("event parsed", {
       eventType,
       sessionId: data.session_id,
       toolName: data.tool_name,
+      source: data.source,
     });
 
     addBreadcrumb("hook-handler", `Processing ${eventType}`, {
       session_id: data.session_id,
       tool_name: data.tool_name,
+      source: data.source,
     });
 
     // On SessionStart, ensure the unified server is running
@@ -243,4 +257,6 @@ async function main() {
 }
 
 initSentry();
-main();
+// When imported directly (generic bin/hook-handler), run without a target ID.
+// Per-target bin files call runHandler(targetId) explicitly instead.
+runHandler();

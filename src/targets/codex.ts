@@ -42,7 +42,7 @@ const codex: TargetAdapter = {
     events: HOOK_EVENTS,
     applyInstallConfig(existing, opts) {
       const codexConfig = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
+      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler-codex");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Enable the codex_hooks feature flag
@@ -213,6 +213,32 @@ const codex: TargetAdapter = {
         return false;
       }
     },
+  },
+
+  otel: {
+    serviceName: "codex_cli_rs",
+    metrics: {
+      metricNames: ["codex.turn.token_usage"],
+      aggregation: "SUM",
+      tokenTypeAttrs: ["$.token_type"],
+      modelAttrs: ["$.model"],
+      tokenTypeMap: {
+        cached_input: "cacheRead",
+        reasoning_output: "output",
+      },
+      excludeTokenTypes: ["total"],
+    },
+    logFields: {
+      eventTypeExprs: ["body", `json_extract(attributes, '$."event.name"')`],
+      timestampMsExprs: [
+        "CAST(timestamp_ns / 1000000 AS INTEGER)",
+        `CAST(strftime('%s', json_extract(attributes, '$."event.timestamp"')) AS INTEGER) * 1000`,
+      ],
+    },
+  },
+
+  ident: {
+    modelPatterns: [/^(gpt-|o[1-9]|chatgpt-)/],
   },
 
   proxy: {

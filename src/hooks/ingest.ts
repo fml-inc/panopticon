@@ -218,24 +218,24 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
     }
   }
 
-  // 4. Model-based detection (last resort) — assumes OpenAI models only come
-  //    from Codex. If other OpenAI-consuming tools start sending hook events,
-  //    they'll need an explicit source/target field to distinguish themselves.
+  // 4. Model-based detection (last resort) — iterate adapter ident specs.
+  //    Logs a warning so operators know detection was ambiguous (see #73).
   const model = typeof data.model === "string" ? data.model : null;
   if (model) {
-    if (/^(gpt-|o[1-9]|chatgpt-)/.test(model)) {
-      const codex = targets.find((v) => v.id === "codex");
-      if (codex) {
-        if (sessionId) sessionTargetCache.set(sessionId, codex.id);
-        return codex;
+    let matched: TargetAdapter | undefined;
+    for (const v of targets) {
+      if (v.ident?.modelPatterns?.some((re) => re.test(model))) {
+        matched = v;
+        break;
       }
     }
-    if (/^claude-/.test(model)) {
-      const claude = targets.find((v) => v.id === "claude");
-      if (claude) {
-        if (sessionId) sessionTargetCache.set(sessionId, claude.id);
-        return claude;
-      }
+    if (matched) {
+      console.warn(
+        `[panopticon] Target resolved via model-name heuristic: model="${model}" → "${matched.id}". ` +
+          `Set an explicit source/target field to avoid ambiguous detection.`,
+      );
+      if (sessionId) sessionTargetCache.set(sessionId, matched.id);
+      return matched;
     }
   }
 

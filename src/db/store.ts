@@ -1,4 +1,5 @@
 import { gzipSync } from "node:zlib";
+import { allTargets } from "../targets/index.js";
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -84,6 +85,20 @@ export function insertOtelLogs(rows: OtelLogRow[]): void {
   insertMany(rows);
 }
 
+/** Lazy-built map from OTel service.name to target adapter id. */
+let _serviceNameMap: Map<string, string> | null = null;
+function serviceNameMap(): Map<string, string> {
+  if (!_serviceNameMap) {
+    _serviceNameMap = new Map();
+    for (const t of allTargets()) {
+      if (t.otel?.serviceName) {
+        _serviceNameMap.set(t.otel.serviceName, t.id);
+      }
+    }
+  }
+  return _serviceNameMap;
+}
+
 /**
  * For metrics missing a session_id (e.g. Codex doesn't include conversation.id
  * on metric datapoints), infer it from the most recent session whose time range
@@ -98,12 +113,7 @@ function inferSessionId(
   const serviceName = resourceAttrs?.["service.name"];
   if (typeof serviceName !== "string") return null;
 
-  // Map service.name to target identifier used in the sessions table
-  let target: string | undefined;
-  if (serviceName === "codex_cli_rs") target = "codex";
-  else if (serviceName === "gemini-cli") target = "gemini";
-  // Claude Code already provides session.id — shouldn't reach here
-
+  const target = serviceNameMap().get(serviceName);
   if (!target) return null;
 
   const metricMs = Math.floor(timestampNs / 1_000_000);

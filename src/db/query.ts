@@ -1,3 +1,5 @@
+import { allTargets } from "../targets/index.js";
+import type { MetricSpec } from "../targets/types.js";
 import type {
   ActivitySessionDetail,
   ActivitySummaryResult,
@@ -13,56 +15,77 @@ import type {
 import { COST_EXPR } from "./pricing.js";
 import { getDb } from "./schema.js";
 
-// Unified token type extraction: works for Claude, Gemini CLI, Codex, and gen_ai metric names
-// Claude uses $.type, Gemini uses $."gen_ai.token.type", Codex uses $.token_type
-const TOKEN_TYPE_EXPR = `COALESCE(json_extract(attributes, '$.type'), json_extract(attributes, '$."gen_ai.token.type"'), json_extract(attributes, '$.token_type'))`;
-const MODEL_EXPR = `COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"'))`;
+// ── Adapter-driven SQL helpers ───────────────────────────────────────────────
+
+/** Build a COALESCE SQL expr to extract the model from metric attributes. */
+function buildModelExpr(spec: MetricSpec): string {
+  const exprs = spec.modelAttrs.map((a) => `json_extract(attributes, '${a}')`);
+  return exprs.length === 1 ? exprs[0] : `COALESCE(${exprs.join(", ")})`;
+}
+
+/** Build a SQL expr to extract and optionally remap token_type from metric attributes. */
+function buildTokenTypeExpr(spec: MetricSpec): string {
+  const exprs = spec.tokenTypeAttrs.map(
+    (a) => `json_extract(attributes, '${a}')`,
+  );
+  const inner = exprs.length === 1 ? exprs[0] : `COALESCE(${exprs.join(", ")})`;
+
+  if (!spec.tokenTypeMap || Object.keys(spec.tokenTypeMap).length === 0) {
+    return inner;
+  }
+
+  const whenClauses = Object.entries(spec.tokenTypeMap)
+    .map(([from, to]) => `WHEN '${from}' THEN '${to}'`)
+    .join(" ");
+  return `CASE ${inner} ${whenClauses} ELSE ${inner} END`;
+}
 
 /**
- * Resolved metrics CTE that correctly deduplicates Gemini (cumulative MAX) vs Claude/Codex (per-request SUM).
+ * Resolved metrics CTE — generates one UNION ALL branch per target that
+ * declares otel.metrics, using the adapter's aggregation strategy.
  */
 function resolvedMetricsCTE(extraWhere = ""): string {
-  return `
-    resolved_tokens AS (
-      -- Gemini: cumulative counters → MAX per (session, model, token_type)
+  const branches: string[] = [];
+
+  for (const target of allTargets()) {
+    const spec = target.otel?.metrics;
+    if (!spec) continue;
+
+    const nameList = spec.metricNames.map((n) => `'${n}'`).join(", ");
+    const modelExpr = buildModelExpr(spec);
+    const tokenTypeExpr = buildTokenTypeExpr(spec);
+
+    let whereClause = `WHERE name IN (${nameList})`;
+    if (spec.excludeTokenTypes?.length) {
+      const rawCoalesce = spec.tokenTypeAttrs
+        .map((a) => `json_extract(attributes, '${a}')`)
+        .join(", ");
+      const rawExpr =
+        spec.tokenTypeAttrs.length === 1
+          ? rawCoalesce
+          : `COALESCE(${rawCoalesce})`;
+      for (const excluded of spec.excludeTokenTypes) {
+        whereClause += `\n        AND ${rawExpr} != '${excluded}'`;
+      }
+    }
+    whereClause += `\n      ${extraWhere}`;
+
+    branches.push(`
+      -- ${target.id}: ${spec.aggregation}
       SELECT session_id,
-             ${MODEL_EXPR} as model,
-             ${TOKEN_TYPE_EXPR} as token_type,
-             MAX(value) as tokens
+             ${modelExpr} as model,
+             ${tokenTypeExpr} as token_type,
+             ${spec.aggregation}(value) as tokens
       FROM otel_metrics
-      WHERE name IN ('gemini_cli.token.usage', 'gen_ai.client.token.usage')
-      ${extraWhere}
-      GROUP BY session_id, model, token_type
+      ${whereClause}
+      GROUP BY session_id, model, token_type`);
+  }
 
-      UNION ALL
+  if (branches.length === 0) {
+    return `resolved_tokens AS (SELECT NULL as session_id, NULL as model, NULL as token_type, 0 as tokens WHERE 0)`;
+  }
 
-      -- Claude: per-request values → SUM
-      SELECT session_id,
-             ${MODEL_EXPR} as model,
-             ${TOKEN_TYPE_EXPR} as token_type,
-             SUM(value) as tokens
-      FROM otel_metrics
-      WHERE name = 'claude_code.token.usage'
-      ${extraWhere}
-      GROUP BY session_id, model, token_type
-
-      UNION ALL
-
-      -- Codex: per-turn histogram sums → SUM, excluding 'total' to avoid double-counting
-      SELECT session_id,
-             ${MODEL_EXPR} as model,
-             CASE json_extract(attributes, '$.token_type')
-               WHEN 'cached_input' THEN 'cacheRead'
-               WHEN 'reasoning_output' THEN 'output'
-               ELSE json_extract(attributes, '$.token_type')
-             END as token_type,
-             SUM(value) as tokens
-      FROM otel_metrics
-      WHERE name = 'codex.turn.token_usage'
-        AND json_extract(attributes, '$.token_type') != 'total'
-      ${extraWhere}
-      GROUP BY session_id, model, token_type
-    )`;
+  return `resolved_tokens AS (${branches.join("\n\n      UNION ALL\n")}\n    )`;
 }
 
 function parseSince(since?: string): number | null {
@@ -90,11 +113,49 @@ function parseJson(raw: string | null): unknown {
   }
 }
 
-// ── OTel SQL helpers ─────────────────────────────────────────────────────────
-// Codex OTel logs store the event name in attributes."event.name" (body is null)
-// and the timestamp in attributes."event.timestamp" (timestamp_ns is 0).
-const OTEL_EVENT_TYPE = `COALESCE(body, json_extract(attributes, '$."event.name"'))`;
-const OTEL_TIMESTAMP_MS = `CASE WHEN timestamp_ns > 0 THEN CAST(timestamp_ns / 1000000 AS INTEGER) ELSE CAST(strftime('%s', json_extract(attributes, '$."event.timestamp"')) AS INTEGER) * 1000 END`;
+// ── OTel log SQL helpers (adapter-driven) ────────────────────────────────────
+
+/** Build COALESCE/CASE expressions for OTel log event type and timestamp from adapter specs. */
+function buildOtelLogExprs(): { eventType: string; timestampMs: string } {
+  const defaultTs = "CAST(timestamp_ns / 1000000 AS INTEGER)";
+  const eventExprs = new Set<string>(["body"]);
+  const extraTsExprs = new Set<string>();
+
+  for (const target of allTargets()) {
+    const lf = target.otel?.logFields;
+    if (!lf) continue;
+    for (const expr of lf.eventTypeExprs ?? []) {
+      eventExprs.add(expr);
+    }
+    for (const expr of lf.timestampMsExprs ?? []) {
+      if (expr !== defaultTs) extraTsExprs.add(expr);
+    }
+  }
+
+  const eventExprArr = [...eventExprs];
+  const eventType =
+    eventExprArr.length === 1
+      ? eventExprArr[0]
+      : `COALESCE(${eventExprArr.join(", ")})`;
+
+  let timestampMs = defaultTs;
+  if (extraTsExprs.size > 0) {
+    const fallbackArr = [...extraTsExprs];
+    const fallbackExpr =
+      fallbackArr.length === 1
+        ? fallbackArr[0]
+        : `COALESCE(${fallbackArr.join(", ")})`;
+    timestampMs = `CASE WHEN timestamp_ns > 0 THEN ${defaultTs} ELSE ${fallbackExpr} END`;
+  }
+
+  return { eventType, timestampMs };
+}
+
+let _otelLogExprs: { eventType: string; timestampMs: string } | null = null;
+function otelLogExprs() {
+  if (!_otelLogExprs) _otelLogExprs = buildOtelLogExprs();
+  return _otelLogExprs;
+}
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
@@ -291,17 +352,17 @@ export function sessionTimeline(opts: {
   }
 
   let otelSql = `
-    SELECT 'otel' as source, id, session_id, ${OTEL_EVENT_TYPE} as event_type,
-           ${OTEL_TIMESTAMP_MS} as timestamp_ms,
+    SELECT 'otel' as source, id, session_id, ${otelLogExprs().eventType} as event_type,
+           ${otelLogExprs().timestampMs} as timestamp_ms,
            NULL as tool_name, NULL as cwd, NULL as payload, NULL as user_prompt,
-           ${OTEL_EVENT_TYPE} as body, ${attrsCol} as attributes, severity_text
+           ${otelLogExprs().eventType} as body, ${attrsCol} as attributes, severity_text
     FROM otel_logs
     WHERE session_id = ?
   `;
   const otelParams: unknown[] = [opts.sessionId];
 
   if (opts.eventTypes?.length) {
-    otelSql += ` AND ${OTEL_EVENT_TYPE} IN (${opts.eventTypes.map(() => "?").join(",")})`;
+    otelSql += ` AND ${otelLogExprs().eventType} IN (${opts.eventTypes.map(() => "?").join(",")})`;
     otelParams.push(...opts.eventTypes);
   }
 
@@ -559,10 +620,20 @@ export function searchEvents(opts: {
     ? "SUBSTR(o.attributes, 1, 500)"
     : "o.attributes";
 
+  // Use table-qualified versions of the OTel expressions for the aliased query
+  const otelEventTypeQ = otelLogExprs().eventType.replace(
+    /\b(body|timestamp_ns|attributes)\b/g,
+    "o.$1",
+  );
+  const otelTimestampMsQ = otelLogExprs().timestampMs.replace(
+    /\b(body|timestamp_ns|attributes)\b/g,
+    "o.$1",
+  );
+
   const otelSql = `
     SELECT 'otel' as source, o.id, o.session_id,
-           COALESCE(o.body, json_extract(o.attributes, '$."event.name"')) as event_type,
-           CASE WHEN o.timestamp_ns > 0 THEN CAST(o.timestamp_ns / 1000000 AS INTEGER) ELSE CAST(strftime('%s', json_extract(o.attributes, '$."event.timestamp"')) AS INTEGER) * 1000 END as timestamp_ms,
+           ${otelEventTypeQ} as event_type,
+           ${otelTimestampMsQ} as timestamp_ms,
            NULL as tool_name, NULL as cwd, ${otelAttrsCol} as payload
     FROM otel_logs o
     WHERE ${otelConditions.join(" AND ")}
@@ -806,10 +877,10 @@ export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
   }
 
   const sql = `
-    SELECT 'otel' as source, id, session_id, ${OTEL_EVENT_TYPE} as event_type,
-           ${OTEL_TIMESTAMP_MS} as timestamp_ms,
+    SELECT 'otel' as source, id, session_id, ${otelLogExprs().eventType} as event_type,
+           ${otelLogExprs().timestampMs} as timestamp_ms,
            NULL as tool_name, NULL as cwd, attributes, severity_text,
-           ${OTEL_EVENT_TYPE} as body
+           ${otelLogExprs().eventType} as body
     FROM otel_logs
     WHERE id = ?
   `;
