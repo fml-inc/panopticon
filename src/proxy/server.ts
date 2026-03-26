@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { config } from "../config.js";
 import { addBreadcrumb, captureException } from "../sentry.js";
-import { allVendors, getVendor } from "../vendors/index.js";
+import { allTargets, getTarget } from "../targets/index.js";
 import { emitHookEventAsync, emitOtelLogs, emitOtelMetrics } from "./emit.js";
 import { anthropicParser } from "./formats/anthropic.js";
 import { openaiParser } from "./formats/openai.js";
@@ -16,16 +16,16 @@ import {
 } from "./streaming.js";
 import { WebSocketMessageExtractor } from "./ws-capture.js";
 
-// Build upstream route table from vendor adapters that have proxy specs,
-// plus static entries for vendors without full adapters (e.g. openai, google)
+// Build upstream route table from target adapters that have proxy specs,
+// plus static entries for targets without full adapters (e.g. openai, google)
 function buildUpstreamRoutes(): Record<string, string> {
   const routes: Record<string, string> = {};
-  for (const v of allVendors()) {
+  for (const v of allTargets()) {
     if (v.proxy && typeof v.proxy.upstreamHost === "string") {
       routes[v.id] = v.proxy.upstreamHost;
     }
   }
-  // Static routes for API-only vendors (not CLI tools with full adapters)
+  // Static routes for API-only targets (not CLI tools with full adapters)
   if (!routes.openai) routes.openai = "api.openai.com";
   if (!routes.google) routes.google = "generativelanguage.googleapis.com";
   return routes;
@@ -36,7 +36,7 @@ const UPSTREAM_ROUTES = buildUpstreamRoutes();
 // Pre-compute known route prefixes for error messages
 const KNOWN_ROUTES_MSG = [
   ...Object.keys(UPSTREAM_ROUTES),
-  ...allVendors()
+  ...allTargets()
     .filter((v) => v.proxy && typeof v.proxy.upstreamHost === "function")
     .map((v) => v.id),
 ]
@@ -62,17 +62,17 @@ function parseRoute(
   url: string,
   headers?: http.IncomingHttpHeaders,
 ): Route | null {
-  // Match /vendor/rest-of-path
+  // Match /target/rest-of-path
   const match = url.match(/^\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
-  const vendorId = match[1];
+  const targetId = match[1];
   const requestPath = match[2] ?? "/";
 
-  // Check vendor adapter for dynamic routing (e.g. Codex JWT auto-detect)
-  const vendorAdapter = getVendor(vendorId);
-  if (vendorAdapter?.proxy) {
-    const { proxy } = vendorAdapter;
+  // Check target adapter for dynamic routing (e.g. Codex JWT auto-detect)
+  const targetAdapter = getTarget(targetId);
+  if (targetAdapter?.proxy) {
+    const { proxy } = targetAdapter;
     const flatHeaders = flattenHeaders(headers ?? {});
 
     const upstream =
@@ -84,14 +84,14 @@ function parseRoute(
       ? proxy.rewritePath(requestPath, flatHeaders)
       : requestPath;
 
-    return { vendor: vendorId, upstream, path: finalPath };
+    return { vendor: targetId, upstream, path: finalPath };
   }
 
   // Fall back to static route table
-  const upstream = UPSTREAM_ROUTES[vendorId];
+  const upstream = UPSTREAM_ROUTES[targetId];
   if (!upstream) return null;
 
-  return { vendor: vendorId, upstream, path: requestPath };
+  return { vendor: targetId, upstream, path: requestPath };
 }
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -253,9 +253,9 @@ function forwardStreaming(
     });
   }
 
-  const vendorSpec = getVendor(route.vendor);
+  const targetSpec = getTarget(route.vendor);
   const accumulator =
-    vendorSpec?.proxy?.accumulatorType === "anthropic"
+    targetSpec?.proxy?.accumulatorType === "anthropic"
       ? createAnthropicAccumulator()
       : createOpenaiAccumulator();
 
@@ -356,7 +356,7 @@ function tunnelWebSocket(
     return;
   }
 
-  // Track session for this vendor
+  // Track session for this target
   const { sessionId, isNew } = sessions.getOrCreateSession(route.vendor, {});
   if (isNew) {
     emitHookEventAsync({
@@ -482,7 +482,7 @@ function tunnelWebSocket(
   proxyReq.end();
 }
 
-/** Handle a proxy API request. Expects the URL to have a vendor prefix. */
+/** Handle a proxy API request. Expects the URL to have a target prefix. */
 export async function handleProxyRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -495,7 +495,7 @@ export async function handleProxyRequest(
     res.end(
       JSON.stringify({
         error: "unknown_route",
-        message: `Unknown vendor prefix. Known: ${KNOWN_ROUTES_MSG}`,
+        message: `Unknown target prefix. Known: ${KNOWN_ROUTES_MSG}`,
       }),
     );
     return;
@@ -583,8 +583,8 @@ if (
     for (const [prefix, host] of Object.entries(UPSTREAM_ROUTES)) {
       console.log(`  /${prefix}/* → https://${host}/*`);
     }
-    // Show dynamic-routed vendors not in the static table
-    for (const v of allVendors()) {
+    // Show dynamic-routed targets not in the static table
+    for (const v of allTargets()) {
       if (
         v.proxy &&
         typeof v.proxy.upstreamHost === "function" &&

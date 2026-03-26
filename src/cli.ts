@@ -2,7 +2,7 @@
 
 declare const __PANOPTICON_VERSION__: string;
 
-import { execSync, spawn, spawnSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,21 +36,13 @@ import {
   readWatermark,
   watermarkKey,
 } from "./sync/watermark.js";
+import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
-import { allVendors, getVendor, vendorIds } from "./vendors/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const CLAUDE_DESKTOP_CONFIG = path.join(
-  os.homedir(),
-  "Library",
-  "Application Support",
-  "Claude",
-  "claude_desktop_config.json",
-);
 
 function output(data: unknown): void {
   console.log(JSON.stringify(data, null, 2));
@@ -62,19 +54,6 @@ function getPluginRoot(): string {
   return dir;
 }
 
-const INSTALL_DIR = path.join(
-  os.homedir(),
-  ".local",
-  "share",
-  "panopticon-app",
-);
-
-function isTransientLocation(pluginRoot: string): boolean {
-  if (fs.existsSync(path.join(pluginRoot, "tsup.config.ts"))) return false;
-  if (pluginRoot === INSTALL_DIR) return false;
-  return true;
-}
-
 function stopExistingDaemons(): void {
   const pidFiles = [config.serverPidFile, config.pidFile];
   for (const pidFile of pidFiles) {
@@ -84,62 +63,6 @@ function stopExistingDaemons(): void {
       fs.unlinkSync(pidFile);
     } catch {}
   }
-}
-
-function installToLocalDir(sourceRoot: string): string {
-  console.log("[0/7] Installing to ~/.local/share/panopticon-app/...");
-
-  stopExistingDaemons();
-
-  // If reinstalling from INSTALL_DIR itself (--force), stage to a temp dir first
-  let effectiveSource = sourceRoot;
-  let tempDir: string | null = null;
-  if (sourceRoot === INSTALL_DIR) {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-reinstall-"));
-    for (const entry of fs.readdirSync(sourceRoot)) {
-      if (entry === "node_modules") continue;
-      fs.cpSync(path.join(sourceRoot, entry), path.join(tempDir, entry), {
-        recursive: true,
-      });
-    }
-    effectiveSource = tempDir;
-  }
-
-  if (fs.existsSync(INSTALL_DIR)) {
-    fs.rmSync(INSTALL_DIR, { recursive: true });
-  }
-  fs.mkdirSync(INSTALL_DIR, { recursive: true });
-
-  for (const entry of fs.readdirSync(effectiveSource)) {
-    if (entry === "node_modules") continue;
-    const src = path.join(effectiveSource, entry);
-    const dest = path.join(INSTALL_DIR, entry);
-    fs.cpSync(src, dest, { recursive: true });
-  }
-
-  if (tempDir) fs.rmSync(tempDir, { recursive: true });
-
-  console.log("      Installing dependencies...");
-  const env = { ...process.env };
-  delete env.npm_config_registry;
-
-  execSync("npm install --production --no-package-lock", {
-    cwd: INSTALL_DIR,
-    stdio: "pipe",
-    timeout: 120_000,
-    env,
-  });
-
-  // Ensure bin scripts are executable
-  const binDir = path.join(INSTALL_DIR, "bin");
-  if (fs.existsSync(binDir)) {
-    for (const file of fs.readdirSync(binDir)) {
-      fs.chmodSync(path.join(binDir, file), 0o755);
-    }
-  }
-
-  console.log(`      Installed to ${INSTALL_DIR}\n`);
-  return INSTALL_DIR;
 }
 
 function readJsonFile(filePath: string): any {
@@ -245,15 +168,15 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     ? fs.readFileSync(shellRc, "utf-8")
     : "";
 
-  // Collect all known vendor env var names for detection/cleanup
-  const allVendorVarNames = new Set<string>();
-  for (const v of allVendors()) {
+  // Collect all known target env var names for detection/cleanup
+  const allTargetVarNames = new Set<string>();
+  for (const v of allTargets()) {
     for (const [varName] of v.shellEnv.envVars(config.port, true)) {
-      allVendorVarNames.add(varName);
+      allTargetVarNames.add(varName);
     }
   }
 
-  // Shared OTEL vars + all vendor-specific vars
+  // Shared OTEL vars + all target-specific vars
   const PANOPTICON_VARS = [
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -262,7 +185,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_METRIC_EXPORT_INTERVAL",
-    ...allVendorVarNames,
+    ...allTargetVarNames,
   ];
   const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
 
@@ -276,7 +199,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     return false;
   };
 
-  // Build the wanted env vars: shared OTEL vars + vendor-specific vars
+  // Build the wanted env vars: shared OTEL vars + target-specific vars
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
     [
@@ -294,29 +217,19 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
   ];
 
-  // Add vendor-specific env vars for targeted vendors
-  const targetVendorList =
+  // Add target-specific env vars for selected targets
+  const selectedTargetList =
     target === "all"
-      ? allVendors()
-      : allVendors().filter((v) => v.id === target);
+      ? allTargets()
+      : allTargets().filter((v) => v.id === target);
 
-  for (const vendor of targetVendorList) {
-    for (const [varName, value] of vendor.shellEnv.envVars(
-      config.port,
-      proxy,
-    )) {
+  for (const t of selectedTargetList) {
+    for (const [varName, value] of t.shellEnv.envVars(config.port, proxy)) {
       wantedLines.push([varName, `export ${varName}=${value}`]);
     }
   }
 
   wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
-
-  if (!rcContent.includes(".local/bin")) {
-    wantedLines.splice(1, 0, [
-      "PATH_LOCAL_BIN",
-      'export PATH="$HOME/.local/bin:$PATH"',
-    ]);
-  }
 
   const lines = rcContent.split("\n");
   const seen = new Set<string>();
@@ -365,6 +278,32 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
   );
 }
 
+function removeShellEnv() {
+  const shellRc = path.join(
+    os.homedir(),
+    process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
+  );
+  if (!fs.existsSync(shellRc)) return;
+
+  const content = fs.readFileSync(shellRc, "utf-8");
+  const lines = content.split("\n");
+  let inBlock = false;
+  const filtered = lines.filter((line) => {
+    if (line.trim().startsWith("# >>> panopticon")) {
+      inBlock = true;
+      return false;
+    }
+    if (line.trim().startsWith("# <<< panopticon")) {
+      inBlock = false;
+      return false;
+    }
+    return !inBlock;
+  });
+
+  fs.writeFileSync(shellRc, filtered.join("\n"));
+  console.log(`      Removed panopticon env vars from ${shellRc}\n`);
+}
+
 // ---------------------------------------------------------------------------
 // Program
 // ---------------------------------------------------------------------------
@@ -391,17 +330,15 @@ program
   .command("install")
   .alias("setup")
   .description("Build, register plugin, init DB, configure shell")
-  .option("--desktop", "Install as MCP server for Claude Desktop instead")
   .option(
     "--target <target>",
-    `Target CLI: ${vendorIds().join(", ")}, all`,
+    `Target CLI: ${targetIds().join(", ")}, all`,
     "all",
   )
   .option("--proxy", "Also route API traffic through the panopticon proxy")
   .option("--force", "Overwrite customized env vars with defaults")
-  .option("--skip-build", "Skip the build step (internal)")
   .action(async (opts: Opts) => {
-    const validTargets = [...vendorIds(), "all"];
+    const validTargets = [...targetIds(), "all"];
     if (!validTargets.includes(opts.target)) {
       console.error(
         `Invalid target: ${opts.target}. Must be ${validTargets.join(", ")}.`,
@@ -409,10 +346,112 @@ program
       process.exit(1);
     }
     const pluginRoot = getPluginRoot();
-    if (opts.desktop) {
-      await installDesktop(pluginRoot, opts);
+    await install(pluginRoot, opts);
+  });
+
+program
+  .command("uninstall")
+  .description("Remove panopticon hooks, shell config, and optionally all data")
+  .option(
+    "--target <target>",
+    `Target CLI: ${targetIds().join(", ")}, all`,
+    "all",
+  )
+  .option("--purge", "Also remove database and all data")
+  .action(async (opts: Opts) => {
+    const validTargets = [...targetIds(), "all"];
+    if (!validTargets.includes(opts.target)) {
+      console.error(
+        `Invalid target: ${opts.target}. Must be ${validTargets.join(", ")}.`,
+      );
+      process.exit(1);
+    }
+
+    const targetId = opts.target ?? "all";
+    const purge = !!opts.purge;
+
+    console.log("Uninstalling panopticon...\n");
+
+    // Stop running daemons
+    console.log("[1/6] Stopping daemons...");
+    stopExistingDaemons();
+    console.log();
+
+    // Remove target configs
+    const selectedTargets =
+      targetId === "all"
+        ? allTargets()
+        : allTargets().filter((t) => t.id === targetId);
+
+    for (const t of selectedTargets) {
+      console.log(`[2/6] Removing panopticon from ${t.detect.displayName}...`);
+      let existing: Record<string, unknown>;
+      if (t.config.configFormat === "toml") {
+        existing = readTomlFile(t.config.configPath);
+      } else {
+        existing = readJsonFile(t.config.configPath) ?? {};
+      }
+      const updated = t.hooks.removeInstallConfig(existing);
+      if (t.config.configFormat === "toml") {
+        writeTomlFile(t.config.configPath, updated);
+      } else {
+        writeJsonFile(t.config.configPath, updated);
+      }
+      console.log(`      ${t.config.configPath}\n`);
+    }
+
+    // Remove shell env
+    console.log("[3/6] Cleaning shell environment...");
+    removeShellEnv();
+
+    if (targetId === "all") {
+      // Remove marketplace and plugin cache
+      console.log("[4/5] Removing marketplace and plugin cache...");
+      try {
+        fs.rmSync(config.marketplaceDir, { recursive: true, force: true });
+        console.log(`      Removed ${config.marketplaceDir}`);
+      } catch {}
+      try {
+        fs.rmSync(config.pluginCacheDir, { recursive: true, force: true });
+        console.log(`      Removed ${config.pluginCacheDir}`);
+      } catch {}
+      console.log();
+
+      // Remove skills
+      console.log("[5/5] Removing skills...");
+      const pluginRoot = getPluginRoot();
+      const skillsSource = path.join(pluginRoot, "skills");
+      const skillsTarget = path.join(os.homedir(), ".claude", "skills");
+      if (fs.existsSync(skillsSource)) {
+        for (const name of fs.readdirSync(skillsSource)) {
+          const dest = path.join(skillsTarget, name);
+          try {
+            fs.rmSync(dest, { recursive: true, force: true });
+            console.log(`      Removed ${dest}`);
+          } catch {}
+        }
+      }
+      console.log();
     } else {
-      await installClaudeCode(pluginRoot, opts);
+      console.log("[4/5] Skipping marketplace (target-specific uninstall)");
+      console.log("[5/5] Skipping skills (target-specific uninstall)\n");
+    }
+
+    if (purge) {
+      console.log("Purging data...");
+      closeDb();
+      try {
+        fs.rmSync(config.dataDir, { recursive: true, force: true });
+        console.log(`      Removed ${config.dataDir}`);
+      } catch {}
+      console.log();
+    }
+
+    console.log("Done! Panopticon has been uninstalled.");
+    if (!purge) {
+      console.log(
+        `Database preserved at ${config.dataDir} (use --purge to remove)`,
+      );
     }
   });
 
@@ -426,133 +465,18 @@ program
         : "unknown";
 
     console.log(`Current: ${currentVersion}`);
-    console.log("Checking for updates...\n");
-
-    const tempDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "panopticon-update-"),
+    console.log(
+      "To update, re-run the install command for your package manager:\n",
     );
-
-    try {
-      const env = { ...process.env };
-      delete env.npm_config_registry;
-
-      // Download the latest package
-      execSync("npm pack @fml-inc/panopticon@latest --pack-destination .", {
-        cwd: tempDir,
-        stdio: "pipe",
-        timeout: 120_000,
-        env,
-      });
-
-      const tgz = fs.readdirSync(tempDir).find((f) => f.endsWith(".tgz"));
-      if (!tgz) throw new Error("Failed to download package");
-
-      execSync(`tar xzf ${tgz}`, { cwd: tempDir, stdio: "pipe" });
-      const packageDir = path.join(tempDir, "package");
-
-      const newPkg = JSON.parse(
-        fs.readFileSync(path.join(packageDir, "package.json"), "utf-8"),
-      );
-      const newVersion = newPkg.version ?? "unknown";
-
-      if (newVersion === currentVersion.split("+")[0]) {
-        console.log("Already on the latest version.");
-        return;
-      }
-
-      console.log(`Updating: ${currentVersion} -> ${newVersion}\n`);
-
-      stopExistingDaemons();
-
-      if (fs.existsSync(INSTALL_DIR)) {
-        fs.rmSync(INSTALL_DIR, { recursive: true });
-      }
-      fs.renameSync(packageDir, INSTALL_DIR);
-
-      console.log("Installing dependencies...");
-      execSync("npm install --omit=dev --no-package-lock", {
-        cwd: INSTALL_DIR,
-        stdio: "pipe",
-        timeout: 120_000,
-        env,
-      });
-
-      const binDir = path.join(INSTALL_DIR, "bin");
-      if (fs.existsSync(binDir)) {
-        for (const file of fs.readdirSync(binDir)) {
-          fs.chmodSync(path.join(binDir, file), 0o755);
-        }
-      }
-
-      console.log(
-        `\nUpdated to ${newVersion}. Run \`panopticon install --skip-build\` to reconfigure.`,
-      );
-    } catch (err: any) {
-      console.error("Update failed:", err.stderr?.toString() ?? err.message);
-      process.exit(1);
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    console.log("  pnpm install -g @fml-inc/panopticon@latest");
+    console.log("  # or: npm install -g @fml-inc/panopticon@latest\n");
+    console.log("Then run: panopticon install");
   });
 
-async function installDesktop(
-  pluginRoot: string,
-  opts: { skipBuild?: boolean },
-) {
-  const skipBuild = opts.skipBuild;
-  const totalSteps = skipBuild ? 3 : 4;
-  let step = 0;
-
-  console.log("Installing panopticon for Claude Desktop...\n");
-
-  if (!skipBuild) {
-    step++;
-    console.log(`[${step}/${totalSteps}] Building...`);
-    try {
-      execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
-      console.log("      Built successfully.\n");
-    } catch (err: any) {
-      console.error(
-        "      Build failed:",
-        err.stderr?.toString() ?? err.message,
-      );
-      process.exit(1);
-    }
-  }
-
-  step++;
-  console.log(`[${step}/${totalSteps}] Initializing database...`);
-  ensureDataDir();
-  getDb();
-  closeDb();
-  console.log(`      ${config.dbPath}\n`);
-
-  step++;
-  console.log(
-    `[${step}/${totalSteps}] Registering MCP server in Claude Desktop...`,
-  );
-  const serverBin = path.join(pluginRoot, "bin", "mcp-server");
-  const desktopConfig = readJsonFile(CLAUDE_DESKTOP_CONFIG) ?? {};
-  desktopConfig.mcpServers = desktopConfig.mcpServers ?? {};
-  desktopConfig.mcpServers.panopticon = {
-    command: "node",
-    args: [serverBin],
-  };
-  writeJsonFile(CLAUDE_DESKTOP_CONFIG, desktopConfig);
-  console.log(`      ${CLAUDE_DESKTOP_CONFIG}\n`);
-
-  step++;
-  console.log(`[${step}/${totalSteps}] Configuring shell environment...`);
-  configureShellEnv(false);
-
-  console.log("Done! Restart Claude Desktop to activate.\n");
-}
-
-async function installClaudeCode(
+async function install(
   pluginRoot: string,
   opts: {
     force?: boolean;
-    skipBuild?: boolean;
     target?: string;
     proxy?: boolean;
   },
@@ -562,56 +486,19 @@ async function installClaudeCode(
 
   console.log("Installing panopticon...\n");
 
-  const hasBuildConfig = fs.existsSync(path.join(pluginRoot, "tsup.config.ts"));
-  if (!opts.skipBuild && hasBuildConfig) {
-    console.log("[1/7] Building...");
-    try {
-      execSync("npx tsup", { cwd: pluginRoot, stdio: "pipe" });
-      console.log("      Built successfully.\n");
-    } catch (err: any) {
-      console.error(
-        "      Build failed:",
-        err.stderr?.toString() ?? err.message,
-      );
-      process.exit(1);
-    }
-
-    // Re-exec with the freshly built code so steps 2-7 use the new version
-    const args = process.argv.slice(1).concat("--skip-build");
-    if (force) args.push("--force");
-    const result = spawnSync(process.argv[0], args, {
-      stdio: "inherit",
-      cwd: process.cwd(),
-      env: process.env,
-    });
-    process.exit(result.status ?? 1);
-  } else if (isTransientLocation(pluginRoot) || force) {
-    installToLocalDir(pluginRoot);
-    const installedCli = path.join(INSTALL_DIR, "bin", "panopticon");
-    const args = [installedCli, "install", "--skip-build"];
-    if (force) args.push("--force");
-    if (target !== "all") args.push("--target", target);
-    if (opts.proxy) args.push("--proxy");
-    const result = spawnSync(process.argv[0], args, {
-      stdio: "inherit",
-      cwd: process.cwd(),
-      env: process.env,
-    });
-    process.exit(result.status ?? 1);
-  } else {
-    console.log("[1/7] Already installed, skipping.\n");
-  }
-
   const pluginJson = readJsonFile(
     path.join(pluginRoot, ".claude-plugin", "plugin.json"),
   );
   const version = pluginJson?.version ?? "0.1.0";
 
-  console.log("[2/7] Initializing database...");
+  console.log("[1/5] Initializing database and log directory...");
   ensureDataDir();
+  const logDir = path.dirname(logPaths.server);
+  fs.mkdirSync(logDir, { recursive: true });
   getDb();
   closeDb();
   console.log(`      ${config.dbPath}`);
+  console.log(`      ${logDir}`);
 
   // Fetch model pricing from OpenRouter (non-blocking if it fails)
   const pricing = await refreshPricing();
@@ -621,7 +508,7 @@ async function installClaudeCode(
       : "      Could not fetch pricing (will use defaults)\n",
   );
 
-  console.log("[3/7] Setting up local marketplace...");
+  console.log("[2/5] Setting up local marketplace...");
   fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
     recursive: true,
   });
@@ -667,75 +554,54 @@ async function installClaudeCode(
   console.log(`      Marketplace: ${config.marketplaceDir}`);
   console.log(`      Cache: ${cacheDir}\n`);
 
-  // Register hooks/config for each targeted vendor
-  const targetVendors =
+  // Register hooks/config for each selected target
+  const selectedTargets =
     target === "all"
-      ? allVendors()
-      : ([getVendor(target)].filter(
+      ? allTargets()
+      : ([getTarget(target)].filter(
           Boolean,
-        ) as import("./vendors/types.js").VendorAdapter[]);
+        ) as import("./targets/types.js").TargetAdapter[]);
 
-  for (const vendor of targetVendors) {
-    console.log(
-      `[4/7] Registering panopticon in ${vendor.detect.displayName}...`,
-    );
+  for (const t of selectedTargets) {
+    console.log(`[3/5] Registering panopticon in ${t.detect.displayName}...`);
 
     // Read existing config
     let existingConfig: Record<string, unknown>;
-    if (vendor.config.configFormat === "toml") {
-      existingConfig = readTomlFile(vendor.config.configPath);
+    if (t.config.configFormat === "toml") {
+      existingConfig = readTomlFile(t.config.configPath);
     } else {
-      existingConfig = readJsonFile(vendor.config.configPath) ?? {};
+      existingConfig = readJsonFile(t.config.configPath) ?? {};
     }
 
-    // Apply vendor-specific install config
-    const updatedConfig = vendor.hooks.applyInstallConfig(existingConfig, {
+    // Apply target-specific install config
+    const updatedConfig = t.hooks.applyInstallConfig(existingConfig, {
       pluginRoot,
       port: config.port,
       proxy: !!opts.proxy,
     });
 
     // Write back
-    if (vendor.config.configFormat === "toml") {
-      writeTomlFile(vendor.config.configPath, updatedConfig);
+    if (t.config.configFormat === "toml") {
+      writeTomlFile(t.config.configPath, updatedConfig);
     } else {
-      writeJsonFile(vendor.config.configPath, updatedConfig);
+      writeJsonFile(t.config.configPath, updatedConfig);
     }
 
-    if (opts.proxy && vendor.id === "codex") {
+    if (opts.proxy && t.id === "codex") {
       console.log("      API proxy enabled (--proxy)");
     }
-    console.log(`      ${vendor.config.configPath}\n`);
+    console.log(`      ${t.config.configPath}\n`);
   }
 
-  // Log skipped vendors
-  const skippedVendors = allVendors().filter(
-    (v) => !targetVendors.some((tv) => tv.id === v.id),
+  // Log skipped targets
+  const skippedTargets = allTargets().filter(
+    (v) => !selectedTargets.some((st) => st.id === v.id),
   );
-  for (const vendor of skippedVendors) {
-    console.log(`[4/7] Skipping ${vendor.detect.displayName} settings...\n`);
+  for (const t of skippedTargets) {
+    console.log(`[3/5] Skipping ${t.detect.displayName} settings...\n`);
   }
 
-  console.log("[5/7] Adding CLI to PATH...");
-  const localBin = path.join(os.homedir(), ".local", "bin");
-  fs.mkdirSync(localBin, { recursive: true });
-  const symlinks: Record<string, string> = {
-    panopticon: path.join(pluginRoot, "bin", "panopticon"),
-  };
-  for (const [name, target] of Object.entries(symlinks)) {
-    const link = path.join(localBin, name);
-    try {
-      fs.unlinkSync(link);
-    } catch {}
-    if (process.platform === "win32") {
-      fs.copyFileSync(target, link);
-    } else {
-      fs.symlinkSync(target, link);
-    }
-  }
-  console.log(`      Linked panopticon -> ${localBin}/panopticon\n`);
-
-  console.log("[6/7] Installing skills...");
+  console.log("[4/5] Installing skills...");
   const skillsSource = path.join(pluginRoot, "skills");
   const skillsTarget = path.join(os.homedir(), ".claude", "skills");
   if (fs.existsSync(skillsSource)) {
@@ -754,15 +620,15 @@ async function installClaudeCode(
   }
   console.log();
 
-  console.log("[7/7] Configuring shell environment...");
+  console.log("[5/5] Configuring shell environment...");
   configureShellEnv(force, target, !!opts.proxy);
 
   const assistant =
     target === "all"
-      ? allVendors()
+      ? allTargets()
           .map((v) => v.detect.displayName)
           .join(", ")
-      : (getVendor(target)?.detect.displayName ?? target);
+      : (getTarget(target)?.detect.displayName ?? target);
   console.log(`Done! Start a new ${assistant} session to activate.\n`);
   console.log("Verify with: panopticon status");
 }
@@ -963,7 +829,7 @@ program
         console.log("  (could not read database)");
       }
     } else {
-      console.log("Database: not initialized (run 'panopticon setup')");
+      console.log("Database: not initialized (run 'panopticon install')");
     }
 
     // Sync targets

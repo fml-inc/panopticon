@@ -3,6 +3,7 @@ import {
   _resetSessionRepoCache,
   extractShellPwd,
   type HookInput,
+  isPanopticonMcpTool,
   resolveEventRepo,
 } from "./ingest.js";
 
@@ -218,5 +219,23 @@ describe("resolveEventRepo", () => {
       });
       expect(resolveEventRepo(data, stubResolve)).toBe("isoapp/district");
     });
+  });
+});
+
+describe("isPanopticonMcpTool", () => {
+  it("matches plugin-prefixed panopticon MCP tools", () => {
+    expect(
+      isPanopticonMcpTool(
+        "mcp__plugin_panopticon_panopticon__panopticon_query",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches plain panopticon MCP server tools", () => {
+    expect(isPanopticonMcpTool("mcp__panopticon__panopticon_query")).toBe(true);
+  });
+
+  it("does not match other MCP tools", () => {
+    expect(isPanopticonMcpTool("mcp__github__search_code")).toBe(false);
   });
 });

@@ -83,6 +83,7 @@ function makeEvent(overrides: Partial<HookEventRecord> = {}): HookEventRecord {
     userPrompt: null,
     filePath: null,
     command: "ls",
+    toolResult: null,
     ...overrides,
   };
 }

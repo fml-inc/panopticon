@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
-import { openLogFd } from "../log.js";
+import { logPaths, openLogFd } from "../log.js";
 import { addBreadcrumb, captureException, initSentry } from "../sentry.js";
 import { type HookInput, processHookEvent } from "./ingest.js";
 
@@ -24,6 +24,17 @@ function getAgentVersion(): string | undefined {
   return typeof __PANOPTICON_VERSION__ !== "undefined"
     ? __PANOPTICON_VERSION__
     : undefined;
+}
+
+function logHook(message: string, meta?: Record<string, unknown>): void {
+  try {
+    ensureDataDir();
+    const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
+    fs.appendFileSync(
+      logPaths.hook,
+      `${new Date().toISOString()} ${message}${suffix}\n`,
+    );
+  } catch {}
 }
 
 function isServerRunning(): boolean {
@@ -117,13 +128,27 @@ function postToServer(data: HookInput): Promise<Record<string, unknown>> {
 
 async function main() {
   try {
+    logHook("hook-handler invoked", {
+      pid: process.pid,
+      cwd: process.cwd(),
+      pwd: process.env.PWD,
+    });
+
     const input = await readStdin();
     if (!input.trim()) {
+      logHook("empty stdin");
       process.exit(0);
     }
 
+    logHook("stdin received", { bytes: Buffer.byteLength(input) });
+
     const data: HookInput = JSON.parse(input);
     const eventType = data.hook_event_name ?? "Unknown";
+    logHook("event parsed", {
+      eventType,
+      sessionId: data.session_id,
+      toolName: data.tool_name,
+    });
 
     addBreadcrumb("hook-handler", `Processing ${eventType}`, {
       session_id: data.session_id,
@@ -132,7 +157,12 @@ async function main() {
 
     // On SessionStart, ensure the unified server is running
     if (eventType === "SessionStart" || eventType === "session_start") {
-      if (!isServerRunning()) startServer();
+      const serverRunning = isServerRunning();
+      logHook("session start", { serverRunning });
+      if (!serverRunning) {
+        logHook("starting server");
+        startServer();
+      }
       refreshIfStale().catch(() => {});
     }
 
@@ -149,15 +179,26 @@ async function main() {
     // Try posting to the server; fall back to direct DB write
     let result: Record<string, unknown>;
     try {
+      logHook("posting to server", { port: config.port });
       result = await postToServer(data);
+      logHook("server post succeeded", { resultKeys: Object.keys(result) });
     } catch {
       // Server unreachable — fall back to direct processing
+      logHook("server post failed, falling back to direct processing");
       result = processHookEvent(data);
+      logHook("direct processing succeeded", {
+        resultKeys: Object.keys(result),
+      });
     }
 
     process.stdout.write(JSON.stringify(result));
+    logHook("response written", {
+      bytes: Buffer.byteLength(JSON.stringify(result)),
+    });
   } catch (err) {
     // Silently fail — hooks must not block the calling CLI
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logHook("hook-handler failed", { error: errorMessage });
     captureException(err, { component: "hook-handler", event_type: "unknown" });
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);

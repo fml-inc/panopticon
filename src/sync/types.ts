@@ -53,6 +53,7 @@ export interface HookEventRecord {
   userPrompt: string | null;
   filePath: string | null;
   command: string | null;
+  toolResult: string | null;
 }
 
 /** OTLP log record for sync. */

@@ -53,9 +53,9 @@ const INSERT_METRIC_SQL = `
 
 const INSERT_HOOK_SQL = `
   INSERT INTO hook_events (session_id, event_type, timestamp_ms, cwd, repository, tool_name,
-                           user_prompt, file_path, command, plan, allowed_prompts, payload)
+                           user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload)
   VALUES (@session_id, @event_type, @timestamp_ms, @cwd, @repository, @tool_name,
-          @user_prompt, @file_path, @command, @plan, @allowed_prompts, @payload)
+          @user_prompt, @file_path, @command, @tool_result, @plan, @allowed_prompts, @payload)
 `;
 
 export function insertOtelLogs(rows: OtelLogRow[]): void {
@@ -139,6 +139,8 @@ const STRIP_TOP_LEVEL = new Set([
   "tool_use_id",
   "prompt",
   "user_prompt",
+  "tool_result",
+  "tool_response",
 ]);
 
 const STRIP_TOOL_INPUT = new Set([
@@ -162,10 +164,18 @@ export function insertHookEvent(row: HookEventRow): void {
   const toolInput = data.tool_input as Record<string, unknown> | undefined;
 
   // Extract high-value fields into columns
-  const userPrompt = extractStr(data, "prompt");
+  const userPrompt =
+    extractStr(data, "prompt") ?? extractStr(data, "user_prompt");
   const filePath = extractStr(toolInput, "file_path");
   const command = extractStr(toolInput, "command");
   const plan = extractStr(toolInput, "plan");
+  // Extract tool result/response (Claude sends tool_result, Gemini sends tool_response)
+  const toolResultRaw = data.tool_result ?? data.tool_response;
+  const toolResult = toolResultRaw
+    ? typeof toolResultRaw === "string"
+      ? toolResultRaw
+      : JSON.stringify(toolResultRaw)
+    : undefined;
   const allowedPrompts = toolInput?.allowedPrompts
     ? JSON.stringify(toolInput.allowedPrompts)
     : undefined;
@@ -201,6 +211,7 @@ export function insertHookEvent(row: HookEventRow): void {
       user_prompt: userPrompt ?? null,
       file_path: filePath ?? null,
       command: command ?? null,
+      tool_result: toolResult ?? null,
       plan: plan ?? null,
       allowed_prompts: allowedPrompts ?? null,
       payload: gzipSync(Buffer.from(JSON.stringify(stripped))),

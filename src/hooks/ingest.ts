@@ -7,8 +7,8 @@ import {
   upsertSessionRepository,
 } from "../db/store.js";
 import { resolveRepoFromCwd } from "../repo.js";
-import { allVendors } from "../vendors/index.js";
-import type { VendorAdapter } from "../vendors/types.js";
+import { allTargets } from "../targets/index.js";
+import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
 
 // Last resolved repo per session — used as fallback for events without paths
@@ -41,6 +41,13 @@ function loadAllowed(): AllowedList | null {
   } catch {
     return null;
   }
+}
+
+export function isPanopticonMcpTool(toolName: string): boolean {
+  return (
+    toolName.startsWith("mcp__plugin_panopticon_panopticon__") ||
+    toolName.startsWith("mcp__panopticon__")
+  );
 }
 
 /**
@@ -116,21 +123,21 @@ export function _resetSessionRepoCache(): void {
  * Returns a JSON-serializable response body (permission decision or {}).
  */
 /**
- * Resolve which vendor adapter sent this event, using the source/vendor
- * field or by matching the raw event name against vendor eventMaps.
+ * Resolve which target adapter sent this event, using the source/vendor
+ * field or by matching the raw event name against target eventMaps.
  */
-function resolveVendor(data: HookInput): VendorAdapter | undefined {
+function resolveTarget(data: HookInput): TargetAdapter | undefined {
   const source = data.source ?? data.vendor;
   if (source) {
-    for (const v of allVendors()) {
+    for (const v of allTargets()) {
       if (v.id === source) return v;
     }
   }
-  // Fall back: check if the raw event name appears in any vendor's eventMap
+  // Fall back: check if the raw event name appears in any target's eventMap
   const rawEvent = data.hook_event_name;
   if (rawEvent) {
-    let matched: VendorAdapter | undefined;
-    for (const v of allVendors()) {
+    let matched: TargetAdapter | undefined;
+    for (const v of allTargets()) {
       if (rawEvent in v.events.eventMap) {
         if (matched) {
           console.warn(
@@ -153,13 +160,13 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   const toolName = data.tool_name ?? null;
   const timestampMs = Date.now();
 
-  // Resolve vendor and normalize event type + payload via adapter
-  const vendor = resolveVendor(data);
-  if (vendor) {
-    const mapped = vendor.events.eventMap[eventType];
+  // Resolve target and normalize event type + payload via adapter
+  const target = resolveTarget(data);
+  if (target) {
+    const mapped = target.events.eventMap[eventType];
     if (mapped) eventType = mapped;
-    if (vendor.events.normalizePayload) {
-      data = vendor.events.normalizePayload(data);
+    if (target.events.normalizePayload) {
+      data = target.events.normalizePayload(data);
     }
   }
 
@@ -188,7 +195,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     let decision: { allow: true; reason: string } | null = null;
 
     // Always auto-allow panopticon's own MCP tools
-    if (toolName.startsWith("mcp__plugin_panopticon_panopticon__")) {
+    if (isPanopticonMcpTool(toolName)) {
       decision = { allow: true, reason: "Panopticon tool (always allowed)" };
     } else {
       const allowed = loadAllowed();
@@ -205,9 +212,9 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
 
     if (decision) {
-      // Use vendor adapter to format the response, fall back to Claude Code format
-      if (vendor) {
-        return vendor.events.formatPermissionResponse(decision);
+      // Use target adapter to format the response, fall back to Claude Code format
+      if (target) {
+        return target.events.formatPermissionResponse(decision);
       }
       return {
         hookSpecificOutput: {

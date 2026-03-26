@@ -141,6 +141,12 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    up(db: Database.Database) {
+      db.exec("ALTER TABLE hook_events ADD COLUMN tool_result TEXT");
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {

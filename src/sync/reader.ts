@@ -16,7 +16,7 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
 const HOOK_EVENTS_SQL = `
   SELECT id, session_id, event_type, timestamp_ms, cwd, repository,
          tool_name, decompress(payload) as payload,
-         user_prompt, file_path, command
+         user_prompt, file_path, command, tool_result
   FROM hook_events
   WHERE id > ?
   ORDER BY id
@@ -40,6 +40,7 @@ export function readHookEvents(
     user_prompt: string | null;
     file_path: string | null;
     command: string | null;
+    tool_result: string | null;
   }>;
 
   const rows: HookEventRecord[] = rawRows.map((r) => ({
@@ -54,6 +55,7 @@ export function readHookEvents(
     userPrompt: r.user_prompt,
     filePath: r.file_path,
     command: r.command,
+    toolResult: r.tool_result,
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
@@ -64,9 +66,14 @@ export function readHookEvents(
 
 /** Body types that hooks already cover — filtered out when hooks are installed. */
 const HOOK_COVERED_BODIES = [
+  // Claude Code
   "claude_code.user_prompt",
   "claude_code.tool_decision",
   "claude_code.tool_result",
+  // Gemini CLI
+  "gemini_cli.user_prompt",
+  "gemini_cli.tool_call",
+  "gemini_cli.hook_call",
 ];
 
 const ALL_LOGS_SQL = `
