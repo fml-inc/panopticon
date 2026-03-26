@@ -1,0 +1,39 @@
+services:
+  test-claude:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      target: test-claude
+    environment:
+      - ANTHROPIC_API_KEY
+      - SHELL=/bin/bash
+      - PANOPTICON_PORT=4318
+    profiles:
+      - claude
+      - all
+
+  test-gemini:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      target: test-gemini
+    environment:
+      - GEMINI_API_KEY
+      - SHELL=/bin/bash
+      - PANOPTICON_PORT=4318
+    profiles:
+      - gemini
+      - all
+
+  test-codex:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      target: test-codex
+    environment:
+      - OPENAI_API_KEY
+      - SHELL=/bin/bash
+      - PANOPTICON_PORT=4318
+    profiles:
+      - codex
+      - all
