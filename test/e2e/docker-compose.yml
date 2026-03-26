@@ -19,6 +19,7 @@ services:
       target: test-gemini
     environment:
       - GOOGLE_API_KEY
+      - GEMINI_API_KEY
       - SHELL=/bin/bash
       - PANOPTICON_PORT=4318
     profiles:

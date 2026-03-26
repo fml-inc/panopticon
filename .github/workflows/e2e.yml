@@ -44,7 +44,10 @@ jobs:
       - name: Run E2E test
         if: steps.check_key.outputs.has_key == 'true'
         env:
-          ${{ matrix.env_var }}: ${{ secrets[matrix.secret_name] }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           docker compose -f test/e2e/docker-compose.yml \
             --profile ${{ matrix.tool }} \
