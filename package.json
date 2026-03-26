@@ -80,6 +80,10 @@
     "./sync": {
       "types": "./dist/sync/index.d.ts",
       "import": "./dist/sync/index.js"
+    },
+    "./vendors": {
+      "types": "./dist/vendors.d.ts",
+      "import": "./dist/vendors.js"
     }
   },
   "scripts": {

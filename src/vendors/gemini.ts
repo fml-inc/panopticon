@@ -26,7 +26,7 @@ const gemini: VendorAdapter = {
     ],
     applyInstallConfig(existing, opts) {
       const settings = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "panopticon-hook");
+      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Deep-copy hooks to avoid mutating the input
