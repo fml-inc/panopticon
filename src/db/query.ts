@@ -13,12 +13,13 @@ import type {
 import { COST_EXPR } from "./pricing.js";
 import { getDb } from "./schema.js";
 
-// Unified token type extraction: works for Claude, Gemini CLI, and gen_ai metric names
-const TOKEN_TYPE_EXPR = `COALESCE(json_extract(attributes, '$.type'), json_extract(attributes, '$."gen_ai.token.type"'))`;
+// Unified token type extraction: works for Claude, Gemini CLI, Codex, and gen_ai metric names
+// Claude uses $.type, Gemini uses $."gen_ai.token.type", Codex uses $.token_type
+const TOKEN_TYPE_EXPR = `COALESCE(json_extract(attributes, '$.type'), json_extract(attributes, '$."gen_ai.token.type"'), json_extract(attributes, '$.token_type'))`;
 const MODEL_EXPR = `COALESCE(json_extract(attributes, '$.model'), json_extract(attributes, '$."gen_ai.response.model"'))`;
 
 /**
- * Resolved metrics CTE that correctly deduplicates Gemini (cumulative MAX) vs Claude (per-request SUM).
+ * Resolved metrics CTE that correctly deduplicates Gemini (cumulative MAX) vs Claude/Codex (per-request SUM).
  */
 function resolvedMetricsCTE(extraWhere = ""): string {
   return `
@@ -42,6 +43,23 @@ function resolvedMetricsCTE(extraWhere = ""): string {
              SUM(value) as tokens
       FROM otel_metrics
       WHERE name = 'claude_code.token.usage'
+      ${extraWhere}
+      GROUP BY session_id, model, token_type
+
+      UNION ALL
+
+      -- Codex: per-turn histogram sums → SUM, excluding 'total' to avoid double-counting
+      SELECT session_id,
+             ${MODEL_EXPR} as model,
+             CASE json_extract(attributes, '$.token_type')
+               WHEN 'cached_input' THEN 'cacheRead'
+               WHEN 'reasoning_output' THEN 'output'
+               ELSE json_extract(attributes, '$.token_type')
+             END as token_type,
+             SUM(value) as tokens
+      FROM otel_metrics
+      WHERE name = 'codex.turn.token_usage'
+        AND json_extract(attributes, '$.token_type') != 'total'
       ${extraWhere}
       GROUP BY session_id, model, token_type
     )`;
