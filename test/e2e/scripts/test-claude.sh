@@ -349,8 +349,8 @@ assert_output_match "$MCP_Q3_OUT" "(token|cost|usage|input|output)" \
 
 log_info "MCP Query 4: Activity summary"
 MCP_Q4_OUT=$(claude --print \
-  "You MUST call the panopticon_summary MCP tool. Tell me: how many total sessions, what the top tools used were, total tokens, and total cost. Do NOT use any tools other than panopticon MCP tools." \
-  --max-turns 4 2>&1 || true)
+  "Call the panopticon_summary MCP tool once, then immediately respond with a brief summary of the result. Do not call any other tools." \
+  --max-turns 6 2>&1 || true)
 sleep 3
 log_info "MCP Q4 output (first 500 chars): ${MCP_Q4_OUT:0:500}"
 
