@@ -17,7 +17,7 @@ import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { logPaths, openLogFd } from "../log.js";
 import { addBreadcrumb, captureException, initSentry } from "../sentry.js";
-import { type HookInput } from "./ingest.js";
+import type { HookInput } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
 function getAgentVersion(): string | undefined {
