@@ -13,6 +13,7 @@ export function decodeMetrics(buf: Uint8Array): OtelMetricRow[] {
     const resourceAttrs = attrsToMap(resourceMetric.resource?.attributes);
     const resourceSessionId =
       (resourceAttrs["session.id"] as string) ??
+      (resourceAttrs["conversation.id"] as string) ??
       (resourceAttrs["service.instance.id"] as string) ??
       undefined;
 
@@ -47,7 +48,10 @@ export function decodeMetrics(buf: Uint8Array): OtelMetricRow[] {
                 Object.keys(resourceAttrs).length > 0
                   ? resourceAttrs
                   : undefined,
-              session_id: (attrs["session.id"] as string) ?? resourceSessionId,
+              session_id:
+                (attrs["session.id"] as string) ??
+                (attrs["conversation.id"] as string) ??
+                resourceSessionId,
             });
           }
           continue;

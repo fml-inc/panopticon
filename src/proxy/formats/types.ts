@@ -1,7 +1,7 @@
 import type { HookInput, OtelMetricPayload } from "../emit.js";
 
 export interface CapturedExchange {
-  vendor: string;
+  target: string;
   sessionId: string;
   timestamp_ms: number;
   request: {

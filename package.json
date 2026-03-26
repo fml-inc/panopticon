@@ -1,6 +1,6 @@
 {
   "name": "@fml-inc/panopticon",
-  "version": "0.1.0",
+  "version": "0.0.0-dev",
   "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
   "type": "module",
   "engines": {
@@ -94,7 +94,8 @@
     "format": "biome format --write src/",
     "test": "vitest run --exclude '.claude/**'",
     "test:watch": "vitest --exclude '.claude/**'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pack:local": "pnpm build && pnpm pack"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

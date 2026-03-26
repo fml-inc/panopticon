@@ -2,7 +2,7 @@
 
 declare const __PANOPTICON_VERSION__: string;
 
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -486,10 +486,8 @@ async function install(
 
   console.log("Installing panopticon...\n");
 
-  const pluginJson = readJsonFile(
-    path.join(pluginRoot, ".claude-plugin", "plugin.json"),
-  );
-  const version = pluginJson?.version ?? "0.1.0";
+  const pkgJson = readJsonFile(path.join(pluginRoot, "package.json"));
+  const version = pkgJson?.version ?? "0.0.0-dev";
 
   console.log("[1/5] Initializing database and log directory...");
   ensureDataDir();
@@ -519,7 +517,7 @@ async function install(
       {
         name: "panopticon",
         source: "./panopticon",
-        description: pluginJson?.description ?? "Observability for Claude Code",
+        description: pkgJson?.description ?? "Observability for Claude Code",
       },
     ],
   });
@@ -551,6 +549,27 @@ async function install(
       fs.cpSync(src, dest, { recursive: true, dereference: true });
     }
   }
+
+  // Ensure bin scripts are executable (cpSync doesn't always preserve mode)
+  const binDir = path.join(pluginRoot, "bin");
+  if (fs.existsSync(binDir)) {
+    for (const file of fs.readdirSync(binDir)) {
+      const binPath = path.join(binDir, file);
+      if (fs.statSync(binPath).isFile()) {
+        fs.chmodSync(binPath, 0o755);
+      }
+    }
+    const cachedBinDir = path.join(cacheDir, "bin");
+    if (fs.existsSync(cachedBinDir)) {
+      for (const file of fs.readdirSync(cachedBinDir)) {
+        const binPath = path.join(cachedBinDir, file);
+        if (fs.statSync(binPath).isFile()) {
+          fs.chmodSync(binPath, 0o755);
+        }
+      }
+    }
+  }
+
   console.log(`      Marketplace: ${config.marketplaceDir}`);
   console.log(`      Cache: ${cacheDir}\n`);
 
@@ -622,6 +641,25 @@ async function install(
 
   console.log("[5/5] Configuring shell environment...");
   configureShellEnv(force, target, !!opts.proxy);
+
+  // Start the server so it's ready for the first hook event
+  stopExistingDaemons();
+  const serverScript = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "server.js",
+  );
+  const logFd = openLogFd("server");
+  const child = spawn("node", [serverScript], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: { ...process.env, PANOPTICON_PORT: String(config.port) },
+  });
+  if (child.pid) {
+    fs.writeFileSync(config.serverPidFile, String(child.pid));
+    console.log(`\nServer started (PID ${child.pid}) on :${config.port}`);
+  }
+  child.unref();
+  fs.closeSync(logFd);
 
   const assistant =
     target === "all"

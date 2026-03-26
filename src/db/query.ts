@@ -72,6 +72,12 @@ function parseJson(raw: string | null): unknown {
   }
 }
 
+// ── OTel SQL helpers ─────────────────────────────────────────────────────────
+// Codex OTel logs store the event name in attributes."event.name" (body is null)
+// and the timestamp in attributes."event.timestamp" (timestamp_ns is 0).
+const OTEL_EVENT_TYPE = `COALESCE(body, json_extract(attributes, '$."event.name"'))`;
+const OTEL_TIMESTAMP_MS = `CASE WHEN timestamp_ns > 0 THEN CAST(timestamp_ns / 1000000 AS INTEGER) ELSE CAST(strftime('%s', json_extract(attributes, '$."event.timestamp"')) AS INTEGER) * 1000 END`;
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 interface RawSessionRow {
@@ -82,10 +88,16 @@ interface RawSessionRow {
   tool_count: number;
   total_tokens: number;
   total_cost: number;
-  repositories: string | null;
   cwd: string | null;
   first_prompt: string | null;
   event_type_counts: string | null;
+}
+
+interface RawRepoRow {
+  session_id: string;
+  repository: string;
+  git_user_name: string | null;
+  git_user_email: string | null;
 }
 
 export function listSessions(
@@ -148,13 +160,11 @@ export function listSessions(
            s.tool_count,
            COALESCE(c.total_tokens, 0) as total_tokens,
            COALESCE(c.total_cost, 0) as total_cost,
-           GROUP_CONCAT(DISTINCT sr.repository) as repositories,
            sc.cwd,
            sp.prompt as first_prompt,
            se.event_type_counts
     FROM all_sessions s
     LEFT JOIN otel_costs c ON s.session_id = c.session_id
-    LEFT JOIN session_repositories sr ON s.session_id = sr.session_id
     LEFT JOIN session_cwds sc ON s.session_id = sc.session_id
     LEFT JOIN session_prompts sp ON s.session_id = sp.session_id
     LEFT JOIN session_event_types se ON s.session_id = se.session_id
@@ -169,6 +179,25 @@ export function listSessions(
 
   const rows = db.prepare(sql).all(...params) as RawSessionRow[];
 
+  const sessionIds = rows.map((r) => r.session_id);
+  const repoRows =
+    sessionIds.length > 0
+      ? (db
+          .prepare(
+            `SELECT session_id, repository, git_user_name, git_user_email
+             FROM session_repositories
+             WHERE session_id IN (${sessionIds.map(() => "?").join(",")})`,
+          )
+          .all(...sessionIds) as RawRepoRow[])
+      : [];
+
+  const reposBySession = new Map<string, RawRepoRow[]>();
+  for (const r of repoRows) {
+    const list = reposBySession.get(r.session_id) ?? [];
+    list.push(r);
+    reposBySession.set(r.session_id, list);
+  }
+
   const sessions: Session[] = rows.map((row) => ({
     sessionId: row.session_id,
     startedAt: toIso(row.start_ms),
@@ -177,10 +206,13 @@ export function listSessions(
     toolCount: row.tool_count,
     totalTokens: row.total_tokens,
     totalCost: row.total_cost,
-    repositories: row.repositories ? row.repositories.split(",") : [],
+    repositories: (reposBySession.get(row.session_id) ?? []).map((r) => ({
+      name: r.repository,
+      gitUserName: r.git_user_name,
+      gitUserEmail: r.git_user_email,
+    })),
     cwd: row.cwd ?? null,
     firstPrompt: row.first_prompt ?? null,
-    githubUsername: null,
     eventTypeCounts:
       (parseJson(row.event_type_counts) as Record<string, number>) ?? {},
   }));
@@ -194,6 +226,60 @@ export function listSessions(
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
+/**
+ * Fields extracted from payload into columns during storage (see STRIP_TOP_LEVEL
+ * and STRIP_TOOL_INPUT in store.ts). Queries must reconstitute them to return
+ * complete payloads.
+ */
+interface ExtractedColumns {
+  // structural (row-level)
+  session_id: string;
+  event_type: string;
+  tool_name: string | null;
+  cwd: string | null;
+  // extracted top-level
+  user_prompt: string | null;
+  tool_result: string | null;
+  // extracted from tool_input
+  file_path: string | null;
+  command: string | null;
+  plan: string | null;
+  allowed_prompts: string | null;
+}
+
+/** Merge extracted columns back into a parsed payload object. */
+function reconstitute(parsed: unknown, cols: ExtractedColumns): unknown {
+  if (!parsed || typeof parsed !== "object") parsed = {};
+  const obj = { ...(parsed as Record<string, unknown>) };
+
+  // Top-level fields
+  if (cols.user_prompt) obj.prompt = cols.user_prompt;
+  if (cols.tool_result) obj.tool_result = cols.tool_result;
+
+  // tool_input fields
+  const existing = (obj.tool_input as Record<string, unknown>) ?? {};
+  let tiChanged = false;
+  if (cols.file_path) {
+    existing.file_path = cols.file_path;
+    tiChanged = true;
+  }
+  if (cols.command) {
+    existing.command = cols.command;
+    tiChanged = true;
+  }
+  if (cols.plan) {
+    existing.plan = cols.plan;
+    tiChanged = true;
+  }
+  if (cols.allowed_prompts) {
+    existing.allowedPrompts = parseJson(cols.allowed_prompts);
+    tiChanged = true;
+  }
+  if (tiChanged) obj.tool_input = existing;
+
+  return obj;
+}
+
 interface RawTimelineRow {
   source: string;
   id: number;
@@ -203,6 +289,12 @@ interface RawTimelineRow {
   tool_name: string | null;
   cwd: string | null;
   payload: string | null;
+  user_prompt: string | null;
+  file_path: string | null;
+  command: string | null;
+  tool_result: string | null;
+  plan: string | null;
+  allowed_prompts: string | null;
   body: string | null;
   attributes: string | null;
   severity_text: string | null;
@@ -227,7 +319,9 @@ export function sessionTimeline(opts: {
 
   let hookSql = `
     SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, cwd, ${payloadCol} as payload, NULL as body, NULL as attributes, NULL as severity_text
+           tool_name, cwd, ${payloadCol} as payload,
+           user_prompt, file_path, command, tool_result, plan, allowed_prompts,
+           NULL as body, NULL as attributes, NULL as severity_text
     FROM hook_events
     WHERE session_id = ?
   `;
@@ -239,16 +333,19 @@ export function sessionTimeline(opts: {
   }
 
   let otelSql = `
-    SELECT 'otel' as source, id, session_id, body as event_type,
-           CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, NULL as cwd, NULL as payload, body, ${attrsCol} as attributes, severity_text
+    SELECT 'otel' as source, id, session_id, ${OTEL_EVENT_TYPE} as event_type,
+           ${OTEL_TIMESTAMP_MS} as timestamp_ms,
+           NULL as tool_name, NULL as cwd, NULL as payload,
+           NULL as user_prompt, NULL as file_path, NULL as command, NULL as tool_result,
+           NULL as plan, NULL as allowed_prompts,
+           ${OTEL_EVENT_TYPE} as body, ${attrsCol} as attributes, severity_text
     FROM otel_logs
     WHERE session_id = ?
   `;
   const otelParams: unknown[] = [opts.sessionId];
 
   if (opts.eventTypes?.length) {
-    otelSql += ` AND body IN (${opts.eventTypes.map(() => "?").join(",")})`;
+    otelSql += ` AND ${OTEL_EVENT_TYPE} IN (${opts.eventTypes.map(() => "?").join(",")})`;
     otelParams.push(...opts.eventTypes);
   }
 
@@ -274,23 +371,19 @@ export function sessionTimeline(opts: {
     .get(opts.sessionId) as { cwd: string | null } | undefined;
 
   const repoRows = db
-    .prepare("SELECT repository FROM session_repositories WHERE session_id = ?")
-    .all(opts.sessionId) as { repository: string }[];
+    .prepare(
+      "SELECT repository, git_user_name, git_user_email FROM session_repositories WHERE session_id = ?",
+    )
+    .all(opts.sessionId) as RawRepoRow[];
 
   const events: TimelineEvent[] = rows.map((row) => {
     let promptPreview: string | null = null;
     let payload: unknown = null;
 
     if (row.source === "hook") {
-      const parsed = parseJson(row.payload);
-      payload = parsed;
-      if (
-        row.event_type === "UserPromptSubmit" &&
-        parsed &&
-        typeof parsed === "object"
-      ) {
-        const p = (parsed as Record<string, unknown>).prompt;
-        if (typeof p === "string") promptPreview = p.slice(0, 300);
+      payload = reconstitute(parseJson(row.payload), row);
+      if (row.user_prompt) {
+        promptPreview = row.user_prompt.slice(0, 300);
       }
     } else {
       payload = parseJson(row.attributes);
@@ -308,8 +401,11 @@ export function sessionTimeline(opts: {
   return {
     session: {
       sessionId: opts.sessionId,
-      githubUsername: null,
-      repositories: repoRows.map((r) => r.repository),
+      repositories: repoRows.map((r) => ({
+        name: r.repository,
+        gitUserName: r.git_user_name,
+        gitUserEmail: r.git_user_email,
+      })),
       cwd: cwdRow?.cwd ?? null,
     },
     events,
@@ -425,7 +521,6 @@ export function costBreakdown(
     totalTokens: row.total_tokens,
     totalCost: row.total_cost,
     sessionCount: row.session_count,
-    githubUsername: null,
   }));
 
   const totals = {
@@ -449,6 +544,12 @@ interface RawSearchRow {
   tool_name: string | null;
   cwd: string | null;
   payload: string | null;
+  user_prompt: string | null;
+  file_path: string | null;
+  command: string | null;
+  tool_result: string | null;
+  plan: string | null;
+  allowed_prompts: string | null;
 }
 
 export function searchEvents(opts: {
@@ -469,7 +570,6 @@ export function searchEvents(opts: {
   const hookPayloadCol = truncate
     ? "SUBSTR(decompress(h.payload), 1, 500)"
     : "decompress(h.payload)";
-  const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
 
   const hookConditions: string[] = [];
   const hookParams: unknown[] = [];
@@ -492,24 +592,32 @@ export function searchEvents(opts: {
 
   const hookSql = `
     SELECT 'hook' as source, h.id, h.session_id, h.event_type, h.timestamp_ms,
-           h.tool_name, h.cwd, ${hookPayloadCol} as payload
+           h.tool_name, h.cwd, ${hookPayloadCol} as payload,
+           h.user_prompt, h.file_path, h.command, h.tool_result, h.plan, h.allowed_prompts
     FROM hook_events h
     WHERE ${hookConditions.join(" AND ")}
   `;
 
-  const otelConditions: string[] = ["(body LIKE ? OR attributes LIKE ?)"];
+  const otelConditions: string[] = ["(o.body LIKE ? OR o.attributes LIKE ?)"];
   const otelParams: unknown[] = [pattern, pattern];
 
   if (sinceMs) {
-    otelConditions.push("CAST(timestamp_ns / 1000000 AS INTEGER) >= ?");
+    otelConditions.push("CAST(o.timestamp_ns / 1000000 AS INTEGER) >= ?");
     otelParams.push(sinceMs);
   }
 
+  const otelAttrsCol = truncate
+    ? "SUBSTR(o.attributes, 1, 500)"
+    : "o.attributes";
+
   const otelSql = `
-    SELECT 'otel' as source, id, session_id, body as event_type,
-           CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, NULL as cwd, ${attrsCol} as payload
-    FROM otel_logs
+    SELECT 'otel' as source, o.id, o.session_id,
+           COALESCE(o.body, json_extract(o.attributes, '$."event.name"')) as event_type,
+           CASE WHEN o.timestamp_ns > 0 THEN CAST(o.timestamp_ns / 1000000 AS INTEGER) ELSE CAST(strftime('%s', json_extract(o.attributes, '$."event.timestamp"')) AS INTEGER) * 1000 END as timestamp_ms,
+           NULL as tool_name, NULL as cwd, ${otelAttrsCol} as payload,
+           NULL as user_prompt, NULL as file_path, NULL as command, NULL as tool_result,
+           NULL as plan, NULL as allowed_prompts
+    FROM otel_logs o
     WHERE ${otelConditions.join(" AND ")}
   `;
 
@@ -529,7 +637,13 @@ export function searchEvents(opts: {
     .all(...hookParams, ...otelParams, limit, offset) as RawSearchRow[];
 
   const results: SearchMatch[] = rows.map((row) => {
-    const snippet = row.payload ?? row.event_type ?? "";
+    let snippet: string;
+    if (row.source === "hook") {
+      const full = reconstitute(parseJson(row.payload), row);
+      snippet = JSON.stringify(full);
+    } else {
+      snippet = row.payload ?? row.event_type ?? "";
+    }
     const matchType =
       row.event_type === "UserPromptSubmit"
         ? "prompt"
@@ -540,7 +654,6 @@ export function searchEvents(opts: {
     return {
       sessionId: row.session_id,
       timestamp: toIso(row.timestamp_ms),
-      githubUsername: null,
       matchType,
       matchSnippet:
         typeof snippet === "string"
@@ -610,9 +723,9 @@ export function activitySummary(
 
     const repos = db
       .prepare(
-        "SELECT repository FROM session_repositories WHERE session_id = ?",
+        "SELECT repository, git_user_name, git_user_email FROM session_repositories WHERE session_id = ?",
       )
-      .all(s.session_id) as { repository: string }[];
+      .all(s.session_id) as RawRepoRow[];
 
     const cwdRow = db
       .prepare(
@@ -636,7 +749,11 @@ export function activitySummary(
       startedAt: toIso(s.start_ms),
       durationMinutes: Math.round((s.end_ms - s.start_ms) / 60000),
       cwd: cwdRow?.cwd ?? null,
-      repositories: repos.map((r) => r.repository),
+      repositories: repos.map((r) => ({
+        name: r.repository,
+        gitUserName: r.git_user_name,
+        gitUserEmail: r.git_user_email,
+      })),
       userPrompts: prompts.map((p) => p.prompt).filter(Boolean) as string[],
       toolsUsed: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
       filesModified: files.map((f) => f.file_path).filter(Boolean) as string[],
@@ -738,7 +855,7 @@ export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
     const sql = `
       SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
              tool_name, cwd, user_prompt, file_path, command, plan,
-             decompress(payload) as payload
+             tool_result, allowed_prompts, decompress(payload) as payload
       FROM hook_events
       WHERE id = ?
     `;
@@ -746,9 +863,10 @@ export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
   }
 
   const sql = `
-    SELECT 'otel' as source, id, session_id, body as event_type,
-           CAST(timestamp_ns / 1000000 AS INTEGER) as timestamp_ms,
-           NULL as tool_name, NULL as cwd, attributes, severity_text, body
+    SELECT 'otel' as source, id, session_id, ${OTEL_EVENT_TYPE} as event_type,
+           ${OTEL_TIMESTAMP_MS} as timestamp_ms,
+           NULL as tool_name, NULL as cwd, attributes, severity_text,
+           ${OTEL_EVENT_TYPE} as body
     FROM otel_logs
     WHERE id = ?
   `;

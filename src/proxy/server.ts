@@ -53,7 +53,7 @@ const FORMAT_PARSERS: ApiFormatParser[] = [
 const sessions = new SessionTracker();
 
 interface Route {
-  vendor: string;
+  target: string;
   upstream: string;
   path: string;
 }
@@ -84,14 +84,14 @@ function parseRoute(
       ? proxy.rewritePath(requestPath, flatHeaders)
       : requestPath;
 
-    return { vendor: targetId, upstream, path: finalPath };
+    return { target: targetId, upstream, path: finalPath };
   }
 
   // Fall back to static route table
   const upstream = UPSTREAM_ROUTES[targetId];
   if (!upstream) return null;
 
-  return { vendor: targetId, upstream, path: requestPath };
+  return { target: targetId, upstream, path: requestPath };
 }
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -110,7 +110,7 @@ function processCapture(capture: CapturedExchange): void {
     const hookEvents = parser.extractEvents(capture);
     for (const event of hookEvents) {
       event.source = "proxy";
-      event.vendor = capture.vendor;
+      event.target = capture.target;
       emitHookEventAsync(event);
     }
 
@@ -143,7 +143,7 @@ function forwardNonStreaming(
 ): void {
   const startMs = Date.now();
   const { sessionId, isNew } = sessions.getOrCreateSession(
-    route.vendor,
+    route.target,
     parsedReqBody,
   );
 
@@ -152,7 +152,7 @@ function forwardNonStreaming(
       session_id: sessionId,
       hook_event_name: "SessionStart",
       source: "proxy",
-      vendor: route.vendor,
+      target: route.target,
     });
   }
 
@@ -191,7 +191,7 @@ function forwardNonStreaming(
         }
 
         const capture: CapturedExchange = {
-          vendor: route.vendor,
+          target: route.target,
           sessionId,
           timestamp_ms: startMs,
           request: {
@@ -212,11 +212,11 @@ function forwardNonStreaming(
   );
 
   upstreamReq.on("error", (err) => {
-    console.error(`Upstream error (${route.vendor}):`, err.message);
+    console.error(`Upstream error (${route.target}):`, err.message);
     addBreadcrumb(
       "proxy",
-      `Upstream error: ${route.vendor}`,
-      { vendor: route.vendor, upstream: route.upstream, error: err.message },
+      `Upstream error: ${route.target}`,
+      { target: route.target, upstream: route.upstream, error: err.message },
       "error",
     );
     if (!clientRes.headersSent) {
@@ -240,7 +240,7 @@ function forwardStreaming(
 ): void {
   const startMs = Date.now();
   const { sessionId, isNew } = sessions.getOrCreateSession(
-    route.vendor,
+    route.target,
     parsedReqBody,
   );
 
@@ -249,11 +249,11 @@ function forwardStreaming(
       session_id: sessionId,
       hook_event_name: "SessionStart",
       source: "proxy",
-      vendor: route.vendor,
+      target: route.target,
     });
   }
 
-  const targetSpec = getTarget(route.vendor);
+  const targetSpec = getTarget(route.target);
   const accumulator =
     targetSpec?.proxy?.accumulatorType === "anthropic"
       ? createAnthropicAccumulator()
@@ -291,7 +291,7 @@ function forwardStreaming(
         const reconstructed = accumulator.finish();
 
         const capture: CapturedExchange = {
-          vendor: route.vendor,
+          target: route.target,
           sessionId,
           timestamp_ms: startMs,
           request: {
@@ -312,11 +312,11 @@ function forwardStreaming(
   );
 
   upstreamReq.on("error", (err) => {
-    console.error(`Upstream error (${route.vendor}):`, err.message);
+    console.error(`Upstream error (${route.target}):`, err.message);
     addBreadcrumb(
       "proxy",
-      `Upstream error: ${route.vendor}`,
-      { vendor: route.vendor, upstream: route.upstream, error: err.message },
+      `Upstream error: ${route.target}`,
+      { target: route.target, upstream: route.upstream, error: err.message },
       "error",
     );
     if (!clientRes.headersSent) {
@@ -357,19 +357,19 @@ function tunnelWebSocket(
   }
 
   // Track session for this target
-  const { sessionId, isNew } = sessions.getOrCreateSession(route.vendor, {});
+  const { sessionId, isNew } = sessions.getOrCreateSession(route.target, {});
   if (isNew) {
     emitHookEventAsync({
       session_id: sessionId,
       hook_event_name: "SessionStart",
       source: "proxy",
-      vendor: route.vendor,
+      target: route.target,
     });
   }
 
   // Catch client socket errors early (before upstream upgrade completes)
   clientSocket.on("error", (err) => {
-    console.error(`WebSocket client error (${route.vendor}):`, err.message);
+    console.error(`WebSocket client error (${route.target}):`, err.message);
   });
 
   // Forward headers, replacing host with upstream.
@@ -429,7 +429,7 @@ function tunnelWebSocket(
         const event = JSON.parse(msg) as Record<string, unknown>;
         if (event.type === "response.completed" && pendingRequest) {
           const capture: CapturedExchange = {
-            vendor: route.vendor,
+            target: route.target,
             sessionId,
             timestamp_ms: requestTimestamp,
             request: {
@@ -464,7 +464,7 @@ function tunnelWebSocket(
   });
 
   proxyReq.on("error", (err) => {
-    console.error(`WebSocket upstream error (${route.vendor}):`, err.message);
+    console.error(`WebSocket upstream error (${route.target}):`, err.message);
     clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
   });
 

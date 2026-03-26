@@ -277,7 +277,7 @@ const otelMetricsPayload = {
 const MOCK_CAPTURE_SESSION = "proxy-capture-sess-001";
 
 const mockAnthropicExchange = {
-  vendor: "claude",
+  target: "claude",
   sessionId: MOCK_CAPTURE_SESSION,
   timestamp_ms: Date.now(),
   request: {
@@ -559,8 +559,8 @@ describe("server integration", () => {
   });
 
   describe("proxy routing", () => {
-    it("returns 404 for unknown vendor", async () => {
-      const { status, body } = await post("/proxy/badvendor/v1/messages", {
+    it("returns 404 for unknown target", async () => {
+      const { status, body } = await post("/proxy/badtarget/v1/messages", {
         msg: "test",
       });
       expect(status).toBe(404);
@@ -626,7 +626,7 @@ describe("server integration", () => {
       );
       for (const event of events) {
         event.source = "proxy";
-        event.vendor = mockAnthropicExchange.vendor;
+        event.target = mockAnthropicExchange.target;
         emitHookEventAsync(event);
       }
 
@@ -680,16 +680,16 @@ describe("server integration", () => {
       const proxyLogs = db
         .prepare(
           `SELECT body, json_extract(attributes, '$.model') as model,
-                  json_extract(attributes, '$.vendor') as vendor
+                  json_extract(attributes, '$.target') as target
            FROM otel_logs
            WHERE json_extract(attributes, '$.source') = 'proxy'`,
         )
-        .all() as Array<{ body: string; model: string; vendor: string }>;
+        .all() as Array<{ body: string; model: string; target: string }>;
 
       expect(proxyLogs.length).toBeGreaterThanOrEqual(1);
       expect(proxyLogs[0].body).toBe("api_request");
       expect(proxyLogs[0].model).toBe("claude-sonnet-4-6-20250514");
-      expect(proxyLogs[0].vendor).toBe("claude");
+      expect(proxyLogs[0].target).toBe("claude");
     });
   });
 });

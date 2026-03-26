@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import {
   insertHookEvent,
+  upsertSession,
   upsertSessionCwd,
   upsertSessionRepository,
 } from "../db/store.js";
@@ -10,6 +12,44 @@ import { resolveRepoFromCwd } from "../repo.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
+
+// Cache: cwd → { name, email }
+const gitIdentityCache = new Map<
+  string,
+  { name: string | null; email: string | null }
+>();
+
+function resolveGitIdentity(cwd: string): {
+  name: string | null;
+  email: string | null;
+} {
+  const cached = gitIdentityCache.get(cwd);
+  if (cached) return cached;
+
+  const result = { name: null as string | null, email: null as string | null };
+  try {
+    result.name =
+      execFileSync("git", ["-C", cwd, "config", "user.name"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null;
+  } catch {
+    // no user.name configured
+  }
+  try {
+    result.email =
+      execFileSync("git", ["-C", cwd, "config", "user.email"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null;
+  } catch {
+    // no user.email configured
+  }
+  gitIdentityCache.set(cwd, result);
+  return result;
+}
 
 // Last resolved repo per session — used as fallback for events without paths
 // (e.g. Stop, UserPromptSubmit). Long-lived in the server process.
@@ -23,7 +63,7 @@ export interface HookInput {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   source?: string;
-  vendor?: string;
+  target?: string;
   prompt?: string;
   [key: string]: unknown;
 }
@@ -122,22 +162,46 @@ export function _resetSessionRepoCache(): void {
  * Process a hook event: normalize, store, and optionally enforce permissions.
  * Returns a JSON-serializable response body (permission decision or {}).
  */
+/** Cache of resolved target per session — once identified, reuse for all events. */
+const sessionTargetCache = new Map<string, string>();
+
+/** Clear the session target cache (for testing). */
+export function _resetSessionTargetCache(): void {
+  sessionTargetCache.clear();
+}
+
 /**
- * Resolve which target adapter sent this event, using the source/vendor
- * field or by matching the raw event name against target eventMaps.
+ * Resolve which target adapter sent this event, using the source/target
+ * field, session cache, eventMap matching, or payload heuristics.
  */
 function resolveTarget(data: HookInput): TargetAdapter | undefined {
-  const source = data.source ?? data.vendor;
+  const targets = allTargets();
+  const sessionId = data.session_id;
+
+  // 1. Explicit source/target field
+  const source = data.source ?? data.target;
   if (source) {
-    for (const v of allTargets()) {
-      if (v.id === source) return v;
+    for (const v of targets) {
+      if (v.id === source) {
+        if (sessionId) sessionTargetCache.set(sessionId, v.id);
+        return v;
+      }
     }
   }
-  // Fall back: check if the raw event name appears in any target's eventMap
+
+  // 2. Session cache — reuse previously identified target
+  if (sessionId) {
+    const cached = sessionTargetCache.get(sessionId);
+    if (cached) {
+      return targets.find((v) => v.id === cached);
+    }
+  }
+
+  // 3. eventMap match (catches Gemini's BeforeTool, AfterTool, BeforeModel)
   const rawEvent = data.hook_event_name;
   if (rawEvent) {
     let matched: TargetAdapter | undefined;
-    for (const v of allTargets()) {
+    for (const v of targets) {
       if (rawEvent in v.events.eventMap) {
         if (matched) {
           console.warn(
@@ -148,8 +212,31 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
         matched = v;
       }
     }
-    if (matched) return matched;
+    if (matched) {
+      if (sessionId) sessionTargetCache.set(sessionId, matched.id);
+      return matched;
+    }
   }
+
+  // 4. Model-based detection — the model name reliably distinguishes clients
+  const model = typeof data.model === "string" ? data.model : null;
+  if (model) {
+    if (/^(gpt-|o[1-9]|chatgpt-)/.test(model)) {
+      const codex = targets.find((v) => v.id === "codex");
+      if (codex) {
+        if (sessionId) sessionTargetCache.set(sessionId, codex.id);
+        return codex;
+      }
+    }
+    if (/^claude-/.test(model)) {
+      const claude = targets.find((v) => v.id === "claude");
+      if (claude) {
+        if (sessionId) sessionTargetCache.set(sessionId, claude.id);
+        return claude;
+      }
+    }
+  }
+
   return undefined;
 }
 
@@ -172,6 +259,8 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
 
   const repo = resolveEventRepo(data);
 
+  const targetId = target?.id ?? "unknown";
+
   insertHookEvent({
     session_id: sessionId,
     event_type: eventType,
@@ -179,12 +268,44 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     cwd: data.cwd,
     repository: repo ?? undefined,
     tool_name: toolName ?? undefined,
+    target: targetId,
     payload: data,
   });
 
+  // Upsert session — each event type contributes different fields
+  const sessionFields: Parameters<typeof upsertSession>[0] = {
+    session_id: sessionId,
+    target: targetId,
+  };
+  if (eventType === "SessionStart") {
+    sessionFields.started_at_ms = timestampMs;
+    sessionFields.cwd = data.cwd;
+    sessionFields.permission_mode =
+      typeof data.permission_mode === "string"
+        ? data.permission_mode
+        : undefined;
+    sessionFields.agent_version =
+      typeof data.agent_version === "string" ? data.agent_version : undefined;
+  }
+  if (eventType === "UserPromptSubmit") {
+    const prompt =
+      typeof data.prompt === "string"
+        ? data.prompt
+        : typeof data.user_prompt === "string"
+          ? data.user_prompt
+          : undefined;
+    if (prompt) sessionFields.first_prompt = prompt;
+  }
+  if (eventType === "Stop" || eventType === "SessionEnd") {
+    sessionFields.ended_at_ms = timestampMs;
+  }
+  upsertSession(sessionFields);
+
   // Populate session junction tables
   if (repo) {
-    upsertSessionRepository(sessionId, repo, timestampMs);
+    const cwd = extractShellPwd(data) ?? (data.cwd as string | undefined);
+    const gitId = cwd ? resolveGitIdentity(cwd) : undefined;
+    upsertSessionRepository(sessionId, repo, timestampMs, gitId);
   }
   if (data.cwd) {
     upsertSessionCwd(sessionId, data.cwd as string, timestampMs);

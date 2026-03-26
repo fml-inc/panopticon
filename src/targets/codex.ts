@@ -26,7 +26,7 @@ function readHooksJson(): Record<string, unknown> {
 
 function writeHooksJson(data: Record<string, unknown>): void {
   fs.mkdirSync(CODEX_DIR, { recursive: true });
-  fs.writeFileSync(CODEX_HOOKS_JSON, JSON.stringify(data, null, 2) + "\n");
+  fs.writeFileSync(CODEX_HOOKS_JSON, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 const codex: TargetAdapter = {
@@ -49,9 +49,8 @@ const codex: TargetAdapter = {
       codexConfig.features =
         (codexConfig.features as Record<string, unknown>) ?? {};
       (codexConfig.features as Record<string, unknown>).codex_hooks = true;
-      (
-        codexConfig.features as Record<string, unknown>
-      ).suppress_unstable_features_warning = true;
+      // Codex reads this at top level, not under [features]
+      codexConfig.suppress_unstable_features_warning = true;
 
       // Remove any legacy TOML hook entries
       delete codexConfig.hooks;
@@ -115,9 +114,9 @@ const codex: TargetAdapter = {
       const features = cfg.features as Record<string, unknown> | undefined;
       if (features) {
         delete features.codex_hooks;
-        delete features.suppress_unstable_features_warning;
         if (Object.keys(features).length === 0) delete cfg.features;
       }
+      delete cfg.suppress_unstable_features_warning;
 
       // Remove any legacy TOML hook entries
       delete cfg.hooks;

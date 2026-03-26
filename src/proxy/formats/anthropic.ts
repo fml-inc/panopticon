@@ -84,7 +84,7 @@ export const anthropicParser: ApiFormatParser = {
           attributes: {
             model,
             token_type: "input",
-            vendor: capture.vendor,
+            target: capture.target,
           },
           sessionId: capture.sessionId,
         });
@@ -96,7 +96,7 @@ export const anthropicParser: ApiFormatParser = {
           attributes: {
             model,
             token_type: "output",
-            vendor: capture.vendor,
+            target: capture.target,
           },
           sessionId: capture.sessionId,
         });
@@ -108,7 +108,7 @@ export const anthropicParser: ApiFormatParser = {
           attributes: {
             model,
             token_type: "cacheRead",
-            vendor: capture.vendor,
+            target: capture.target,
           },
           sessionId: capture.sessionId,
         });
@@ -120,7 +120,7 @@ export const anthropicParser: ApiFormatParser = {
           attributes: {
             model,
             token_type: "cacheWrite",
-            vendor: capture.vendor,
+            target: capture.target,
           },
           sessionId: capture.sessionId,
         });
@@ -145,7 +145,7 @@ export const anthropicParser: ApiFormatParser = {
         sessionId: capture.sessionId,
         attributes: {
           model,
-          vendor: capture.vendor,
+          target: capture.target,
           duration_ms: capture.duration_ms,
           status: capture.response.status,
           stop_reason: resBody?.stop_reason,
