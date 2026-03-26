@@ -198,12 +198,13 @@ if [ "$TOKEN_METRIC_COUNT" -gt 0 ]; then
      LIMIT 1;" \
     "otel_metrics: token metrics have model in attributes"
 
-  # attributes: token type present
+  # attributes: token type present (Codex uses $.token_type, Claude uses $.type, Gemini uses gen_ai.token.type)
   assert_db_not_empty \
     "SELECT 1 FROM otel_metrics
      WHERE name LIKE '%token%'
        AND (json_extract(attributes, '$.type') IS NOT NULL
-         OR json_extract(attributes, '$.\"gen_ai.token.type\"') IS NOT NULL)
+         OR json_extract(attributes, '$.\"gen_ai.token.type\"') IS NOT NULL
+         OR json_extract(attributes, '$.token_type') IS NOT NULL)
      LIMIT 1;" \
     "otel_metrics: token metrics have token_type in attributes"
 else
@@ -263,16 +264,40 @@ assert_db_not_empty \
   "SELECT 1 FROM otel_logs WHERE body = 'api_request' AND attributes LIKE '%proxy%' LIMIT 1;" \
   "Proxy: api_request logs with source=proxy"
 
-# Proxy: log attributes contain required fields (vendor, duration_ms, status)
+# Proxy: log attributes contain required fields (target, duration_ms, status)
 assert_db_not_empty \
   "SELECT 1 FROM otel_logs
    WHERE body = 'api_request'
      AND attributes LIKE '%proxy%'
-     AND json_extract(attributes, '$.vendor') IS NOT NULL
+     AND json_extract(attributes, '$.target') IS NOT NULL
      AND json_extract(attributes, '$.duration_ms') IS NOT NULL
      AND json_extract(attributes, '$.status') IS NOT NULL
    LIMIT 1;" \
-  "Proxy: api_request log has vendor, duration_ms, status fields"
+  "Proxy: api_request log has target, duration_ms, status fields"
+
+# ── 6f: sessions table ────────────────────────────────────────────────────
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions LIMIT 1;" \
+  "sessions: table is populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE target = 'codex' LIMIT 1;" \
+  "sessions: has target = 'codex'"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE started_at_ms IS NOT NULL LIMIT 1;" \
+  "sessions: started_at_ms is populated"
+
+# ── 6g: hook_events.target column ─────────────────────────────────────────
+
+assert_db_zero \
+  "SELECT COUNT(*) FROM hook_events WHERE target IS NULL OR target = '';" \
+  "hook_events: target column is always populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM hook_events WHERE target = 'codex' LIMIT 1;" \
+  "hook_events: target is 'codex' for Codex sessions"
 
 # ─── Summary ────────────────────────────────────────────────────────────────
 print_summary

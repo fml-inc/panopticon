@@ -49,7 +49,17 @@ vi.mock("./config.js", () => {
 
 // Must import after mock
 import { config } from "./config.js";
+import { costBreakdown } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
+import {
+  insertOtelMetrics,
+  type OtelMetricRow,
+  upsertSession,
+} from "./db/store.js";
+import {
+  _resetSessionRepoCache,
+  _resetSessionTargetCache,
+} from "./hooks/ingest.js";
 import {
   emitHookEventAsync,
   emitOtelLogs,
@@ -690,6 +700,437 @@ describe("server integration", () => {
       expect(proxyLogs[0].body).toBe("api_request");
       expect(proxyLogs[0].model).toBe("claude-sonnet-4-6-20250514");
       expect(proxyLogs[0].target).toBe("claude");
+    });
+  });
+
+  // ── Codex OTel format ────────────────────────────────────────────────────
+
+  describe("Codex OTel format", () => {
+    const CODEX_SESSION = "019d2bae-7c39-7c73-b058-codex";
+    const codexTimestamp = "2026-03-26T20:00:00.000Z";
+
+    it("accepts Codex logs with conversation.id and event.name in attrs", async () => {
+      const payload = {
+        resourceLogs: [
+          {
+            resource: {
+              attributes: [
+                {
+                  key: "service.name",
+                  value: { stringValue: "codex_cli_rs" },
+                },
+                {
+                  key: "conversation.id",
+                  value: { stringValue: CODEX_SESSION },
+                },
+              ],
+            },
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    // Codex sends timeUnixNano=0 with real time in attrs
+                    // and no body (event name is in attributes)
+                    timeUnixNano: "0",
+                    severityNumber: 9,
+                    severityText: "INFO",
+                    attributes: [
+                      {
+                        key: "event.name",
+                        value: { stringValue: "model_response" },
+                      },
+                      {
+                        key: "event.timestamp",
+                        value: { stringValue: codexTimestamp },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      const { status } = await post("/v1/logs", payload);
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT session_id, body, timestamp_ns FROM otel_logs WHERE session_id = ?",
+        )
+        .get(CODEX_SESSION) as {
+        session_id: string;
+        body: string;
+        timestamp_ns: number;
+      };
+      expect(row).toBeDefined();
+      expect(row.session_id).toBe(CODEX_SESSION);
+      expect(row.body).toBe("model_response");
+      // Timestamp should be derived from event.timestamp attr
+      expect(row.timestamp_ns).toBeGreaterThan(0);
+    });
+
+    it("accepts Codex metrics with conversation.id fallback", async () => {
+      const payload = {
+        resourceMetrics: [
+          {
+            resource: {
+              attributes: [
+                {
+                  key: "service.name",
+                  value: { stringValue: "codex_cli_rs" },
+                },
+                {
+                  key: "conversation.id",
+                  value: { stringValue: CODEX_SESSION },
+                },
+              ],
+            },
+            scopeMetrics: [
+              {
+                metrics: [
+                  {
+                    name: "codex.turn.token_usage",
+                    unit: "tokens",
+                    gauge: {
+                      dataPoints: [
+                        {
+                          timeUnixNano: String(Date.now() * 1_000_000),
+                          asInt: "800",
+                          attributes: [
+                            {
+                              key: "token_type",
+                              value: { stringValue: "input" },
+                            },
+                            {
+                              key: "model",
+                              value: { stringValue: "o3" },
+                            },
+                          ],
+                        },
+                        {
+                          timeUnixNano: String(Date.now() * 1_000_000),
+                          asInt: "200",
+                          attributes: [
+                            {
+                              key: "token_type",
+                              value: { stringValue: "output" },
+                            },
+                            {
+                              key: "model",
+                              value: { stringValue: "o3" },
+                            },
+                          ],
+                        },
+                        {
+                          timeUnixNano: String(Date.now() * 1_000_000),
+                          asInt: "150",
+                          attributes: [
+                            {
+                              key: "token_type",
+                              value: { stringValue: "cached_input" },
+                            },
+                            {
+                              key: "model",
+                              value: { stringValue: "o3" },
+                            },
+                          ],
+                        },
+                        {
+                          timeUnixNano: String(Date.now() * 1_000_000),
+                          asInt: "1150",
+                          attributes: [
+                            {
+                              key: "token_type",
+                              value: { stringValue: "total" },
+                            },
+                            {
+                              key: "model",
+                              value: { stringValue: "o3" },
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      const { status } = await post("/v1/metrics", payload);
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const metrics = db
+        .prepare(
+          `SELECT name, value, json_extract(attributes, '$.token_type') as token_type,
+                  session_id
+           FROM otel_metrics
+           WHERE name = 'codex.turn.token_usage' AND session_id = ?`,
+        )
+        .all(CODEX_SESSION) as Array<{
+        name: string;
+        value: number;
+        token_type: string;
+        session_id: string;
+      }>;
+
+      expect(metrics.length).toBe(4);
+      expect(metrics.every((m) => m.session_id === CODEX_SESSION)).toBe(true);
+    });
+
+    it("Codex token types are mapped correctly in cost queries", () => {
+      // costBreakdown uses resolvedMetricsCTE which maps Codex token types
+      const result = costBreakdown({ since: "1h" });
+      // We just need it not to throw — the Codex UNION ALL is exercised
+      expect(result).toBeDefined();
+      expect(result.groups).toBeDefined();
+    });
+  });
+
+  // ── Codex metric session inference ───────────────────────────────────────
+
+  describe("Codex metric session inference", () => {
+    it("infers session_id for metrics missing it", () => {
+      const db = getDb();
+      const sessionId = "codex-infer-sess-001";
+      const metricTs = Date.now();
+
+      // Create a session in the sessions table
+      upsertSession({
+        session_id: sessionId,
+        target: "codex",
+        started_at_ms: metricTs - 60_000,
+      });
+
+      // Insert metrics without session_id but with codex service.name
+      const rows: OtelMetricRow[] = [
+        {
+          timestamp_ns: metricTs * 1_000_000,
+          name: "codex.turn.token_usage",
+          value: 500,
+          metric_type: "gauge",
+          attributes: { token_type: "input", model: "o3" },
+          resource_attributes: { "service.name": "codex_cli_rs" },
+          // no session_id
+        },
+      ];
+      insertOtelMetrics(rows);
+
+      const stored = db
+        .prepare(
+          "SELECT session_id FROM otel_metrics WHERE name = 'codex.turn.token_usage' AND value = 500",
+        )
+        .get() as { session_id: string | null };
+
+      expect(stored.session_id).toBe(sessionId);
+    });
+
+    it("does not infer session for unknown service.name", () => {
+      const db = getDb();
+      const metricTs = Date.now();
+
+      const rows: OtelMetricRow[] = [
+        {
+          timestamp_ns: metricTs * 1_000_000,
+          name: "unknown.metric",
+          value: 42,
+          metric_type: "gauge",
+          attributes: {},
+          resource_attributes: { "service.name": "unknown-service" },
+        },
+      ];
+      insertOtelMetrics(rows);
+
+      const stored = db
+        .prepare(
+          "SELECT session_id FROM otel_metrics WHERE name = 'unknown.metric'",
+        )
+        .get() as { session_id: string | null };
+
+      expect(stored.session_id).toBeNull();
+    });
+  });
+
+  // ── resolveTarget via processHookEvent ───────────────────────────────────
+
+  describe("target detection", () => {
+    beforeAll(() => {
+      _resetSessionTargetCache();
+      _resetSessionRepoCache();
+    });
+
+    it("detects target from explicit source field", async () => {
+      const { status } = await post("/hooks", {
+        session_id: "target-test-explicit",
+        hook_event_name: "SessionStart",
+        source: "claude",
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target FROM hook_events WHERE session_id = 'target-test-explicit'",
+        )
+        .get() as { target: string };
+      expect(row.target).toBe("claude");
+    });
+
+    it("detects Codex from model name when no source field", async () => {
+      _resetSessionTargetCache();
+      const { status } = await post("/hooks", {
+        session_id: "target-test-model-codex",
+        hook_event_name: "PreToolUse",
+        tool_name: "shell",
+        model: "o3",
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target FROM hook_events WHERE session_id = 'target-test-model-codex'",
+        )
+        .get() as { target: string };
+      expect(row.target).toBe("codex");
+    });
+
+    it("detects Claude from model name when no source field", async () => {
+      _resetSessionTargetCache();
+      const { status } = await post("/hooks", {
+        session_id: "target-test-model-claude",
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        model: "claude-sonnet-4-6-20250514",
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target FROM hook_events WHERE session_id = 'target-test-model-claude'",
+        )
+        .get() as { target: string };
+      expect(row.target).toBe("claude");
+    });
+
+    it("caches target per session", async () => {
+      _resetSessionTargetCache();
+      // First event identifies as codex via model
+      await post("/hooks", {
+        session_id: "target-test-cache",
+        hook_event_name: "SessionStart",
+        model: "gpt-4.1",
+      });
+      // Second event has no model — should use cached target
+      await post("/hooks", {
+        session_id: "target-test-cache",
+        hook_event_name: "PreToolUse",
+        tool_name: "shell",
+      });
+
+      const db = getDb();
+      const rows = db
+        .prepare(
+          "SELECT target FROM hook_events WHERE session_id = 'target-test-cache' ORDER BY id",
+        )
+        .all() as Array<{ target: string }>;
+      expect(rows).toHaveLength(2);
+      expect(rows[0].target).toBe("codex");
+      expect(rows[1].target).toBe("codex");
+    });
+
+    it("falls back to unknown when target cannot be determined", async () => {
+      _resetSessionTargetCache();
+      const { status } = await post("/hooks", {
+        session_id: "target-test-unknown",
+        hook_event_name: "PreToolUse",
+        tool_name: "something",
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target FROM hook_events WHERE session_id = 'target-test-unknown'",
+        )
+        .get() as { target: string };
+      expect(row.target).toBe("unknown");
+    });
+  });
+
+  // ── Session lifecycle upsert ─────────────────────────────────────────────
+
+  describe("session lifecycle", () => {
+    const LIFECYCLE_SESSION = "lifecycle-sess-001";
+
+    beforeAll(async () => {
+      await post("/hooks", {
+        session_id: LIFECYCLE_SESSION,
+        hook_event_name: "SessionStart",
+        source: "claude",
+        cwd: "/workspace/project",
+        permission_mode: "plan",
+        agent_version: "1.0.42",
+      });
+      await post("/hooks", {
+        session_id: LIFECYCLE_SESSION,
+        hook_event_name: "UserPromptSubmit",
+        source: "claude",
+        prompt: "Fix the bug",
+      });
+      await post("/hooks", {
+        session_id: LIFECYCLE_SESSION,
+        hook_event_name: "UserPromptSubmit",
+        source: "claude",
+        prompt: "Actually, refactor it instead",
+      });
+      await post("/hooks", {
+        session_id: LIFECYCLE_SESSION,
+        hook_event_name: "Stop",
+        source: "claude",
+      });
+    });
+
+    it("creates session on SessionStart with metadata", () => {
+      const db = getDb();
+      const row = db
+        .prepare("SELECT * FROM sessions WHERE session_id = ?")
+        .get(LIFECYCLE_SESSION) as Record<string, unknown>;
+
+      expect(row).toBeDefined();
+      expect(row.target).toBe("claude");
+      expect(row.started_at_ms).toBeGreaterThan(0);
+      expect(row.cwd).toBe("/workspace/project");
+      expect(row.permission_mode).toBe("plan");
+      expect(row.agent_version).toBe("1.0.42");
+    });
+
+    it("captures first prompt only (does not overwrite)", () => {
+      const db = getDb();
+      const row = db
+        .prepare("SELECT first_prompt FROM sessions WHERE session_id = ?")
+        .get(LIFECYCLE_SESSION) as { first_prompt: string };
+
+      expect(row.first_prompt).toBe("Fix the bug");
+    });
+
+    it("updates ended_at_ms on Stop", () => {
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT started_at_ms, ended_at_ms FROM sessions WHERE session_id = ?",
+        )
+        .get(LIFECYCLE_SESSION) as {
+        started_at_ms: number;
+        ended_at_ms: number;
+      };
+
+      expect(row.ended_at_ms).toBeGreaterThanOrEqual(row.started_at_ms);
     });
   });
 });

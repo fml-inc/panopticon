@@ -282,16 +282,46 @@ assert_db_not_empty \
   "SELECT 1 FROM otel_logs WHERE body = 'api_request' AND attributes LIKE '%proxy%' LIMIT 1;" \
   "Proxy: api_request logs with source=proxy"
 
-# Proxy: log attributes contain required fields for proxy captures (model, vendor, duration_ms, status)
+# Proxy: log attributes contain required fields for proxy captures (model, target, duration_ms, status)
 assert_db_not_empty \
   "SELECT 1 FROM otel_logs
    WHERE body = 'api_request'
      AND attributes LIKE '%proxy%'
-     AND json_extract(attributes, '$.vendor') IS NOT NULL
+     AND json_extract(attributes, '$.target') IS NOT NULL
      AND json_extract(attributes, '$.duration_ms') IS NOT NULL
      AND json_extract(attributes, '$.status') IS NOT NULL
    LIMIT 1;" \
-  "Proxy: api_request log has vendor, duration_ms, status fields"
+  "Proxy: api_request log has target, duration_ms, status fields"
+
+# ── 6f: sessions table ────────────────────────────────────────────────────
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions LIMIT 1;" \
+  "sessions: table is populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE target = 'claude' LIMIT 1;" \
+  "sessions: has target = 'claude'"
+
+assert_db_not_empty \
+  "SELECT 1 FROM sessions WHERE started_at_ms IS NOT NULL LIMIT 1;" \
+  "sessions: started_at_ms is populated"
+
+# ── 6g: hook_events.target column ─────────────────────────────────────────
+
+assert_db_zero \
+  "SELECT COUNT(*) FROM hook_events WHERE target IS NULL OR target = '';" \
+  "hook_events: target column is always populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM hook_events WHERE target = 'claude' LIMIT 1;" \
+  "hook_events: target is 'claude' for Claude sessions"
+
+# ── 6h: session_repositories git identity ─────────────────────────────────
+
+assert_db_not_empty \
+  "SELECT 1 FROM session_repositories LIMIT 1;" \
+  "session_repositories: table is populated"
 
 # ─── Summary ────────────────────────────────────────────────────────────────
 print_summary
