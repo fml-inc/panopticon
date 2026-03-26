@@ -212,12 +212,10 @@ assert_db_zero \
   "SELECT COUNT(*) FROM otel_logs WHERE session_id IS NULL OR session_id = '';" \
   "otel_logs: session_id is always populated"
 
-# body: recognized log body type (sync reader uses HOOK_COVERED_BODIES to dedup)
-assert_db_not_empty \
-  "SELECT 1 FROM otel_logs
-   WHERE body IN ('api_request','gemini_cli.user_prompt','gemini_cli.tool_call','gemini_cli.hook_call')
-   LIMIT 1;" \
-  "otel_logs: has recognized Gemini log body types"
+# body: must be non-null (used as event_type in sessionTimeline, searched in searchEvents)
+assert_db_zero \
+  "SELECT COUNT(*) FROM otel_logs WHERE body IS NULL OR body = '';" \
+  "otel_logs: body is always populated"
 
 # attributes: valid JSON (searchEvents, timeline, sync serialization)
 assert_db_zero \
