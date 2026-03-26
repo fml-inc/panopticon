@@ -8,12 +8,10 @@ TOOL="gemini"
 # ─── Phase 1: Check API Key ─────────────────────────────────────────────────
 log_phase 1 "Check API Key"
 
-# Gemini CLI expects GEMINI_API_KEY; fall back to GOOGLE_API_KEY
-if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ]; then
-  log_skip "GEMINI_API_KEY / GOOGLE_API_KEY not set — skipping Gemini E2E"
+if [ -z "${GEMINI_API_KEY:-}" ]; then
+  log_skip "GEMINI_API_KEY not set — skipping Gemini E2E"
   exit 0
 fi
-export GEMINI_API_KEY="${GEMINI_API_KEY:-${GOOGLE_API_KEY}}"
 log_info "GEMINI_API_KEY is set"
 
 # ─── Phase 2: Install Panopticon ─────────────────────────────────────────────

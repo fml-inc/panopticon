@@ -18,8 +18,8 @@ jobs:
             secret_name: ANTHROPIC_API_KEY
             env_var: ANTHROPIC_API_KEY
           - tool: gemini
-            secret_name: GOOGLE_API_KEY
-            env_var: GOOGLE_API_KEY
+            secret_name: GEMINI_API_KEY
+            env_var: GEMINI_API_KEY
           - tool: codex
             secret_name: OPENAI_API_KEY
             env_var: OPENAI_API_KEY
@@ -45,8 +45,7 @@ jobs:
         if: steps.check_key.outputs.has_key == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           docker compose -f test/e2e/docker-compose.yml \
