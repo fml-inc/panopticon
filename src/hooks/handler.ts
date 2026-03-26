@@ -257,6 +257,7 @@ export async function runHandler(targetId?: string): Promise<void> {
 }
 
 initSentry();
-// When imported directly (generic bin/hook-handler), run without a target ID.
-// Per-target bin files call runHandler(targetId) explicitly instead.
-runHandler();
+// Target ID is passed as a CLI argument: `node hook-handler gemini`
+// When invoked without an argument (e.g. by Claude Code's plugin system),
+// targetId is undefined and the server falls back to detection heuristics.
+runHandler(process.argv[2]);

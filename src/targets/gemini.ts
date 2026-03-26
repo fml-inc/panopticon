@@ -21,7 +21,7 @@ const gemini: TargetAdapter = {
     events: ["SessionStart", "BeforeModel", "BeforeTool", "AfterTool"],
     applyInstallConfig(existing, opts) {
       const settings = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler-gemini");
+      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Deep-copy hooks to avoid mutating the input
@@ -45,7 +45,7 @@ const gemini: TargetAdapter = {
           .filter((group) => (group.hooks as unknown[]).length > 0);
         // Add panopticon hook
         (hooks[event] as unknown[]).push({
-          hooks: [{ type: "command", command: hookBin }],
+          hooks: [{ type: "command", command: `node ${hookBin} gemini` }],
         });
       }
       settings.hooks = hooks;

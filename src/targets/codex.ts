@@ -42,7 +42,7 @@ const codex: TargetAdapter = {
     events: HOOK_EVENTS,
     applyInstallConfig(existing, opts) {
       const codexConfig = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler-codex");
+      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Enable the codex_hooks feature flag
@@ -58,7 +58,7 @@ const codex: TargetAdapter = {
       // Write hooks.json (the format the new hooks engine expects)
       const hooksFile = readHooksJson();
       const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
-      const command = `node ${hookBin}`;
+      const command = `node ${hookBin} codex`;
       for (const event of HOOK_EVENTS) {
         const groups = (hooks[event] ?? []) as Array<Record<string, unknown>>;
         // Remove existing panopticon groups

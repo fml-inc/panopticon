@@ -1,4 +1,0 @@
-#!/usr/bin/env node
-
-import { runHandler } from "../dist/hooks/handler.js";
-runHandler("gemini");
