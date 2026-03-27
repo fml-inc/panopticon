@@ -37,3 +37,24 @@ services:
     profiles:
       - codex
       - all
+
+  # Grafana OTEL LGTM stack (Loki + Grafana + Tempo + Mimir)
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    profiles:
+      - grafana
+      - all
+
+  test-grafana:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      target: test-grafana
+    environment:
+      - SHELL=/bin/bash
+      - PANOPTICON_PORT=4318
+    depends_on:
+      - otel-lgtm
+    profiles:
+      - grafana
+      - all
