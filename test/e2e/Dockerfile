@@ -56,3 +56,7 @@ ENTRYPOINT ["/opt/e2e/scripts/test-gemini.sh"]
 FROM base AS test-codex
 RUN npm install -g @openai/codex
 ENTRYPOINT ["/opt/e2e/scripts/test-codex.sh"]
+
+# ─── Grafana OTEL sync (no CLI tool needed) ────────────────────────────────
+FROM base AS test-grafana
+ENTRYPOINT ["/opt/e2e/scripts/test-grafana.sh"]
