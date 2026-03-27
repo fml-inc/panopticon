@@ -1,64 +1,7 @@
 services:
-  test-claude:
-    build:
-      context: ../..
-      dockerfile: test/e2e/Dockerfile
-      target: test-claude
-    environment:
-      - ANTHROPIC_API_KEY
-      - SHELL=/bin/bash
-      - PANOPTICON_PORT=4318
-    profiles:
-      - claude
-      - all
-
-  test-gemini:
-    build:
-      context: ../..
-      dockerfile: test/e2e/Dockerfile
-      target: test-gemini
-    environment:
-      - GEMINI_API_KEY
-      - SHELL=/bin/bash
-      - PANOPTICON_PORT=4318
-    profiles:
-      - gemini
-      - all
-
-  test-codex:
-    build:
-      context: ../..
-      dockerfile: test/e2e/Dockerfile
-      target: test-codex
-    environment:
-      - OPENAI_API_KEY
-      - SHELL=/bin/bash
-      - PANOPTICON_PORT=4318
-    profiles:
-      - codex
-      - all
-
   # Grafana OTEL LGTM stack (Loki + Grafana + Tempo + Mimir)
   otel-lgtm:
     image: grafana/otel-lgtm:latest
-    profiles:
-      - grafana
-      - sync-validation
-      - all
-
-  test-grafana:
-    build:
-      context: ../..
-      dockerfile: test/e2e/Dockerfile
-      target: test-grafana
-    environment:
-      - SHELL=/bin/bash
-      - PANOPTICON_PORT=4318
-    depends_on:
-      - otel-lgtm
-    profiles:
-      - grafana
-      - all
 
   test-sync-validation:
     build:
@@ -73,6 +16,3 @@ services:
       - PANOPTICON_PORT=4318
     depends_on:
       - otel-lgtm
-    profiles:
-      - sync-validation
-      - all
