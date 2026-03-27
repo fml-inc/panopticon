@@ -12,4 +12,9 @@ export type {
   SyncOptions,
   SyncTarget,
 } from "./types.js";
-export { resetWatermarks } from "./watermark.js";
+export {
+  closeWatermarkDb,
+  readWatermark,
+  resetWatermarks,
+  watermarkKey,
+} from "./watermark.js";
