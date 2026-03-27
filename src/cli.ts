@@ -1053,6 +1053,21 @@ program
         console.log(`  ${t.name} → ${t.url}${auth}`);
       }
     }),
+  )
+  .addCommand(
+    new Command("reset")
+      .description("Reset sync watermarks (re-syncs all data)")
+      .argument("[target]", "Reset only this sync target (default: all)")
+      .action(async (targetName?: string) => {
+        const { resetWatermarks } = await import("./sync/watermark.js");
+        resetWatermarks(targetName);
+        console.log(
+          targetName
+            ? `Reset sync watermarks for "${targetName}"`
+            : "Reset all sync watermarks",
+        );
+        console.log("Restart panopticon to re-sync.");
+      }),
   );
 
 // ---------------------------------------------------------------------------
@@ -1239,6 +1254,98 @@ permissions
   .action(async () => {
     const input = JSON.parse(await readStdin());
     output(permissionsApply(input));
+  });
+
+const scanCmd = program
+  .command("scan")
+  .description("Scan local session files (Claude Code, Codex, Gemini)");
+
+async function printScanSummary(): Promise<void> {
+  const { getDb } = await import("./db/schema.js");
+  const db = getDb();
+  const bySource = db
+    .prepare(
+      "SELECT source, COUNT(*) as sessions, SUM(turn_count) as turns, SUM(total_input_tokens + total_output_tokens) as tokens FROM scanner_sessions GROUP BY source",
+    )
+    .all() as {
+    source: string;
+    sessions: number;
+    turns: number;
+    tokens: number;
+  }[];
+  const total = db
+    .prepare("SELECT COUNT(*) as c FROM scanner_sessions")
+    .get() as { c: number };
+  const totalTurns = db
+    .prepare("SELECT COUNT(*) as c FROM scanner_turns")
+    .get() as { c: number };
+
+  console.log(`\nTotal: ${total.c} sessions, ${totalTurns.c} turns`);
+  for (const row of bySource) {
+    console.log(
+      `  ${row.source}: ${row.sessions} sessions, ${row.turns ?? 0} turns, ${row.tokens ?? 0} tokens`,
+    );
+  }
+}
+
+scanCmd
+  .command("run", { isDefault: true })
+  .description("Scan for new session data (incremental)")
+  .action(async () => {
+    const { scanOnce } = await import("./scanner/index.js");
+    const { getDb } = await import("./db/schema.js");
+    getDb();
+
+    const { filesScanned, newTurns } = scanOnce((msg) =>
+      console.log(`[scan] ${msg}`),
+    );
+    console.log(`Done: ${filesScanned} files scanned, ${newTurns} new turns`);
+    await printScanSummary();
+  });
+
+scanCmd
+  .command("reset")
+  .description("Reset scanner data and re-scan from scratch")
+  .argument(
+    "[source]",
+    "Reset only this source: claude, codex, gemini (default: all)",
+  )
+  .action(async (source?: string) => {
+    const { scanOnce } = await import("./scanner/index.js");
+    const { resetScanner, resetScannerSource } = await import(
+      "./scanner/store.js"
+    );
+    const { getDb } = await import("./db/schema.js");
+    getDb();
+
+    if (source) {
+      resetScannerSource(source);
+      console.log(`Reset scanner data for "${source}"`);
+    } else {
+      resetScanner();
+      console.log("Reset all scanner data");
+    }
+
+    const { filesScanned, newTurns } = scanOnce((msg) =>
+      console.log(`[scan] ${msg}`),
+    );
+    console.log(`Done: ${filesScanned} files scanned, ${newTurns} new turns`);
+    await printScanSummary();
+  });
+
+scanCmd
+  .command("compare")
+  .description("Compare scanner data against hooks/OTLP data")
+  .action(async () => {
+    const { scanOnce } = await import("./scanner/index.js");
+    const { getDb } = await import("./db/schema.js");
+    getDb();
+
+    scanOnce(() => {});
+    const { reconcile, formatReconcileReport } = await import(
+      "./scanner/reconcile.js"
+    );
+    console.log(formatReconcileReport(reconcile()));
   });
 
 // ---------------------------------------------------------------------------

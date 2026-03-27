@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { TargetAdapter } from "./types.js";
+import type { ScannerParseResult, TargetAdapter } from "./types.js";
 
 const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
@@ -256,6 +257,130 @@ const codex: TargetAdapter = {
         : `/v1${requestPath}`;
     },
     accumulatorType: "openai",
+  },
+
+  scanner: {
+    discover() {
+      const sessionsDir = path.join(CODEX_DIR, "sessions");
+      const files: { filePath: string }[] = [];
+      const safeReaddir = (d: string) => {
+        try {
+          return fs.readdirSync(d);
+        } catch {
+          return [];
+        }
+      };
+      for (const year of safeReaddir(sessionsDir)) {
+        for (const month of safeReaddir(path.join(sessionsDir, year))) {
+          for (const day of safeReaddir(path.join(sessionsDir, year, month))) {
+            const dayDir = path.join(sessionsDir, year, month, day);
+            for (const entry of safeReaddir(dayDir)) {
+              if (entry.endsWith(".jsonl"))
+                files.push({ filePath: path.join(dayDir, entry) });
+            }
+          }
+        }
+      }
+      return files;
+    },
+
+    parseFile(
+      filePath: string,
+      fromByteOffset: number,
+    ): ScannerParseResult | null {
+      const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
+      if (lines.length === 0) return null;
+
+      let meta: ScannerParseResult["meta"];
+      const turns: ScannerParseResult["turns"] = [];
+      let turnIndex = 0;
+      let currentModel: string | undefined;
+      let firstPrompt: string | undefined;
+
+      for (const line of lines) {
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const type = obj.type as string;
+        const timestamp = obj.timestamp as string | undefined;
+        const payload = obj.payload as Record<string, unknown> | undefined;
+
+        if (type === "session_meta" && payload) {
+          meta = {
+            sessionId: payload.id as string,
+            cwd: payload.cwd as string | undefined,
+            cliVersion: payload.cli_version as string | undefined,
+            startedAtMs: payload.timestamp
+              ? new Date(payload.timestamp as string).getTime()
+              : timestamp
+                ? new Date(timestamp).getTime()
+                : undefined,
+          };
+        }
+
+        if (type === "turn_context" && payload) {
+          currentModel = payload.model as string | undefined;
+          if (meta && currentModel && !meta.model) meta.model = currentModel;
+        }
+
+        if (type === "event_msg" && payload) {
+          const eventType = payload.type as string;
+
+          if (eventType === "user_message") {
+            const message = payload.message as string | undefined;
+            if (!firstPrompt && message) firstPrompt = message.slice(0, 200);
+            turns.push({
+              sessionId: meta?.sessionId ?? "",
+              turnIndex: turnIndex++,
+              timestampMs: timestamp
+                ? new Date(timestamp).getTime()
+                : Date.now(),
+              model: currentModel,
+              role: "user",
+              contentPreview: message?.slice(0, 200),
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              reasoningTokens: 0,
+            });
+          }
+
+          if (eventType === "token_count") {
+            const info = payload.info as Record<string, unknown> | null;
+            if (!info) continue;
+            const lastUsage = info.last_token_usage as
+              | Record<string, unknown>
+              | undefined;
+            if (!lastUsage) continue;
+
+            turns.push({
+              sessionId: meta?.sessionId ?? "",
+              turnIndex: turnIndex++,
+              timestampMs: timestamp
+                ? new Date(timestamp).getTime()
+                : Date.now(),
+              model: currentModel,
+              role: "assistant",
+              inputTokens: (lastUsage.input_tokens as number) ?? 0,
+              outputTokens: (lastUsage.output_tokens as number) ?? 0,
+              cacheReadTokens: (lastUsage.cached_input_tokens as number) ?? 0,
+              cacheCreationTokens: 0,
+              reasoningTokens:
+                (lastUsage.reasoning_output_tokens as number) ?? 0,
+            });
+          }
+        }
+      }
+
+      if (meta && firstPrompt && !meta.firstPrompt)
+        meta.firstPrompt = firstPrompt;
+      return { meta, turns, newByteOffset };
+    },
   },
 };
 

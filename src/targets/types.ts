@@ -150,6 +150,54 @@ export interface TargetProxySpec {
   accumulatorType: "anthropic" | "openai";
 }
 
+// ── Session File Scanner ─────────────────────────────────────────────────────
+
+export interface DiscoveredFile {
+  filePath: string;
+}
+
+export interface ScannerParsedTurn {
+  sessionId: string;
+  turnIndex: number;
+  timestampMs: number;
+  model?: string;
+  role: "user" | "assistant";
+  contentPreview?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+}
+
+export interface ScannerParsedSession {
+  sessionId: string;
+  model?: string;
+  cwd?: string;
+  cliVersion?: string;
+  startedAtMs?: number;
+  firstPrompt?: string;
+}
+
+export interface ScannerParseResult {
+  meta?: ScannerParsedSession;
+  turns: ScannerParsedTurn[];
+  newByteOffset: number;
+}
+
+export interface TargetScannerSpec {
+  /** Discover session files on disk for this target. */
+  discover(): DiscoveredFile[];
+  /**
+   * Parse a session file. Receives the file path and current byte offset.
+   * Returns parsed data and new byte offset, or null if no new data.
+   */
+  parseFile(
+    filePath: string,
+    fromByteOffset: number,
+  ): ScannerParseResult | null;
+}
+
 // ── The Adapter ─────────────────────────────────────────────────────────────
 
 export interface TargetAdapter {
@@ -166,4 +214,6 @@ export interface TargetAdapter {
   otel?: TargetOtelSpec;
   /** How to identify this target from hook payloads when no explicit source field is present */
   ident?: TargetIdentSpec;
+  /** Session file scanner — reads local transcript files for token usage */
+  scanner?: TargetScannerSpec;
 }

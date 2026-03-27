@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
+import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { TargetAdapter } from "./types.js";
+import type { ScannerParseResult, TargetAdapter } from "./types.js";
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 
@@ -123,6 +124,124 @@ const claude: TargetAdapter = {
 
   ident: {
     modelPatterns: [/^claude-/],
+  },
+
+  scanner: {
+    discover() {
+      const projectsDir = path.join(CLAUDE_DIR, "projects");
+      const files: { filePath: string }[] = [];
+      try {
+        for (const slug of fs.readdirSync(projectsDir)) {
+          const slugDir = path.join(projectsDir, slug);
+          try {
+            if (!fs.statSync(slugDir).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          for (const entry of fs.readdirSync(slugDir)) {
+            if (entry.endsWith(".jsonl")) {
+              files.push({ filePath: path.join(slugDir, entry) });
+            }
+          }
+        }
+      } catch {
+        /* projects dir may not exist */
+      }
+      return files;
+    },
+
+    parseFile(
+      filePath: string,
+      fromByteOffset: number,
+    ): ScannerParseResult | null {
+      const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
+      if (lines.length === 0) return null;
+
+      let meta: ScannerParseResult["meta"];
+      const turns: ScannerParseResult["turns"] = [];
+      let turnIndex = 0;
+      let firstPrompt: string | undefined;
+
+      for (const line of lines) {
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const type = obj.type as string;
+        const sessionId = obj.sessionId as string | undefined;
+
+        if (!meta && sessionId) {
+          meta = {
+            sessionId,
+            cliVersion: obj.version as string | undefined,
+            cwd: obj.cwd as string | undefined,
+            startedAtMs: obj.timestamp
+              ? new Date(obj.timestamp as string).getTime()
+              : undefined,
+          };
+        }
+
+        if (type === "user") {
+          const msg = obj.message as Record<string, unknown> | undefined;
+          const content = msg?.content;
+          let preview: string | undefined;
+          if (typeof content === "string") {
+            preview = content.slice(0, 200);
+          } else if (Array.isArray(content)) {
+            const text = content.find(
+              (b: Record<string, unknown>) => b.type === "text",
+            );
+            if (text) preview = (text.text as string)?.slice(0, 200);
+          }
+          if (!firstPrompt && preview) firstPrompt = preview;
+
+          turns.push({
+            sessionId: sessionId ?? meta?.sessionId ?? "",
+            turnIndex: turnIndex++,
+            timestampMs: obj.timestamp
+              ? new Date(obj.timestamp as string).getTime()
+              : Date.now(),
+            role: "user",
+            contentPreview: preview,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            reasoningTokens: 0,
+          });
+        }
+
+        if (type === "assistant") {
+          const msg = obj.message as Record<string, unknown> | undefined;
+          const usage = msg?.usage as Record<string, unknown> | undefined;
+          const model = msg?.model as string | undefined;
+          if (meta && model && !meta.model) meta.model = model;
+
+          turns.push({
+            sessionId: sessionId ?? meta?.sessionId ?? "",
+            turnIndex: turnIndex++,
+            timestampMs: obj.timestamp
+              ? new Date(obj.timestamp as string).getTime()
+              : Date.now(),
+            model,
+            role: "assistant",
+            inputTokens: (usage?.input_tokens as number) ?? 0,
+            outputTokens: (usage?.output_tokens as number) ?? 0,
+            cacheReadTokens: (usage?.cache_read_input_tokens as number) ?? 0,
+            cacheCreationTokens:
+              (usage?.cache_creation_input_tokens as number) ?? 0,
+            reasoningTokens: 0,
+          });
+        }
+      }
+
+      if (meta && firstPrompt && !meta.firstPrompt)
+        meta.firstPrompt = firstPrompt;
+      return { meta, turns, newByteOffset };
+    },
   },
 };
 

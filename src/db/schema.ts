@@ -205,6 +205,60 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 6,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scanner_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          model TEXT,
+          cwd TEXT,
+          cli_version TEXT,
+          started_at_ms INTEGER,
+          ended_at_ms INTEGER,
+          first_prompt TEXT,
+          total_input_tokens INTEGER DEFAULT 0,
+          total_output_tokens INTEGER DEFAULT 0,
+          total_cache_read_tokens INTEGER DEFAULT 0,
+          total_cache_creation_tokens INTEGER DEFAULT 0,
+          total_reasoning_tokens INTEGER DEFAULT 0,
+          turn_count INTEGER DEFAULT 0,
+          UNIQUE(session_id, source)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scanner_sessions_session ON scanner_sessions(session_id);
+        CREATE INDEX IF NOT EXISTS idx_scanner_sessions_source ON scanner_sessions(source);
+        CREATE INDEX IF NOT EXISTS idx_scanner_sessions_started ON scanner_sessions(started_at_ms);
+
+        CREATE TABLE IF NOT EXISTS scanner_turns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          turn_index INTEGER NOT NULL,
+          timestamp_ms INTEGER NOT NULL,
+          model TEXT,
+          role TEXT,
+          content_preview TEXT,
+          input_tokens INTEGER DEFAULT 0,
+          output_tokens INTEGER DEFAULT 0,
+          cache_read_tokens INTEGER DEFAULT 0,
+          cache_creation_tokens INTEGER DEFAULT 0,
+          reasoning_tokens INTEGER DEFAULT 0,
+          UNIQUE(session_id, source, turn_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scanner_turns_session ON scanner_turns(session_id);
+        CREATE INDEX IF NOT EXISTS idx_scanner_turns_ts ON scanner_turns(timestamp_ms);
+
+        CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
+          file_path TEXT PRIMARY KEY,
+          byte_offset INTEGER NOT NULL DEFAULT 0,
+          last_scanned_ms INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {
