@@ -1,7 +1,6 @@
 name: E2E Integration Tests
 
 on:
-  pull_request:
   push:
     branches: [main]
 
