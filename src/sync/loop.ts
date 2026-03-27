@@ -70,7 +70,10 @@ function resolveToken(target: SyncTarget): string | undefined {
       });
     }
     return token || undefined;
-  } catch {
+  } catch (err) {
+    console.error(
+      `[panopticon-sync] tokenCommand failed for "${target.name}": ${err instanceof Error ? err.message : err}`,
+    );
     return undefined;
   }
 }
