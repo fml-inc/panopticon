@@ -212,7 +212,7 @@ if [ -n "$HAS_CLAUDE" ]; then
 
   for i in 0 1 2; do
     log_info "Claude session $((i + 1))/3: ${TASKS[$i]:0:60}..."
-    claude --print "${TASKS[$i]}" --max-turns 3 --model claude-haiku-4-5-20251001 2>&1 || log_info "Claude session $((i + 1)) exited"
+    claude --print "${TASKS[$i]}" --max-turns 3 --model claude-haiku-4-5-20251001 --dangerously-skip-permissions 2>&1 || log_info "Claude session $((i + 1)) exited"
     sleep 3
     SESSIONS_RUN=$((SESSIONS_RUN + 1))
   done
