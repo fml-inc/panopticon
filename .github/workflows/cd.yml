@@ -10,7 +10,45 @@ permissions:
   packages: write
 
 jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    name: E2E — sync data-loss validation
+    # Skip E2E on tag pushes (the code was already tested on the merge)
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+    steps:
+      - name: Check for API keys
+        id: check_keys
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ] && \
+             [ -z "${{ secrets.OPENAI_API_KEY }}" ] && \
+             [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ No API keys available — skipping"
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.check_keys.outputs.has_key == 'true'
+        uses: actions/checkout@v4
+
+      - name: Run E2E test
+        if: steps.check_keys.outputs.has_key == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          docker compose -f test/e2e/docker-compose.yml \
+            up --build --abort-on-container-exit \
+            --exit-code-from test-sync-validation
+
   publish:
+    needs: e2e
+    # Run after E2E on main pushes; run immediately on tag pushes (E2E is skipped)
+    if: ${{ always() && (needs.e2e.result == 'success' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

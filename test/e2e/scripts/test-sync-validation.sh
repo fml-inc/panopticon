@@ -212,7 +212,7 @@ if [ -n "$HAS_CLAUDE" ]; then
 
   for i in 0 1 2; do
     log_info "Claude session $((i + 1))/3: ${TASKS[$i]:0:60}..."
-    claude --print "${TASKS[$i]}" --max-turns 3 2>&1 || log_info "Claude session $((i + 1)) exited"
+    claude --print "${TASKS[$i]}" --max-turns 3 --model claude-haiku-4-5-20251001 2>&1 || log_info "Claude session $((i + 1)) exited"
     sleep 3
     SESSIONS_RUN=$((SESSIONS_RUN + 1))
   done
@@ -225,7 +225,7 @@ if [ -n "$HAS_CODEX" ]; then
 
   for i in 0 1; do
     log_info "Codex session $((i + 1))/2: ${TASKS[$i]:0:60}..."
-    codex exec "${TASKS[$i]}" --full-auto 2>&1 || log_info "Codex session $((i + 1)) exited"
+    codex exec "${TASKS[$i]}" --full-auto --model o4-mini 2>&1 || log_info "Codex session $((i + 1)) exited"
     sleep 3
     SESSIONS_RUN=$((SESSIONS_RUN + 1))
   done
@@ -238,7 +238,7 @@ if [ -n "$HAS_GEMINI" ]; then
 
   for i in 0 1; do
     log_info "Gemini session $((i + 1))/2: ${TASKS[$i]:0:60}..."
-    gemini -p "${TASKS[$i]}" --yolo 2>&1 || log_info "Gemini session $((i + 1)) exited"
+    gemini -p "${TASKS[$i]}" --yolo --model gemini-2.0-flash 2>&1 || log_info "Gemini session $((i + 1)) exited"
     sleep 3
     SESSIONS_RUN=$((SESSIONS_RUN + 1))
   done
