@@ -373,13 +373,10 @@ if [ -n "$HAS_CLAUDE" ]; then
     "hook_events: has recognized Claude Code tool name"
 fi
 
-# Claude Code does not currently send source/target in hook payloads,
-# so target detection falls back to 'unknown' (see issue #73).
-# Just verify Claude sessions exist via tool names rather than target.
 if [ -n "$HAS_CLAUDE" ]; then
   assert_db_not_empty \
-    "SELECT 1 FROM hook_events WHERE target IS NOT NULL LIMIT 1;" \
-    "hook_events: target populated for Claude sessions"
+    "SELECT 1 FROM hook_events WHERE target = 'claude' LIMIT 1;" \
+    "hook_events: target is 'claude' for Claude sessions"
 fi
 if [ -n "$HAS_CODEX" ]; then
   assert_db_not_empty \
