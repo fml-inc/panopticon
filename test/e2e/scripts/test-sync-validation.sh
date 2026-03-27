@@ -258,6 +258,7 @@ wait_for_db_rows otel_logs 1 15 || true
 wait_for_db_rows otel_metrics 1 15 || true
 
 dump_db_debug
+dump_db_samples
 
 # ── 6a: Structural checks ────────────────────────────────────────────────────
 
