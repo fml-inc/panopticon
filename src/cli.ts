@@ -1009,8 +1009,17 @@ program
       .argument("<name>", "Target name")
       .argument("<url>", "OTLP endpoint base URL")
       .option("--token <token>", "Bearer token for auth")
+      .option(
+        "--token-command <command>",
+        "Shell command that returns a token (e.g. 'gh auth token')",
+      )
       .action((name: string, url: string, opts: Opts) => {
-        addTarget({ name, url, token: opts.token ?? undefined });
+        addTarget({
+          name,
+          url,
+          token: opts.token ?? undefined,
+          tokenCommand: opts.tokenCommand ?? undefined,
+        });
         console.log(`Added sync target "${name}" → ${url}`);
         console.log("Restart panopticon to activate.");
       }),
@@ -1036,7 +1045,11 @@ program
         return;
       }
       for (const t of targets) {
-        const auth = t.token ? " (token)" : "";
+        const auth = t.token
+          ? " (token)"
+          : t.tokenCommand
+            ? ` (token-command: ${t.tokenCommand})`
+            : "";
         console.log(`  ${t.name} → ${t.url}${auth}`);
       }
     }),

@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { getDb } from "../db/schema.js";
 import { captureException } from "../sentry.js";
 import { chunk, postOtlp } from "./post.js";
@@ -45,6 +46,35 @@ function shouldSync(
   return true;
 }
 
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function resolveToken(target: SyncTarget): string | undefined {
+  if (target.token) return target.token;
+  if (!target.tokenCommand) return undefined;
+
+  const cached = tokenCache.get(target.name);
+  if (cached && Date.now() < cached.expiresAt) return cached.token;
+
+  try {
+    const token = execSync(target.tokenCommand, {
+      encoding: "utf-8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (token) {
+      tokenCache.set(target.name, {
+        token,
+        expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
+      });
+    }
+    return token || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
   const postBatchSize = opts.postBatchSize ?? DEFAULT_POST_BATCH_SIZE;
@@ -56,8 +86,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
   function resolveHeaders(target: SyncTarget): Record<string, string> {
     const headers: Record<string, string> = { ...target.headers };
-    if (target.token) {
-      headers.Authorization = `Bearer ${target.token}`;
+    const token = resolveToken(target);
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
     return headers;
   }
