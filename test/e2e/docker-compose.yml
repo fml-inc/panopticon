@@ -43,6 +43,7 @@ services:
     image: grafana/otel-lgtm:latest
     profiles:
       - grafana
+      - sync-validation
       - all
 
   test-grafana:
@@ -57,4 +58,21 @@ services:
       - otel-lgtm
     profiles:
       - grafana
+      - all
+
+  test-sync-validation:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      target: test-sync-validation
+    environment:
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+      - GEMINI_API_KEY
+      - SHELL=/bin/bash
+      - PANOPTICON_PORT=4318
+    depends_on:
+      - otel-lgtm
+    profiles:
+      - sync-validation
       - all

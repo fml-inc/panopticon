@@ -60,3 +60,8 @@ ENTRYPOINT ["/opt/e2e/scripts/test-codex.sh"]
 # ─── Grafana OTEL sync (no CLI tool needed) ────────────────────────────────
 FROM base AS test-grafana
 ENTRYPOINT ["/opt/e2e/scripts/test-grafana.sh"]
+
+# ─── Sync data-loss validation (organic CLI telemetry → Grafana) ─────────────
+FROM base AS test-sync-validation
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+ENTRYPOINT ["/opt/e2e/scripts/test-sync-validation.sh"]
