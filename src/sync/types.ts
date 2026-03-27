@@ -5,6 +5,8 @@ export interface SyncTarget {
   url: string;
   /** Bearer token — sent as Authorization: Bearer <token> */
   token?: string;
+  /** Shell command that returns a Bearer token on stdout (e.g. "gh auth token"). Cached for 5 minutes. */
+  tokenCommand?: string;
   /** Additional headers (merged with token auth if both provided) */
   headers?: Record<string, string>;
 }
