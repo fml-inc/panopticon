@@ -42,25 +42,6 @@ ENV PANOPTICON_PORT=4318
 
 WORKDIR /workspace
 
-# ─── Claude Code ────────────────────────────────────────────────────────────
-FROM base AS test-claude
-RUN npm install -g @anthropic-ai/claude-code
-ENTRYPOINT ["/opt/e2e/scripts/test-claude.sh"]
-
-# ─── Gemini CLI ─────────────────────────────────────────────────────────────
-FROM base AS test-gemini
-RUN npm install -g @google/gemini-cli
-ENTRYPOINT ["/opt/e2e/scripts/test-gemini.sh"]
-
-# ─── Codex CLI ──────────────────────────────────────────────────────────────
-FROM base AS test-codex
-RUN npm install -g @openai/codex
-ENTRYPOINT ["/opt/e2e/scripts/test-codex.sh"]
-
-# ─── Grafana OTEL sync (no CLI tool needed) ────────────────────────────────
-FROM base AS test-grafana
-ENTRYPOINT ["/opt/e2e/scripts/test-grafana.sh"]
-
 # ─── Sync data-loss validation (organic CLI telemetry → Grafana) ─────────────
 FROM base AS test-sync-validation
 RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
