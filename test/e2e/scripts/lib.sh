@@ -200,3 +200,67 @@ dump_db_debug() {
   echo "  Event types: $(sqlite3 "$DB_PATH" 'SELECT DISTINCT event_type FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  Tool names: $(sqlite3 "$DB_PATH" "SELECT DISTINCT tool_name FROM hook_events WHERE tool_name IS NOT NULL AND tool_name != '';" 2>/dev/null || echo 'N/A')"
 }
+
+# Dump sample rows from each table for content inspection
+dump_db_samples() {
+  log_info "Sample rows:"
+  if [ ! -f "$DB_PATH" ]; then
+    log_info "  Database file not found at $DB_PATH"
+    return
+  fi
+
+  echo ""
+  echo "── hook_events (5 sample rows) ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT id, session_id, event_type, target, tool_name,
+            substr(user_prompt, 1, 60) AS prompt_preview,
+            cwd, timestamp_ms
+     FROM hook_events ORDER BY id LIMIT 5;" 2>/dev/null || echo "  (query failed)"
+
+  echo ""
+  echo "── otel_logs (5 sample rows) ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT id, session_id, body, severity_text,
+            substr(attributes, 1, 120) AS attrs_preview,
+            timestamp_ns
+     FROM otel_logs ORDER BY id LIMIT 5;" 2>/dev/null || echo "  (query failed)"
+
+  echo ""
+  echo "── otel_metrics (5 sample rows) ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT id, session_id, name, value, unit,
+            substr(attributes, 1, 120) AS attrs_preview,
+            timestamp_ns
+     FROM otel_metrics ORDER BY id LIMIT 5;" 2>/dev/null || echo "  (query failed)"
+
+  echo ""
+  echo "── sessions ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT session_id, target, started_at_ms, ended_at_ms,
+            substr(first_prompt, 1, 60) AS prompt_preview
+     FROM sessions ORDER BY started_at_ms;" 2>/dev/null || echo "  (query failed)"
+
+  echo ""
+  echo "── hook_events by session + event_type ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT session_id, target, event_type, COUNT(*) AS count
+     FROM hook_events
+     GROUP BY session_id, target, event_type
+     ORDER BY session_id, event_type;" 2>/dev/null || echo "  (query failed)"
+
+  echo ""
+  echo "── otel_logs by session + body ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT session_id, body, COUNT(*) AS count
+     FROM otel_logs
+     GROUP BY session_id, body
+     ORDER BY session_id, body;" 2>/dev/null || echo "  (query failed)"
+
+  echo ""
+  echo "── otel_metrics by session + name ──"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT session_id, name, COUNT(*) AS count, SUM(value) AS total_value
+     FROM otel_metrics
+     GROUP BY session_id, name
+     ORDER BY session_id, name;" 2>/dev/null || echo "  (query failed)"
+}

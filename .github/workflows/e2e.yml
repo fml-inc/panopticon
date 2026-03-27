@@ -8,63 +8,33 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        tool: [claude, gemini, codex]
-        include:
-          - tool: claude
-            secret_name: ANTHROPIC_API_KEY
-            env_var: ANTHROPIC_API_KEY
-          - tool: gemini
-            secret_name: GEMINI_API_KEY
-            env_var: GEMINI_API_KEY
-          - tool: codex
-            secret_name: OPENAI_API_KEY
-            env_var: OPENAI_API_KEY
-
-    name: E2E — ${{ matrix.tool }}
+    timeout-minutes: 20
+    name: E2E — sync data-loss validation
 
     steps:
-      - name: Check for API key
-        id: check_key
+      - name: Check for API keys
+        id: check_keys
         run: |
-          if [ -z "${{ secrets[matrix.secret_name] }}" ]; then
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ] && \
+             [ -z "${{ secrets.OPENAI_API_KEY }}" ] && \
+             [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
             echo "has_key=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ ${{ matrix.secret_name }} not available — skipping"
+            echo "⏭️ No API keys available — skipping"
           else
             echo "has_key=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout
-        if: steps.check_key.outputs.has_key == 'true'
+        if: steps.check_keys.outputs.has_key == 'true'
         uses: actions/checkout@v4
 
       - name: Run E2E test
-        if: steps.check_key.outputs.has_key == 'true'
+        if: steps.check_keys.outputs.has_key == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           docker compose -f test/e2e/docker-compose.yml \
-            --profile ${{ matrix.tool }} \
             up --build --abort-on-container-exit \
-            --exit-code-from test-${{ matrix.tool }}
-
-  e2e-grafana:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    name: E2E — grafana sync
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run Grafana sync E2E test
-        run: |
-          docker compose -f test/e2e/docker-compose.yml \
-            --profile grafana \
-            up --build --abort-on-container-exit \
-            --exit-code-from test-grafana
+            --exit-code-from test-sync-validation
