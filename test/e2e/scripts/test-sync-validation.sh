@@ -553,8 +553,75 @@ if [ -n "$HAS_GEMINI" ]; then
     "sessions: has target = 'gemini'"
 fi
 
-# ─── Phase 7: Snapshot + Sync → Loki (Zero Data Loss) ───────────────────────
-log_phase 7 "Validate Loki (Zero Data Loss)"
+# ─── Phase 7: Session File Scanner ───────────────────────────────────────────
+log_phase 7 "Session File Scanner"
+
+# Run the scanner to pick up session files written by the CLI sessions
+SCAN_OUTPUT=$(panopticon scan 2>&1 || true)
+log_info "Scan output: ${SCAN_OUTPUT}"
+
+SCANNER_SESSIONS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_sessions;" 2>/dev/null || echo "0")
+SCANNER_TURNS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_turns;" 2>/dev/null || echo "0")
+
+log_info "Scanner: ${SCANNER_SESSIONS} sessions, ${SCANNER_TURNS} turns"
+
+# Scanner should have found sessions from the CLI runs
+assert_db_count "SELECT COUNT(*) FROM scanner_sessions;" 1 \
+  "scanner_sessions: >= 1 session found"
+
+assert_db_count "SELECT COUNT(*) FROM scanner_turns;" 1 \
+  "scanner_turns: >= 1 turn found"
+
+# Scanner turns should have token data
+assert_db_not_empty \
+  "SELECT 1 FROM scanner_turns WHERE input_tokens > 0 OR output_tokens > 0 LIMIT 1;" \
+  "scanner_turns: has turns with token data"
+
+# Per-CLI scanner checks
+if [ -n "$HAS_CLAUDE" ]; then
+  assert_db_not_empty \
+    "SELECT 1 FROM scanner_sessions WHERE source = 'claude' LIMIT 1;" \
+    "scanner: found Claude session files"
+  assert_db_not_empty \
+    "SELECT 1 FROM scanner_turns WHERE source = 'claude' AND role = 'assistant' AND output_tokens > 0 LIMIT 1;" \
+    "scanner: Claude turns have output tokens"
+fi
+
+if [ -n "$HAS_CODEX" ]; then
+  assert_db_not_empty \
+    "SELECT 1 FROM scanner_sessions WHERE source = 'codex' LIMIT 1;" \
+    "scanner: found Codex session files"
+fi
+
+if [ -n "$HAS_GEMINI" ]; then
+  assert_db_not_empty \
+    "SELECT 1 FROM scanner_sessions WHERE source = 'gemini' LIMIT 1;" \
+    "scanner: found Gemini session files"
+fi
+
+# Scanner sessions should correlate with hook_events sessions
+SCANNER_HOOK_OVERLAP=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM scanner_sessions s
+   INNER JOIN (SELECT DISTINCT session_id FROM hook_events) h ON s.session_id = h.session_id;" \
+  2>/dev/null || echo "0")
+if [ "$SCANNER_HOOK_OVERLAP" -gt 0 ]; then
+  log_pass "Scanner <-> hooks: ${SCANNER_HOOK_OVERLAP} sessions overlap"
+else
+  log_info "Scanner <-> hooks: no overlap (session IDs may differ)"
+fi
+
+# Show scanner summary
+sqlite3 -header -column "$DB_PATH" \
+  "SELECT source, COUNT(*) as sessions, SUM(turn_count) as turns,
+     SUM(total_input_tokens) as input_tok, SUM(total_output_tokens) as output_tok
+   FROM scanner_sessions GROUP BY source;" 2>/dev/null || true
+
+# Run reconciliation report
+log_info "Running scan compare..."
+panopticon scan compare 2>&1 || true
+
+# ─── Phase 8: Snapshot + Sync → Loki (Zero Data Loss) ───────────────────────
+log_phase 8 "Validate Loki (Zero Data Loss)"
 
 LOCAL_HOOKS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM hook_events;" 2>/dev/null || echo "0")
 LOCAL_LOGS_TOTAL=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_logs;" 2>/dev/null || echo "0")
@@ -633,7 +700,7 @@ else
 fi
 
 # ─── Phase 8: Validate Prometheus Metrics ────────────────────────────────────
-log_phase 8 "Validate Prometheus Metrics"
+log_phase 9 "Validate Prometheus Metrics"
 
 PROM_NAMES=$(curl -sf -G "${PROM_URL}/api/v1/label/__name__/values" 2>/dev/null \
   | jq -r '.data[]' 2>/dev/null || echo "")
@@ -657,7 +724,7 @@ else
 fi
 
 # ─── Phase 9: Verify Sync Watermarks ────────────────────────────────────────
-log_phase 9 "Verify Sync Watermarks"
+log_phase 10 "Verify Sync Watermarks"
 
 SYNC_LIST=$(panopticon sync list 2>/dev/null || echo "")
 if echo "$SYNC_LIST" | grep -q "e2e-sync-val"; then
