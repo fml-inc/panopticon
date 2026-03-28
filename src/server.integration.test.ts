@@ -891,69 +891,7 @@ describe("server integration", () => {
     });
   });
 
-  // ── Codex metric session inference ───────────────────────────────────────
-
-  describe("Codex metric session inference", () => {
-    it("infers session_id for metrics missing it", () => {
-      const db = getDb();
-      const sessionId = "codex-infer-sess-001";
-      const metricTs = Date.now();
-
-      // Create a session in the sessions table
-      upsertSession({
-        session_id: sessionId,
-        target: "codex",
-        started_at_ms: metricTs - 60_000,
-      });
-
-      // Insert metrics without session_id but with codex service.name
-      const rows: OtelMetricRow[] = [
-        {
-          timestamp_ns: metricTs * 1_000_000,
-          name: "codex.turn.token_usage",
-          value: 500,
-          metric_type: "gauge",
-          attributes: { token_type: "input", model: "o3" },
-          resource_attributes: { "service.name": "codex_cli_rs" },
-          // no session_id
-        },
-      ];
-      insertOtelMetrics(rows);
-
-      const stored = db
-        .prepare(
-          "SELECT session_id FROM otel_metrics WHERE name = 'codex.turn.token_usage' AND value = 500",
-        )
-        .get() as { session_id: string | null };
-
-      expect(stored.session_id).toBe(sessionId);
-    });
-
-    it("does not infer session for unknown service.name", () => {
-      const db = getDb();
-      const metricTs = Date.now();
-
-      const rows: OtelMetricRow[] = [
-        {
-          timestamp_ns: metricTs * 1_000_000,
-          name: "unknown.metric",
-          value: 42,
-          metric_type: "gauge",
-          attributes: {},
-          resource_attributes: { "service.name": "unknown-service" },
-        },
-      ];
-      insertOtelMetrics(rows);
-
-      const stored = db
-        .prepare(
-          "SELECT session_id FROM otel_metrics WHERE name = 'unknown.metric'",
-        )
-        .get() as { session_id: string | null };
-
-      expect(stored.session_id).toBeNull();
-    });
-  });
+  // (Session inference removed — scanner provides authoritative session data)
 
   // ── resolveTarget via processHookEvent ───────────────────────────────────
 
@@ -1221,46 +1159,7 @@ describe("server integration", () => {
     });
   });
 
-  // ── Gemini session inference ─────────────────────────────────────────────
-
-  describe("Gemini metric session inference", () => {
-    it("infers session_id from gemini-cli service.name", () => {
-      const sessionId = "gemini-infer-sess-only";
-      const metricTs = Date.now();
-
-      // Create a Gemini session — use a time that's clearly the most recent
-      upsertSession({
-        session_id: sessionId,
-        target: "gemini",
-        started_at_ms: metricTs - 1_000,
-      });
-
-      // Insert metric without session_id but with gemini service.name
-      const rows: OtelMetricRow[] = [
-        {
-          timestamp_ns: metricTs * 1_000_000,
-          name: "gemini_cli.token.usage",
-          value: 777,
-          metric_type: "gauge",
-          attributes: {
-            "gen_ai.token.type": "input",
-            "gen_ai.response.model": "gemini-2.5-flash",
-          },
-          resource_attributes: { "service.name": "gemini-cli" },
-        },
-      ];
-      insertOtelMetrics(rows);
-
-      const db = getDb();
-      const stored = db
-        .prepare(
-          "SELECT session_id FROM otel_metrics WHERE name = 'gemini_cli.token.usage' AND value = 777",
-        )
-        .get() as { session_id: string | null };
-
-      expect(stored.session_id).toBe(sessionId);
-    });
-  });
+  // (Gemini session inference removed — scanner provides authoritative session data)
 
   // ── Gemini target detection via eventMap ────────────────────────────────
 

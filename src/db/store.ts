@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { allTargets } from "../targets/index.js";
+
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -85,76 +85,13 @@ export function insertOtelLogs(rows: OtelLogRow[]): void {
   insertMany(rows);
 }
 
-/** Lazy-built map from OTel service.name to target adapter id. */
-let _serviceNameMap: Map<string, string> | null = null;
-function serviceNameMap(): Map<string, string> {
-  if (!_serviceNameMap) {
-    _serviceNameMap = new Map();
-    for (const t of allTargets()) {
-      if (t.otel?.serviceName) {
-        _serviceNameMap.set(t.otel.serviceName, t.id);
-      }
-    }
-  }
-  return _serviceNameMap;
-}
-
-/**
- * For metrics missing a session_id (e.g. Codex doesn't include conversation.id
- * on metric datapoints), infer it from the most recent session whose time range
- * overlaps the metric timestamp.  We scope by target to avoid cross-client
- * misattribution and cache the result for the duration of the batch.
- */
-function inferSessionId(
-  db: ReturnType<typeof getDb>,
-  timestampNs: number,
-  resourceAttrs: Record<string, unknown> | undefined,
-): string | null {
-  const serviceName = resourceAttrs?.["service.name"];
-  if (typeof serviceName !== "string") return null;
-
-  const target = serviceNameMap().get(serviceName);
-  if (!target) return null;
-
-  const metricMs = Math.floor(timestampNs / 1_000_000);
-
-  // Find the most recent session for this target that started before the metric
-  const row = db
-    .prepare(
-      `SELECT session_id FROM sessions
-       WHERE target = ? AND started_at_ms <= ?
-       ORDER BY started_at_ms DESC LIMIT 1`,
-    )
-    .get(target, metricMs) as { session_id: string } | undefined;
-
-  return row?.session_id ?? null;
-}
-
 export function insertOtelMetrics(rows: OtelMetricRow[]): void {
   const db = getDb();
   const stmt = db.prepare(INSERT_METRIC_SQL);
 
-  // Cache inferred session IDs keyed by service name. Within a single batch,
-  // all metrics for one service.name get the same inferred session. This is
-  // correct when one client emits one batch per session (the common case).
-  // If two sessions for the same service interleave in one batch, the later
-  // session's metrics will be mis-attributed — acceptable given the rarity.
-  const inferCache = new Map<string, string | null>();
-
   const insertMany = db.transaction((rows: OtelMetricRow[]) => {
     for (const row of rows) {
-      let sessionId = row.session_id ?? null;
-
-      if (!sessionId && row.resource_attributes) {
-        const service = row.resource_attributes["service.name"] as string;
-        if (!inferCache.has(service)) {
-          inferCache.set(
-            service,
-            inferSessionId(db, row.timestamp_ns, row.resource_attributes),
-          );
-        }
-        sessionId = inferCache.get(service) ?? null;
-      }
+      const sessionId = row.session_id ?? null;
 
       stmt.run({
         timestamp_ns: row.timestamp_ns,
