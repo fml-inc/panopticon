@@ -36,6 +36,29 @@ const claude: TargetAdapter = {
       (settings.enabledPlugins as Record<string, unknown>)[
         "panopticon@local-plugins"
       ] = true;
+
+      // Clean up stale hooks from older panopticon/fml installs that wrote
+      // hook entries directly into settings.json.  The plugin system now
+      // handles hooks via hooks.json, so these are redundant and break when
+      // package paths change.
+      const hooks = settings.hooks as Record<string, unknown[]> | undefined;
+      if (hooks) {
+        for (const event of Object.keys(hooks)) {
+          const entries = hooks[event];
+          if (!Array.isArray(entries)) continue;
+          hooks[event] = entries.filter(
+            (h) =>
+              !(
+                typeof h === "object" &&
+                h !== null &&
+                JSON.stringify(h).includes("hook-handler")
+              ),
+          );
+          if ((hooks[event] as unknown[]).length === 0) delete hooks[event];
+        }
+        if (Object.keys(hooks).length === 0) delete settings.hooks;
+      }
+
       return settings;
     },
     removeInstallConfig(existing) {
