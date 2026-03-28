@@ -205,6 +205,90 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 6,
+    up: (db) => {
+      // Add scanner columns to sessions table — both hooks and scanner
+      // upsert by session_id with COALESCE, so either source can fill
+      // in any field independently.
+      db.exec(`
+        ALTER TABLE sessions ADD COLUMN model TEXT;
+        ALTER TABLE sessions ADD COLUMN cli_version TEXT;
+        ALTER TABLE sessions ADD COLUMN scanner_file_path TEXT;
+        ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_reasoning_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN turn_count INTEGER DEFAULT 0;
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scanner_turns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          turn_index INTEGER NOT NULL,
+          timestamp_ms INTEGER NOT NULL,
+          model TEXT,
+          role TEXT,
+          content_preview TEXT,
+          input_tokens INTEGER DEFAULT 0,
+          output_tokens INTEGER DEFAULT 0,
+          cache_read_tokens INTEGER DEFAULT 0,
+          cache_creation_tokens INTEGER DEFAULT 0,
+          reasoning_tokens INTEGER DEFAULT 0,
+          UNIQUE(session_id, source, turn_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scanner_turns_session ON scanner_turns(session_id);
+        CREATE INDEX IF NOT EXISTS idx_scanner_turns_ts ON scanner_turns(timestamp_ms);
+
+        CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
+          file_path TEXT PRIMARY KEY,
+          byte_offset INTEGER NOT NULL DEFAULT 0,
+          last_scanned_ms INTEGER NOT NULL
+        );
+      `);
+    },
+  },
+  {
+    version: 7,
+    up: (db) => {
+      db.exec(`
+        -- OTLP-sourced token columns (separate from scanner totals)
+        ALTER TABLE sessions ADD COLUMN otel_input_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN otel_output_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN otel_cache_read_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN otel_cache_creation_tokens INTEGER DEFAULT 0;
+
+        -- Model set (comma-separated, sessions can switch models)
+        ALTER TABLE sessions ADD COLUMN models TEXT;
+
+        -- Completeness indicators
+        ALTER TABLE sessions ADD COLUMN has_hooks INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN has_otel INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN has_scanner INTEGER DEFAULT 0;
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scanner_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          timestamp_ms INTEGER NOT NULL,
+          tool_name TEXT,
+          tool_input TEXT,
+          tool_output TEXT,
+          content TEXT,
+          metadata JSON,
+          UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type);
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {

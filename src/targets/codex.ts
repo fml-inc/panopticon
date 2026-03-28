@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { TargetAdapter } from "./types.js";
+import type { ScannerParseResult, TargetAdapter } from "./types.js";
 
 const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
@@ -256,6 +257,171 @@ const codex: TargetAdapter = {
         : `/v1${requestPath}`;
     },
     accumulatorType: "openai",
+  },
+
+  scanner: {
+    discover() {
+      const sessionsDir = path.join(CODEX_DIR, "sessions");
+      const files: { filePath: string }[] = [];
+      const safeReaddir = (d: string) => {
+        try {
+          return fs.readdirSync(d);
+        } catch {
+          return [];
+        }
+      };
+      for (const year of safeReaddir(sessionsDir)) {
+        for (const month of safeReaddir(path.join(sessionsDir, year))) {
+          for (const day of safeReaddir(path.join(sessionsDir, year, month))) {
+            const dayDir = path.join(sessionsDir, year, month, day);
+            for (const entry of safeReaddir(dayDir)) {
+              if (entry.endsWith(".jsonl"))
+                files.push({ filePath: path.join(dayDir, entry) });
+            }
+          }
+        }
+      }
+      return files;
+    },
+
+    parseFile(
+      filePath: string,
+      fromByteOffset: number,
+    ): ScannerParseResult | null {
+      const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
+      if (lines.length === 0) return null;
+
+      let meta: ScannerParseResult["meta"];
+      const turns: ScannerParseResult["turns"] = [];
+      const events: ScannerParseResult["events"] = [];
+      let turnIndex = 0;
+      let currentModel: string | undefined;
+      let firstPrompt: string | undefined;
+
+      for (const line of lines) {
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const type = obj.type as string;
+        const timestamp = obj.timestamp as string | undefined;
+        const tsMs = timestamp ? new Date(timestamp).getTime() : Date.now();
+        const payload = obj.payload as Record<string, unknown> | undefined;
+
+        if (type === "session_meta" && payload) {
+          meta = {
+            sessionId: payload.id as string,
+            cwd: payload.cwd as string | undefined,
+            cliVersion: payload.cli_version as string | undefined,
+            startedAtMs: payload.timestamp
+              ? new Date(payload.timestamp as string).getTime()
+              : tsMs,
+          };
+        }
+
+        if (type === "turn_context" && payload) {
+          currentModel = payload.model as string | undefined;
+          if (meta && currentModel && !meta.model) meta.model = currentModel;
+        }
+
+        const sid = meta?.sessionId ?? "";
+
+        if (type === "event_msg" && payload) {
+          const eventType = payload.type as string;
+
+          if (eventType === "user_message") {
+            const message = payload.message as string | undefined;
+            if (!firstPrompt && message) firstPrompt = message.slice(0, 200);
+            turns.push({
+              sessionId: sid,
+              turnIndex: turnIndex++,
+              timestampMs: tsMs,
+              model: currentModel,
+              role: "user",
+              contentPreview: message?.slice(0, 200),
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              reasoningTokens: 0,
+            });
+          }
+
+          if (eventType === "token_count") {
+            const info = payload.info as Record<string, unknown> | null;
+            if (!info) continue;
+            const lastUsage = info.last_token_usage as
+              | Record<string, unknown>
+              | undefined;
+            if (!lastUsage) continue;
+
+            turns.push({
+              sessionId: sid,
+              turnIndex: turnIndex++,
+              timestampMs: tsMs,
+              model: currentModel,
+              role: "assistant",
+              inputTokens: (lastUsage.input_tokens as number) ?? 0,
+              outputTokens: (lastUsage.output_tokens as number) ?? 0,
+              cacheReadTokens: (lastUsage.cached_input_tokens as number) ?? 0,
+              cacheCreationTokens: 0,
+              reasoningTokens:
+                (lastUsage.reasoning_output_tokens as number) ?? 0,
+            });
+          }
+
+          if (eventType === "agent_message") {
+            events.push({
+              sessionId: sid,
+              eventType: "agent_message",
+              timestampMs: tsMs,
+              content: (payload.message as string)?.slice(0, 500),
+              metadata: { phase: payload.phase },
+            });
+          }
+        }
+
+        // Tool calls from response_item
+        if (type === "response_item") {
+          const p = obj.payload as Record<string, unknown> | undefined;
+          const itemType = p?.type as string | undefined;
+
+          if (itemType === "function_call") {
+            events.push({
+              sessionId: sid,
+              eventType: "tool_call",
+              timestampMs: tsMs,
+              toolName: p?.name as string | undefined,
+              toolInput:
+                typeof p?.arguments === "string"
+                  ? p.arguments.slice(0, 1000)
+                  : JSON.stringify(p?.arguments)?.slice(0, 1000),
+              metadata: { call_id: p?.call_id },
+            });
+          }
+
+          if (itemType === "function_call_output") {
+            events.push({
+              sessionId: sid,
+              eventType: "tool_result",
+              timestampMs: tsMs,
+              toolOutput:
+                typeof p?.output === "string"
+                  ? p.output.slice(0, 1000)
+                  : undefined,
+              metadata: { call_id: p?.call_id },
+            });
+          }
+        }
+      }
+
+      if (meta && firstPrompt && !meta.firstPrompt)
+        meta.firstPrompt = firstPrompt;
+      return { meta, turns, events, newByteOffset };
+    },
   },
 };
 

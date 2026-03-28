@@ -5,6 +5,8 @@ import { syncAwarePrune } from "./db/sync-prune.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
 import { handleOtlpRequest } from "./otlp/server.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
+import { createScannerLoop } from "./scanner/index.js";
+import type { ScannerHandle } from "./scanner/types.js";
 import {
   addBreadcrumb,
   captureException,
@@ -127,6 +129,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
 
   const server = createUnifiedServer();
   let syncHandle: SyncHandle | null = null;
+  let scannerHandle: ScannerHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
 
   server.on("error", (err: NodeJS.ErrnoException) => {
@@ -156,6 +159,12 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
       syncHandle.start();
     }
 
+    // Start session file scanner
+    scannerHandle = createScannerLoop({
+      log: (msg) => console.error(`[panopticon-scanner] ${msg}`),
+    });
+    scannerHandle.start();
+
     // Run prune on startup, then hourly
     runPrune();
     pruneTimer = setInterval(runPrune, PRUNE_INTERVAL_MS);
@@ -164,6 +173,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
 
   const shutdown = async () => {
     if (pruneTimer) clearInterval(pruneTimer);
+    scannerHandle?.stop();
     syncHandle?.stop();
     await flushSentry();
     server.close();

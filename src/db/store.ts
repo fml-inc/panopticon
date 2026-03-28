@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { allTargets } from "../targets/index.js";
+
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -85,76 +85,13 @@ export function insertOtelLogs(rows: OtelLogRow[]): void {
   insertMany(rows);
 }
 
-/** Lazy-built map from OTel service.name to target adapter id. */
-let _serviceNameMap: Map<string, string> | null = null;
-function serviceNameMap(): Map<string, string> {
-  if (!_serviceNameMap) {
-    _serviceNameMap = new Map();
-    for (const t of allTargets()) {
-      if (t.otel?.serviceName) {
-        _serviceNameMap.set(t.otel.serviceName, t.id);
-      }
-    }
-  }
-  return _serviceNameMap;
-}
-
-/**
- * For metrics missing a session_id (e.g. Codex doesn't include conversation.id
- * on metric datapoints), infer it from the most recent session whose time range
- * overlaps the metric timestamp.  We scope by target to avoid cross-client
- * misattribution and cache the result for the duration of the batch.
- */
-function inferSessionId(
-  db: ReturnType<typeof getDb>,
-  timestampNs: number,
-  resourceAttrs: Record<string, unknown> | undefined,
-): string | null {
-  const serviceName = resourceAttrs?.["service.name"];
-  if (typeof serviceName !== "string") return null;
-
-  const target = serviceNameMap().get(serviceName);
-  if (!target) return null;
-
-  const metricMs = Math.floor(timestampNs / 1_000_000);
-
-  // Find the most recent session for this target that started before the metric
-  const row = db
-    .prepare(
-      `SELECT session_id FROM sessions
-       WHERE target = ? AND started_at_ms <= ?
-       ORDER BY started_at_ms DESC LIMIT 1`,
-    )
-    .get(target, metricMs) as { session_id: string } | undefined;
-
-  return row?.session_id ?? null;
-}
-
 export function insertOtelMetrics(rows: OtelMetricRow[]): void {
   const db = getDb();
   const stmt = db.prepare(INSERT_METRIC_SQL);
 
-  // Cache inferred session IDs keyed by service name. Within a single batch,
-  // all metrics for one service.name get the same inferred session. This is
-  // correct when one client emits one batch per session (the common case).
-  // If two sessions for the same service interleave in one batch, the later
-  // session's metrics will be mis-attributed — acceptable given the rarity.
-  const inferCache = new Map<string, string | null>();
-
   const insertMany = db.transaction((rows: OtelMetricRow[]) => {
     for (const row of rows) {
-      let sessionId = row.session_id ?? null;
-
-      if (!sessionId && row.resource_attributes) {
-        const service = row.resource_attributes["service.name"] as string;
-        if (!inferCache.has(service)) {
-          inferCache.set(
-            service,
-            inferSessionId(db, row.timestamp_ns, row.resource_attributes),
-          );
-        }
-        sessionId = inferCache.get(service) ?? null;
-      }
+      const sessionId = row.session_id ?? null;
 
       stmt.run({
         timestamp_ns: row.timestamp_ns,
@@ -215,13 +152,42 @@ export interface SessionUpsert {
   first_prompt?: string;
   permission_mode?: string;
   agent_version?: string;
+  // Scanner-sourced fields
+  model?: string;
+  cli_version?: string;
+  scanner_file_path?: string;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cache_read_tokens?: number;
+  total_cache_creation_tokens?: number;
+  total_reasoning_tokens?: number;
+  turn_count?: number;
+  // OTLP-sourced tokens
+  otel_input_tokens?: number;
+  otel_output_tokens?: number;
+  otel_cache_read_tokens?: number;
+  otel_cache_creation_tokens?: number;
+  // Completeness indicators
+  has_hooks?: number;
+  has_otel?: number;
+  has_scanner?: number;
 }
 
 export function upsertSession(row: SessionUpsert): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt, permission_mode, agent_version)
-     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt, @permission_mode, @agent_version)
+    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+       permission_mode, agent_version, model, cli_version, scanner_file_path,
+       total_input_tokens, total_output_tokens, total_cache_read_tokens,
+       total_cache_creation_tokens, total_reasoning_tokens, turn_count,
+       otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
+       models, has_hooks, has_otel, has_scanner)
+     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt,
+       @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
+       @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
+       @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
+       @otel_input_tokens, @otel_output_tokens, @otel_cache_read_tokens, @otel_cache_creation_tokens,
+       @model, @has_hooks, @has_otel, @has_scanner)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
@@ -229,7 +195,29 @@ export function upsertSession(row: SessionUpsert): void {
        cwd = COALESCE(excluded.cwd, sessions.cwd),
        first_prompt = COALESCE(sessions.first_prompt, excluded.first_prompt),
        permission_mode = COALESCE(excluded.permission_mode, sessions.permission_mode),
-       agent_version = COALESCE(excluded.agent_version, sessions.agent_version)`,
+       agent_version = COALESCE(excluded.agent_version, sessions.agent_version),
+       model = COALESCE(excluded.model, sessions.model),
+       cli_version = COALESCE(excluded.cli_version, sessions.cli_version),
+       scanner_file_path = COALESCE(excluded.scanner_file_path, sessions.scanner_file_path),
+       total_input_tokens = COALESCE(excluded.total_input_tokens, sessions.total_input_tokens),
+       total_output_tokens = COALESCE(excluded.total_output_tokens, sessions.total_output_tokens),
+       total_cache_read_tokens = COALESCE(excluded.total_cache_read_tokens, sessions.total_cache_read_tokens),
+       total_cache_creation_tokens = COALESCE(excluded.total_cache_creation_tokens, sessions.total_cache_creation_tokens),
+       total_reasoning_tokens = COALESCE(excluded.total_reasoning_tokens, sessions.total_reasoning_tokens),
+       turn_count = COALESCE(excluded.turn_count, sessions.turn_count),
+       otel_input_tokens = COALESCE(excluded.otel_input_tokens, sessions.otel_input_tokens),
+       otel_output_tokens = COALESCE(excluded.otel_output_tokens, sessions.otel_output_tokens),
+       otel_cache_read_tokens = COALESCE(excluded.otel_cache_read_tokens, sessions.otel_cache_read_tokens),
+       otel_cache_creation_tokens = COALESCE(excluded.otel_cache_creation_tokens, sessions.otel_cache_creation_tokens),
+       models = CASE
+         WHEN excluded.model IS NULL THEN sessions.models
+         WHEN sessions.models IS NULL THEN excluded.model
+         WHEN sessions.models LIKE '%' || excluded.model || '%' THEN sessions.models
+         ELSE sessions.models || ',' || excluded.model
+       END,
+       has_hooks = MAX(COALESCE(excluded.has_hooks, 0), COALESCE(sessions.has_hooks, 0)),
+       has_otel = MAX(COALESCE(excluded.has_otel, 0), COALESCE(sessions.has_otel, 0)),
+       has_scanner = MAX(COALESCE(excluded.has_scanner, 0), COALESCE(sessions.has_scanner, 0))`,
   ).run({
     session_id: row.session_id,
     target: row.target ?? null,
@@ -239,6 +227,22 @@ export function upsertSession(row: SessionUpsert): void {
     first_prompt: row.first_prompt ?? null,
     permission_mode: row.permission_mode ?? null,
     agent_version: row.agent_version ?? null,
+    model: row.model ?? null,
+    cli_version: row.cli_version ?? null,
+    scanner_file_path: row.scanner_file_path ?? null,
+    total_input_tokens: row.total_input_tokens ?? null,
+    total_output_tokens: row.total_output_tokens ?? null,
+    total_cache_read_tokens: row.total_cache_read_tokens ?? null,
+    total_cache_creation_tokens: row.total_cache_creation_tokens ?? null,
+    total_reasoning_tokens: row.total_reasoning_tokens ?? null,
+    turn_count: row.turn_count ?? null,
+    otel_input_tokens: row.otel_input_tokens ?? null,
+    otel_output_tokens: row.otel_output_tokens ?? null,
+    otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
+    otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
+    has_hooks: row.has_hooks ?? 0,
+    has_otel: row.has_otel ?? 0,
+    has_scanner: row.has_scanner ?? 0,
   });
 }
 

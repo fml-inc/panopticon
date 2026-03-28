@@ -1,7 +1,14 @@
 import http from "node:http";
 import { config } from "../config.js";
-import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
+import {
+  insertOtelLogs,
+  insertOtelMetrics,
+  type OtelLogRow,
+  type OtelMetricRow,
+  upsertSession,
+} from "../db/store.js";
 import { captureException } from "../sentry.js";
+import { allTargets } from "../targets/index.js";
 import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
 import {
@@ -16,6 +23,120 @@ function collectBody(req: http.IncomingMessage): Promise<Buffer> {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+}
+
+/** Map from OTel service.name to target ID, built lazily from target registry. */
+let _serviceNameMap: Map<string, string> | null = null;
+function serviceNameMap(): Map<string, string> {
+  if (!_serviceNameMap) {
+    _serviceNameMap = new Map();
+    for (const t of allTargets()) {
+      if (t.otel?.serviceName) {
+        _serviceNameMap.set(t.otel.serviceName, t.id);
+      }
+    }
+  }
+  return _serviceNameMap;
+}
+
+/**
+ * Create/enrich session rows from OTLP data. Derives:
+ * - target from service.name mapping
+ * - started_at_ms from earliest timestamp in the batch
+ * - otel_* token columns from token metric values
+ * - model from metric attributes
+ */
+function ensureSessionsFromOtel(
+  rows: Array<{
+    session_id?: string;
+    timestamp_ns?: number;
+    resource_attributes?: Record<string, unknown>;
+    name?: string;
+    value?: number;
+    attributes?: Record<string, unknown>;
+  }>,
+): void {
+  const sessions = new Map<
+    string,
+    {
+      target?: string;
+      minTimestampMs?: number;
+      model?: string;
+      otelInput: number;
+      otelOutput: number;
+      otelCacheRead: number;
+      otelCacheCreation: number;
+    }
+  >();
+
+  for (const row of rows) {
+    const sid = row.session_id;
+    if (!sid) continue;
+
+    if (!sessions.has(sid)) {
+      const serviceName = row.resource_attributes?.["service.name"];
+      const target =
+        typeof serviceName === "string"
+          ? serviceNameMap().get(serviceName)
+          : undefined;
+      sessions.set(sid, {
+        target,
+        otelInput: 0,
+        otelOutput: 0,
+        otelCacheRead: 0,
+        otelCacheCreation: 0,
+      });
+    }
+
+    const sess = sessions.get(sid)!;
+
+    // Derive timing from earliest timestamp
+    if (row.timestamp_ns && row.timestamp_ns > 0) {
+      const ms = Math.floor(row.timestamp_ns / 1_000_000);
+      if (!sess.minTimestampMs || ms < sess.minTimestampMs) {
+        sess.minTimestampMs = ms;
+      }
+    }
+
+    // Extract model from attributes
+    if (!sess.model && row.attributes) {
+      const m = row.attributes.model ?? row.attributes["gen_ai.response.model"];
+      if (typeof m === "string") sess.model = m;
+    }
+
+    // Aggregate token metrics
+    if (
+      row.name &&
+      typeof row.value === "number" &&
+      row.name.includes("token")
+    ) {
+      const tokenType =
+        (row.attributes?.type as string) ??
+        (row.attributes?.["gen_ai.token.type"] as string) ??
+        (row.attributes?.token_type as string);
+      if (tokenType === "input") sess.otelInput += row.value;
+      else if (tokenType === "output") sess.otelOutput += row.value;
+      else if (tokenType === "cacheRead" || tokenType === "cache_read")
+        sess.otelCacheRead += row.value;
+      else if (tokenType === "cacheCreation" || tokenType === "cache_write")
+        sess.otelCacheCreation += row.value;
+    }
+  }
+
+  for (const [sessionId, sess] of sessions) {
+    if (!sess.target) continue;
+    upsertSession({
+      session_id: sessionId,
+      target: sess.target,
+      has_otel: 1,
+      started_at_ms: sess.minTimestampMs,
+      model: sess.model,
+      otel_input_tokens: sess.otelInput || undefined,
+      otel_output_tokens: sess.otelOutput || undefined,
+      otel_cache_read_tokens: sess.otelCacheRead || undefined,
+      otel_cache_creation_tokens: sess.otelCacheCreation || undefined,
+    });
+  }
 }
 
 function isProtobuf(req: http.IncomingMessage): boolean {
@@ -85,7 +206,10 @@ export async function handleOtlpRequest(
     if (signal === "logs") {
       if (isProtobuf(req)) {
         const rows = decodeLogs(body);
-        if (rows.length > 0) insertOtelLogs(rows);
+        if (rows.length > 0) {
+          insertOtelLogs(rows);
+          ensureSessionsFromOtel(rows);
+        }
         const respBytes = ExportLogsServiceResponse.encode(
           ExportLogsServiceResponse.create({}),
         ).finish();
@@ -94,7 +218,10 @@ export async function handleOtlpRequest(
       } else if (isJson(req)) {
         const data = JSON.parse(body.toString("utf-8"));
         const rows = jsonLogsToRows(data);
-        if (rows.length > 0) insertOtelLogs(rows);
+        if (rows.length > 0) {
+          insertOtelLogs(rows);
+          ensureSessionsFromOtel(rows);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
       } else {
@@ -104,7 +231,10 @@ export async function handleOtlpRequest(
     } else if (signal === "metrics") {
       if (isProtobuf(req)) {
         const rows = decodeMetrics(body);
-        if (rows.length > 0) insertOtelMetrics(rows);
+        if (rows.length > 0) {
+          insertOtelMetrics(rows);
+          ensureSessionsFromOtel(rows);
+        }
         const respBytes = ExportMetricsServiceResponse.encode(
           ExportMetricsServiceResponse.create({}),
         ).finish();
@@ -113,7 +243,10 @@ export async function handleOtlpRequest(
       } else if (isJson(req)) {
         const data = JSON.parse(body.toString("utf-8"));
         const rows = jsonMetricsToRows(data);
-        if (rows.length > 0) insertOtelMetrics(rows);
+        if (rows.length > 0) {
+          insertOtelMetrics(rows);
+          ensureSessionsFromOtel(rows);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
       } else {

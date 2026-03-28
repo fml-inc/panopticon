@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { HookInput } from "../hooks/ingest.js";
 import { registerTarget } from "./registry.js";
-import type { TargetAdapter } from "./types.js";
+import type { ScannerParseResult, TargetAdapter } from "./types.js";
 
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
 
@@ -197,6 +197,175 @@ const gemini: TargetAdapter = {
       aggregation: "MAX",
       tokenTypeAttrs: ['$."gen_ai.token.type"'],
       modelAttrs: ['$."gen_ai.response.model"'],
+    },
+  },
+
+  scanner: {
+    discover() {
+      const tmpDir = path.join(GEMINI_DIR, "tmp");
+      const files: { filePath: string }[] = [];
+      const safeReaddir = (d: string) => {
+        try {
+          return fs.readdirSync(d);
+        } catch {
+          return [];
+        }
+      };
+      for (const project of safeReaddir(tmpDir)) {
+        const chatsDir = path.join(tmpDir, project, "chats");
+        for (const entry of safeReaddir(chatsDir)) {
+          if (entry.startsWith("session-") && entry.endsWith(".json"))
+            files.push({ filePath: path.join(chatsDir, entry) });
+        }
+      }
+      return files;
+    },
+
+    parseFile(
+      filePath: string,
+      fromByteOffset: number,
+    ): ScannerParseResult | null {
+      let size: number;
+      try {
+        size = fs.statSync(filePath).size;
+      } catch {
+        return null;
+      }
+      if (size <= fromByteOffset) return null;
+
+      // Gemini writes a single JSON object, re-read fully when changed.
+      let session: Record<string, unknown>;
+      try {
+        session = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      } catch {
+        return null;
+      }
+
+      const sessionId = session.sessionId as string | undefined;
+      if (!sessionId) return null;
+
+      const messages = session.messages as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (!messages?.length) return null;
+
+      const meta: ScannerParseResult["meta"] = {
+        sessionId,
+        startedAtMs: session.startTime
+          ? new Date(session.startTime as string).getTime()
+          : undefined,
+      };
+
+      const turns: ScannerParseResult["turns"] = [];
+      const events: ScannerParseResult["events"] = [];
+      let turnIndex = 0;
+      let firstPrompt: string | undefined;
+
+      for (const msg of messages) {
+        const type = msg.type as string;
+        const timestamp = msg.timestamp as string | undefined;
+        const timestampMs = timestamp
+          ? new Date(timestamp).getTime()
+          : Date.now();
+
+        if (type === "user") {
+          const content = msg.content as Array<{ text?: string }> | undefined;
+          const text = content?.[0]?.text;
+          if (!firstPrompt && text) firstPrompt = text.slice(0, 200);
+          turns.push({
+            sessionId,
+            turnIndex: turnIndex++,
+            timestampMs,
+            role: "user",
+            contentPreview: text?.slice(0, 200),
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            reasoningTokens: 0,
+          });
+        }
+
+        if (type === "gemini") {
+          const model = msg.model as string | undefined;
+          const tokens = msg.tokens as Record<string, number> | undefined;
+          if (model && !meta.model) meta.model = model;
+          turns.push({
+            sessionId,
+            turnIndex: turnIndex++,
+            timestampMs,
+            model,
+            role: "assistant",
+            contentPreview:
+              typeof msg.content === "string"
+                ? msg.content.slice(0, 200)
+                : undefined,
+            inputTokens: tokens?.input ?? 0,
+            outputTokens: tokens?.output ?? 0,
+            cacheReadTokens: tokens?.cached ?? 0,
+            cacheCreationTokens: 0,
+            reasoningTokens: tokens?.thoughts ?? 0,
+          });
+
+          // Tool calls
+          const toolCalls = msg.toolCalls as
+            | Array<Record<string, unknown>>
+            | undefined;
+          if (toolCalls) {
+            for (const tc of toolCalls) {
+              const result = tc.result as
+                | Array<Record<string, unknown>>
+                | undefined;
+              const output = result?.[0]?.functionResponse;
+              events.push({
+                sessionId,
+                eventType: "tool_call",
+                timestampMs,
+                toolName: (tc.name ?? tc.displayName) as string | undefined,
+                toolInput: tc.args
+                  ? JSON.stringify(tc.args).slice(0, 1000)
+                  : undefined,
+                toolOutput: output
+                  ? JSON.stringify(output).slice(0, 1000)
+                  : undefined,
+              });
+            }
+          }
+
+          // Thoughts/reasoning
+          const thoughts = msg.thoughts as
+            | Array<Record<string, unknown>>
+            | undefined;
+          if (thoughts) {
+            for (const t of thoughts) {
+              events.push({
+                sessionId,
+                eventType: "reasoning",
+                timestampMs,
+                content: ((t.description ?? t.subject) as string)?.slice(
+                  0,
+                  500,
+                ),
+              });
+            }
+          }
+        }
+
+        if (type === "info") {
+          events.push({
+            sessionId,
+            eventType: "info",
+            timestampMs,
+            content:
+              typeof msg.content === "string"
+                ? msg.content.slice(0, 500)
+                : undefined,
+          });
+        }
+      }
+
+      if (firstPrompt) meta.firstPrompt = firstPrompt;
+      return { meta, turns, events, newByteOffset: size };
     },
   },
 };
