@@ -8,7 +8,7 @@
 
 <br>
 
-Self-contained observability for AI coding tools. Captures OpenTelemetry signals, hook events, and API traffic from Claude Code, Gemini CLI, and Codex CLI — stored in SQLite, queryable via MCP.
+Self-contained observability for AI coding tools. Captures OpenTelemetry signals, hook events, API traffic, and local session files from Claude Code, Gemini CLI, and Codex CLI — stored in SQLite, queryable via MCP.
 
 No Docker, no external services. Just Node.js.
 
@@ -54,41 +54,39 @@ panopticon install
 ┌──────────────────────────────────────────────────────────────┐
 │          Claude Code / Gemini CLI / Codex CLI                │
 │                                                              │
-│  ┌──────────┐     ┌──────────────┐     ┌──────────────────┐  │
-│  │ OTel SDK │     │ Plugin Hooks │     │ API requests     │  │
-│  │          │     │              │     │ (--proxy mode)   │  │
-│  └────┬─────┘     └──────┬───────┘     └────────┬─────────┘  │
-└───────┼──────────────────┼──────────────────────┼────────────┘
-        │                  │                      │
-        ▼                  ▼                      ▼
-┌──────────────────────────────────────────────────────────────┐
-│              Unified Panopticon Server (:4318)               │
-│                                                              │
-│  /v1/logs, /v1/metrics   /hooks       /proxy/anthropic       │
-│  (OTLP ingest)           (hook JSON)  /proxy/openai          │
-│                                       /proxy/google          │
-│                                       /proxy/codex           │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-                       ▼
-          ┌─────────────────────────┐
-          │    SQLite (WAL mode)    │
-          │                         │
-          │   (platform-specific    │
-          │    data directory)      │
-          └─────┬─────────────┬─────┘
-                │             │
-                ▼             ▼
-       ┌────────────┐  ┌───────────────┐
-       │ MCP Server │  │  Sync Loop    │
-       │  (stdio)   │  │  (optional)   │
-       │            │  │               │
-       │ panopticon │  │ merge → OTLP  │
-       │ query tools│  │ → remote POST │
-       └────────────┘  └───────────────┘
+│  ┌──────────┐  ┌──────────────┐  ┌───────────┐  ┌────────┐  │
+│  │ OTel SDK │  │ Plugin Hooks │  │ Session   │  │  API   │  │
+│  │          │  │              │  │ Files     │  │ Proxy  │  │
+│  └────┬─────┘  └──────┬───────┘  └─────┬─────┘  └───┬────┘  │
+└───────┼───────────────┼───────────────┼──────────────┼───────┘
+        │               │               │              │
+        ▼               ▼               │              ▼
+┌───────────────────────────────────────┼──────────────────────┐
+│        Unified Panopticon Server (:4318)                     │
+│                                       │                      │
+│  /v1/logs, /v1/metrics   /hooks       │  /proxy/anthropic    │
+│  (OTLP ingest)           (hook JSON)  │  /proxy/openai       │
+│                                       │  /proxy/google       │
+└──────────────────────┬────────────────┼──────────────────────┘
+                       │                │
+                       ▼                ▼
+          ┌─────────────────────────────────────┐
+          │         SQLite (WAL mode)           │
+          │                                     │
+          │  sessions (unified, all sources)    │
+          │  hook_events / otel_logs / metrics  │
+          │  scanner_turns / scanner_events     │
+          └──┬──────────┬──────────────┬────────┘
+             │          │              │
+             ▼          ▼              ▼
+      ┌──────────┐ ┌──────────┐ ┌───────────┐
+      │   MCP    │ │  Sync    │ │  Scanner  │
+      │  Server  │ │  Loop    │ │  Loop     │
+      │ (stdio)  │ │ (OTLP)  │ │ (60s poll)│
+      └──────────┘ └──────────┘ └───────────┘
 ```
 
-**Four data pipelines feed one database:**
+**Five data pipelines feed one database:**
 
 1. **Hook events** — Plugin hooks capture SessionStart, tool use (pre/post), prompts, and session end. Rich payloads including tool inputs and outputs.
 
@@ -96,20 +94,24 @@ panopticon install
 
 3. **OTel metrics** — Time series: `token.usage`, `cost.usage`, `session.count`, `active_time.total`, `lines_of_code.count`, `commit.count`, `pull_request.count`.
 
-4. **API proxy** — Transparent HTTP proxy for Anthropic, OpenAI, and Google AI APIs. Captures request/response pairs and emits them as hook events and OTel data. Enable with `panopticon install --proxy`.
+4. **Session file scanner** — Reads local JSONL/JSON session files written by each CLI. Extracts per-turn token usage (input, output, cache read, cache creation, reasoning), tool calls, API errors, agent reasoning, and file snapshots. More complete than OTel for token data (captures ~2x the turns) and provides historical backfill for sessions before panopticon was installed.
 
-All pipelines are correlated by `session_id`.
+5. **API proxy** — Transparent HTTP proxy for Anthropic, OpenAI, and Google AI APIs. Captures request/response pairs and emits them as hook events and OTel data. Enable with `panopticon install --proxy`.
+
+All pipelines feed a **unified sessions table** — each session accumulates data from whichever sources are active, in any order, via COALESCE upserts.
 
 **Sync** (optional) — OTLP export that tails the local SQLite and POSTs merged events to a remote OTLP receiver. Useful for forwarding to Grafana, Honeycomb, Datadog, etc.
 
+**Scanner** — Polls local CLI session files every 60 seconds. Extracts per-turn token usage and events that OTel misses (reasoning tokens, cache breakdowns, tool calls with arguments/output, API errors with retry metadata). Backfills historical sessions from before panopticon was installed.
+
 ## Supported tools
 
-| Tool | Hooks | OTel | Proxy | Notes |
-|------|-------|------|-------|-------|
-| Claude Code | Plugin marketplace | Native OTel SDK | Anthropic API | Full hook + OTel coverage |
-| Gemini CLI | `settings.json` hooks | Native OTel SDK (HTTP) | Google AI API | All tool events via hooks; rich OTel (API latency, model routing, config) |
-| Codex CLI | `hooks.json` | Native OTel SDK (HTTP) | OpenAI API | PreToolUse/PostToolUse require Codex 0.117+ |
-| Claude Desktop | MCP server | — | — | MCP query tools only |
+| Tool | Hooks | OTel | Scanner | Proxy | Notes |
+|------|-------|------|---------|-------|-------|
+| Claude Code | Plugin marketplace | Native OTel SDK | `~/.claude/projects/` JSONL | Anthropic API | Full coverage; scanner captures API errors, file snapshots |
+| Gemini CLI | `settings.json` hooks | Native OTel SDK (HTTP) | `~/.gemini/tmp/` JSON | Google AI API | Scanner captures tool calls, reasoning thoughts |
+| Codex CLI | `hooks.json` | Native OTel SDK (HTTP) | `~/.codex/sessions/` JSONL | OpenAI API | Scanner captures tool calls, reasoning tokens, agent messages |
+| Claude Desktop | MCP server | — | — | — | MCP query tools only |
 
 Each tool is implemented as a **target adapter** in `src/targets/`. To add support for a new tool, create a single adapter file that declares config paths, hook events, shell env vars, event normalization, detection logic, and proxy routing — then register it in `src/targets/index.ts`.
 
@@ -168,6 +170,11 @@ panopticon search <query>   Full-text search across all events
 panopticon event <src> <id> Get full details for a specific event
 panopticon query <sql>      Raw read-only SQL query
 panopticon db-stats         Show database row counts
+
+panopticon scan             Scan local session files (incremental)
+panopticon scan reset       Reset scanner and re-scan from scratch
+  [source]                  Optionally reset only: claude, codex, gemini
+panopticon scan compare     Compare scanner data against hooks/OTLP data
 
 panopticon prune            Delete old data from the database
   --older-than 30d          Max age (default: 30d)
@@ -242,10 +249,14 @@ SQLite with WAL mode. Location depends on platform (see data directory above).
 
 | Table | Description |
 |-------|-------------|
+| `sessions` | Unified session metadata — aggregated from hooks, OTel, and scanner |
 | `otel_logs` | OTel log records (api_request, tool_result, user_prompt, etc.) |
 | `otel_metrics` | OTel metric data points (token usage, cost, active time, etc.) |
 | `hook_events` | Plugin hook events with full payloads (tool inputs/outputs, tool results) |
 | `hook_events_fts` | FTS5 full-text search index on hook payloads |
+| `scanner_turns` | Per-turn token usage from session files (input, output, cache, reasoning) |
+| `scanner_events` | Tool calls, errors, reasoning, file snapshots from session files |
+| `scanner_file_watermarks` | Byte offsets for incremental session file parsing |
 | `session_repositories` | Maps sessions to GitHub repositories |
 | `session_cwds` | Maps sessions to working directories |
 | `model_pricing` | Cached model pricing from OpenRouter |
@@ -293,9 +304,16 @@ src/
 ├── db/
 │   ├── schema.ts       SQLite schema, migrations, WAL + auto-vacuum
 │   ├── query.ts        Query helpers for MCP tools and CLI
-│   ├── store.ts        Data storage (insert hooks, OTel, sessions)
+│   ├── store.ts        Data storage (insert hooks, OTel, upsert sessions)
 │   ├── prune.ts        Data retention / pruning
 │   └── pricing.ts      Model pricing cache (OpenRouter)
+├── scanner/
+│   ├── index.ts        Public API (createScannerLoop, scanOnce)
+│   ├── loop.ts         Poll loop — discovers files via target adapters, incremental parse
+│   ├── reader.ts       Byte-offset file reader (only reads new lines)
+│   ├── store.ts        Scanner DB operations (turns, events, watermarks, session upsert)
+│   ├── reconcile.ts    Compare scanner vs hooks/OTLP token data per session
+│   └── types.ts        ScannerHandle, ScannerOptions
 ├── hooks/
 │   ├── handler.ts      Hook event handler (stdin JSON → server)
 │   ├── ingest.ts       Hook processing — uses target adapters for normalization
@@ -340,5 +358,6 @@ Each supported coding tool is a self-contained adapter in `src/targets/`. An ada
 | **Events** | Event name mapping to canonical types, payload normalization, permission response format |
 | **Detection** | Display name, `isInstalled()`, `isConfigured()` for doctor |
 | **Proxy** | Upstream host (static or dynamic), path rewriting, accumulator type |
+| **Scanner** | `discover()` finds session files on disk, `parseFile()` extracts turns + events |
 
-To add a new target, create `src/targets/<name>.ts`, implement `TargetAdapter`, call `registerTarget()`, and add the import to `src/targets/index.ts`. All consumers (install, uninstall, doctor, hooks, proxy, shell env) pick it up automatically.
+To add a new target, create `src/targets/<name>.ts`, implement `TargetAdapter`, call `registerTarget()`, and add the import to `src/targets/index.ts`. All consumers (install, uninstall, doctor, hooks, proxy, shell env, scanner) pick it up automatically.
