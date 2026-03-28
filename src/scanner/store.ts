@@ -1,38 +1,27 @@
 import { getDb } from "../db/schema.js";
+import { upsertSession as upsertSessionRow } from "../db/store.js";
 import type {
   ScannerParsedSession,
   ScannerParsedTurn,
 } from "../targets/types.js";
 
-// ── Session upsert ──────────────────────────────────────────────────────────
-
-const UPSERT_SESSION_SQL = `
-  INSERT INTO scanner_sessions (session_id, source, file_path, model, cwd, cli_version, started_at_ms, first_prompt)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(session_id, source) DO UPDATE SET
-    model = COALESCE(excluded.model, scanner_sessions.model),
-    cwd = COALESCE(excluded.cwd, scanner_sessions.cwd),
-    cli_version = COALESCE(excluded.cli_version, scanner_sessions.cli_version),
-    started_at_ms = COALESCE(excluded.started_at_ms, scanner_sessions.started_at_ms),
-    first_prompt = COALESCE(excluded.first_prompt, scanner_sessions.first_prompt)
-`;
+// ── Session upsert (writes to unified sessions table) ───────────────────────
 
 export function upsertSession(
   meta: ScannerParsedSession,
   filePath: string,
   source: string,
 ): void {
-  const db = getDb();
-  db.prepare(UPSERT_SESSION_SQL).run(
-    meta.sessionId,
-    source,
-    filePath,
-    meta.model ?? null,
-    meta.cwd ?? null,
-    meta.cliVersion ?? null,
-    meta.startedAtMs ?? null,
-    meta.firstPrompt ?? null,
-  );
+  upsertSessionRow({
+    session_id: meta.sessionId,
+    target: source,
+    started_at_ms: meta.startedAtMs,
+    cwd: meta.cwd,
+    first_prompt: meta.firstPrompt,
+    model: meta.model,
+    cli_version: meta.cliVersion,
+    scanner_file_path: filePath,
+  });
 }
 
 // ── Turn insert ─────────────────────────────────────────────────────────────
@@ -70,36 +59,29 @@ export function insertTurns(turns: ScannerParsedTurn[], source: string): void {
   tx();
 }
 
-// ── Session totals update ───────────────────────────────────────────────────
+// ── Session totals update (writes to unified sessions table) ────────────────
 
 const UPDATE_TOTALS_SQL = `
-  UPDATE scanner_sessions SET
-    total_input_tokens = (SELECT COALESCE(SUM(input_tokens), 0) FROM scanner_turns WHERE session_id = ? AND source = ?),
-    total_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM scanner_turns WHERE session_id = ? AND source = ?),
-    total_cache_read_tokens = (SELECT COALESCE(SUM(cache_read_tokens), 0) FROM scanner_turns WHERE session_id = ? AND source = ?),
-    total_cache_creation_tokens = (SELECT COALESCE(SUM(cache_creation_tokens), 0) FROM scanner_turns WHERE session_id = ? AND source = ?),
-    total_reasoning_tokens = (SELECT COALESCE(SUM(reasoning_tokens), 0) FROM scanner_turns WHERE session_id = ? AND source = ?),
-    turn_count = (SELECT COUNT(*) FROM scanner_turns WHERE session_id = ? AND source = ?)
-  WHERE session_id = ? AND source = ?
+  UPDATE sessions SET
+    total_input_tokens = (SELECT COALESCE(SUM(input_tokens), 0) FROM scanner_turns WHERE session_id = ?),
+    total_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM scanner_turns WHERE session_id = ?),
+    total_cache_read_tokens = (SELECT COALESCE(SUM(cache_read_tokens), 0) FROM scanner_turns WHERE session_id = ?),
+    total_cache_creation_tokens = (SELECT COALESCE(SUM(cache_creation_tokens), 0) FROM scanner_turns WHERE session_id = ?),
+    total_reasoning_tokens = (SELECT COALESCE(SUM(reasoning_tokens), 0) FROM scanner_turns WHERE session_id = ?),
+    turn_count = (SELECT COUNT(*) FROM scanner_turns WHERE session_id = ?)
+  WHERE session_id = ?
 `;
 
-export function updateSessionTotals(sessionId: string, source: string): void {
+export function updateSessionTotals(sessionId: string): void {
   const db = getDb();
   db.prepare(UPDATE_TOTALS_SQL).run(
     sessionId,
-    source,
     sessionId,
-    source,
     sessionId,
-    source,
     sessionId,
-    source,
     sessionId,
-    source,
     sessionId,
-    source,
     sessionId,
-    source,
   );
 }
 
@@ -129,19 +111,28 @@ export function resetScanner(): void {
   db.exec(`
     DELETE FROM scanner_file_watermarks;
     DELETE FROM scanner_turns;
-    DELETE FROM scanner_sessions;
+    UPDATE sessions SET
+      model = NULL, cli_version = NULL, scanner_file_path = NULL,
+      total_input_tokens = 0, total_output_tokens = 0,
+      total_cache_read_tokens = 0, total_cache_creation_tokens = 0,
+      total_reasoning_tokens = 0, turn_count = 0;
   `);
 }
 
 export function resetScannerSource(source: string): void {
   const db = getDb();
-  // Delete watermarks for files belonging to this source's sessions
-  db.prepare(`
-    DELETE FROM scanner_file_watermarks
-    WHERE file_path IN (SELECT file_path FROM scanner_sessions WHERE source = ?)
-  `).run(source);
+  db.prepare(
+    "DELETE FROM scanner_file_watermarks WHERE file_path IN (SELECT scanner_file_path FROM sessions WHERE target = ?)",
+  ).run(source);
   db.prepare("DELETE FROM scanner_turns WHERE source = ?").run(source);
-  db.prepare("DELETE FROM scanner_sessions WHERE source = ?").run(source);
+  db.prepare(`
+    UPDATE sessions SET
+      model = NULL, cli_version = NULL, scanner_file_path = NULL,
+      total_input_tokens = 0, total_output_tokens = 0,
+      total_cache_read_tokens = 0, total_cache_creation_tokens = 0,
+      total_reasoning_tokens = 0, turn_count = 0
+    WHERE target = ?
+  `).run(source);
 }
 
 // ── Turn count for incremental parsing ──────────────────────────────────────

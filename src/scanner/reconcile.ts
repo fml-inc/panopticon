@@ -62,10 +62,11 @@ const RECONCILE_SQL = `
     GROUP BY session_id
   ),
   scanner_summary AS (
-    SELECT session_id, source, turn_count,
+    SELECT session_id, target as source, turn_count,
       total_input_tokens, total_output_tokens,
       total_cache_read_tokens, total_cache_creation_tokens, total_reasoning_tokens
-    FROM scanner_sessions
+    FROM sessions
+    WHERE scanner_file_path IS NOT NULL
   ),
   all_sessions AS (
     SELECT session_id FROM hook_summary

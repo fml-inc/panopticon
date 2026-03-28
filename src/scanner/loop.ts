@@ -58,7 +58,7 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
       if (result.turns.length > 0) {
         insertTurns(result.turns, source);
         newTurns += result.turns.length;
-        updateSessionTotals(result.meta.sessionId, source);
+        updateSessionTotals(result.meta.sessionId);
       }
 
       writeFileWatermark(filePath, result.newByteOffset);

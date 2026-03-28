@@ -1265,7 +1265,7 @@ async function printScanSummary(): Promise<void> {
   const db = getDb();
   const bySource = db
     .prepare(
-      "SELECT source, COUNT(*) as sessions, SUM(turn_count) as turns, SUM(total_input_tokens + total_output_tokens) as tokens FROM scanner_sessions GROUP BY source",
+      "SELECT target as source, COUNT(*) as sessions, SUM(turn_count) as turns, SUM(total_input_tokens + total_output_tokens) as tokens FROM sessions WHERE scanner_file_path IS NOT NULL GROUP BY target",
     )
     .all() as {
     source: string;
@@ -1274,7 +1274,9 @@ async function printScanSummary(): Promise<void> {
     tokens: number;
   }[];
   const total = db
-    .prepare("SELECT COUNT(*) as c FROM scanner_sessions")
+    .prepare(
+      "SELECT COUNT(*) as c FROM sessions WHERE scanner_file_path IS NOT NULL",
+    )
     .get() as { c: number };
   const totalTurns = db
     .prepare("SELECT COUNT(*) as c FROM scanner_turns")

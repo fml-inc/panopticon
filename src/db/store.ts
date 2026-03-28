@@ -152,13 +152,29 @@ export interface SessionUpsert {
   first_prompt?: string;
   permission_mode?: string;
   agent_version?: string;
+  // Scanner-sourced fields
+  model?: string;
+  cli_version?: string;
+  scanner_file_path?: string;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cache_read_tokens?: number;
+  total_cache_creation_tokens?: number;
+  total_reasoning_tokens?: number;
+  turn_count?: number;
 }
 
 export function upsertSession(row: SessionUpsert): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt, permission_mode, agent_version)
-     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt, @permission_mode, @agent_version)
+    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+       permission_mode, agent_version, model, cli_version, scanner_file_path,
+       total_input_tokens, total_output_tokens, total_cache_read_tokens,
+       total_cache_creation_tokens, total_reasoning_tokens, turn_count)
+     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt,
+       @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
+       @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
+       @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
@@ -166,7 +182,16 @@ export function upsertSession(row: SessionUpsert): void {
        cwd = COALESCE(excluded.cwd, sessions.cwd),
        first_prompt = COALESCE(sessions.first_prompt, excluded.first_prompt),
        permission_mode = COALESCE(excluded.permission_mode, sessions.permission_mode),
-       agent_version = COALESCE(excluded.agent_version, sessions.agent_version)`,
+       agent_version = COALESCE(excluded.agent_version, sessions.agent_version),
+       model = COALESCE(excluded.model, sessions.model),
+       cli_version = COALESCE(excluded.cli_version, sessions.cli_version),
+       scanner_file_path = COALESCE(excluded.scanner_file_path, sessions.scanner_file_path),
+       total_input_tokens = COALESCE(excluded.total_input_tokens, sessions.total_input_tokens),
+       total_output_tokens = COALESCE(excluded.total_output_tokens, sessions.total_output_tokens),
+       total_cache_read_tokens = COALESCE(excluded.total_cache_read_tokens, sessions.total_cache_read_tokens),
+       total_cache_creation_tokens = COALESCE(excluded.total_cache_creation_tokens, sessions.total_cache_creation_tokens),
+       total_reasoning_tokens = COALESCE(excluded.total_reasoning_tokens, sessions.total_reasoning_tokens),
+       turn_count = COALESCE(excluded.turn_count, sessions.turn_count)`,
   ).run({
     session_id: row.session_id,
     target: row.target ?? null,
@@ -176,6 +201,15 @@ export function upsertSession(row: SessionUpsert): void {
     first_prompt: row.first_prompt ?? null,
     permission_mode: row.permission_mode ?? null,
     agent_version: row.agent_version ?? null,
+    model: row.model ?? null,
+    cli_version: row.cli_version ?? null,
+    scanner_file_path: row.scanner_file_path ?? null,
+    total_input_tokens: row.total_input_tokens ?? null,
+    total_output_tokens: row.total_output_tokens ?? null,
+    total_cache_read_tokens: row.total_cache_read_tokens ?? null,
+    total_cache_creation_tokens: row.total_cache_creation_tokens ?? null,
+    total_reasoning_tokens: row.total_reasoning_tokens ?? null,
+    turn_count: row.turn_count ?? null,
   });
 }
 

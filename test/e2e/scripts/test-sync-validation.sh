@@ -560,14 +560,14 @@ log_phase 7 "Session File Scanner"
 SCAN_OUTPUT=$(panopticon scan 2>&1 || true)
 log_info "Scan output: ${SCAN_OUTPUT}"
 
-SCANNER_SESSIONS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_sessions;" 2>/dev/null || echo "0")
+SCANNER_SESSIONS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions WHERE scanner_file_path IS NOT NULL;" 2>/dev/null || echo "0")
 SCANNER_TURNS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_turns;" 2>/dev/null || echo "0")
 
 log_info "Scanner: ${SCANNER_SESSIONS} sessions, ${SCANNER_TURNS} turns"
 
 # Scanner should have found sessions from the CLI runs
-assert_db_count "SELECT COUNT(*) FROM scanner_sessions;" 1 \
-  "scanner_sessions: >= 1 session found"
+assert_db_count "SELECT COUNT(*) FROM sessions WHERE scanner_file_path IS NOT NULL;" 1 \
+  "sessions: >= 1 scanner-sourced session"
 
 assert_db_count "SELECT COUNT(*) FROM scanner_turns;" 1 \
   "scanner_turns: >= 1 turn found"
@@ -580,7 +580,7 @@ assert_db_not_empty \
 # Per-CLI scanner checks
 if [ -n "$HAS_CLAUDE" ]; then
   assert_db_not_empty \
-    "SELECT 1 FROM scanner_sessions WHERE source = 'claude' LIMIT 1;" \
+    "SELECT 1 FROM sessions WHERE scanner_file_path IS NOT NULL AND target = 'claude' LIMIT 1;" \
     "scanner: found Claude session files"
   assert_db_not_empty \
     "SELECT 1 FROM scanner_turns WHERE source = 'claude' AND role = 'assistant' AND output_tokens > 0 LIMIT 1;" \
@@ -589,32 +589,21 @@ fi
 
 if [ -n "$HAS_CODEX" ]; then
   assert_db_not_empty \
-    "SELECT 1 FROM scanner_sessions WHERE source = 'codex' LIMIT 1;" \
+    "SELECT 1 FROM sessions WHERE scanner_file_path IS NOT NULL AND target = 'codex' LIMIT 1;" \
     "scanner: found Codex session files"
 fi
 
 if [ -n "$HAS_GEMINI" ]; then
   assert_db_not_empty \
-    "SELECT 1 FROM scanner_sessions WHERE source = 'gemini' LIMIT 1;" \
+    "SELECT 1 FROM sessions WHERE scanner_file_path IS NOT NULL AND target = 'gemini' LIMIT 1;" \
     "scanner: found Gemini session files"
-fi
-
-# Scanner sessions should correlate with hook_events sessions
-SCANNER_HOOK_OVERLAP=$(sqlite3 "$DB_PATH" \
-  "SELECT COUNT(*) FROM scanner_sessions s
-   INNER JOIN (SELECT DISTINCT session_id FROM hook_events) h ON s.session_id = h.session_id;" \
-  2>/dev/null || echo "0")
-if [ "$SCANNER_HOOK_OVERLAP" -gt 0 ]; then
-  log_pass "Scanner <-> hooks: ${SCANNER_HOOK_OVERLAP} sessions overlap"
-else
-  log_info "Scanner <-> hooks: no overlap (session IDs may differ)"
 fi
 
 # Show scanner summary
 sqlite3 -header -column "$DB_PATH" \
-  "SELECT source, COUNT(*) as sessions, SUM(turn_count) as turns,
+  "SELECT target as source, COUNT(*) as sessions, SUM(turn_count) as turns,
      SUM(total_input_tokens) as input_tok, SUM(total_output_tokens) as output_tok
-   FROM scanner_sessions GROUP BY source;" 2>/dev/null || true
+   FROM sessions WHERE scanner_file_path IS NOT NULL GROUP BY target;" 2>/dev/null || true
 
 # Run reconciliation report
 log_info "Running scan compare..."

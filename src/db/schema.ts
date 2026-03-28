@@ -208,30 +208,22 @@ const migrations: Migration[] = [
   {
     version: 6,
     up: (db) => {
+      // Add scanner columns to sessions table — both hooks and scanner
+      // upsert by session_id with COALESCE, so either source can fill
+      // in any field independently.
       db.exec(`
-        CREATE TABLE IF NOT EXISTS scanner_sessions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          source TEXT NOT NULL,
-          file_path TEXT NOT NULL,
-          model TEXT,
-          cwd TEXT,
-          cli_version TEXT,
-          started_at_ms INTEGER,
-          ended_at_ms INTEGER,
-          first_prompt TEXT,
-          total_input_tokens INTEGER DEFAULT 0,
-          total_output_tokens INTEGER DEFAULT 0,
-          total_cache_read_tokens INTEGER DEFAULT 0,
-          total_cache_creation_tokens INTEGER DEFAULT 0,
-          total_reasoning_tokens INTEGER DEFAULT 0,
-          turn_count INTEGER DEFAULT 0,
-          UNIQUE(session_id, source)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scanner_sessions_session ON scanner_sessions(session_id);
-        CREATE INDEX IF NOT EXISTS idx_scanner_sessions_source ON scanner_sessions(source);
-        CREATE INDEX IF NOT EXISTS idx_scanner_sessions_started ON scanner_sessions(started_at_ms);
+        ALTER TABLE sessions ADD COLUMN model TEXT;
+        ALTER TABLE sessions ADD COLUMN cli_version TEXT;
+        ALTER TABLE sessions ADD COLUMN scanner_file_path TEXT;
+        ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN total_reasoning_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN turn_count INTEGER DEFAULT 0;
+      `);
 
+      db.exec(`
         CREATE TABLE IF NOT EXISTS scanner_turns (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           session_id TEXT NOT NULL,
