@@ -510,17 +510,25 @@ async function install(
   fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
     recursive: true,
   });
-  writeJsonFile(config.marketplaceManifest, {
+  const manifest = readJsonFile(config.marketplaceManifest) ?? {
     name: "local-plugins",
     owner: { name: os.userInfo().username },
-    plugins: [
-      {
-        name: "panopticon",
-        source: "./panopticon",
-        description: pkgJson?.description ?? "Observability for Claude Code",
-      },
-    ],
-  });
+    plugins: [],
+  };
+  const plugins = (manifest.plugins as Array<Record<string, unknown>>) ?? [];
+  const existing = plugins.findIndex((p) => p.name === "panopticon");
+  const entry = {
+    name: "panopticon",
+    source: "./panopticon",
+    description: pkgJson?.description ?? "Observability for Claude Code",
+  };
+  if (existing >= 0) {
+    plugins[existing] = entry;
+  } else {
+    plugins.push(entry);
+  }
+  manifest.plugins = plugins;
+  writeJsonFile(config.marketplaceManifest, manifest);
 
   const symlinkType = process.platform === "win32" ? "junction" : "dir";
   const marketplaceLink = path.join(config.marketplaceDir, "panopticon");

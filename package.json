@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@10.17.1",
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "repository": {
     "type": "git",

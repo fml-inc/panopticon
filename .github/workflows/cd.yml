@@ -2,54 +2,13 @@ name: CD
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    name: E2E — sync data-loss validation
-    # Skip E2E on tag pushes (the code was already tested on the merge)
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-
-    steps:
-      - name: Check for API keys
-        id: check_keys
-        run: |
-          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ] && \
-             [ -z "${{ secrets.OPENAI_API_KEY }}" ] && \
-             [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "has_key=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ No API keys available — skipping"
-          else
-            echo "has_key=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout
-        if: steps.check_keys.outputs.has_key == 'true'
-        uses: actions/checkout@v4
-
-      - name: Run E2E test
-        if: steps.check_keys.outputs.has_key == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          docker compose -f test/e2e/docker-compose.yml \
-            up --build --abort-on-container-exit \
-            --exit-code-from test-sync-validation
-
   publish:
-    needs: e2e
-    # Run after E2E on main pushes; run immediately on tag pushes (E2E is skipped)
-    if: ${{ always() && (needs.e2e.result == 'success' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,30 +19,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://npm.pkg.github.com
+          registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Set dev version (non-tag builds)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: |
-          LATEST=$(npm view @fml-inc/panopticon version --registry https://npm.pkg.github.com 2>/dev/null || echo "0.0.0")
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
-          PATCH=$((PATCH + 1))
-          VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          pnpm pkg set "version=${VERSION}"
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "Publishing version: ${VERSION}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set release version (tagged builds)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Set version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           pnpm pkg set "version=${VERSION}"
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "Publishing release version: ${VERSION}"
+          echo "Publishing version: ${VERSION}"
 
       - name: Lint & format
         run: pnpm biome ci src/
@@ -94,13 +38,10 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Publish to GitHub Packages
-        run: pnpm publish --no-git-checks --access restricted
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Test
+        run: pnpm test
 
-      - name: Tag release
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+      - name: Publish to npm
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
