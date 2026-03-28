@@ -257,6 +257,7 @@ const gemini: TargetAdapter = {
       };
 
       const turns: ScannerParseResult["turns"] = [];
+      const events: ScannerParseResult["events"] = [];
       let turnIndex = 0;
       let firstPrompt: string | undefined;
 
@@ -305,11 +306,66 @@ const gemini: TargetAdapter = {
             cacheCreationTokens: 0,
             reasoningTokens: tokens?.thoughts ?? 0,
           });
+
+          // Tool calls
+          const toolCalls = msg.toolCalls as
+            | Array<Record<string, unknown>>
+            | undefined;
+          if (toolCalls) {
+            for (const tc of toolCalls) {
+              const result = tc.result as
+                | Array<Record<string, unknown>>
+                | undefined;
+              const output = result?.[0]?.functionResponse;
+              events.push({
+                sessionId,
+                eventType: "tool_call",
+                timestampMs,
+                toolName: (tc.name ?? tc.displayName) as string | undefined,
+                toolInput: tc.args
+                  ? JSON.stringify(tc.args).slice(0, 1000)
+                  : undefined,
+                toolOutput: output
+                  ? JSON.stringify(output).slice(0, 1000)
+                  : undefined,
+              });
+            }
+          }
+
+          // Thoughts/reasoning
+          const thoughts = msg.thoughts as
+            | Array<Record<string, unknown>>
+            | undefined;
+          if (thoughts) {
+            for (const t of thoughts) {
+              events.push({
+                sessionId,
+                eventType: "reasoning",
+                timestampMs,
+                content: ((t.description ?? t.subject) as string)?.slice(
+                  0,
+                  500,
+                ),
+              });
+            }
+          }
+        }
+
+        if (type === "info") {
+          events.push({
+            sessionId,
+            eventType: "info",
+            timestampMs,
+            content:
+              typeof msg.content === "string"
+                ? msg.content.slice(0, 500)
+                : undefined,
+          });
         }
       }
 
       if (firstPrompt) meta.firstPrompt = firstPrompt;
-      return { meta, turns, newByteOffset: size };
+      return { meta, turns, events, newByteOffset: size };
     },
   },
 };

@@ -251,6 +251,44 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    up: (db) => {
+      db.exec(`
+        -- OTLP-sourced token columns (separate from scanner totals)
+        ALTER TABLE sessions ADD COLUMN otel_input_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN otel_output_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN otel_cache_read_tokens INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN otel_cache_creation_tokens INTEGER DEFAULT 0;
+
+        -- Model set (comma-separated, sessions can switch models)
+        ALTER TABLE sessions ADD COLUMN models TEXT;
+
+        -- Completeness indicators
+        ALTER TABLE sessions ADD COLUMN has_hooks INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN has_otel INTEGER DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN has_scanner INTEGER DEFAULT 0;
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scanner_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          timestamp_ms INTEGER NOT NULL,
+          tool_name TEXT,
+          tool_input TEXT,
+          tool_output TEXT,
+          content TEXT,
+          metadata JSON,
+          UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type);
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {

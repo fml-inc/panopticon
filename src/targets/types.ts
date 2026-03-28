@@ -179,9 +179,21 @@ export interface ScannerParsedSession {
   firstPrompt?: string;
 }
 
+export interface ScannerParsedEvent {
+  sessionId: string;
+  eventType: string; // tool_call, tool_result, error, agent_message, reasoning, file_snapshot, info
+  timestampMs: number;
+  toolName?: string;
+  toolInput?: string;
+  toolOutput?: string;
+  content?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ScannerParseResult {
   meta?: ScannerParsedSession;
   turns: ScannerParsedTurn[];
+  events: ScannerParsedEvent[];
   newByteOffset: number;
 }
 

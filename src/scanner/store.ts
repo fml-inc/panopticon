@@ -1,6 +1,11 @@
 import { getDb } from "../db/schema.js";
-import { upsertSession as upsertSessionRow } from "../db/store.js";
+import {
+  upsertSessionRepository,
+  upsertSession as upsertSessionRow,
+} from "../db/store.js";
+import { resolveRepoFromCwd } from "../repo.js";
 import type {
+  ScannerParsedEvent,
   ScannerParsedSession,
   ScannerParsedTurn,
 } from "../targets/types.js";
@@ -21,7 +26,20 @@ export function upsertSession(
     model: meta.model,
     cli_version: meta.cliVersion,
     scanner_file_path: filePath,
+    has_scanner: 1,
   });
+
+  // Resolve repo from cwd for scanner-only sessions
+  if (meta.cwd) {
+    const repo = resolveRepoFromCwd(meta.cwd);
+    if (repo) {
+      upsertSessionRepository(
+        meta.sessionId,
+        repo,
+        meta.startedAtMs ?? Date.now(),
+      );
+    }
+  }
 }
 
 // ── Turn insert ─────────────────────────────────────────────────────────────
@@ -53,6 +71,39 @@ export function insertTurns(turns: ScannerParsedTurn[], source: string): void {
         t.cacheReadTokens,
         t.cacheCreationTokens,
         t.reasoningTokens,
+      );
+    }
+  });
+  tx();
+}
+
+// ── Scanner events insert ───────────────────────────────────────────────────
+
+const INSERT_EVENT_SQL = `
+  INSERT OR IGNORE INTO scanner_events
+    (session_id, source, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+export function insertScannerEvents(
+  events: ScannerParsedEvent[],
+  source: string,
+): void {
+  if (events.length === 0) return;
+  const db = getDb();
+  const stmt = db.prepare(INSERT_EVENT_SQL);
+  const tx = db.transaction(() => {
+    for (const e of events) {
+      stmt.run(
+        e.sessionId,
+        source,
+        e.eventType,
+        e.timestampMs,
+        e.toolName ?? null,
+        e.toolInput ?? null,
+        e.toolOutput ?? null,
+        e.content ?? null,
+        e.metadata ? JSON.stringify(e.metadata) : null,
       );
     }
   });

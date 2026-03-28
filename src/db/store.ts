@@ -162,6 +162,15 @@ export interface SessionUpsert {
   total_cache_creation_tokens?: number;
   total_reasoning_tokens?: number;
   turn_count?: number;
+  // OTLP-sourced tokens
+  otel_input_tokens?: number;
+  otel_output_tokens?: number;
+  otel_cache_read_tokens?: number;
+  otel_cache_creation_tokens?: number;
+  // Completeness indicators
+  has_hooks?: number;
+  has_otel?: number;
+  has_scanner?: number;
 }
 
 export function upsertSession(row: SessionUpsert): void {
@@ -170,11 +179,15 @@ export function upsertSession(row: SessionUpsert): void {
     `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
        permission_mode, agent_version, model, cli_version, scanner_file_path,
        total_input_tokens, total_output_tokens, total_cache_read_tokens,
-       total_cache_creation_tokens, total_reasoning_tokens, turn_count)
+       total_cache_creation_tokens, total_reasoning_tokens, turn_count,
+       otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
+       models, has_hooks, has_otel, has_scanner)
      VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt,
        @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
        @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
-       @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count)
+       @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
+       @otel_input_tokens, @otel_output_tokens, @otel_cache_read_tokens, @otel_cache_creation_tokens,
+       @model, @has_hooks, @has_otel, @has_scanner)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
@@ -191,7 +204,20 @@ export function upsertSession(row: SessionUpsert): void {
        total_cache_read_tokens = COALESCE(excluded.total_cache_read_tokens, sessions.total_cache_read_tokens),
        total_cache_creation_tokens = COALESCE(excluded.total_cache_creation_tokens, sessions.total_cache_creation_tokens),
        total_reasoning_tokens = COALESCE(excluded.total_reasoning_tokens, sessions.total_reasoning_tokens),
-       turn_count = COALESCE(excluded.turn_count, sessions.turn_count)`,
+       turn_count = COALESCE(excluded.turn_count, sessions.turn_count),
+       otel_input_tokens = COALESCE(excluded.otel_input_tokens, sessions.otel_input_tokens),
+       otel_output_tokens = COALESCE(excluded.otel_output_tokens, sessions.otel_output_tokens),
+       otel_cache_read_tokens = COALESCE(excluded.otel_cache_read_tokens, sessions.otel_cache_read_tokens),
+       otel_cache_creation_tokens = COALESCE(excluded.otel_cache_creation_tokens, sessions.otel_cache_creation_tokens),
+       models = CASE
+         WHEN excluded.model IS NULL THEN sessions.models
+         WHEN sessions.models IS NULL THEN excluded.model
+         WHEN sessions.models LIKE '%' || excluded.model || '%' THEN sessions.models
+         ELSE sessions.models || ',' || excluded.model
+       END,
+       has_hooks = MAX(COALESCE(excluded.has_hooks, 0), COALESCE(sessions.has_hooks, 0)),
+       has_otel = MAX(COALESCE(excluded.has_otel, 0), COALESCE(sessions.has_otel, 0)),
+       has_scanner = MAX(COALESCE(excluded.has_scanner, 0), COALESCE(sessions.has_scanner, 0))`,
   ).run({
     session_id: row.session_id,
     target: row.target ?? null,
@@ -210,6 +236,13 @@ export function upsertSession(row: SessionUpsert): void {
     total_cache_creation_tokens: row.total_cache_creation_tokens ?? null,
     total_reasoning_tokens: row.total_reasoning_tokens ?? null,
     turn_count: row.turn_count ?? null,
+    otel_input_tokens: row.otel_input_tokens ?? null,
+    otel_output_tokens: row.otel_output_tokens ?? null,
+    otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
+    otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
+    has_hooks: row.has_hooks ?? 0,
+    has_otel: row.has_otel ?? 0,
+    has_scanner: row.has_scanner ?? 0,
   });
 }
 

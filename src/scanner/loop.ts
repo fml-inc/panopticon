@@ -7,6 +7,7 @@ import { allTargets } from "../targets/registry.js";
 import type { ScannerParseResult } from "../targets/types.js";
 import {
   getTurnCount,
+  insertScannerEvents,
   insertTurns,
   readFileWatermark,
   updateSessionTotals,
@@ -59,6 +60,10 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         insertTurns(result.turns, source);
         newTurns += result.turns.length;
         updateSessionTotals(result.meta.sessionId);
+      }
+
+      if (result.events.length > 0) {
+        insertScannerEvents(result.events, source);
       }
 
       writeFileWatermark(filePath, result.newByteOffset);

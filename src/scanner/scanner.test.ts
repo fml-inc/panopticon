@@ -535,3 +535,274 @@ describe("target scanner specs", () => {
     }
   });
 });
+
+// ── Event capture tests ─────────────────────────────────────────────────────
+
+describe("claude event capture", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "scanner-claude-ev-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("captures system error events", () => {
+    const lines = [
+      JSON.stringify({
+        type: "system",
+        sessionId: "err-1",
+        timestamp: "2026-01-01T00:00:00Z",
+        level: "error",
+        data: {
+          type: "api_error",
+          message: "rate limited",
+          retryAttempt: 1,
+          maxRetries: 3,
+          retryInMs: 2000,
+        },
+      }),
+    ];
+    const file = path.join(tmpDir, "s.jsonl");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+    const result = getTarget("claude")!.scanner!.parseFile(file, 0);
+    expect(result!.events.length).toBeGreaterThanOrEqual(1);
+    const err = result!.events.find((e) => e.eventType === "error");
+    expect(err).toBeDefined();
+    expect(err!.content).toBe("rate limited");
+    expect(err!.metadata?.retryAttempt).toBe(1);
+  });
+
+  it("captures file-history-snapshot events", () => {
+    const lines = [
+      JSON.stringify({
+        type: "file-history-snapshot",
+        sessionId: "snap-1",
+        timestamp: "2026-01-01T00:00:00Z",
+        messageId: "msg-123",
+        data: { trackedFileBackups: { "file.ts": "hash123" } },
+      }),
+    ];
+    const file = path.join(tmpDir, "s.jsonl");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+    const result = getTarget("claude")!.scanner!.parseFile(file, 0);
+    const snap = result!.events.find((e) => e.eventType === "file_snapshot");
+    expect(snap).toBeDefined();
+    expect(snap!.metadata?.messageId).toBe("msg-123");
+  });
+
+  it("captures progress events with durationMs", () => {
+    const lines = [
+      JSON.stringify({
+        type: "progress",
+        sessionId: "prog-1",
+        timestamp: "2026-01-01T00:00:00Z",
+        data: {
+          hookEvent: "PreToolUse",
+          hookName: "PreToolUse:Bash",
+          durationMs: 150,
+        },
+      }),
+    ];
+    const file = path.join(tmpDir, "s.jsonl");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+    const result = getTarget("claude")!.scanner!.parseFile(file, 0);
+    const prog = result!.events.find((e) => e.eventType === "progress");
+    expect(prog).toBeDefined();
+    expect(prog!.metadata?.durationMs).toBe(150);
+    expect(prog!.toolName).toBe("PreToolUse:Bash");
+  });
+});
+
+describe("codex event capture", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "scanner-codex-ev-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("captures function_call tool events", () => {
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-01-01T00:00:00Z",
+        payload: { id: "codex-ev-1", cwd: "/workspace" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-01-01T00:00:01Z",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: '{"cmd":"ls -la"}',
+          call_id: "call-1",
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-01-01T00:00:02Z",
+        payload: {
+          type: "function_call_output",
+          output: "file1.ts\nfile2.ts",
+          call_id: "call-1",
+        },
+      }),
+    ];
+    const file = path.join(tmpDir, "s.jsonl");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+    const result = getTarget("codex")!.scanner!.parseFile(file, 0);
+    expect(result!.events.length).toBe(2);
+
+    const call = result!.events.find((e) => e.eventType === "tool_call")!;
+    expect(call.toolName).toBe("exec_command");
+    expect(call.toolInput).toContain("ls -la");
+
+    const out = result!.events.find((e) => e.eventType === "tool_result")!;
+    expect(out.toolOutput).toContain("file1.ts");
+  });
+
+  it("captures agent_message events", () => {
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-01-01T00:00:00Z",
+        payload: { id: "codex-ev-2" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-01-01T00:00:01Z",
+        payload: {
+          type: "agent_message",
+          message: "Exploring the codebase structure",
+          phase: "commentary",
+        },
+      }),
+    ];
+    const file = path.join(tmpDir, "s.jsonl");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+    const result = getTarget("codex")!.scanner!.parseFile(file, 0);
+    const msg = result!.events.find((e) => e.eventType === "agent_message")!;
+    expect(msg.content).toBe("Exploring the codebase structure");
+    expect(msg.metadata?.phase).toBe("commentary");
+  });
+});
+
+describe("gemini event capture", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "scanner-gemini-ev-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("captures toolCalls from gemini messages", () => {
+    const session = {
+      sessionId: "gem-ev-1",
+      startTime: "2026-01-01T00:00:00Z",
+      messages: [
+        {
+          type: "gemini",
+          model: "gemini-3-flash",
+          timestamp: "2026-01-01T00:00:01Z",
+          tokens: {
+            input: 100,
+            output: 10,
+            cached: 0,
+            thoughts: 0,
+            total: 110,
+          },
+          content: "Reading file",
+          toolCalls: [
+            {
+              name: "read_file",
+              args: { file_path: "/workspace/main.ts" },
+              result: [
+                { functionResponse: { content: "export function main() {}" } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const file = path.join(tmpDir, "session-test.json");
+    fs.writeFileSync(file, JSON.stringify(session));
+    const result = getTarget("gemini")!.scanner!.parseFile(file, 0);
+    const call = result!.events.find((e) => e.eventType === "tool_call")!;
+    expect(call.toolName).toBe("read_file");
+    expect(call.toolInput).toContain("main.ts");
+    expect(call.toolOutput).toContain("export function main");
+  });
+
+  it("captures thoughts/reasoning from gemini messages", () => {
+    const session = {
+      sessionId: "gem-ev-2",
+      startTime: "2026-01-01T00:00:00Z",
+      messages: [
+        {
+          type: "gemini",
+          model: "gemini-3-flash",
+          timestamp: "2026-01-01T00:00:01Z",
+          tokens: {
+            input: 100,
+            output: 10,
+            cached: 0,
+            thoughts: 50,
+            total: 160,
+          },
+          content: "Here is my analysis",
+          thoughts: [
+            {
+              subject: "Code review",
+              description: "Analyzing the function for bugs",
+            },
+          ],
+        },
+      ],
+    };
+    const file = path.join(tmpDir, "session-test.json");
+    fs.writeFileSync(file, JSON.stringify(session));
+    const result = getTarget("gemini")!.scanner!.parseFile(file, 0);
+    const thought = result!.events.find((e) => e.eventType === "reasoning")!;
+    expect(thought.content).toBe("Analyzing the function for bugs");
+  });
+
+  it("captures info messages", () => {
+    const session = {
+      sessionId: "gem-ev-3",
+      startTime: "2026-01-01T00:00:00Z",
+      messages: [
+        {
+          type: "info",
+          timestamp: "2026-01-01T00:00:01Z",
+          content: "Tool execution output",
+        },
+      ],
+    };
+    const file = path.join(tmpDir, "session-test.json");
+    fs.writeFileSync(file, JSON.stringify(session));
+    const result = getTarget("gemini")!.scanner!.parseFile(file, 0);
+    const info = result!.events.find((e) => e.eventType === "info")!;
+    expect(info.content).toBe("Tool execution output");
+  });
+
+  it("returns empty events array when no events", () => {
+    const session = {
+      sessionId: "gem-ev-4",
+      startTime: "2026-01-01T00:00:00Z",
+      messages: [
+        {
+          type: "user",
+          timestamp: "2026-01-01T00:00:01Z",
+          content: [{ text: "hi" }],
+        },
+      ],
+    };
+    const file = path.join(tmpDir, "session-test.json");
+    fs.writeFileSync(file, JSON.stringify(session));
+    const result = getTarget("gemini")!.scanner!.parseFile(file, 0);
+    expect(result!.events).toEqual([]);
+  });
+});

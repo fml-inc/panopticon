@@ -40,33 +40,102 @@ function serviceNameMap(): Map<string, string> {
 }
 
 /**
- * Create session rows for any new session IDs seen in OTLP data.
- * Uses service.name from resource_attributes to determine the target.
+ * Create/enrich session rows from OTLP data. Derives:
+ * - target from service.name mapping
+ * - started_at_ms from earliest timestamp in the batch
+ * - otel_* token columns from token metric values
+ * - model from metric attributes
  */
 function ensureSessionsFromOtel(
   rows: Array<{
     session_id?: string;
+    timestamp_ns?: number;
     resource_attributes?: Record<string, unknown>;
+    name?: string;
+    value?: number;
+    attributes?: Record<string, unknown>;
   }>,
 ): void {
-  const seen = new Map<string, string>(); // session_id → target
+  const sessions = new Map<
+    string,
+    {
+      target?: string;
+      minTimestampMs?: number;
+      model?: string;
+      otelInput: number;
+      otelOutput: number;
+      otelCacheRead: number;
+      otelCacheCreation: number;
+    }
+  >();
+
   for (const row of rows) {
     const sid = row.session_id;
-    if (!sid || seen.has(sid)) continue;
+    if (!sid) continue;
 
-    const serviceName = row.resource_attributes?.["service.name"];
-    const target =
-      typeof serviceName === "string"
-        ? serviceNameMap().get(serviceName)
-        : undefined;
+    if (!sessions.has(sid)) {
+      const serviceName = row.resource_attributes?.["service.name"];
+      const target =
+        typeof serviceName === "string"
+          ? serviceNameMap().get(serviceName)
+          : undefined;
+      sessions.set(sid, {
+        target,
+        otelInput: 0,
+        otelOutput: 0,
+        otelCacheRead: 0,
+        otelCacheCreation: 0,
+      });
+    }
 
-    if (target) {
-      seen.set(sid, target);
+    const sess = sessions.get(sid)!;
+
+    // Derive timing from earliest timestamp
+    if (row.timestamp_ns && row.timestamp_ns > 0) {
+      const ms = Math.floor(row.timestamp_ns / 1_000_000);
+      if (!sess.minTimestampMs || ms < sess.minTimestampMs) {
+        sess.minTimestampMs = ms;
+      }
+    }
+
+    // Extract model from attributes
+    if (!sess.model && row.attributes) {
+      const m = row.attributes.model ?? row.attributes["gen_ai.response.model"];
+      if (typeof m === "string") sess.model = m;
+    }
+
+    // Aggregate token metrics
+    if (
+      row.name &&
+      typeof row.value === "number" &&
+      row.name.includes("token")
+    ) {
+      const tokenType =
+        (row.attributes?.type as string) ??
+        (row.attributes?.["gen_ai.token.type"] as string) ??
+        (row.attributes?.token_type as string);
+      if (tokenType === "input") sess.otelInput += row.value;
+      else if (tokenType === "output") sess.otelOutput += row.value;
+      else if (tokenType === "cacheRead" || tokenType === "cache_read")
+        sess.otelCacheRead += row.value;
+      else if (tokenType === "cacheCreation" || tokenType === "cache_write")
+        sess.otelCacheCreation += row.value;
     }
   }
 
-  for (const [sessionId, target] of seen) {
-    upsertSession({ session_id: sessionId, target });
+  for (const [sessionId, sess] of sessions) {
+    if (!sess.target) continue;
+    upsertSession({
+      session_id: sessionId,
+      target: sess.target,
+      has_otel: 1,
+      started_at_ms: sess.minTimestampMs,
+      model: sess.model,
+      otel_input_tokens: sess.otelInput || undefined,
+      otel_output_tokens: sess.otelOutput || undefined,
+      otel_cache_read_tokens: sess.otelCacheRead || undefined,
+      otel_cache_creation_tokens: sess.otelCacheCreation || undefined,
+    });
   }
 }
 

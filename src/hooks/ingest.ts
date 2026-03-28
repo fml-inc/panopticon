@@ -278,6 +278,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionFields: Parameters<typeof upsertSession>[0] = {
     session_id: sessionId,
     target: targetId,
+    has_hooks: 1,
   };
   if (eventType === "SessionStart") {
     sessionFields.started_at_ms = timestampMs;

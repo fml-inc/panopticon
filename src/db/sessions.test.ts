@@ -509,3 +509,127 @@ describe("OTLP-derived sessions", () => {
     expect(s.scanner_file_path).toBe("/codex/sessions/session.jsonl");
   });
 });
+
+// ── Model set tracking ──────────────────────────────────────────────────────
+
+describe("model set tracking", () => {
+  it("first model sets the models field", () => {
+    upsertSession({ session_id: "model-1", model: "claude-opus-4-6" });
+    const s = getSession("model-1")!;
+    expect(s.models).toBe("claude-opus-4-6");
+  });
+
+  it("same model is not duplicated", () => {
+    upsertSession({ session_id: "model-2", model: "claude-opus-4-6" });
+    upsertSession({ session_id: "model-2", model: "claude-opus-4-6" });
+    const s = getSession("model-2")!;
+    expect(s.models).toBe("claude-opus-4-6");
+  });
+
+  it("different models are comma-separated", () => {
+    upsertSession({ session_id: "model-3", model: "claude-opus-4-6" });
+    upsertSession({ session_id: "model-3", model: "claude-haiku-4-5" });
+    const s = getSession("model-3")!;
+    expect(s.models).toBe("claude-opus-4-6,claude-haiku-4-5");
+  });
+
+  it("null model does not change existing set", () => {
+    upsertSession({ session_id: "model-4", model: "gpt-5.4" });
+    upsertSession({ session_id: "model-4" }); // no model
+    const s = getSession("model-4")!;
+    expect(s.models).toBe("gpt-5.4");
+  });
+
+  it("three models from different sources accumulate", () => {
+    upsertSession({ session_id: "model-5", model: "claude-opus-4-6" });
+    upsertSession({ session_id: "model-5", model: "claude-haiku-4-5" });
+    upsertSession({ session_id: "model-5", model: "claude-sonnet-4" });
+    const s = getSession("model-5")!;
+    expect(s.models).toBe("claude-opus-4-6,claude-haiku-4-5,claude-sonnet-4");
+  });
+});
+
+// ── Completeness indicators ─────────────────────────────────────────────────
+
+describe("completeness indicators", () => {
+  it("has_hooks is set and sticky", () => {
+    upsertSession({ session_id: "comp-1", has_hooks: 1 });
+    upsertSession({ session_id: "comp-1" }); // no flag
+    const s = getSession("comp-1")!;
+    expect(s.has_hooks).toBe(1);
+  });
+
+  it("has_otel is set and sticky", () => {
+    upsertSession({ session_id: "comp-2", has_otel: 1 });
+    upsertSession({ session_id: "comp-2" });
+    const s = getSession("comp-2")!;
+    expect(s.has_otel).toBe(1);
+  });
+
+  it("has_scanner is set and sticky", () => {
+    upsertSession({ session_id: "comp-3", has_scanner: 1 });
+    upsertSession({ session_id: "comp-3" });
+    const s = getSession("comp-3")!;
+    expect(s.has_scanner).toBe(1);
+  });
+
+  it("all three flags set from different sources", () => {
+    upsertSession({ session_id: "comp-4", has_hooks: 1 });
+    upsertSession({ session_id: "comp-4", has_otel: 1 });
+    upsertSession({ session_id: "comp-4", has_scanner: 1 });
+    const s = getSession("comp-4")!;
+    expect(s.has_hooks).toBe(1);
+    expect(s.has_otel).toBe(1);
+    expect(s.has_scanner).toBe(1);
+  });
+
+  it("flags default to 0 when no source has written", () => {
+    upsertSession({ session_id: "comp-5", target: "claude" });
+    const s = getSession("comp-5")!;
+    expect(s.has_hooks).toBe(0);
+    expect(s.has_otel).toBe(0);
+    expect(s.has_scanner).toBe(0);
+  });
+});
+
+// ── OTEL token columns ──────────────────────────────────────────────────────
+
+describe("OTEL token columns", () => {
+  it("otel tokens are stored separately from scanner tokens", () => {
+    upsertSession({
+      session_id: "tok-1",
+      total_input_tokens: 1000,
+      total_output_tokens: 500,
+      otel_input_tokens: 800,
+      otel_output_tokens: 400,
+    });
+    const s = getSession("tok-1")!;
+    expect(s.total_input_tokens).toBe(1000); // scanner
+    expect(s.total_output_tokens).toBe(500);
+    expect(s.otel_input_tokens).toBe(800); // otel
+    expect(s.otel_output_tokens).toBe(400);
+  });
+
+  it("otel and scanner tokens update independently", () => {
+    // Scanner sets tokens
+    upsertSession({ session_id: "tok-2", total_input_tokens: 1000 });
+    // OTEL sets different tokens
+    upsertSession({ session_id: "tok-2", otel_input_tokens: 800 });
+    const s = getSession("tok-2")!;
+    expect(s.total_input_tokens).toBe(1000);
+    expect(s.otel_input_tokens).toBe(800);
+  });
+
+  it("otel cache tokens stored separately", () => {
+    upsertSession({
+      session_id: "tok-3",
+      otel_cache_read_tokens: 50000,
+      otel_cache_creation_tokens: 3000,
+      total_cache_read_tokens: 75000,
+    });
+    const s = getSession("tok-3")!;
+    expect(s.otel_cache_read_tokens).toBe(50000);
+    expect(s.otel_cache_creation_tokens).toBe(3000);
+    expect(s.total_cache_read_tokens).toBe(75000); // scanner
+  });
+});

@@ -159,6 +159,7 @@ const claude: TargetAdapter = {
 
       let meta: ScannerParseResult["meta"];
       const turns: ScannerParseResult["turns"] = [];
+      const events: ScannerParseResult["events"] = [];
       let turnIndex = 0;
       let firstPrompt: string | undefined;
 
@@ -172,15 +173,17 @@ const claude: TargetAdapter = {
 
         const type = obj.type as string;
         const sessionId = obj.sessionId as string | undefined;
+        const sid = sessionId ?? meta?.sessionId ?? "";
+        const tsMs = obj.timestamp
+          ? new Date(obj.timestamp as string).getTime()
+          : Date.now();
 
         if (!meta && sessionId) {
           meta = {
             sessionId,
             cliVersion: obj.version as string | undefined,
             cwd: obj.cwd as string | undefined,
-            startedAtMs: obj.timestamp
-              ? new Date(obj.timestamp as string).getTime()
-              : undefined,
+            startedAtMs: tsMs,
           };
         }
 
@@ -199,11 +202,9 @@ const claude: TargetAdapter = {
           if (!firstPrompt && preview) firstPrompt = preview;
 
           turns.push({
-            sessionId: sessionId ?? meta?.sessionId ?? "",
+            sessionId: sid,
             turnIndex: turnIndex++,
-            timestampMs: obj.timestamp
-              ? new Date(obj.timestamp as string).getTime()
-              : Date.now(),
+            timestampMs: tsMs,
             role: "user",
             contentPreview: preview,
             inputTokens: 0,
@@ -221,11 +222,9 @@ const claude: TargetAdapter = {
           if (meta && model && !meta.model) meta.model = model;
 
           turns.push({
-            sessionId: sessionId ?? meta?.sessionId ?? "",
+            sessionId: sid,
             turnIndex: turnIndex++,
-            timestampMs: obj.timestamp
-              ? new Date(obj.timestamp as string).getTime()
-              : Date.now(),
+            timestampMs: tsMs,
             model,
             role: "assistant",
             inputTokens: (usage?.input_tokens as number) ?? 0,
@@ -236,11 +235,61 @@ const claude: TargetAdapter = {
             reasoningTokens: 0,
           });
         }
+
+        // System events: API errors, retries
+        if (type === "system") {
+          const data = obj.data as Record<string, unknown> | undefined;
+          const level = obj.level as string | undefined;
+          if (data?.type === "api_error" || level === "error") {
+            events.push({
+              sessionId: sid,
+              eventType: "error",
+              timestampMs: tsMs,
+              content:
+                typeof data?.message === "string" ? data.message : undefined,
+              metadata: {
+                level,
+                retryAttempt: data?.retryAttempt,
+                maxRetries: data?.maxRetries,
+                retryInMs: data?.retryInMs,
+              },
+            });
+          }
+        }
+
+        // File history snapshots
+        if (type === "file-history-snapshot") {
+          const data = obj.data as Record<string, unknown> | undefined;
+          const messageId = obj.messageId as string | undefined;
+          events.push({
+            sessionId: sid,
+            eventType: "file_snapshot",
+            timestampMs: tsMs,
+            metadata: { messageId, ...(data ?? {}) },
+          });
+        }
+
+        // Progress events with duration
+        if (type === "progress") {
+          const data = obj.data as Record<string, unknown> | undefined;
+          if (data?.durationMs || data?.hookEvent) {
+            events.push({
+              sessionId: sid,
+              eventType: "progress",
+              timestampMs: tsMs,
+              toolName: data.hookName as string | undefined,
+              metadata: {
+                hookEvent: data.hookEvent,
+                durationMs: data.durationMs,
+              },
+            });
+          }
+        }
       }
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
-      return { meta, turns, newByteOffset };
+      return { meta, turns, events, newByteOffset };
     },
   },
 };

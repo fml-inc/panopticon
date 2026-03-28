@@ -293,6 +293,7 @@ const codex: TargetAdapter = {
 
       let meta: ScannerParseResult["meta"];
       const turns: ScannerParseResult["turns"] = [];
+      const events: ScannerParseResult["events"] = [];
       let turnIndex = 0;
       let currentModel: string | undefined;
       let firstPrompt: string | undefined;
@@ -307,6 +308,7 @@ const codex: TargetAdapter = {
 
         const type = obj.type as string;
         const timestamp = obj.timestamp as string | undefined;
+        const tsMs = timestamp ? new Date(timestamp).getTime() : Date.now();
         const payload = obj.payload as Record<string, unknown> | undefined;
 
         if (type === "session_meta" && payload) {
@@ -316,9 +318,7 @@ const codex: TargetAdapter = {
             cliVersion: payload.cli_version as string | undefined,
             startedAtMs: payload.timestamp
               ? new Date(payload.timestamp as string).getTime()
-              : timestamp
-                ? new Date(timestamp).getTime()
-                : undefined,
+              : tsMs,
           };
         }
 
@@ -327,6 +327,8 @@ const codex: TargetAdapter = {
           if (meta && currentModel && !meta.model) meta.model = currentModel;
         }
 
+        const sid = meta?.sessionId ?? "";
+
         if (type === "event_msg" && payload) {
           const eventType = payload.type as string;
 
@@ -334,11 +336,9 @@ const codex: TargetAdapter = {
             const message = payload.message as string | undefined;
             if (!firstPrompt && message) firstPrompt = message.slice(0, 200);
             turns.push({
-              sessionId: meta?.sessionId ?? "",
+              sessionId: sid,
               turnIndex: turnIndex++,
-              timestampMs: timestamp
-                ? new Date(timestamp).getTime()
-                : Date.now(),
+              timestampMs: tsMs,
               model: currentModel,
               role: "user",
               contentPreview: message?.slice(0, 200),
@@ -359,11 +359,9 @@ const codex: TargetAdapter = {
             if (!lastUsage) continue;
 
             turns.push({
-              sessionId: meta?.sessionId ?? "",
+              sessionId: sid,
               turnIndex: turnIndex++,
-              timestampMs: timestamp
-                ? new Date(timestamp).getTime()
-                : Date.now(),
+              timestampMs: tsMs,
               model: currentModel,
               role: "assistant",
               inputTokens: (lastUsage.input_tokens as number) ?? 0,
@@ -374,12 +372,55 @@ const codex: TargetAdapter = {
                 (lastUsage.reasoning_output_tokens as number) ?? 0,
             });
           }
+
+          if (eventType === "agent_message") {
+            events.push({
+              sessionId: sid,
+              eventType: "agent_message",
+              timestampMs: tsMs,
+              content: (payload.message as string)?.slice(0, 500),
+              metadata: { phase: payload.phase },
+            });
+          }
+        }
+
+        // Tool calls from response_item
+        if (type === "response_item") {
+          const p = obj.payload as Record<string, unknown> | undefined;
+          const itemType = p?.type as string | undefined;
+
+          if (itemType === "function_call") {
+            events.push({
+              sessionId: sid,
+              eventType: "tool_call",
+              timestampMs: tsMs,
+              toolName: p?.name as string | undefined,
+              toolInput:
+                typeof p?.arguments === "string"
+                  ? p.arguments.slice(0, 1000)
+                  : JSON.stringify(p?.arguments)?.slice(0, 1000),
+              metadata: { call_id: p?.call_id },
+            });
+          }
+
+          if (itemType === "function_call_output") {
+            events.push({
+              sessionId: sid,
+              eventType: "tool_result",
+              timestampMs: tsMs,
+              toolOutput:
+                typeof p?.output === "string"
+                  ? p.output.slice(0, 1000)
+                  : undefined,
+              metadata: { call_id: p?.call_id },
+            });
+          }
         }
       }
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
-      return { meta, turns, newByteOffset };
+      return { meta, turns, events, newByteOffset };
     },
   },
 };
