@@ -1,7 +1,14 @@
 import http from "node:http";
 import { config } from "../config.js";
-import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
+import {
+  insertOtelLogs,
+  insertOtelMetrics,
+  type OtelLogRow,
+  type OtelMetricRow,
+  upsertSession,
+} from "../db/store.js";
 import { captureException } from "../sentry.js";
+import { allTargets } from "../targets/index.js";
 import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
 import {
@@ -16,6 +23,51 @@ function collectBody(req: http.IncomingMessage): Promise<Buffer> {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+}
+
+/** Map from OTel service.name to target ID, built lazily from target registry. */
+let _serviceNameMap: Map<string, string> | null = null;
+function serviceNameMap(): Map<string, string> {
+  if (!_serviceNameMap) {
+    _serviceNameMap = new Map();
+    for (const t of allTargets()) {
+      if (t.otel?.serviceName) {
+        _serviceNameMap.set(t.otel.serviceName, t.id);
+      }
+    }
+  }
+  return _serviceNameMap;
+}
+
+/**
+ * Create session rows for any new session IDs seen in OTLP data.
+ * Uses service.name from resource_attributes to determine the target.
+ */
+function ensureSessionsFromOtel(
+  rows: Array<{
+    session_id?: string;
+    resource_attributes?: Record<string, unknown>;
+  }>,
+): void {
+  const seen = new Map<string, string>(); // session_id → target
+  for (const row of rows) {
+    const sid = row.session_id;
+    if (!sid || seen.has(sid)) continue;
+
+    const serviceName = row.resource_attributes?.["service.name"];
+    const target =
+      typeof serviceName === "string"
+        ? serviceNameMap().get(serviceName)
+        : undefined;
+
+    if (target) {
+      seen.set(sid, target);
+    }
+  }
+
+  for (const [sessionId, target] of seen) {
+    upsertSession({ session_id: sessionId, target });
+  }
 }
 
 function isProtobuf(req: http.IncomingMessage): boolean {
@@ -85,7 +137,10 @@ export async function handleOtlpRequest(
     if (signal === "logs") {
       if (isProtobuf(req)) {
         const rows = decodeLogs(body);
-        if (rows.length > 0) insertOtelLogs(rows);
+        if (rows.length > 0) {
+          insertOtelLogs(rows);
+          ensureSessionsFromOtel(rows);
+        }
         const respBytes = ExportLogsServiceResponse.encode(
           ExportLogsServiceResponse.create({}),
         ).finish();
@@ -94,7 +149,10 @@ export async function handleOtlpRequest(
       } else if (isJson(req)) {
         const data = JSON.parse(body.toString("utf-8"));
         const rows = jsonLogsToRows(data);
-        if (rows.length > 0) insertOtelLogs(rows);
+        if (rows.length > 0) {
+          insertOtelLogs(rows);
+          ensureSessionsFromOtel(rows);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
       } else {
@@ -104,7 +162,10 @@ export async function handleOtlpRequest(
     } else if (signal === "metrics") {
       if (isProtobuf(req)) {
         const rows = decodeMetrics(body);
-        if (rows.length > 0) insertOtelMetrics(rows);
+        if (rows.length > 0) {
+          insertOtelMetrics(rows);
+          ensureSessionsFromOtel(rows);
+        }
         const respBytes = ExportMetricsServiceResponse.encode(
           ExportMetricsServiceResponse.create({}),
         ).finish();
@@ -113,7 +174,10 @@ export async function handleOtlpRequest(
       } else if (isJson(req)) {
         const data = JSON.parse(body.toString("utf-8"));
         const rows = jsonMetricsToRows(data);
-        if (rows.length > 0) insertOtelMetrics(rows);
+        if (rows.length > 0) {
+          insertOtelMetrics(rows);
+          ensureSessionsFromOtel(rows);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
       } else {

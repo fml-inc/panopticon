@@ -418,3 +418,94 @@ describe("COALESCE merge semantics", () => {
     expect(s.scanner_file_path).toBe("/path.jsonl");
   });
 });
+
+// ── OTLP-derived sessions ───────────────────────────────────────────────────
+
+describe("OTLP-derived sessions", () => {
+  it("codex: OTLP creates minimal session (target only)", () => {
+    // This is what ensureSessionsFromOtel does: upsert with just session_id + target
+    upsertSession({ session_id: "codex-otel-sess-1", target: "codex" });
+
+    const s = getSession("codex-otel-sess-1")!;
+    expect(s.session_id).toBe("codex-otel-sess-1");
+    expect(s.target).toBe("codex");
+    expect(s.model).toBeNull();
+    expect(s.scanner_file_path).toBeNull();
+    expect(s.started_at_ms).toBeNull();
+  });
+
+  it("gemini: OTLP logs create a session via service.name mapping", () => {
+    upsertSession({ session_id: "gemini-otel-sess-1", target: "gemini" });
+    const s = getSession("gemini-otel-sess-1")!;
+    expect(s.target).toBe("gemini");
+  });
+
+  it("OTLP session + scanner compose: scanner adds tokens to OTLP-created session", () => {
+    // OTLP creates minimal session
+    upsertSession({ session_id: "otel-then-scan", target: "codex" });
+    // Scanner adds token data
+    upsertSession({
+      session_id: "otel-then-scan",
+      model: "gpt-5.4",
+      total_input_tokens: 15000,
+      total_output_tokens: 300,
+      total_reasoning_tokens: 50,
+      turn_count: 3,
+      scanner_file_path: "/path/to/session.jsonl",
+    });
+    const s = getSession("otel-then-scan")!;
+    expect(s.target).toBe("codex");
+    expect(s.model).toBe("gpt-5.4");
+    expect(s.total_input_tokens).toBe(15000);
+    expect(s.total_reasoning_tokens).toBe(50);
+    expect(s.scanner_file_path).toBe("/path/to/session.jsonl");
+  });
+
+  it("OTLP session + hooks compose: hooks add runtime fields to OTLP-created session", () => {
+    // OTLP creates minimal session
+    upsertSession({ session_id: "otel-then-hook", target: "gemini" });
+    // Hooks add runtime fields
+    upsertSession({
+      session_id: "otel-then-hook",
+      started_at_ms: 1700000000000,
+      cwd: "/workspace",
+      first_prompt: "Use some tools",
+    });
+    const s = getSession("otel-then-hook")!;
+    expect(s.target).toBe("gemini");
+    expect(s.started_at_ms).toBe(1700000000000);
+    expect(s.cwd).toBe("/workspace");
+    expect(s.first_prompt).toBe("Use some tools");
+  });
+
+  it("all three sources compose on one session", () => {
+    // OTLP creates session
+    upsertSession({ session_id: "all-three", target: "codex" });
+    // Hooks add runtime data
+    upsertSession({
+      session_id: "all-three",
+      started_at_ms: 1700000000000,
+      first_prompt: "Build a thing",
+    });
+    // Scanner adds token data
+    upsertSession({
+      session_id: "all-three",
+      model: "gpt-5.4",
+      cli_version: "0.117.0",
+      total_input_tokens: 15000,
+      total_output_tokens: 300,
+      total_reasoning_tokens: 50,
+      turn_count: 3,
+      scanner_file_path: "/codex/sessions/session.jsonl",
+    });
+    const s = getSession("all-three")!;
+    expect(s.target).toBe("codex");
+    expect(s.started_at_ms).toBe(1700000000000);
+    expect(s.first_prompt).toBe("Build a thing");
+    expect(s.model).toBe("gpt-5.4");
+    expect(s.cli_version).toBe("0.117.0");
+    expect(s.total_input_tokens).toBe(15000);
+    expect(s.total_reasoning_tokens).toBe(50);
+    expect(s.scanner_file_path).toBe("/codex/sessions/session.jsonl");
+  });
+});
