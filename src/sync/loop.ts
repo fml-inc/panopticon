@@ -6,6 +6,7 @@ import {
   readHookEvents,
   readMetrics,
   readOtelLogs,
+  readOtelSpans,
   readScannerEvents,
   readScannerTurns,
 } from "./reader.js";
@@ -13,6 +14,7 @@ import {
   serializeHookEvents,
   serializeMetrics,
   serializeOtelLogs,
+  serializeOtelSpans,
   serializeScannerEvents,
   serializeScannerTurns,
 } from "./serialize.js";
@@ -230,6 +232,31 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     return rows.length === batchSize;
   }
 
+  async function syncOtelSpans(target: SyncTarget): Promise<boolean> {
+    const wmKey = watermarkKey("otel_spans", target.name);
+    const wm = readWatermark(wmKey);
+
+    const { rows, maxId } = readOtelSpans(wm, batchSize);
+    if (rows.length === 0) return false;
+
+    log(`otel_spans: ${rows.length} spans (watermark ${wm} → ${maxId})`);
+    const batches = chunk(rows, postBatchSize);
+
+    for (const batch of batches) {
+      if (batch.length > 0) {
+        const payload = serializeOtelSpans(batch);
+        await postOtlp(
+          `${target.url}/v1/traces`,
+          payload,
+          resolveHeaders(target),
+        );
+      }
+    }
+
+    writeWatermark(wmKey, maxId);
+    return rows.length === batchSize;
+  }
+
   async function syncScannerEvents(target: SyncTarget): Promise<boolean> {
     const wmKey = watermarkKey("scanner_events", target.name);
     const wm = readWatermark(wmKey);
@@ -269,6 +296,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           if (await syncMetrics(target)) anyWork = true;
           if (await syncScannerTurns(target)) anyWork = true;
           if (await syncScannerEvents(target)) anyWork = true;
+          if (await syncOtelSpans(target)) anyWork = true;
           if (!anyWork) break;
           hasMore = true;
         }

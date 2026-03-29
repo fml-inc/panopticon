@@ -309,6 +309,32 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS otel_spans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trace_id TEXT NOT NULL,
+          span_id TEXT NOT NULL,
+          parent_span_id TEXT,
+          name TEXT NOT NULL,
+          kind INTEGER,
+          start_time_ns INTEGER NOT NULL,
+          end_time_ns INTEGER NOT NULL,
+          status_code INTEGER,
+          status_message TEXT,
+          attributes JSON,
+          resource_attributes JSON,
+          session_id TEXT,
+          UNIQUE(trace_id, span_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_spans_session ON otel_spans(session_id);
+        CREATE INDEX IF NOT EXISTS idx_spans_trace ON otel_spans(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_spans_start ON otel_spans(start_time_ns);
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {

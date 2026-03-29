@@ -365,7 +365,13 @@ const gemini: TargetAdapter = {
       }
 
       if (firstPrompt) meta.firstPrompt = firstPrompt;
-      return { meta, turns, events, newByteOffset: size };
+      return {
+        meta,
+        turns,
+        events,
+        newByteOffset: size,
+        absoluteIndices: true,
+      };
     },
   },
 };

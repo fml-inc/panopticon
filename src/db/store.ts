@@ -27,6 +27,21 @@ export interface OtelMetricRow {
   session_id?: string;
 }
 
+export interface OtelSpanRow {
+  trace_id: string;
+  span_id: string;
+  parent_span_id?: string;
+  name: string;
+  kind?: number;
+  start_time_ns: number;
+  end_time_ns: number;
+  status_code?: number;
+  status_message?: string;
+  attributes?: Record<string, unknown>;
+  resource_attributes?: Record<string, unknown>;
+  session_id?: string;
+}
+
 export interface HookEventRow {
   session_id: string;
   event_type: string;
@@ -51,6 +66,11 @@ const INSERT_LOG_SQL = `
 const INSERT_METRIC_SQL = `
   INSERT INTO otel_metrics (timestamp_ns, name, value, metric_type, unit, attributes, resource_attributes, session_id)
   VALUES (@timestamp_ns, @name, @value, @metric_type, @unit, @attributes, @resource_attributes, @session_id)
+`;
+
+const INSERT_SPAN_SQL = `
+  INSERT OR IGNORE INTO otel_spans (trace_id, span_id, parent_span_id, name, kind, start_time_ns, end_time_ns, status_code, status_message, attributes, resource_attributes, session_id)
+  VALUES (@trace_id, @span_id, @parent_span_id, @name, @kind, @start_time_ns, @end_time_ns, @status_code, @status_message, @attributes, @resource_attributes, @session_id)
 `;
 
 const INSERT_HOOK_SQL = `
@@ -104,6 +124,33 @@ export function insertOtelMetrics(rows: OtelMetricRow[]): void {
           ? JSON.stringify(row.resource_attributes)
           : null,
         session_id: sessionId,
+      });
+    }
+  });
+  insertMany(rows);
+}
+
+export function insertOtelSpans(rows: OtelSpanRow[]): void {
+  const db = getDb();
+  const stmt = db.prepare(INSERT_SPAN_SQL);
+
+  const insertMany = db.transaction((rows: OtelSpanRow[]) => {
+    for (const row of rows) {
+      stmt.run({
+        trace_id: row.trace_id,
+        span_id: row.span_id,
+        parent_span_id: row.parent_span_id ?? null,
+        name: row.name,
+        kind: row.kind ?? null,
+        start_time_ns: row.start_time_ns,
+        end_time_ns: row.end_time_ns,
+        status_code: row.status_code ?? null,
+        status_message: row.status_message ?? null,
+        attributes: row.attributes ? JSON.stringify(row.attributes) : null,
+        resource_attributes: row.resource_attributes
+          ? JSON.stringify(row.resource_attributes)
+          : null,
+        session_id: row.session_id ?? null,
       });
     }
   });

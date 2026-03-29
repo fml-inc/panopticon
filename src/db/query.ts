@@ -921,10 +921,26 @@ export function dbStats() {
   const hooks = db
     .prepare("SELECT COUNT(*) as count FROM hook_events")
     .get() as { count: number };
+  const spans = db
+    .prepare("SELECT COUNT(*) as count FROM otel_spans")
+    .get() as { count: number };
+  const sessions = db
+    .prepare("SELECT COUNT(*) as count FROM sessions")
+    .get() as { count: number };
+  const scannerTurns = db
+    .prepare("SELECT COUNT(*) as count FROM scanner_turns")
+    .get() as { count: number };
+  const scannerEvents = db
+    .prepare("SELECT COUNT(*) as count FROM scanner_events")
+    .get() as { count: number };
 
   return {
     otel_logs: logs.count,
     otel_metrics: metrics.count,
+    otel_spans: spans.count,
     hook_events: hooks.count,
+    sessions: sessions.count,
+    scanner_turns: scannerTurns.count,
+    scanner_events: scannerEvents.count,
   };
 }

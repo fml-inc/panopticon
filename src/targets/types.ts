@@ -195,6 +195,13 @@ export interface ScannerParseResult {
   turns: ScannerParsedTurn[];
   events: ScannerParsedEvent[];
   newByteOffset: number;
+  /**
+   * When true, turn indices are absolute (0-based from start of session)
+   * and the caller should NOT re-index them. Used by parsers that re-read
+   * the full file (e.g. Gemini JSON) rather than reading incrementally.
+   * INSERT OR IGNORE handles dedup via the UNIQUE constraint.
+   */
+  absoluteIndices?: boolean;
 }
 
 export interface TargetScannerSpec {
