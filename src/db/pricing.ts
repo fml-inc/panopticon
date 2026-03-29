@@ -95,8 +95,8 @@ export async function refreshPricing(): Promise<PricingCache | null> {
     fs.mkdirSync(path.dirname(PRICING_PATH), { recursive: true });
     fs.writeFileSync(PRICING_PATH, `${JSON.stringify(cache, null, 2)}\n`);
 
-    // Upsert into SQLite
-    upsertPricingTable(models);
+    // Insert only changed prices (append-only time series)
+    insertPricingChanges(models);
 
     return cache;
   } catch {
@@ -106,18 +106,68 @@ export async function refreshPricing(): Promise<PricingCache | null> {
   }
 }
 
-function upsertPricingTable(models: Record<string, ModelPricing>): void {
+/**
+ * Read the latest price for each model into a Map for diffing.
+ * Uses the most recent row per model_id (highest updated_ms).
+ */
+function readCurrentPrices(
+  db: ReturnType<typeof getDb>,
+): Map<string, ModelPricing> {
+  const rows = db
+    .prepare(
+      `SELECT model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m
+       FROM model_pricing mp
+       WHERE updated_ms = (SELECT MAX(updated_ms) FROM model_pricing WHERE model_id = mp.model_id)`,
+    )
+    .all() as Array<{
+    model_id: string;
+    input_per_m: number;
+    output_per_m: number;
+    cache_read_per_m: number;
+    cache_write_per_m: number;
+  }>;
+
+  const map = new Map<string, ModelPricing>();
+  for (const r of rows) {
+    map.set(r.model_id, {
+      input: r.input_per_m,
+      output: r.output_per_m,
+      cache_read: r.cache_read_per_m,
+      cache_write: r.cache_write_per_m,
+    });
+  }
+  return map;
+}
+
+/**
+ * Insert only models whose pricing has changed.
+ * Append-only: each insert is a price-change event forming a time series.
+ */
+function insertPricingChanges(models: Record<string, ModelPricing>): number {
   const db = getDb();
   const now = Date.now();
-  const upsert = db.prepare(`
-    INSERT OR REPLACE INTO model_pricing
+  const current = readCurrentPrices(db);
+
+  const insert = db.prepare(`
+    INSERT INTO model_pricing
       (model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, updated_ms)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
+  let changed = 0;
   const tx = db.transaction(() => {
     for (const [modelId, pricing] of Object.entries(models)) {
-      upsert.run(
+      const existing = current.get(modelId);
+      if (
+        existing &&
+        existing.input === pricing.input &&
+        existing.output === pricing.output &&
+        existing.cache_read === pricing.cache_read &&
+        existing.cache_write === pricing.cache_write
+      ) {
+        continue;
+      }
+      insert.run(
         modelId,
         pricing.input,
         pricing.output,
@@ -125,9 +175,11 @@ function upsertPricingTable(models: Record<string, ModelPricing>): void {
         pricing.cache_write,
         now,
       );
+      changed++;
     }
   });
   tx();
+  return changed;
 }
 
 /**
@@ -136,7 +188,7 @@ function upsertPricingTable(models: Record<string, ModelPricing>): void {
  */
 function ensureFallbacks(): void {
   try {
-    upsertPricingTable(FALLBACK_PRICING);
+    insertPricingChanges(FALLBACK_PRICING);
   } catch {
     // Non-blocking
   }
@@ -166,6 +218,11 @@ export async function refreshIfStale(): Promise<void> {
  * SQL expression that computes cost for a row with (model, token_type, tokens) columns.
  * Looks up the best matching model in the model_pricing table by longest prefix match.
  */
+/**
+ * SQL expression that computes cost for a row with (model, token_type, tokens) columns.
+ * Looks up the best matching model in the model_pricing table by longest prefix match,
+ * using the most recent price entry (highest updated_ms) for that model.
+ */
 export const COST_EXPR = `
   tokens * COALESCE((
     SELECT CASE token_type
@@ -177,6 +234,6 @@ export const COST_EXPR = `
     END
     FROM model_pricing mp
     WHERE model LIKE mp.model_id || '%'
-    ORDER BY LENGTH(mp.model_id) DESC
+    ORDER BY LENGTH(mp.model_id) DESC, mp.updated_ms DESC
     LIMIT 1
   ), 0) / 1000000.0`;
