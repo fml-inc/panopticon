@@ -260,24 +260,16 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
     for (const target of opts.targets) {
       try {
+        // Round-robin: one batch from each table per iteration so all
+        // tables make progress together and no single backlog blocks others.
         for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
-          if (!(await syncHookEvents(target))) break;
-          hasMore = true;
-        }
-        for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
-          if (!(await syncOtelLogs(target))) break;
-          hasMore = true;
-        }
-        for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
-          if (!(await syncMetrics(target))) break;
-          hasMore = true;
-        }
-        for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
-          if (!(await syncScannerTurns(target))) break;
-          hasMore = true;
-        }
-        for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
-          if (!(await syncScannerEvents(target))) break;
+          let anyWork = false;
+          if (await syncHookEvents(target)) anyWork = true;
+          if (await syncOtelLogs(target)) anyWork = true;
+          if (await syncMetrics(target)) anyWork = true;
+          if (await syncScannerTurns(target)) anyWork = true;
+          if (await syncScannerEvents(target)) anyWork = true;
+          if (!anyWork) break;
           hasMore = true;
         }
       } catch (err) {
