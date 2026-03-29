@@ -270,9 +270,19 @@ server.tool(
   `Execute a read-only SQL query against the panopticon database.
 
 Schema:
-  hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, user_prompt, file_path, command, plan, allowed_prompts, payload BLOB)
+  sessions(session_id PK, target, started_at_ms, ended_at_ms, cwd, first_prompt, permission_mode, agent_version, model, cli_version, scanner_file_path, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens, total_reasoning_tokens, turn_count, otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner)
+  session_repositories(session_id, repository, first_seen_ms, git_user_name, git_user_email)
+  session_cwds(session_id, cwd, first_seen_ms)
+  hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, target, user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload BLOB)
   otel_logs(id, timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, attributes JSON, resource_attributes JSON, session_id, prompt_id, trace_id, span_id)
-  otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)`,
+  otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)
+  otel_spans(id, trace_id, span_id, parent_span_id, name, kind, start_time_ns, end_time_ns, status_code, status_message, attributes JSON, resource_attributes JSON, session_id)
+  scanner_turns(id, session_id, source, turn_index, timestamp_ms, model, role, content_preview, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens)
+  scanner_events(id, session_id, source, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata JSON)
+  scanner_file_watermarks(file_path PK, byte_offset, last_scanned_ms)
+  model_pricing(id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, updated_ms)
+
+Join on session_id across tables. hook_events payload is gzipped — use decompress(payload) to read. otel_logs.trace_id/span_id correlate with otel_spans.`,
   {
     sql: z.string().describe("SQL query (SELECT/WITH/PRAGMA only)"),
   },
