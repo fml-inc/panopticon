@@ -56,6 +56,7 @@ export interface HookEventRecord {
   filePath: string | null;
   command: string | null;
   toolResult: string | null;
+  target: string | null;
 }
 
 /** OTLP log record for sync. */
@@ -100,6 +101,7 @@ export interface ScannerTurnRecord {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   reasoningTokens: number;
+  cliVersion: string | null;
 }
 
 /** Scanner event record for sync. */

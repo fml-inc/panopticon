@@ -62,12 +62,14 @@ function resourceKey(sessionId: string, repository: string | null): string {
 function resourceAttributes(
   sessionId: string,
   repository: string | null,
+  target?: string | null,
 ): OtlpKeyValue[] {
   const attrs: OtlpKeyValue[] = [
     kv("service.name", "panopticon"),
     kv("session.id", sessionId),
   ];
   if (repository) attrs.push(kv("repository.full_name", repository));
+  if (target) attrs.push(kv("target", target));
   return attrs;
 }
 
@@ -105,7 +107,11 @@ export function serializeHookEvents(
     const key = resourceKey(event.sessionId, event.repository);
     if (!groups.has(key)) {
       groups.set(key, {
-        attrs: resourceAttributes(event.sessionId, event.repository),
+        attrs: resourceAttributes(
+          event.sessionId,
+          event.repository,
+          event.target,
+        ),
         records: [],
       });
     }
@@ -244,6 +250,7 @@ function scannerTurnToLogRecord(turn: ScannerTurnRecord): OtlpLogRecord {
   if (turn.role) attrs.push(kv("role", turn.role));
   if (turn.contentPreview)
     attrs.push(kv("content_preview", turn.contentPreview));
+  if (turn.cliVersion) attrs.push(kv("cli_version", turn.cliVersion));
 
   return {
     timeUnixNano: String(turn.timestampMs * 1_000_000),

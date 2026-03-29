@@ -20,12 +20,14 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
 // ── Hook events ──────────────────────────────────────────────────────────────
 
 const HOOK_EVENTS_SQL = `
-  SELECT id, session_id, event_type, timestamp_ms, cwd, repository,
-         tool_name, decompress(payload) as payload,
-         user_prompt, file_path, command, tool_result
-  FROM hook_events
-  WHERE id > ?
-  ORDER BY id
+  SELECT h.id, h.session_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
+         h.tool_name, decompress(h.payload) as payload,
+         h.user_prompt, h.file_path, h.command, h.tool_result,
+         s.target
+  FROM hook_events h
+  LEFT JOIN sessions s ON s.session_id = h.session_id
+  WHERE h.id > ?
+  ORDER BY h.id
   LIMIT ?
 `;
 
@@ -47,6 +49,7 @@ export function readHookEvents(
     file_path: string | null;
     command: string | null;
     tool_result: string | null;
+    target: string | null;
   }>;
 
   const rows: HookEventRecord[] = rawRows.map((r) => ({
@@ -62,6 +65,7 @@ export function readHookEvents(
     filePath: r.file_path,
     command: r.command,
     toolResult: r.tool_result,
+    target: r.target,
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
@@ -224,13 +228,15 @@ export function readMetrics(
 // ── Scanner turns ───────────────────────────────────────────────────────────
 
 const SCANNER_TURNS_SQL = `
-  SELECT id, session_id, source, turn_index, timestamp_ms,
-         model, role, content_preview,
-         input_tokens, output_tokens, cache_read_tokens,
-         cache_creation_tokens, reasoning_tokens
-  FROM scanner_turns
-  WHERE id > ?
-  ORDER BY id
+  SELECT t.id, t.session_id, t.source, t.turn_index, t.timestamp_ms,
+         t.model, t.role, t.content_preview,
+         t.input_tokens, t.output_tokens, t.cache_read_tokens,
+         t.cache_creation_tokens, t.reasoning_tokens,
+         s.cli_version
+  FROM scanner_turns t
+  LEFT JOIN sessions s ON s.session_id = t.session_id
+  WHERE t.id > ?
+  ORDER BY t.id
   LIMIT ?
 `;
 
@@ -253,6 +259,7 @@ export function readScannerTurns(
     cache_read_tokens: number;
     cache_creation_tokens: number;
     reasoning_tokens: number;
+    cli_version: string | null;
   }>;
 
   const rows: ScannerTurnRecord[] = rawRows.map((r) => ({
@@ -269,6 +276,7 @@ export function readScannerTurns(
     cacheReadTokens: r.cache_read_tokens,
     cacheCreationTokens: r.cache_creation_tokens,
     reasoningTokens: r.reasoning_tokens,
+    cliVersion: r.cli_version,
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
