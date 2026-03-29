@@ -289,6 +289,13 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 8,
+    up: (db) => {
+      // Wipe OpenRouter pricing data — replaced by LiteLLM source
+      db.exec("DELETE FROM model_pricing");
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {
