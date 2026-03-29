@@ -24,7 +24,7 @@ export function initDb(): void {
 }
 
 /**
- * Fetch model pricing from OpenRouter and cache locally.
+ * Fetch model pricing from LiteLLM and cache locally.
  * Returns the number of models cached, or null if the fetch failed.
  */
 export async function fetchPricing(): Promise<number | null> {

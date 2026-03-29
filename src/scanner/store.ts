@@ -1,3 +1,4 @@
+import { refreshIfStale } from "../db/pricing.js";
 import { getDb } from "../db/schema.js";
 import {
   upsertSessionRepository,
@@ -133,6 +134,8 @@ export function updateSessionTotals(sessionId: string): void {
     sessionId,
     sessionId,
   );
+  // Scanner produces token data that needs pricing for cost queries
+  refreshIfStale().catch(() => {});
 }
 
 // ── File watermarks ─────────────────────────────────────────────────────────

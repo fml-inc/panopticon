@@ -289,6 +289,26 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 8,
+    up: (db) => {
+      // Replace single-row-per-model pricing with append-only time series.
+      // Drop old OpenRouter data and recreate with autoincrement id.
+      db.exec(`
+        DROP TABLE IF EXISTS model_pricing;
+        CREATE TABLE model_pricing (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          model_id TEXT NOT NULL,
+          input_per_m REAL NOT NULL,
+          output_per_m REAL NOT NULL,
+          cache_read_per_m REAL NOT NULL DEFAULT 0,
+          cache_write_per_m REAL NOT NULL DEFAULT 0,
+          updated_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_pricing_model ON model_pricing(model_id, updated_ms);
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {

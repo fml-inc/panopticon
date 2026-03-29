@@ -498,7 +498,7 @@ async function install(
   console.log(`      ${config.dbPath}`);
   console.log(`      ${logDir}`);
 
-  // Fetch model pricing from OpenRouter (non-blocking if it fails)
+  // Fetch model pricing from LiteLLM (non-blocking if it fails)
   const pricing = await refreshPricing();
   console.log(
     pricing
@@ -1231,9 +1231,9 @@ program
 
 program
   .command("refresh-pricing")
-  .description("Fetch latest model pricing from OpenRouter")
+  .description("Fetch latest model pricing from LiteLLM")
   .action(async () => {
-    console.log("Fetching pricing from OpenRouter...");
+    console.log("Fetching pricing from LiteLLM...");
     const result = await refreshPricing();
     if (result) {
       console.log(

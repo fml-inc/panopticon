@@ -1,5 +1,6 @@
 import http from "node:http";
 import { config } from "../config.js";
+import { refreshIfStale } from "../db/pricing.js";
 import {
   insertOtelLogs,
   insertOtelMetrics,
@@ -226,6 +227,9 @@ export async function handleOtlpRequest(
         res.end();
       }
     } else if (signal === "metrics") {
+      // Metrics carry token data that needs pricing for cost queries
+      refreshIfStale().catch(() => {});
+
       if (isProtobuf(req)) {
         const rows = decodeMetrics(body);
         if (rows.length > 0) {
