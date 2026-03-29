@@ -3,8 +3,6 @@ import { config } from "../config.js";
 import {
   insertOtelLogs,
   insertOtelMetrics,
-  type OtelLogRow,
-  type OtelMetricRow,
   upsertSession,
 } from "../db/store.js";
 import { captureException } from "../sentry.js";

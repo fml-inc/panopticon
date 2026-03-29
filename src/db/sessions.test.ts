@@ -1,11 +1,3 @@
-/**
- * Tests for the unified sessions table — verifies that hooks, OTLP, and
- * scanner data can upsert independently or in any combination, and that
- * COALESCE merging produces the correct result for each vendor.
- */
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import {
   afterAll,
   beforeAll,
@@ -36,7 +28,7 @@ vi.mock("../config.js", () => {
 });
 
 import { closeDb, getDb } from "./schema.js";
-import { type SessionUpsert, upsertSession } from "./store.js";
+import { upsertSession } from "./store.js";
 
 function getSession(sessionId: string) {
   const db = getDb();
