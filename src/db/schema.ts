@@ -332,7 +332,35 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_spans_session ON otel_spans(session_id);
         CREATE INDEX IF NOT EXISTS idx_spans_trace ON otel_spans(trace_id);
         CREATE INDEX IF NOT EXISTS idx_spans_start ON otel_spans(start_time_ns);
+
+        CREATE TABLE IF NOT EXISTS session_summary_deltas (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          delta_index INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          from_turn INTEGER NOT NULL,
+          to_turn INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          method TEXT NOT NULL DEFAULT 'deterministic',
+          UNIQUE(session_id, delta_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_summary_deltas_session ON session_summary_deltas(session_id);
       `);
+
+      // ALTER TABLE columns added conditionally to handle DBs from
+      // earlier development where these were part of migration v8.
+      const addColumnIfMissing = (table: string, column: string, type: string) => {
+        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        if (!cols.some((c) => c.name === column)) {
+          db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        }
+      };
+
+      addColumnIfMissing("scanner_file_watermarks", "archived_size", "INTEGER DEFAULT 0");
+      addColumnIfMissing("scanner_turns", "summary", "TEXT");
+      addColumnIfMissing("sessions", "summary", "TEXT");
+      addColumnIfMissing("sessions", "summary_version", "INTEGER DEFAULT 0");
+      addColumnIfMissing("sessions", "sync_dirty", "INTEGER DEFAULT 0");
     },
   },
 ];

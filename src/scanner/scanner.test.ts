@@ -272,7 +272,7 @@ describe("claude scanner parseFile", () => {
 
   function writeAndParse(lines: string[]) {
     const file = path.join(tmpDir, "session.jsonl");
-    fs.writeFileSync(file, lines.join("\n") + "\n");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
 
     return getTarget("claude")!.scanner!.parseFile(file, 0);
   }
@@ -375,7 +375,7 @@ describe("codex scanner parseFile", () => {
 
   function writeAndParse(lines: string[]) {
     const file = path.join(tmpDir, "session.jsonl");
-    fs.writeFileSync(file, lines.join("\n") + "\n");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
     return getTarget("codex")!.scanner!.parseFile(file, 0);
   }
 
