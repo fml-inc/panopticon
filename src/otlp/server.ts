@@ -176,7 +176,11 @@ function sniffSignalFromBody(body: Buffer, protobuf: boolean): Signal | null {
       const rows = decodeMetrics(body);
       if (rows.length > 0) return "metrics";
     } catch {}
-    return "traces"; // fallback
+    try {
+      const rows = decodeTraces(body);
+      if (rows.length > 0) return "traces";
+    } catch {}
+    return null;
   }
   // JSON: check top-level keys
   try {
