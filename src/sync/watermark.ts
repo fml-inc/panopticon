@@ -45,7 +45,13 @@ export function writeWatermark(key: string, value: number): void {
   ).run(key, value);
 }
 
-const SYNCED_TABLES = ["hook_events", "otel_logs", "otel_metrics"];
+const SYNCED_TABLES = [
+  "hook_events",
+  "otel_logs",
+  "otel_metrics",
+  "scanner_turns",
+  "scanner_events",
+];
 
 export function resetWatermarks(targetName?: string): void {
   const db = getWatermarkDb();

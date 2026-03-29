@@ -167,10 +167,6 @@ export interface SessionUpsert {
   otel_output_tokens?: number;
   otel_cache_read_tokens?: number;
   otel_cache_creation_tokens?: number;
-  // Completeness indicators
-  has_hooks?: number;
-  has_otel?: number;
-  has_scanner?: number;
 }
 
 export function upsertSession(row: SessionUpsert): void {
@@ -181,13 +177,13 @@ export function upsertSession(row: SessionUpsert): void {
        total_input_tokens, total_output_tokens, total_cache_read_tokens,
        total_cache_creation_tokens, total_reasoning_tokens, turn_count,
        otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
-       models, has_hooks, has_otel, has_scanner)
+       models)
      VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt,
        @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
        @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
        @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
        @otel_input_tokens, @otel_output_tokens, @otel_cache_read_tokens, @otel_cache_creation_tokens,
-       @model, @has_hooks, @has_otel, @has_scanner)
+       @model)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
@@ -214,10 +210,7 @@ export function upsertSession(row: SessionUpsert): void {
          WHEN sessions.models IS NULL THEN excluded.model
          WHEN sessions.models LIKE '%' || excluded.model || '%' THEN sessions.models
          ELSE sessions.models || ',' || excluded.model
-       END,
-       has_hooks = MAX(COALESCE(excluded.has_hooks, 0), COALESCE(sessions.has_hooks, 0)),
-       has_otel = MAX(COALESCE(excluded.has_otel, 0), COALESCE(sessions.has_otel, 0)),
-       has_scanner = MAX(COALESCE(excluded.has_scanner, 0), COALESCE(sessions.has_scanner, 0))`,
+       END`,
   ).run({
     session_id: row.session_id,
     target: row.target ?? null,
@@ -240,9 +233,6 @@ export function upsertSession(row: SessionUpsert): void {
     otel_output_tokens: row.otel_output_tokens ?? null,
     otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
     otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
-    has_hooks: row.has_hooks ?? 0,
-    has_otel: row.has_otel ?? 0,
-    has_scanner: row.has_scanner ?? 0,
   });
 }
 

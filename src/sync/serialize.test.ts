@@ -84,6 +84,7 @@ function makeEvent(overrides: Partial<HookEventRecord> = {}): HookEventRecord {
     filePath: null,
     command: "ls",
     toolResult: null,
+    target: null,
     ...overrides,
   };
 }
