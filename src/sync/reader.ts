@@ -1,5 +1,11 @@
 import { getDb } from "../db/schema.js";
-import type { HookEventRecord, MetricRow, OtelLogRecord } from "./types.js";
+import type {
+  HookEventRecord,
+  MetricRow,
+  OtelLogRecord,
+  ScannerEventRecord,
+  ScannerTurnRecord,
+} from "./types.js";
 
 function parseJson(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null;
@@ -209,6 +215,106 @@ export function readMetrics(
     attributes: parseJson(r.attributes),
     resourceAttributes: parseJson(r.resource_attributes),
     sessionId: r.session_id,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Scanner turns ───────────────────────────────────────────────────────────
+
+const SCANNER_TURNS_SQL = `
+  SELECT id, session_id, source, turn_index, timestamp_ms,
+         model, role, content_preview,
+         input_tokens, output_tokens, cache_read_tokens,
+         cache_creation_tokens, reasoning_tokens
+  FROM scanner_turns
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readScannerTurns(
+  afterId: number,
+  limit: number,
+): { rows: ScannerTurnRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(SCANNER_TURNS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    turn_index: number;
+    timestamp_ms: number;
+    model: string | null;
+    role: string | null;
+    content_preview: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+    reasoning_tokens: number;
+  }>;
+
+  const rows: ScannerTurnRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    source: r.source,
+    turnIndex: r.turn_index,
+    timestampMs: r.timestamp_ms,
+    model: r.model,
+    role: r.role,
+    contentPreview: r.content_preview,
+    inputTokens: r.input_tokens,
+    outputTokens: r.output_tokens,
+    cacheReadTokens: r.cache_read_tokens,
+    cacheCreationTokens: r.cache_creation_tokens,
+    reasoningTokens: r.reasoning_tokens,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Scanner events ──────────────────────────────────────────────────────────
+
+const SCANNER_EVENTS_SQL = `
+  SELECT id, session_id, source, event_type, timestamp_ms,
+         tool_name, tool_input, tool_output, content, metadata
+  FROM scanner_events
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readScannerEvents(
+  afterId: number,
+  limit: number,
+): { rows: ScannerEventRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(SCANNER_EVENTS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    event_type: string;
+    timestamp_ms: number;
+    tool_name: string | null;
+    tool_input: string | null;
+    tool_output: string | null;
+    content: string | null;
+    metadata: string | null;
+  }>;
+
+  const rows: ScannerEventRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    source: r.source,
+    eventType: r.event_type,
+    timestampMs: r.timestamp_ms,
+    toolName: r.tool_name,
+    toolInput: r.tool_input,
+    toolOutput: r.tool_output,
+    content: r.content,
+    metadata: parseJson(r.metadata),
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;

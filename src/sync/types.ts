@@ -85,6 +85,37 @@ export interface MetricRow {
   sessionId: string | null;
 }
 
+/** Scanner turn record for sync. */
+export interface ScannerTurnRecord {
+  id: number;
+  sessionId: string;
+  source: string; // "claude" | "codex" | "gemini"
+  turnIndex: number;
+  timestampMs: number;
+  model: string | null;
+  role: string | null;
+  contentPreview: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+}
+
+/** Scanner event record for sync. */
+export interface ScannerEventRecord {
+  id: number;
+  sessionId: string;
+  source: string;
+  eventType: string;
+  timestampMs: number;
+  toolName: string | null;
+  toolInput: string | null;
+  toolOutput: string | null;
+  content: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
 // ── OTLP JSON types ──────────────────────────────────────────────────────────
 
 export interface OtlpAnyValue {

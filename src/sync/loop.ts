@@ -2,11 +2,19 @@ import { execSync } from "node:child_process";
 import { getDb } from "../db/schema.js";
 import { captureException } from "../sentry.js";
 import { chunk, postOtlp } from "./post.js";
-import { readHookEvents, readMetrics, readOtelLogs } from "./reader.js";
+import {
+  readHookEvents,
+  readMetrics,
+  readOtelLogs,
+  readScannerEvents,
+  readScannerTurns,
+} from "./reader.js";
 import {
   serializeHookEvents,
   serializeMetrics,
   serializeOtelLogs,
+  serializeScannerEvents,
+  serializeScannerTurns,
 } from "./serialize.js";
 import type { SyncHandle, SyncOptions, SyncTarget } from "./types.js";
 import {
@@ -197,6 +205,56 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     return rows.length === batchSize;
   }
 
+  async function syncScannerTurns(target: SyncTarget): Promise<boolean> {
+    const wmKey = watermarkKey("scanner_turns", target.name);
+    const wm = readWatermark(wmKey);
+
+    const { rows, maxId } = readScannerTurns(wm, batchSize);
+    if (rows.length === 0) return false;
+
+    log(`scanner_turns: ${rows.length} turns (watermark ${wm} → ${maxId})`);
+    const batches = chunk(rows, postBatchSize);
+
+    for (const batch of batches) {
+      if (batch.length > 0) {
+        const payload = serializeScannerTurns(batch);
+        await postOtlp(
+          `${target.url}/v1/logs`,
+          payload,
+          resolveHeaders(target),
+        );
+      }
+    }
+
+    writeWatermark(wmKey, maxId);
+    return rows.length === batchSize;
+  }
+
+  async function syncScannerEvents(target: SyncTarget): Promise<boolean> {
+    const wmKey = watermarkKey("scanner_events", target.name);
+    const wm = readWatermark(wmKey);
+
+    const { rows, maxId } = readScannerEvents(wm, batchSize);
+    if (rows.length === 0) return false;
+
+    log(`scanner_events: ${rows.length} events (watermark ${wm} → ${maxId})`);
+    const batches = chunk(rows, postBatchSize);
+
+    for (const batch of batches) {
+      if (batch.length > 0) {
+        const payload = serializeScannerEvents(batch);
+        await postOtlp(
+          `${target.url}/v1/logs`,
+          payload,
+          resolveHeaders(target),
+        );
+      }
+    }
+
+    writeWatermark(wmKey, maxId);
+    return rows.length === batchSize;
+  }
+
   async function runOnce(): Promise<boolean> {
     let hasMore = false;
 
@@ -212,6 +270,14 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         }
         for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
           if (!(await syncMetrics(target))) break;
+          hasMore = true;
+        }
+        for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
+          if (!(await syncScannerTurns(target))) break;
+          hasMore = true;
+        }
+        for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
+          if (!(await syncScannerEvents(target))) break;
           hasMore = true;
         }
       } catch (err) {
