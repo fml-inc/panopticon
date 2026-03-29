@@ -1,5 +1,11 @@
 import { getDb } from "../db/schema.js";
-import type { HookEventRecord, MetricRow, OtelLogRecord } from "./types.js";
+import type {
+  HookEventRecord,
+  MetricRow,
+  OtelLogRecord,
+  ScannerEventRecord,
+  ScannerTurnRecord,
+} from "./types.js";
 
 function parseJson(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null;
@@ -14,12 +20,14 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
 // ── Hook events ──────────────────────────────────────────────────────────────
 
 const HOOK_EVENTS_SQL = `
-  SELECT id, session_id, event_type, timestamp_ms, cwd, repository,
-         tool_name, decompress(payload) as payload,
-         user_prompt, file_path, command, tool_result
-  FROM hook_events
-  WHERE id > ?
-  ORDER BY id
+  SELECT h.id, h.session_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
+         h.tool_name, decompress(h.payload) as payload,
+         h.user_prompt, h.file_path, h.command, h.tool_result,
+         s.target
+  FROM hook_events h
+  LEFT JOIN sessions s ON s.session_id = h.session_id
+  WHERE h.id > ?
+  ORDER BY h.id
   LIMIT ?
 `;
 
@@ -41,6 +49,7 @@ export function readHookEvents(
     file_path: string | null;
     command: string | null;
     tool_result: string | null;
+    target: string | null;
   }>;
 
   const rows: HookEventRecord[] = rawRows.map((r) => ({
@@ -56,6 +65,7 @@ export function readHookEvents(
     filePath: r.file_path,
     command: r.command,
     toolResult: r.tool_result,
+    target: r.target,
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
@@ -209,6 +219,110 @@ export function readMetrics(
     attributes: parseJson(r.attributes),
     resourceAttributes: parseJson(r.resource_attributes),
     sessionId: r.session_id,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Scanner turns ───────────────────────────────────────────────────────────
+
+const SCANNER_TURNS_SQL = `
+  SELECT t.id, t.session_id, t.source, t.turn_index, t.timestamp_ms,
+         t.model, t.role, t.content_preview,
+         t.input_tokens, t.output_tokens, t.cache_read_tokens,
+         t.cache_creation_tokens, t.reasoning_tokens,
+         s.cli_version
+  FROM scanner_turns t
+  LEFT JOIN sessions s ON s.session_id = t.session_id
+  WHERE t.id > ?
+  ORDER BY t.id
+  LIMIT ?
+`;
+
+export function readScannerTurns(
+  afterId: number,
+  limit: number,
+): { rows: ScannerTurnRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(SCANNER_TURNS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    turn_index: number;
+    timestamp_ms: number;
+    model: string | null;
+    role: string | null;
+    content_preview: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+    reasoning_tokens: number;
+    cli_version: string | null;
+  }>;
+
+  const rows: ScannerTurnRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    source: r.source,
+    turnIndex: r.turn_index,
+    timestampMs: r.timestamp_ms,
+    model: r.model,
+    role: r.role,
+    contentPreview: r.content_preview,
+    inputTokens: r.input_tokens,
+    outputTokens: r.output_tokens,
+    cacheReadTokens: r.cache_read_tokens,
+    cacheCreationTokens: r.cache_creation_tokens,
+    reasoningTokens: r.reasoning_tokens,
+    cliVersion: r.cli_version,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Scanner events ──────────────────────────────────────────────────────────
+
+const SCANNER_EVENTS_SQL = `
+  SELECT id, session_id, source, event_type, timestamp_ms,
+         tool_name, tool_input, tool_output, content, metadata
+  FROM scanner_events
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readScannerEvents(
+  afterId: number,
+  limit: number,
+): { rows: ScannerEventRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(SCANNER_EVENTS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    event_type: string;
+    timestamp_ms: number;
+    tool_name: string | null;
+    tool_input: string | null;
+    tool_output: string | null;
+    content: string | null;
+    metadata: string | null;
+  }>;
+
+  const rows: ScannerEventRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    source: r.source,
+    eventType: r.event_type,
+    timestampMs: r.timestamp_ms,
+    toolName: r.tool_name,
+    toolInput: r.tool_input,
+    toolOutput: r.tool_output,
+    content: r.content,
+    metadata: parseJson(r.metadata),
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;

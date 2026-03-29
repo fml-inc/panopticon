@@ -3,8 +3,6 @@ import { config } from "../config.js";
 import {
   insertOtelLogs,
   insertOtelMetrics,
-  type OtelLogRow,
-  type OtelMetricRow,
   upsertSession,
 } from "../db/store.js";
 import { captureException } from "../sentry.js";
@@ -128,7 +126,6 @@ function ensureSessionsFromOtel(
     upsertSession({
       session_id: sessionId,
       target: sess.target,
-      has_otel: 1,
       started_at_ms: sess.minTimestampMs,
       model: sess.model,
       otel_input_tokens: sess.otelInput || undefined,

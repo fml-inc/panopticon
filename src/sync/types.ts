@@ -56,6 +56,7 @@ export interface HookEventRecord {
   filePath: string | null;
   command: string | null;
   toolResult: string | null;
+  target: string | null;
 }
 
 /** OTLP log record for sync. */
@@ -83,6 +84,38 @@ export interface MetricRow {
   attributes: Record<string, unknown> | null;
   resourceAttributes: Record<string, unknown> | null;
   sessionId: string | null;
+}
+
+/** Scanner turn record for sync. */
+export interface ScannerTurnRecord {
+  id: number;
+  sessionId: string;
+  source: string; // "claude" | "codex" | "gemini"
+  turnIndex: number;
+  timestampMs: number;
+  model: string | null;
+  role: string | null;
+  contentPreview: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  cliVersion: string | null;
+}
+
+/** Scanner event record for sync. */
+export interface ScannerEventRecord {
+  id: number;
+  sessionId: string;
+  source: string;
+  eventType: string;
+  timestampMs: number;
+  toolName: string | null;
+  toolInput: string | null;
+  toolOutput: string | null;
+  content: string | null;
+  metadata: Record<string, unknown> | null;
 }
 
 // ── OTLP JSON types ──────────────────────────────────────────────────────────

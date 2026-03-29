@@ -9,6 +9,8 @@ import type {
   OtlpNumberDataPoint,
   OtlpResourceLogs,
   OtlpResourceMetrics,
+  ScannerEventRecord,
+  ScannerTurnRecord,
 } from "./types.js";
 
 // ── AnyValue encoding ────────────────────────────────────────────────────────
@@ -60,19 +62,24 @@ function resourceKey(sessionId: string, repository: string | null): string {
 function resourceAttributes(
   sessionId: string,
   repository: string | null,
+  target?: string | null,
 ): OtlpKeyValue[] {
   const attrs: OtlpKeyValue[] = [
     kv("service.name", "panopticon"),
     kv("session.id", sessionId),
   ];
   if (repository) attrs.push(kv("repository.full_name", repository));
+  if (target) attrs.push(kv("target", target));
   return attrs;
 }
 
 // ── Hook events → OTLP logs ─────────────────────────────────────────────────
 
 function hookEventToLogRecord(event: HookEventRecord): OtlpLogRecord {
-  const attrs: OtlpKeyValue[] = [kv("event_type", event.eventType)];
+  const attrs: OtlpKeyValue[] = [
+    kv("emitter", "hook"),
+    kv("event_type", event.eventType),
+  ];
 
   if (event.toolName) attrs.push(kv("tool_name", event.toolName));
   if (event.cwd) attrs.push(kv("cwd", event.cwd));
@@ -100,7 +107,11 @@ export function serializeHookEvents(
     const key = resourceKey(event.sessionId, event.repository);
     if (!groups.has(key)) {
       groups.set(key, {
-        attrs: resourceAttributes(event.sessionId, event.repository),
+        attrs: resourceAttributes(
+          event.sessionId,
+          event.repository,
+          event.target,
+        ),
         records: [],
       });
     }
@@ -121,7 +132,7 @@ function otelLogToRecord(log: OtelLogRecord): OtlpLogRecord {
   const record: OtlpLogRecord = {
     timeUnixNano: String(log.timestampNs),
     body: { stringValue: log.body ?? "" },
-    attributes: mapToKvList(log.attributes),
+    attributes: [kv("emitter", "otel"), ...mapToKvList(log.attributes)],
   };
 
   if (log.severityText) record.severityText = log.severityText;
@@ -199,7 +210,7 @@ export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
     session.metrics.get(m.name)!.points.push({
       timeUnixNano: String(m.timestampNs),
       asDouble: m.value,
-      attributes: mapToKvList(m.attributes),
+      attributes: [kv("emitter", "otel"), ...mapToKvList(m.attributes)],
     });
   }
 
@@ -217,6 +228,109 @@ export function serializeMetrics(metrics: MetricRow[]): OtlpResourceMetrics {
           ),
         },
       ],
+    })),
+  };
+}
+
+// ── Scanner turns → OTLP logs ──────────────────────────────────────────────
+
+function scannerTurnToLogRecord(turn: ScannerTurnRecord): OtlpLogRecord {
+  const attrs: OtlpKeyValue[] = [
+    kv("emitter", "scanner"),
+    kv("source", turn.source),
+    kv("turn_index", turn.turnIndex),
+    kv("input_tokens", turn.inputTokens),
+    kv("output_tokens", turn.outputTokens),
+    kv("cache_read_tokens", turn.cacheReadTokens),
+    kv("cache_creation_tokens", turn.cacheCreationTokens),
+    kv("reasoning_tokens", turn.reasoningTokens),
+  ];
+
+  if (turn.model) attrs.push(kv("model", turn.model));
+  if (turn.role) attrs.push(kv("role", turn.role));
+  if (turn.contentPreview)
+    attrs.push(kv("content_preview", turn.contentPreview));
+  if (turn.cliVersion) attrs.push(kv("cli_version", turn.cliVersion));
+
+  return {
+    timeUnixNano: String(turn.timestampMs * 1_000_000),
+    body: { stringValue: "scanner.turn" },
+    attributes: attrs,
+  };
+}
+
+export function serializeScannerTurns(
+  turns: ScannerTurnRecord[],
+): OtlpResourceLogs {
+  const groups = new Map<
+    string,
+    { attrs: OtlpKeyValue[]; records: OtlpLogRecord[] }
+  >();
+
+  for (const turn of turns) {
+    const key = resourceKey(turn.sessionId, null);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        attrs: resourceAttributes(turn.sessionId, null),
+        records: [],
+      });
+    }
+    groups.get(key)!.records.push(scannerTurnToLogRecord(turn));
+  }
+
+  return {
+    resourceLogs: Array.from(groups.values()).map((g) => ({
+      resource: { attributes: g.attrs },
+      scopeLogs: [{ logRecords: g.records }],
+    })),
+  };
+}
+
+// ── Scanner events → OTLP logs ─────────────────────────────────────────────
+
+function scannerEventToLogRecord(event: ScannerEventRecord): OtlpLogRecord {
+  const attrs: OtlpKeyValue[] = [
+    kv("emitter", "scanner"),
+    kv("source", event.source),
+    kv("event_type", event.eventType),
+  ];
+
+  if (event.toolName) attrs.push(kv("tool_name", event.toolName));
+  if (event.toolInput) attrs.push(kv("tool_input", event.toolInput));
+  if (event.toolOutput) attrs.push(kv("tool_output", event.toolOutput));
+  if (event.content) attrs.push(kv("content", event.content));
+  if (event.metadata) attrs.push(kv("metadata", event.metadata));
+
+  return {
+    timeUnixNano: String(event.timestampMs * 1_000_000),
+    body: { stringValue: "scanner.event" },
+    attributes: attrs,
+  };
+}
+
+export function serializeScannerEvents(
+  events: ScannerEventRecord[],
+): OtlpResourceLogs {
+  const groups = new Map<
+    string,
+    { attrs: OtlpKeyValue[]; records: OtlpLogRecord[] }
+  >();
+
+  for (const event of events) {
+    const key = resourceKey(event.sessionId, null);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        attrs: resourceAttributes(event.sessionId, null),
+        records: [],
+      });
+    }
+    groups.get(key)!.records.push(scannerEventToLogRecord(event));
+  }
+
+  return {
+    resourceLogs: Array.from(groups.values()).map((g) => ({
+      resource: { attributes: g.attrs },
+      scopeLogs: [{ logRecords: g.records }],
     })),
   };
 }
