@@ -349,14 +349,24 @@ const migrations: Migration[] = [
 
       // ALTER TABLE columns added conditionally to handle DBs from
       // earlier development where these were part of migration v8.
-      const addColumnIfMissing = (table: string, column: string, type: string) => {
-        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      const addColumnIfMissing = (
+        table: string,
+        column: string,
+        type: string,
+      ) => {
+        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as {
+          name: string;
+        }[];
         if (!cols.some((c) => c.name === column)) {
           db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
         }
       };
 
-      addColumnIfMissing("scanner_file_watermarks", "archived_size", "INTEGER DEFAULT 0");
+      addColumnIfMissing(
+        "scanner_file_watermarks",
+        "archived_size",
+        "INTEGER DEFAULT 0",
+      );
       addColumnIfMissing("scanner_turns", "summary", "TEXT");
       addColumnIfMissing("sessions", "summary", "TEXT");
       addColumnIfMissing("sessions", "summary_version", "INTEGER DEFAULT 0");
