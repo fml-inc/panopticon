@@ -8,6 +8,7 @@ export interface PruneResult {
   hook_events: number;
   session_repositories: number;
   session_cwds: number;
+  model_pricing: number;
 }
 
 export function pruneEstimate(cutoffMs: number): PruneResult {
@@ -42,12 +43,29 @@ export function pruneEstimate(cutoffMs: number): PruneResult {
       .get(cutoffMs) as { c: number }
   ).c;
 
+  // Pricing: count rows older than cutoff, excluding the latest per model
+  const pricing = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM model_pricing
+         WHERE updated_ms < ?
+           AND id NOT IN (
+             SELECT id FROM (
+               SELECT id, ROW_NUMBER() OVER (PARTITION BY model_id ORDER BY updated_ms DESC) as rn
+               FROM model_pricing
+             ) WHERE rn = 1
+           )`,
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+
   return {
     otel_logs: logs,
     otel_metrics: metrics,
     hook_events: hooks,
     session_repositories: sessionRepos,
     session_cwds: sessionCwds,
+    model_pricing: pricing,
   };
 }
 
@@ -79,12 +97,27 @@ export function pruneExecute(cutoffMs: number): PruneResult {
       .prepare("DELETE FROM session_cwds WHERE first_seen_ms < ?")
       .run(cutoffMs).changes;
 
+    // Pricing: delete rows older than cutoff, always keeping the latest per model
+    const pricing = db
+      .prepare(
+        `DELETE FROM model_pricing
+         WHERE updated_ms < ?
+           AND id NOT IN (
+             SELECT id FROM (
+               SELECT id, ROW_NUMBER() OVER (PARTITION BY model_id ORDER BY updated_ms DESC) as rn
+               FROM model_pricing
+             ) WHERE rn = 1
+           )`,
+      )
+      .run(cutoffMs).changes;
+
     return {
       otel_logs: logs,
       otel_metrics: metrics,
       hook_events: hooks,
       session_repositories: sessionRepos,
       session_cwds: sessionCwds,
+      model_pricing: pricing,
     };
   });
 
