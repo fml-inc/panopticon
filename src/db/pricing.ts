@@ -4,13 +4,15 @@ import { config } from "../config.js";
 import { getDb } from "./schema.js";
 
 const PRICING_PATH = path.join(config.dataDir, "pricing.json");
-const STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/models";
+const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const LITELLM_URL =
+  "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
 interface ModelPricing {
   input: number;
   output: number;
   cache_read: number;
+  cache_write: number;
 }
 
 interface PricingCache {
@@ -19,39 +21,69 @@ interface PricingCache {
 }
 
 /**
- * Fetch pricing from OpenRouter, save to disk cache, and upsert into SQLite.
- * Models are keyed by their base name (provider prefix stripped).
+ * Hardcoded fallback pricing for common models (per million tokens).
+ * Used when LiteLLM fetch fails or cache is empty.
+ */
+const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  "claude-opus-4-6": {
+    input: 5,
+    output: 25,
+    cache_read: 0.5,
+    cache_write: 6.25,
+  },
+  "claude-sonnet-4-6": {
+    input: 3,
+    output: 15,
+    cache_read: 0.3,
+    cache_write: 3.75,
+  },
+  "claude-haiku-4-5": {
+    input: 1,
+    output: 5,
+    cache_read: 0.1,
+    cache_write: 1.25,
+  },
+};
+
+interface LiteLLMEntry {
+  input_cost_per_token?: number;
+  output_cost_per_token?: number;
+  cache_read_input_token_cost?: number;
+  cache_creation_input_token_cost?: number;
+  mode?: string;
+}
+
+/**
+ * Fetch pricing from LiteLLM, save to disk cache, and upsert into SQLite.
+ * Models are keyed by their LiteLLM ID (e.g. "claude-opus-4-6").
  */
 export async function refreshPricing(): Promise<PricingCache | null> {
   try {
-    const res = await fetch(OPENROUTER_URL);
+    const res = await fetch(LITELLM_URL);
     if (!res.ok) return null;
 
-    const json = (await res.json()) as {
-      data: {
-        id: string;
-        pricing: {
-          prompt?: string;
-          completion?: string;
-          input_cache_read?: string;
-        };
-      }[];
-    };
+    const data = (await res.json()) as Record<string, LiteLLMEntry>;
+    if (!data || typeof data !== "object") return null;
 
     const models: Record<string, ModelPricing> = {};
-    for (const m of json.data) {
-      const input = parseFloat(m.pricing?.prompt ?? "0") * 1_000_000;
-      const output = parseFloat(m.pricing?.completion ?? "0") * 1_000_000;
-      const cacheRead =
-        parseFloat(m.pricing?.input_cache_read ?? "0") * 1_000_000;
+    for (const [modelId, entry] of Object.entries(data)) {
+      if (!entry.input_cost_per_token || !entry.output_cost_per_token) continue;
+      if (entry.mode && entry.mode !== "chat") continue;
 
+      const input = entry.input_cost_per_token * 1_000_000;
+      const output = entry.output_cost_per_token * 1_000_000;
       if (input === 0 && output === 0) continue;
 
-      // Strip provider prefix: "anthropic/claude-opus-4" → "claude-opus-4"
-      const baseId = m.id.includes("/") ? m.id.split("/")[1] : m.id;
-      if (!models[baseId]) {
-        models[baseId] = { input, output, cache_read: cacheRead };
-      }
+      models[modelId] = {
+        input,
+        output,
+        cache_read: entry.cache_read_input_token_cost
+          ? entry.cache_read_input_token_cost * 1_000_000
+          : 0,
+        cache_write: entry.cache_creation_input_token_cost
+          ? entry.cache_creation_input_token_cost * 1_000_000
+          : 0,
+      };
     }
 
     const cache: PricingCache = {
@@ -68,6 +100,8 @@ export async function refreshPricing(): Promise<PricingCache | null> {
 
     return cache;
   } catch {
+    // On fetch failure, ensure fallbacks are in the DB
+    ensureFallbacks();
     return null;
   }
 }
@@ -88,12 +122,24 @@ function upsertPricingTable(models: Record<string, ModelPricing>): void {
         pricing.input,
         pricing.output,
         pricing.cache_read,
-        pricing.input * 1.25, // estimate cache write at 1.25x input
+        pricing.cache_write,
         now,
       );
     }
   });
   tx();
+}
+
+/**
+ * Ensure fallback pricing exists in the DB for common models.
+ * Called when LiteLLM fetch fails so cost queries still work.
+ */
+function ensureFallbacks(): void {
+  try {
+    upsertPricingTable(FALLBACK_PRICING);
+  } catch {
+    // Non-blocking
+  }
 }
 
 /** Refresh pricing if cache is missing or older than 24h. */
