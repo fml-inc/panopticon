@@ -4,15 +4,18 @@ import { refreshIfStale } from "../db/pricing.js";
 import {
   insertOtelLogs,
   insertOtelMetrics,
+  insertOtelSpans,
   upsertSession,
 } from "../db/store.js";
 import { captureException } from "../sentry.js";
 import { allTargets } from "../targets/index.js";
 import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
+import { decodeTraces } from "./decode-traces.js";
 import {
   ExportLogsServiceResponse,
   ExportMetricsServiceResponse,
+  ExportTracesServiceResponse,
 } from "./proto.js";
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -255,9 +258,44 @@ export async function handleOtlpRequest(
         res.end();
       }
     } else if (signal === "traces") {
-      // Accept but ignore traces for now
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end("{}");
+      if (isProtobuf(req)) {
+        const rows = decodeTraces(body);
+        if (rows.length > 0) {
+          insertOtelSpans(rows);
+          ensureSessionsFromOtel(
+            rows.map((r) => ({
+              session_id: r.session_id,
+              timestamp_ns: r.start_time_ns,
+              resource_attributes: r.resource_attributes,
+              attributes: r.attributes,
+            })),
+          );
+        }
+        const respBytes = ExportTracesServiceResponse.encode(
+          ExportTracesServiceResponse.create({}),
+        ).finish();
+        res.writeHead(200, { "Content-Type": "application/x-protobuf" });
+        res.end(Buffer.from(respBytes));
+      } else if (isJson(req)) {
+        const data = JSON.parse(body.toString("utf-8"));
+        const rows = jsonTracesToRows(data);
+        if (rows.length > 0) {
+          insertOtelSpans(rows);
+          ensureSessionsFromOtel(
+            rows.map((r) => ({
+              session_id: r.session_id,
+              timestamp_ns: r.start_time_ns,
+              resource_attributes: r.resource_attributes,
+              attributes: r.attributes,
+            })),
+          );
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      } else {
+        res.writeHead(415);
+        res.end();
+      }
     } else {
       res.writeHead(404);
       res.end();
@@ -390,6 +428,43 @@ function jsonMetricsToRows(
               resourceSessionId) as string | undefined,
           });
         }
+      }
+    }
+  }
+  return rows;
+}
+
+function jsonTracesToRows(data: any): import("../db/store.js").OtelSpanRow[] {
+  const rows: import("../db/store.js").OtelSpanRow[] = [];
+
+  for (const rs of data.resourceSpans ?? []) {
+    const resourceAttrs = kvListToMap(rs.resource?.attributes);
+    const resourceSessionId =
+      resourceAttrs["session.id"] ??
+      resourceAttrs["conversation.id"] ??
+      resourceAttrs["service.instance.id"];
+
+    for (const ss of rs.scopeSpans ?? []) {
+      for (const span of ss.spans ?? []) {
+        const attrs = kvListToMap(span.attributes);
+
+        rows.push({
+          trace_id: span.traceId ?? "",
+          span_id: span.spanId ?? "",
+          parent_span_id: span.parentSpanId || undefined,
+          name: span.name ?? "",
+          kind: span.kind ?? undefined,
+          start_time_ns: parseInt(span.startTimeUnixNano ?? "0", 10),
+          end_time_ns: parseInt(span.endTimeUnixNano ?? "0", 10),
+          status_code: span.status?.code ?? undefined,
+          status_message: span.status?.message || undefined,
+          attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
+          resource_attributes:
+            Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
+          session_id: (attrs["session.id"] ??
+            attrs["conversation.id"] ??
+            resourceSessionId) as string | undefined,
+        });
       }
     }
   }

@@ -51,6 +51,7 @@ const SYNCED_TABLES = [
   "otel_metrics",
   "scanner_turns",
   "scanner_events",
+  "otel_spans",
 ];
 
 export function resetWatermarks(targetName?: string): void {

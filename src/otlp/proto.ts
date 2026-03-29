@@ -331,6 +331,72 @@ const root = protobuf.Root.fromJSON({
                 },
               },
             },
+            trace: {
+              nested: {
+                v1: {
+                  nested: {
+                    Span: {
+                      fields: {
+                        traceId: { type: "bytes", id: 1 },
+                        spanId: { type: "bytes", id: 2 },
+                        traceState: { type: "string", id: 3 },
+                        parentSpanId: { type: "bytes", id: 4 },
+                        name: { type: "string", id: 5 },
+                        kind: { type: "int32", id: 6 },
+                        startTimeUnixNano: {
+                          type: "fixed64",
+                          id: 7,
+                        },
+                        endTimeUnixNano: {
+                          type: "fixed64",
+                          id: 8,
+                        },
+                        attributes: {
+                          rule: "repeated",
+                          type: "opentelemetry.proto.common.v1.KeyValue",
+                          id: 9,
+                        },
+                        status: { type: "Status", id: 15 },
+                      },
+                    },
+                    Status: {
+                      fields: {
+                        message: { type: "string", id: 2 },
+                        code: { type: "int32", id: 3 },
+                      },
+                    },
+                    ResourceSpans: {
+                      fields: {
+                        resource: {
+                          type: "opentelemetry.proto.resource.v1.Resource",
+                          id: 1,
+                        },
+                        scopeSpans: {
+                          rule: "repeated",
+                          type: "ScopeSpans",
+                          id: 2,
+                        },
+                        schemaUrl: { type: "string", id: 3 },
+                      },
+                    },
+                    ScopeSpans: {
+                      fields: {
+                        scope: {
+                          type: "opentelemetry.proto.common.v1.InstrumentationScope",
+                          id: 1,
+                        },
+                        spans: {
+                          rule: "repeated",
+                          type: "Span",
+                          id: 2,
+                        },
+                        schemaUrl: { type: "string", id: 3 },
+                      },
+                    },
+                  },
+                },
+              },
+            },
             collector: {
               nested: {
                 logs: {
@@ -373,6 +439,26 @@ const root = protobuf.Root.fromJSON({
                     },
                   },
                 },
+                trace: {
+                  nested: {
+                    v1: {
+                      nested: {
+                        ExportTracesServiceRequest: {
+                          fields: {
+                            resourceSpans: {
+                              rule: "repeated",
+                              type: "opentelemetry.proto.trace.v1.ResourceSpans",
+                              id: 1,
+                            },
+                          },
+                        },
+                        ExportTracesServiceResponse: {
+                          fields: {},
+                        },
+                      },
+                    },
+                  },
+                },
               },
             },
           },
@@ -393,6 +479,12 @@ export const ExportLogsServiceResponse = root.lookupType(
 );
 export const ExportMetricsServiceResponse = root.lookupType(
   "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse",
+);
+export const ExportTracesServiceRequest = root.lookupType(
+  "opentelemetry.proto.collector.trace.v1.ExportTracesServiceRequest",
+);
+export const ExportTracesServiceResponse = root.lookupType(
+  "opentelemetry.proto.collector.trace.v1.ExportTracesServiceResponse",
 );
 
 // Helper: extract a scalar value from a protobuf AnyValue

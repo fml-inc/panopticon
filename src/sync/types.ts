@@ -118,6 +118,23 @@ export interface ScannerEventRecord {
   metadata: Record<string, unknown> | null;
 }
 
+/** OTLP span record for sync. */
+export interface OtelSpanRecord {
+  id: number;
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  name: string;
+  kind: number | null;
+  startTimeNs: number;
+  endTimeNs: number;
+  statusCode: number | null;
+  statusMessage: string | null;
+  attributes: Record<string, unknown> | null;
+  resourceAttributes: Record<string, unknown> | null;
+  sessionId: string | null;
+}
+
 // ── OTLP JSON types ──────────────────────────────────────────────────────────
 
 export interface OtlpAnyValue {
@@ -174,6 +191,27 @@ export interface OtlpResourceMetrics {
     resource: { attributes: OtlpKeyValue[] };
     scopeMetrics: Array<{
       metrics: OtlpMetric[];
+    }>;
+  }>;
+}
+
+export interface OtlpSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  kind?: number;
+  startTimeUnixNano: string;
+  endTimeUnixNano: string;
+  status?: { code?: number; message?: string };
+  attributes: OtlpKeyValue[];
+}
+
+export interface OtlpResourceSpans {
+  resourceSpans: Array<{
+    resource: { attributes: OtlpKeyValue[] };
+    scopeSpans: Array<{
+      spans: OtlpSpan[];
     }>;
   }>;
 }
