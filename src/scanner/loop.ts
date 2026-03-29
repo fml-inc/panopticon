@@ -41,8 +41,9 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
 
       // When reading from byte 0 (full file), turn indices start at 0 so
       // INSERT OR IGNORE deduplicates. When incremental (offset > 0),
-      // re-index from existing turn count.
-      if (offset > 0 && result.meta?.sessionId) {
+      // re-index from existing turn count — unless the parser produces
+      // absolute indices (e.g. Gemini re-reads the full JSON file).
+      if (offset > 0 && result.meta?.sessionId && !result.absoluteIndices) {
         const existingCount = getTurnCount(result.meta.sessionId, source);
         if (existingCount > 0) {
           reindexTurns(result, existingCount);
