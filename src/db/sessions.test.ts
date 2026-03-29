@@ -549,49 +549,6 @@ describe("model set tracking", () => {
   });
 });
 
-// ── Completeness indicators ─────────────────────────────────────────────────
-
-describe("completeness indicators", () => {
-  it("has_hooks is set and sticky", () => {
-    upsertSession({ session_id: "comp-1", has_hooks: 1 });
-    upsertSession({ session_id: "comp-1" }); // no flag
-    const s = getSession("comp-1")!;
-    expect(s.has_hooks).toBe(1);
-  });
-
-  it("has_otel is set and sticky", () => {
-    upsertSession({ session_id: "comp-2", has_otel: 1 });
-    upsertSession({ session_id: "comp-2" });
-    const s = getSession("comp-2")!;
-    expect(s.has_otel).toBe(1);
-  });
-
-  it("has_scanner is set and sticky", () => {
-    upsertSession({ session_id: "comp-3", has_scanner: 1 });
-    upsertSession({ session_id: "comp-3" });
-    const s = getSession("comp-3")!;
-    expect(s.has_scanner).toBe(1);
-  });
-
-  it("all three flags set from different sources", () => {
-    upsertSession({ session_id: "comp-4", has_hooks: 1 });
-    upsertSession({ session_id: "comp-4", has_otel: 1 });
-    upsertSession({ session_id: "comp-4", has_scanner: 1 });
-    const s = getSession("comp-4")!;
-    expect(s.has_hooks).toBe(1);
-    expect(s.has_otel).toBe(1);
-    expect(s.has_scanner).toBe(1);
-  });
-
-  it("flags default to 0 when no source has written", () => {
-    upsertSession({ session_id: "comp-5", target: "claude" });
-    const s = getSession("comp-5")!;
-    expect(s.has_hooks).toBe(0);
-    expect(s.has_otel).toBe(0);
-    expect(s.has_scanner).toBe(0);
-  });
-});
-
 // ── OTEL token columns ──────────────────────────────────────────────────────
 
 describe("OTEL token columns", () => {

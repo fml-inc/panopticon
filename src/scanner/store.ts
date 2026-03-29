@@ -26,7 +26,6 @@ export function upsertSession(
     model: meta.model,
     cli_version: meta.cliVersion,
     scanner_file_path: filePath,
-    has_scanner: 1,
   });
 
   // Resolve repo from cwd for scanner-only sessions
