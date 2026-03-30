@@ -775,7 +775,7 @@ if [ -n "$HAS_CLAUDE" ] && command -v claude &>/dev/null; then
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     SHELL="$SHELL" \
     bash -c \
-    'claude -p "Respond with only the word: working" --output-format text --model haiku --bare --dangerously-skip-permissions --tools "" 2>&1' \
+    'claude -p "Respond with only the word: working" --output-format text --model haiku --bare --tools "" 2>&1' \
   ) || true
 
   if echo "$LLM_ENV" | grep -qi "working"; then

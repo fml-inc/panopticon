@@ -59,7 +59,6 @@ export function invokeLlm(
     "--model",
     "haiku",
     "--bare",
-    "--dangerously-skip-permissions",
     "--tools",
     "",
   ];

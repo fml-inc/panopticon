@@ -35,14 +35,21 @@ RUN git init /workspace \
 COPY test/e2e/scripts/ /opt/e2e/scripts/
 RUN chmod +x /opt/e2e/scripts/*.sh
 
-# Use bash so install writes .bashrc (not .zshrc)
+# Run as non-root user
+RUN useradd -m -s /bin/bash testuser \
+  && chown -R testuser:testuser /opt/panopticon /opt/e2e /workspace
+
+USER testuser
 ENV SHELL=/bin/bash
-ENV HOME=/root
+ENV HOME=/home/testuser
 ENV PANOPTICON_PORT=4318
 
 WORKDIR /workspace
 
 # ─── Sync data-loss validation (organic CLI telemetry → Grafana) ─────────────
 FROM base AS test-sync-validation
+# Global npm install must happen before USER switch
+USER root
 RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+USER testuser
 ENTRYPOINT ["/opt/e2e/scripts/test-sync-validation.sh"]
