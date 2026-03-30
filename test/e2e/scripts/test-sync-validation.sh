@@ -882,32 +882,37 @@ MAX_METRIC_ID=$(sqlite3 "$DB_PATH" "SELECT COALESCE(MAX(id), 0) FROM otel_metric
 
 WM_DB_PATH="$(echo "$DB_PATH" | sed 's/data\.db/sync-watermarks.db/')"
 if [ -f "$WM_DB_PATH" ]; then
-  HOOK_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='hook_events:e2e-sync-val';" 2>/dev/null || echo "0")
-  LOG_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='otel_logs:e2e-sync-val';" 2>/dev/null || echo "0")
-  METRIC_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='otel_metrics:e2e-sync-val';" 2>/dev/null || echo "0")
+  # Poll watermarks until they catch up to max IDs.
+  # The sync loop runs every 1-30s in the background; late telemetry can
+  # arrive after the last sync cycle, so we wait instead of snapshotting.
+  WM_TIMEOUT=60
+  log_info "Waiting up to ${WM_TIMEOUT}s for watermarks to reach max IDs..."
 
-  if [ "${HOOK_WM:-0}" -ge "$MAX_HOOK_ID" ] && [ "$MAX_HOOK_ID" -gt 0 ]; then
-    log_pass "hook_events fully synced (watermark ${HOOK_WM} >= max id ${MAX_HOOK_ID})"
-  elif [ "${HOOK_WM:-0}" -gt 0 ]; then
-    log_fail "hook_events partially synced (watermark ${HOOK_WM} < max id ${MAX_HOOK_ID})"
-  else
-    log_fail "hook_events watermark stuck at 0"
+  if [ "$MAX_HOOK_ID" -gt 0 ]; then
+    if wait_for_watermark "$WM_DB_PATH" "hook_events:e2e-sync-val" "$MAX_HOOK_ID" "$WM_TIMEOUT"; then
+      log_pass "hook_events fully synced (watermark >= max id ${MAX_HOOK_ID})"
+    else
+      HOOK_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='hook_events:e2e-sync-val';" 2>/dev/null || echo "0")
+      log_fail "hook_events partially synced (watermark ${HOOK_WM} < max id ${MAX_HOOK_ID} after ${WM_TIMEOUT}s)"
+    fi
   fi
 
-  if [ "${LOG_WM:-0}" -ge "$MAX_LOG_ID" ] && [ "$MAX_LOG_ID" -gt 0 ]; then
-    log_pass "otel_logs fully synced (watermark ${LOG_WM} >= max id ${MAX_LOG_ID})"
-  elif [ "${LOG_WM:-0}" -gt 0 ]; then
-    log_fail "otel_logs partially synced (watermark ${LOG_WM} < max id ${MAX_LOG_ID})"
-  else
-    log_fail "otel_logs watermark stuck at 0"
+  if [ "$MAX_LOG_ID" -gt 0 ]; then
+    if wait_for_watermark "$WM_DB_PATH" "otel_logs:e2e-sync-val" "$MAX_LOG_ID" "$WM_TIMEOUT"; then
+      log_pass "otel_logs fully synced (watermark >= max id ${MAX_LOG_ID})"
+    else
+      LOG_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='otel_logs:e2e-sync-val';" 2>/dev/null || echo "0")
+      log_fail "otel_logs partially synced (watermark ${LOG_WM} < max id ${MAX_LOG_ID} after ${WM_TIMEOUT}s)"
+    fi
   fi
 
-  if [ "${METRIC_WM:-0}" -ge "$MAX_METRIC_ID" ] && [ "$MAX_METRIC_ID" -gt 0 ]; then
-    log_pass "otel_metrics fully synced (watermark ${METRIC_WM} >= max id ${MAX_METRIC_ID})"
-  elif [ "${METRIC_WM:-0}" -gt 0 ]; then
-    log_fail "otel_metrics partially synced (watermark ${METRIC_WM} < max id ${MAX_METRIC_ID})"
-  else
-    log_fail "otel_metrics watermark stuck at 0"
+  if [ "$MAX_METRIC_ID" -gt 0 ]; then
+    if wait_for_watermark "$WM_DB_PATH" "otel_metrics:e2e-sync-val" "$MAX_METRIC_ID" "$WM_TIMEOUT"; then
+      log_pass "otel_metrics fully synced (watermark >= max id ${MAX_METRIC_ID})"
+    else
+      METRIC_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='otel_metrics:e2e-sync-val';" 2>/dev/null || echo "0")
+      log_fail "otel_metrics partially synced (watermark ${METRIC_WM} < max id ${MAX_METRIC_ID} after ${WM_TIMEOUT}s)"
+    fi
   fi
 else
   log_fail "Sync watermarks DB not found at ${WM_DB_PATH}"

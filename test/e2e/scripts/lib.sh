@@ -139,6 +139,26 @@ assert_grep() {
   fi
 }
 
+# Wait for a sync watermark to reach a target value
+# Usage: wait_for_watermark <wm_db_path> <wm_key> <target_value> <timeout_seconds>
+wait_for_watermark() {
+  local wm_db="$1"
+  local wm_key="$2"
+  local target="$3"
+  local timeout="${4:-60}"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local wm
+    wm=$(sqlite3 "$wm_db" "SELECT value FROM watermarks WHERE key='${wm_key}';" 2>/dev/null || echo "0")
+    if [ "${wm:-0}" -ge "$target" ] 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
 # Print summary and exit with appropriate code
 print_summary() {
   echo ""
