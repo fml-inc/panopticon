@@ -139,6 +139,26 @@ assert_grep() {
   fi
 }
 
+# Wait for a sync watermark to reach a target value
+# Usage: wait_for_watermark <wm_db_path> <wm_key> <target_value> <timeout_seconds>
+wait_for_watermark() {
+  local wm_db="$1"
+  local wm_key="$2"
+  local target="$3"
+  local timeout="${4:-60}"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local wm
+    wm=$(sqlite3 "$wm_db" "SELECT value FROM watermarks WHERE key='${wm_key}';" 2>/dev/null || echo "0")
+    if [ "${wm:-0}" -ge "$target" ] 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
 # Print summary and exit with appropriate code
 print_summary() {
   echo ""
@@ -196,6 +216,10 @@ dump_db_debug() {
   echo "  hook_events rows: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  otel_logs rows:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM otel_logs;' 2>/dev/null || echo 'N/A')"
   echo "  otel_metrics rows:$(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM otel_metrics;' 2>/dev/null || echo 'N/A')"
+  echo "  otel_spans rows:  $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM otel_spans;' 2>/dev/null || echo 'N/A')"
+  echo "  scanner_turns:    $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM scanner_turns;' 2>/dev/null || echo 'N/A')"
+  echo "  scanner_events:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM scanner_events;' 2>/dev/null || echo 'N/A')"
+  echo "  summary_deltas:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM session_summary_deltas;' 2>/dev/null || echo 'N/A')"
   echo "  Distinct sessions: $(sqlite3 "$DB_PATH" 'SELECT COUNT(DISTINCT session_id) FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  Event types: $(sqlite3 "$DB_PATH" 'SELECT DISTINCT event_type FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  Tool names: $(sqlite3 "$DB_PATH" "SELECT DISTINCT tool_name FROM hook_events WHERE tool_name IS NOT NULL AND tool_name != '';" 2>/dev/null || echo 'N/A')"

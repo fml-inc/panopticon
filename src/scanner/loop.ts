@@ -1,19 +1,27 @@
+import fs from "node:fs";
 import { getDb } from "../db/schema.js";
 // Import targets so they self-register before we iterate the registry
 import "../targets/claude.js";
 import "../targets/codex.js";
 import "../targets/gemini.js";
+import { getArchiveBackend } from "../archive/index.js";
+import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
 import type { ScannerParseResult } from "../targets/types.js";
 import {
   getTurnCount,
+  getTurnsWithoutSummary,
   insertScannerEvents,
   insertTurns,
+  readArchivedSize,
   readFileWatermark,
   updateSessionTotals,
+  updateTurnSummary,
   upsertSession,
+  writeArchivedSize,
   writeFileWatermark,
 } from "./store.js";
+import { summarizeTurn } from "./summarize.js";
 import type { ScannerHandle, ScannerOptions } from "./types.js";
 
 const DEFAULT_IDLE_MS = 60_000;
@@ -68,11 +76,62 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
       }
 
       writeFileWatermark(filePath, result.newByteOffset);
+
+      // Archive raw file for 100% recall
+      try {
+        const fileSize = fs.statSync(filePath).size;
+        const archivedSize = readArchivedSize(filePath);
+        if (fileSize > archivedSize) {
+          const rawContent = fs.readFileSync(filePath);
+          getArchiveBackend().putSync(
+            result.meta.sessionId,
+            source,
+            rawContent,
+          );
+          writeArchivedSize(filePath, fileSize);
+        }
+      } catch (archiveErr) {
+        // Archive failure is non-fatal
+        log(
+          `Archive error for ${filePath}: ${archiveErr instanceof Error ? archiveErr.message : archiveErr}`,
+        );
+      }
+
+      // Generate deterministic summaries for new turns
+      if (result.turns.length > 0) {
+        try {
+          const unsummarized = getTurnsWithoutSummary(
+            result.meta.sessionId,
+            source,
+            100,
+          );
+          for (const turn of unsummarized) {
+            const { summary } = summarizeTurn({
+              role: turn.role,
+              contentPreview: turn.content_preview,
+            });
+            updateTurnSummary(turn.id, summary);
+          }
+        } catch (summaryErr) {
+          log(
+            `Summary error: ${summaryErr instanceof Error ? summaryErr.message : summaryErr}`,
+          );
+        }
+      }
     }
   }
 
   if (filesScanned > 0) {
     log(`Scanned ${filesScanned} files, ${newTurns} new turns`);
+  }
+
+  // Generate session summaries for sessions with enough new turns
+  if (newTurns > 0) {
+    try {
+      generateSummariesOnce(log);
+    } catch (err) {
+      log(`Session summary error: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   return { filesScanned, newTurns };

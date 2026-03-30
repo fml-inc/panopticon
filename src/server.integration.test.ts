@@ -3,10 +3,12 @@
  *
  * Starts the real HTTP server against a temp SQLite database and exercises:
  *   - Hook event ingestion via POST /hooks
- *   - OTel JSON log & metric ingestion via POST /v1/logs and /v1/metrics
+ *   - OTel JSON log & metric ingestion via POST /v1/logs, /v1/metrics, /v1/traces
  *   - Proxy route validation (404, 405)
  *   - Proxy capture → DB pipeline (format parsers + emit functions)
  *   - Database state: session isolation, column extraction, FTS, compression
+ *   - Session file archiving (LocalArchiveBackend round-trip)
+ *   - LLM-powered session summaries with deterministic fallback
  */
 import fs from "node:fs";
 import type http from "node:http";
@@ -48,6 +50,8 @@ vi.mock("./config.js", () => {
 });
 
 // Must import after mock
+import path from "node:path";
+import { LocalArchiveBackend } from "./archive/local.js";
 import { config } from "./config.js";
 import { costBreakdown, searchEvents, sessionTimeline } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
@@ -66,7 +70,17 @@ import {
   emitOtelMetrics,
 } from "./proxy/emit.js";
 import { anthropicParser } from "./proxy/formats/anthropic.js";
+import {
+  insertScannerEvents,
+  insertTurns,
+  updateSessionTotals,
+  upsertSession as upsertScannerSession,
+} from "./scanner/store.js";
 import { createUnifiedServer } from "./server.js";
+import { flattenDeltas } from "./summary/flatten.js";
+import { generateDelta } from "./summary/generate.js";
+import * as llm from "./summary/llm.js";
+import { insertSummaryDelta, readSummaryDeltas } from "./summary/store.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1345,6 +1359,420 @@ describe("server integration", () => {
       const models = result.groups.map((g) => g.key);
       // Should have at least one model from the test data
       expect(models.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── OTLP trace storage ──────────────────────────────────────────────────
+
+  describe("OTLP trace ingestion", () => {
+    const TRACE_SESSION = "trace-sess-001";
+
+    it("accepts JSON traces via POST /v1/traces", async () => {
+      const payload = {
+        resourceSpans: [
+          {
+            resource: {
+              attributes: [
+                {
+                  key: "service.name",
+                  value: { stringValue: "claude-code" },
+                },
+                {
+                  key: "session.id",
+                  value: { stringValue: TRACE_SESSION },
+                },
+              ],
+            },
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    traceId: "abcdef0123456789abcdef0123456789",
+                    spanId: "1234567890abcdef",
+                    name: "LLM completion",
+                    kind: 2,
+                    startTimeUnixNano: String(Date.now() * 1_000_000),
+                    endTimeUnixNano: String((Date.now() + 500) * 1_000_000),
+                    status: { code: 1, message: "OK" },
+                    attributes: [
+                      {
+                        key: "model",
+                        value: { stringValue: "claude-sonnet-4-6" },
+                      },
+                    ],
+                  },
+                  {
+                    traceId: "abcdef0123456789abcdef0123456789",
+                    spanId: "fedcba0987654321",
+                    parentSpanId: "1234567890abcdef",
+                    name: "tool_use: Read",
+                    kind: 3,
+                    startTimeUnixNano: String((Date.now() + 100) * 1_000_000),
+                    endTimeUnixNano: String((Date.now() + 200) * 1_000_000),
+                    attributes: [
+                      {
+                        key: "tool.name",
+                        value: { stringValue: "Read" },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const { status } = await post("/v1/traces", payload);
+      expect(status).toBe(200);
+    });
+
+    it("stores spans in otel_spans with correct fields", () => {
+      const db = getDb();
+      const spans = db
+        .prepare(
+          "SELECT trace_id, span_id, parent_span_id, name, kind, session_id FROM otel_spans WHERE session_id = ? ORDER BY name",
+        )
+        .all(TRACE_SESSION) as Array<{
+        trace_id: string;
+        span_id: string;
+        parent_span_id: string | null;
+        name: string;
+        kind: number;
+        session_id: string;
+      }>;
+
+      expect(spans).toHaveLength(2);
+
+      const parent = spans.find((s) => s.name === "LLM completion");
+      expect(parent).toBeDefined();
+      expect(parent!.trace_id).toBe("abcdef0123456789abcdef0123456789");
+      expect(parent!.span_id).toBe("1234567890abcdef");
+      expect(parent!.parent_span_id).toBeNull();
+      expect(parent!.kind).toBe(2);
+
+      const child = spans.find((s) => s.name === "tool_use: Read");
+      expect(child).toBeDefined();
+      expect(child!.parent_span_id).toBe("1234567890abcdef");
+    });
+
+    it("stores span attributes as JSON", () => {
+      const db = getDb();
+      const row = db
+        .prepare(
+          `SELECT json_extract(attributes, '$.model') as model
+           FROM otel_spans WHERE session_id = ? AND name = 'LLM completion'`,
+        )
+        .get(TRACE_SESSION) as { model: string };
+
+      expect(row.model).toBe("claude-sonnet-4-6");
+    });
+
+    it("deduplicates spans on (trace_id, span_id)", async () => {
+      // Re-send the same trace — row count should not increase
+      const before = countRows("otel_spans");
+
+      await post("/v1/traces", {
+        resourceSpans: [
+          {
+            resource: { attributes: [] },
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    traceId: "abcdef0123456789abcdef0123456789",
+                    spanId: "1234567890abcdef",
+                    name: "LLM completion",
+                    startTimeUnixNano: "1000",
+                    endTimeUnixNano: "2000",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(countRows("otel_spans")).toBe(before);
+    });
+  });
+
+  // ── Session file archiving ──────────────────────────────────────────────
+
+  describe("session file archive (LocalArchiveBackend)", () => {
+    let archive: LocalArchiveBackend;
+
+    beforeAll(() => {
+      archive = new LocalArchiveBackend(path.join(config.dataDir, "archive"));
+    });
+
+    it("round-trips content through put/get", () => {
+      const content = Buffer.from(
+        '{"role":"user","content":"hello"}\n{"role":"assistant","content":"hi"}\n',
+      );
+      archive.putSync("archive-sess-1", "claude", content);
+
+      const retrieved = archive.getSync("archive-sess-1", "claude");
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.toString()).toBe(content.toString());
+    });
+
+    it("hasSync returns true for archived, false for missing", () => {
+      expect(archive.hasSync("archive-sess-1", "claude")).toBe(true);
+      expect(archive.hasSync("archive-sess-1", "codex")).toBe(false);
+      expect(archive.hasSync("nonexistent", "claude")).toBe(false);
+    });
+
+    it("getSync returns null for missing archive", () => {
+      expect(archive.getSync("nonexistent", "claude")).toBeNull();
+    });
+
+    it("list returns all archived files with sizes", () => {
+      archive.putSync("archive-sess-2", "gemini", Buffer.from("test data"));
+
+      const entries = archive.list();
+      expect(entries.length).toBeGreaterThanOrEqual(2);
+
+      const sess1 = entries.find(
+        (e) => e.sessionId === "archive-sess-1" && e.source === "claude",
+      );
+      expect(sess1).toBeDefined();
+      expect(sess1!.sizeBytes).toBeGreaterThan(0);
+    });
+
+    it("stats aggregates file count and total bytes", () => {
+      const stats = archive.stats();
+      expect(stats.totalFiles).toBeGreaterThanOrEqual(2);
+      expect(stats.totalBytes).toBeGreaterThan(0);
+    });
+
+    it("overwrites existing archive on re-put", () => {
+      const original = Buffer.from("original");
+      const updated = Buffer.from("updated content that is longer");
+
+      archive.putSync("archive-sess-3", "claude", original);
+      archive.putSync("archive-sess-3", "claude", updated);
+
+      const retrieved = archive.getSync("archive-sess-3", "claude");
+      expect(retrieved!.toString()).toBe(updated.toString());
+    });
+  });
+
+  // ── LLM-powered session summaries ───────────────────────────────────────
+
+  describe("session summary generation", () => {
+    const SUMMARY_SESSION = "summary-sess-001";
+    const baseTs = Date.now() - 60_000;
+
+    beforeAll(() => {
+      // Create a session with scanner turns and events
+      upsertScannerSession(
+        {
+          sessionId: SUMMARY_SESSION,
+          model: "claude-sonnet-4-6",
+          cwd: "/workspace/project",
+          startedAtMs: baseTs,
+          firstPrompt: "Refactor the auth module",
+        },
+        "/tmp/fake-session.jsonl",
+        "claude",
+      );
+
+      // Insert 12 turns (enough to trigger a delta at DELTA_INTERVAL=10)
+      const turns = Array.from({ length: 12 }, (_, i) => ({
+        sessionId: SUMMARY_SESSION,
+        turnIndex: i,
+        timestampMs: baseTs + i * 5000,
+        model: "claude-sonnet-4-6",
+        role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+        contentPreview:
+          i % 2 === 0
+            ? `User prompt ${i}: refactor the auth middleware`
+            : `Assistant response ${i}: I'll update the auth module`,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+      }));
+      insertTurns(turns, "claude");
+
+      // Insert matching events (tool calls)
+      const events = [
+        {
+          sessionId: SUMMARY_SESSION,
+          eventType: "tool_call",
+          timestampMs: baseTs + 5000,
+          toolName: "Read",
+          toolInput: JSON.stringify({
+            file_path: "/workspace/project/src/auth.ts",
+          }),
+        },
+        {
+          sessionId: SUMMARY_SESSION,
+          eventType: "tool_call",
+          timestampMs: baseTs + 15000,
+          toolName: "Edit",
+          toolInput: JSON.stringify({
+            file_path: "/workspace/project/src/auth.ts",
+            old_string: "old",
+            new_string: "new",
+          }),
+        },
+        {
+          sessionId: SUMMARY_SESSION,
+          eventType: "tool_call",
+          timestampMs: baseTs + 25000,
+          toolName: "Write",
+          toolInput: JSON.stringify({
+            file_path: "/workspace/project/src/middleware.ts",
+          }),
+        },
+        {
+          sessionId: SUMMARY_SESSION,
+          eventType: "tool_call",
+          timestampMs: baseTs + 35000,
+          toolName: "Bash",
+          toolInput: JSON.stringify({ command: "npm test" }),
+        },
+      ];
+      insertScannerEvents(events, "claude");
+
+      updateSessionTotals(SUMMARY_SESSION);
+    });
+
+    it("generateDelta uses LLM when available", () => {
+      const spy = vi
+        .spyOn(llm, "invokeLlm")
+        .mockReturnValue(
+          "Refactored the auth middleware to use JWT tokens and added unit tests.",
+        );
+
+      const delta = generateDelta(SUMMARY_SESSION, 0, 10);
+
+      expect(delta).not.toBeNull();
+      expect(delta!.method).toBe("llm");
+      expect(delta!.content).toBe(
+        "Refactored the auth middleware to use JWT tokens and added unit tests.",
+      );
+      expect(delta!.fromTurn).toBe(0);
+      expect(delta!.toTurn).toBe(10);
+      expect(spy).toHaveBeenCalledOnce();
+
+      // The prompt should contain turn data
+      const prompt = spy.mock.calls[0][0];
+      expect(prompt).toContain("refactor the auth middleware");
+      expect(prompt).toContain("Read");
+
+      spy.mockRestore();
+    });
+
+    it("generateDelta falls back to deterministic when LLM returns null", () => {
+      const spy = vi.spyOn(llm, "invokeLlm").mockReturnValue(null);
+
+      const delta = generateDelta(SUMMARY_SESSION, 0, 10);
+
+      expect(delta).not.toBeNull();
+      expect(delta!.method).toBe("deterministic");
+      // Deterministic output includes structured fields
+      expect(delta!.content).toContain("Turns 0-9");
+      expect(delta!.content).toContain("Tools:");
+
+      spy.mockRestore();
+    });
+
+    it("generateDelta returns null for empty turn range", () => {
+      const delta = generateDelta(SUMMARY_SESSION, 100, 110);
+      expect(delta).toBeNull();
+    });
+
+    it("summary deltas persist and read back correctly", () => {
+      const delta = {
+        sessionId: SUMMARY_SESSION,
+        deltaIndex: 0,
+        createdAtMs: Date.now(),
+        fromTurn: 0,
+        toTurn: 10,
+        content: "Test summary content",
+        method: "llm",
+      };
+      insertSummaryDelta(delta);
+
+      const deltas = readSummaryDeltas(SUMMARY_SESSION);
+      expect(deltas).toHaveLength(1);
+      expect(deltas[0].content).toBe("Test summary content");
+      expect(deltas[0].method).toBe("llm");
+    });
+
+    it("flattenDeltas uses LLM when available", () => {
+      const spy = vi
+        .spyOn(llm, "invokeLlm")
+        .mockReturnValue(
+          "Complete session: refactored auth module with JWT tokens across 50 turns.",
+        );
+
+      const deltas = Array.from({ length: 5 }, (_, i) => ({
+        sessionId: SUMMARY_SESSION,
+        deltaIndex: i,
+        createdAtMs: Date.now(),
+        fromTurn: i * 10,
+        toTurn: (i + 1) * 10,
+        content: `Phase ${i}: worked on auth module`,
+        method: "llm" as const,
+      }));
+
+      const result = flattenDeltas(deltas);
+      expect(result).toBe(
+        "Complete session: refactored auth module with JWT tokens across 50 turns.",
+      );
+      expect(spy).toHaveBeenCalledOnce();
+
+      const prompt = spy.mock.calls[0][0];
+      expect(prompt).toContain("Phase 0");
+      expect(prompt).toContain("Phase 4");
+
+      spy.mockRestore();
+    });
+
+    it("flattenDeltas falls back to deterministic when LLM returns null", () => {
+      const spy = vi.spyOn(llm, "invokeLlm").mockReturnValue(null);
+
+      const deltas = [
+        {
+          sessionId: SUMMARY_SESSION,
+          deltaIndex: 0,
+          createdAtMs: Date.now(),
+          fromTurn: 0,
+          toTurn: 10,
+          content:
+            'Prompt: "Refactor auth". Turns 0-9 (10 turns). Tools: Read(2), Edit(1). Files: auth.ts',
+          method: "deterministic",
+        },
+        {
+          sessionId: SUMMARY_SESSION,
+          deltaIndex: 1,
+          createdAtMs: Date.now(),
+          fromTurn: 10,
+          toTurn: 20,
+          content:
+            'Prompt: "Add tests". Turns 10-19 (10 turns). Tools: Write(3), Bash(2). Files: auth.test.ts',
+          method: "deterministic",
+        },
+      ];
+
+      const result = flattenDeltas(deltas);
+      // Deterministic flatten extracts tools and files
+      expect(result).toContain("turns");
+      expect(result).toContain("2 phases");
+
+      spy.mockRestore();
+    });
+
+    it("detectAgent caches its result", () => {
+      const result1 = llm.detectAgent();
+      const result2 = llm.detectAgent();
+      // Should return the same reference (cached)
+      expect(result1).toBe(result2);
     });
   });
 });
