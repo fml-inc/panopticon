@@ -609,6 +609,160 @@ sqlite3 -header -column "$DB_PATH" \
 log_info "Running scan compare..."
 panopticon scan compare 2>&1 || true
 
+# ── 7b: OTLP traces (otel_spans) ───────────────────────────────────────────
+
+log_info "── OTLP trace storage ──"
+
+SPAN_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_spans;" 2>/dev/null || echo "0")
+log_info "otel_spans: ${SPAN_COUNT} rows"
+
+if [ "$SPAN_COUNT" -gt 0 ]; then
+  log_pass "otel_spans: table is populated (${SPAN_COUNT} spans)"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM otel_spans WHERE trace_id IS NULL OR trace_id = '';" \
+    "otel_spans: all trace_id values are non-empty"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM otel_spans WHERE span_id IS NULL OR span_id = '';" \
+    "otel_spans: all span_id values are non-empty"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM otel_spans WHERE name IS NULL OR name = '';" \
+    "otel_spans: all spans have a name"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM otel_spans
+     WHERE start_time_ns <= 0 OR end_time_ns <= 0;" \
+    "otel_spans: all spans have positive timestamps"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM otel_spans WHERE end_time_ns < start_time_ns;" \
+    "otel_spans: end_time >= start_time for all spans"
+
+  assert_db_not_empty \
+    "SELECT 1 FROM otel_spans WHERE session_id IS NOT NULL AND session_id != '' LIMIT 1;" \
+    "otel_spans: at least some spans have session_id"
+
+  # Check for parent-child relationships (nested spans)
+  CHILD_SPANS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_spans WHERE parent_span_id IS NOT NULL AND parent_span_id != '';" 2>/dev/null || echo "0")
+  if [ "$CHILD_SPANS" -gt 0 ]; then
+    log_pass "otel_spans: has parent-child span relationships (${CHILD_SPANS} child spans)"
+  else
+    log_info "otel_spans: no nested spans (single-level traces)"
+  fi
+
+  # Show sample spans
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT trace_id, span_id, name, kind, session_id,
+            (end_time_ns - start_time_ns) / 1000000 AS duration_ms
+     FROM otel_spans ORDER BY start_time_ns LIMIT 5;" 2>/dev/null || true
+else
+  log_info "otel_spans: empty (CLIs may not emit OTLP traces)"
+fi
+
+# ── 7c: Session file archiving ──────────────────────────────────────────────
+
+log_info "── Session file archive ──"
+
+DATA_DIR=$(dirname "$DB_PATH")
+ARCHIVE_DIR="${DATA_DIR}/archive"
+
+if [ -d "$ARCHIVE_DIR" ]; then
+  ARCHIVE_COUNT=$(find "$ARCHIVE_DIR" -name '*.jsonl.gz' 2>/dev/null | wc -l | tr -d ' ')
+  log_pass "archive: directory exists with ${ARCHIVE_COUNT} files"
+
+  if [ "$ARCHIVE_COUNT" -gt 0 ]; then
+    # Verify archives are valid gzip
+    CORRUPT=0
+    while IFS= read -r f; do
+      if ! gzip -t "$f" 2>/dev/null; then
+        CORRUPT=$((CORRUPT + 1))
+      fi
+    done < <(find "$ARCHIVE_DIR" -name '*.jsonl.gz')
+
+    if [ "$CORRUPT" -eq 0 ]; then
+      log_pass "archive: all ${ARCHIVE_COUNT} files are valid gzip"
+    else
+      log_fail "archive: ${CORRUPT}/${ARCHIVE_COUNT} files are corrupt"
+    fi
+
+    # Verify archives are organized by session_id
+    ARCHIVE_SESSIONS=$(find "$ARCHIVE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$ARCHIVE_SESSIONS" -gt 0 ]; then
+      log_pass "archive: ${ARCHIVE_SESSIONS} session directories"
+    else
+      log_fail "archive: no session subdirectories"
+    fi
+
+    # Show archive structure
+    log_info "Archive contents:"
+    find "$ARCHIVE_DIR" -name '*.jsonl.gz' -exec ls -lh {} \; 2>/dev/null | head -10
+  else
+    log_info "archive: directory exists but no .jsonl.gz files yet"
+  fi
+else
+  log_info "archive: directory not created (scanner may not have archived)"
+fi
+
+# ── 7d: Session summaries ──────────────────────────────────────────────────
+
+log_info "── Session summaries ──"
+
+SUMMARY_DELTA_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas;" 2>/dev/null || echo "0")
+SESSIONS_WITH_SUMMARY=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND summary != '';" 2>/dev/null || echo "0")
+
+log_info "Summary deltas: ${SUMMARY_DELTA_COUNT}, sessions with summary: ${SESSIONS_WITH_SUMMARY}"
+
+if [ "$SCANNER_TURNS" -ge 10 ]; then
+  # With >= 10 turns, at least one summary delta should have been generated
+  assert_db_count "SELECT COUNT(*) FROM session_summary_deltas;" 1 \
+    "session_summary_deltas: >= 1 delta generated"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM session_summary_deltas WHERE content IS NULL OR content = '';" \
+    "session_summary_deltas: all deltas have content"
+
+  assert_db_zero \
+    "SELECT COUNT(*) FROM session_summary_deltas WHERE method IS NULL OR method = '';" \
+    "session_summary_deltas: all deltas have method set"
+
+  assert_db_not_empty \
+    "SELECT 1 FROM session_summary_deltas WHERE method IN ('llm', 'deterministic') LIMIT 1;" \
+    "session_summary_deltas: method is 'llm' or 'deterministic'"
+
+  # Check if LLM summaries were generated (claude is installed in the container)
+  LLM_DELTAS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'llm';" 2>/dev/null || echo "0")
+  DETERMINISTIC_DELTAS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'deterministic';" 2>/dev/null || echo "0")
+  log_info "Summary methods: ${LLM_DELTAS} LLM, ${DETERMINISTIC_DELTAS} deterministic"
+
+  if [ "$LLM_DELTAS" -gt 0 ]; then
+    log_pass "session_summary_deltas: LLM summaries generated (${LLM_DELTAS} deltas)"
+  else
+    log_info "session_summary_deltas: no LLM summaries (claude --bare may not be available in container)"
+  fi
+
+  # sessions.summary should be populated
+  if [ "$SESSIONS_WITH_SUMMARY" -gt 0 ]; then
+    log_pass "sessions: ${SESSIONS_WITH_SUMMARY} sessions have summary text"
+  else
+    log_info "sessions: no summaries populated yet"
+  fi
+
+  # summary_version should track deltas
+  assert_db_not_empty \
+    "SELECT 1 FROM sessions WHERE summary_version > 0 LIMIT 1;" \
+    "sessions: at least one session has summary_version > 0"
+
+  # Show sample summaries
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT session_id, delta_index, method, from_turn, to_turn,
+            substr(content, 1, 80) AS content_preview
+     FROM session_summary_deltas ORDER BY session_id, delta_index LIMIT 5;" 2>/dev/null || true
+else
+  log_info "session summaries: skipped (only ${SCANNER_TURNS} turns, need >= 10)"
+fi
+
 # ─── Phase 8: Snapshot + Sync → Loki (Zero Data Loss) ───────────────────────
 log_phase 8 "Validate Loki (Zero Data Loss)"
 
