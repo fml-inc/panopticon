@@ -218,6 +218,7 @@ dump_db_debug() {
   echo "  otel_metrics rows:$(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM otel_metrics;' 2>/dev/null || echo 'N/A')"
   echo "  otel_spans rows:  $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM otel_spans;' 2>/dev/null || echo 'N/A')"
   echo "  scanner_turns:    $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM scanner_turns;' 2>/dev/null || echo 'N/A')"
+  echo "  scanner_events:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM scanner_events;' 2>/dev/null || echo 'N/A')"
   echo "  summary_deltas:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM session_summary_deltas;' 2>/dev/null || echo 'N/A')"
   echo "  Distinct sessions: $(sqlite3 "$DB_PATH" 'SELECT COUNT(DISTINCT session_id) FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  Event types: $(sqlite3 "$DB_PATH" 'SELECT DISTINCT event_type FROM hook_events;' 2>/dev/null || echo 'N/A')"

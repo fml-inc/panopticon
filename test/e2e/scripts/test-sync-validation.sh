@@ -769,10 +769,14 @@ log_phase 8 "Validate Loki (Zero Data Loss)"
 LOCAL_HOOKS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM hook_events;" 2>/dev/null || echo "0")
 LOCAL_LOGS_TOTAL=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_logs;" 2>/dev/null || echo "0")
 LOCAL_METRICS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_metrics;" 2>/dev/null || echo "0")
+LOCAL_SCANNER_TURNS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_turns;" 2>/dev/null || echo "0")
+LOCAL_SCANNER_EVENTS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_events;" 2>/dev/null || echo "0")
 
-log_info "Local counts: ${LOCAL_HOOKS} hooks, ${LOCAL_LOGS_TOTAL} logs, ${LOCAL_METRICS} metrics"
+log_info "Local counts: ${LOCAL_HOOKS} hooks, ${LOCAL_LOGS_TOTAL} logs, ${LOCAL_METRICS} metrics, ${LOCAL_SCANNER_TURNS} scanner turns, ${LOCAL_SCANNER_EVENTS} scanner events"
 
-# Determine expected Loki count (hooks always sync; otel_logs filtered by hook dedup)
+# Determine expected Loki count.
+# The sync loop sends these tables to /v1/logs (which Loki ingests):
+#   hook_events, otel_logs (filtered by hook dedup), scanner_turns, scanner_events
 CONFIG_PATH="$HOME/.local/share/panopticon/config.json"
 HOOKS_INSTALLED=$(jq -r '.hooksInstalled // false' "$CONFIG_PATH" 2>/dev/null || echo "false")
 LOCAL_LOGS_FILTERED=0
@@ -786,8 +790,8 @@ else
   LOCAL_LOGS_SYNCED="$LOCAL_LOGS_TOTAL"
 fi
 
-EXPECTED_LOKI=$((LOCAL_HOOKS + LOCAL_LOGS_SYNCED))
-log_info "Expected Loki entries: ${EXPECTED_LOKI} (${LOCAL_HOOKS} hooks + ${LOCAL_LOGS_SYNCED} logs)"
+EXPECTED_LOKI=$((LOCAL_HOOKS + LOCAL_LOGS_SYNCED + LOCAL_SCANNER_TURNS + LOCAL_SCANNER_EVENTS))
+log_info "Expected Loki entries: ${EXPECTED_LOKI} (${LOCAL_HOOKS} hooks + ${LOCAL_LOGS_SYNCED} logs + ${LOCAL_SCANNER_TURNS} scanner turns + ${LOCAL_SCANNER_EVENTS} scanner events)"
 
 if [ "$EXPECTED_LOKI" -eq 0 ]; then
   log_fail "Expected Loki count is 0 — no data was generated"
