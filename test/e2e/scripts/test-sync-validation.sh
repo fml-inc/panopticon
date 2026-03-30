@@ -763,6 +763,65 @@ else
   log_info "session summaries: skipped (only ${SCANNER_TURNS} turns, need >= 10)"
 fi
 
+# ── 7e: LLM summary smoke test ──────────────────────────────────────────────
+
+log_info "── LLM summary smoke test ──"
+
+if [ -n "$HAS_CLAUDE" ] && command -v claude &>/dev/null; then
+  # Strip env vars that cause nested-subprocess issues (same as src/summary/llm.ts)
+  LLM_ENV=$(env -i \
+    HOME="$HOME" \
+    PATH="$PATH" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    SHELL="$SHELL" \
+    bash -c \
+    'claude -p "Respond with only the word: working" --output-format text --model haiku --bare --dangerously-skip-permissions --tools "" 2>&1' \
+  ) || true
+
+  if echo "$LLM_ENV" | grep -qi "working"; then
+    log_pass "LLM smoke test: claude --bare returned expected output"
+
+    # If the LLM works, re-run scanner to regenerate summaries with LLM
+    # First, clear existing deterministic deltas so they get regenerated
+    sqlite3 "$DB_PATH" "DELETE FROM session_summary_deltas; UPDATE sessions SET summary = NULL, summary_version = 0;" 2>/dev/null || true
+    log_info "Cleared deterministic summaries, re-running scan..."
+
+    panopticon scan 2>&1 || true
+    sleep 2
+
+    LLM_DELTAS_NOW=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'llm';" 2>/dev/null || echo "0")
+    DET_DELTAS_NOW=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'deterministic';" 2>/dev/null || echo "0")
+
+    if [ "$LLM_DELTAS_NOW" -gt 0 ]; then
+      log_pass "LLM summaries generated after re-scan (${LLM_DELTAS_NOW} LLM, ${DET_DELTAS_NOW} deterministic)"
+
+      # Show the LLM-generated content
+      log_info "LLM summary content:"
+      sqlite3 "$DB_PATH" \
+        "SELECT session_id, method, substr(content, 1, 200) AS preview
+         FROM session_summary_deltas WHERE method = 'llm' LIMIT 3;" 2>/dev/null || true
+    else
+      log_fail "LLM summaries not generated despite claude --bare working"
+      # Debug: check what invokeLlm sees
+      log_info "Checking claude availability from node context..."
+      node -e "
+        const { execFileSync } = require('child_process');
+        try {
+          const p = execFileSync('which', ['claude'], { encoding: 'utf-8' }).trim();
+          console.log('which claude:', p);
+        } catch (e) {
+          console.log('which claude failed:', e.message);
+        }
+      " 2>&1 || true
+    fi
+  else
+    log_info "LLM smoke test: claude --bare did not return expected output"
+    log_info "Output: ${LLM_ENV:0:200}"
+  fi
+else
+  log_info "LLM smoke test: skipped (no ANTHROPIC_API_KEY or claude not installed)"
+fi
+
 # ─── Phase 8: Snapshot + Sync → Loki (Zero Data Loss) ───────────────────────
 log_phase 8 "Validate Loki (Zero Data Loss)"
 
