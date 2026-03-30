@@ -49,9 +49,41 @@ function isServerRunning(): boolean {
   } catch {
     try {
       fs.unlinkSync(config.serverPidFile);
-    } catch {}
+    } catch (err) {
+      console.error("[hook-handler] Failed to remove stale PID file:", err);
+      captureException(err, {
+        component: "hook-handler",
+        phase: "pid-cleanup",
+      });
+    }
     return false;
   }
+}
+
+/**
+ * Atomically claim the right to start the server using O_EXCL on a lock file.
+ * Returns true if this process won the race, false if another process already claimed it.
+ */
+function acquireStartLock(): boolean {
+  ensureDataDir();
+  const lockFile = `${config.serverPidFile}.lock`;
+  try {
+    const fd = fs.openSync(
+      lockFile,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+    );
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseStartLock(): void {
+  try {
+    fs.unlinkSync(`${config.serverPidFile}.lock`);
+  } catch {}
 }
 
 function startServer(): void {
@@ -245,15 +277,28 @@ export async function runHandler(opts: {
       source: data.source,
     });
 
-    // On SessionStart, ensure the unified server is running
+    // On SessionStart, ensure the unified server is running.
+    // Uses an atomic lock file (O_EXCL) to prevent two concurrent hook
+    // invocations from both spawning a server (TOCTOU race).
     if (eventType === "SessionStart" || eventType === "session_start") {
       const serverRunning = isServerRunning();
       logHook("session start", { serverRunning });
       if (!serverRunning) {
-        logHook("starting server");
-        startServer();
-        const ready = await waitForServer(port);
-        logHook("server readiness", { ready });
+        if (acquireStartLock()) {
+          try {
+            logHook("starting server (lock acquired)");
+            startServer();
+            const ready = await waitForServer(port);
+            logHook("server readiness", { ready });
+          } finally {
+            releaseStartLock();
+          }
+        } else {
+          // Another hook handler is starting the server — wait for it
+          logHook("waiting for server (another handler starting)");
+          const ready = await waitForServer(port);
+          logHook("server readiness (waited)", { ready });
+        }
       }
       refreshIfStale().catch(() => {});
     }
