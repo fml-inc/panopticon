@@ -95,7 +95,8 @@
     "test": "vitest run --exclude '.claude/**'",
     "test:watch": "vitest --exclude '.claude/**'",
     "typecheck": "tsc --noEmit",
-    "pack:local": "pnpm build && pnpm pack"
+    "pack:local": "pnpm build && pnpm pack",
+    "postinstall": "node ./bin/panopticon install && claude plugin update 2>/dev/null || true"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

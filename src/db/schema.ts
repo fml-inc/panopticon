@@ -373,6 +373,55 @@ const migrations: Migration[] = [
       addColumnIfMissing("sessions", "sync_dirty", "INTEGER DEFAULT 0");
     },
   },
+  {
+    version: 10,
+    up: (db) => {
+      // Drop the single-table version if it exists from an earlier dev build
+      db.exec("DROP TABLE IF EXISTS config_snapshots");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS user_config_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_name TEXT NOT NULL,
+          snapshot_at_ms INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          permissions JSON NOT NULL DEFAULT '{}',
+          enabled_plugins JSON NOT NULL DEFAULT '[]',
+          hooks JSON NOT NULL DEFAULT '[]',
+          commands JSON NOT NULL DEFAULT '[]',
+          rules JSON NOT NULL DEFAULT '[]',
+          skills JSON NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_config_ts ON user_config_snapshots(snapshot_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_user_config_device_hash ON user_config_snapshots(device_name, content_hash);
+
+        CREATE TABLE IF NOT EXISTS repo_config_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repository TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          session_id TEXT,
+          snapshot_at_ms INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          -- project layer (.claude/settings.json)
+          hooks JSON NOT NULL DEFAULT '[]',
+          mcp_servers JSON NOT NULL DEFAULT '[]',
+          commands JSON NOT NULL DEFAULT '[]',
+          agents JSON NOT NULL DEFAULT '[]',
+          rules JSON NOT NULL DEFAULT '[]',
+          -- project local layer (.claude/settings.local.json)
+          local_hooks JSON NOT NULL DEFAULT '[]',
+          local_mcp_servers JSON NOT NULL DEFAULT '[]',
+          local_permissions JSON NOT NULL DEFAULT '{}',
+          local_is_gitignored INTEGER NOT NULL DEFAULT 1,
+          -- instructions (CLAUDE.md files at all depths)
+          instructions JSON NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_repo_config_repo_ts ON repo_config_snapshots(repository, snapshot_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_repo_config_session ON repo_config_snapshots(session_id);
+        CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(repository, content_hash);
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {
