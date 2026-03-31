@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { config, isEventEnabled } from "../config.js";
+import { config } from "../config.js";
 import {
   insertHookEvent,
   upsertSession,
   upsertSessionCwd,
   upsertSessionRepository,
 } from "../db/store.js";
+import { isEventEnabled } from "../eventConfig.js";
 import { resolveRepoFromCwd } from "../repo.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
