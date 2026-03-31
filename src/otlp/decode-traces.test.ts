@@ -148,4 +148,56 @@ describe("decodeTraces", () => {
     const buf = encodeTraces([]);
     expect(decodeTraces(buf)).toEqual([]);
   });
+
+  it("extracts conversation ID from gen_ai.prompt.name for Gemini", () => {
+    const traceId = Buffer.from("aabbccdd11223344", "hex");
+    const buf = encodeTraces([
+      {
+        resource: {
+          attributes: [
+            {
+              key: "session.id",
+              value: { stringValue: "otel-process-session" },
+            },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId,
+                spanId: Buffer.from("1111", "hex"),
+                name: "user_prompt",
+                startTimeUnixNano: 1000,
+                endTimeUnixNano: 2000,
+              },
+              {
+                traceId,
+                spanId: Buffer.from("2222", "hex"),
+                parentSpanId: Buffer.from("1111", "hex"),
+                name: "llm_call",
+                startTimeUnixNano: 1000,
+                endTimeUnixNano: 2000,
+                attributes: [
+                  {
+                    key: "gen_ai.prompt.name",
+                    value: {
+                      stringValue:
+                        "d180514f-fcb5-4734-a28a-78928d9c7250########0",
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const rows = decodeTraces(buf);
+    expect(rows).toHaveLength(2);
+    // Both spans should use the conversation ID, not the OTel session.id
+    expect(rows[0].session_id).toBe("d180514f-fcb5-4734-a28a-78928d9c7250");
+    expect(rows[1].session_id).toBe("d180514f-fcb5-4734-a28a-78928d9c7250");
+  });
 });

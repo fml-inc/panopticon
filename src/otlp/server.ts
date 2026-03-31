@@ -438,6 +438,15 @@ function jsonMetricsToRows(
   return rows;
 }
 
+function extractJsonConversationId(promptName: unknown): string | undefined {
+  if (typeof promptName !== "string") return undefined;
+  const sep = promptName.indexOf("########");
+  if (sep === -1) return undefined;
+  const uuid = promptName.slice(0, sep);
+  if (uuid.length === 36 && uuid[8] === "-") return uuid;
+  return undefined;
+}
+
 function jsonTracesToRows(data: any): import("../db/store.js").OtelSpanRow[] {
   const rows: import("../db/store.js").OtelSpanRow[] = [];
 
@@ -448,9 +457,22 @@ function jsonTracesToRows(data: any): import("../db/store.js").OtelSpanRow[] {
       resourceAttrs["conversation.id"] ??
       resourceAttrs["service.instance.id"];
 
+    // Build trace_id → conversation_id map from gen_ai.prompt.name
+    const traceConversation = new Map<string, string>();
     for (const ss of rs.scopeSpans ?? []) {
       for (const span of ss.spans ?? []) {
         const attrs = kvListToMap(span.attributes);
+        const convId = extractJsonConversationId(attrs["gen_ai.prompt.name"]);
+        if (convId && span.traceId) {
+          traceConversation.set(span.traceId, convId);
+        }
+      }
+    }
+
+    for (const ss of rs.scopeSpans ?? []) {
+      for (const span of ss.spans ?? []) {
+        const attrs = kvListToMap(span.attributes);
+        const conversationId = traceConversation.get(span.traceId ?? "");
 
         rows.push({
           trace_id: span.traceId ?? "",
@@ -465,7 +487,8 @@ function jsonTracesToRows(data: any): import("../db/store.js").OtelSpanRow[] {
           attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
           resource_attributes:
             Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
-          session_id: (attrs["session.id"] ??
+          session_id: (conversationId ??
+            attrs["session.id"] ??
             attrs["conversation.id"] ??
             resourceSessionId) as string | undefined,
         });

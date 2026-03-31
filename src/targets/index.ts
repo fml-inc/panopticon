@@ -16,6 +16,7 @@ export type {
   TargetProxySpec,
   TargetShellEnvSpec,
 } from "./types.js";
+export { ALL_EVENTS } from "./types.js";
 
 // Register built-in targets (side-effect imports)
 import "./claude.js";
