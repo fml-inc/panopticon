@@ -8,6 +8,7 @@ import {
   upsertSessionCwd,
   upsertSessionRepository,
 } from "../db/store.js";
+import { isEventEnabled } from "../eventConfig.js";
 import { resolveRepoFromCwd } from "../repo.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
@@ -242,6 +243,21 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
   return undefined;
 }
 
+/**
+ * Process a hook event: normalize, store, and optionally enforce permissions.
+ *
+ * Called by the server's POST /hooks handler for every hook event from any
+ * target (Claude Code, Gemini, Codex). The flow:
+ *   1. Resolve which target adapter sent this event
+ *   2. Map the event name to canonical form (e.g. Gemini's "BeforeTool" → "PreToolUse")
+ *   3. Resolve the git repository from cwd/file paths
+ *   4. Store the event in hook_events table (full payload as gzipped blob)
+ *   5. Upsert session metadata (started_at, first_prompt, ended_at, etc.)
+ *   6. For PreToolUse: check allowed.json and return permission decision
+ *
+ * Returns {} for most events. For PreToolUse, may return a permission
+ * response that Claude Code uses to auto-approve/deny the tool call.
+ */
 export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionId = data.session_id ?? "unknown";
   const rawEventType = data.hook_event_name ?? "Unknown";
@@ -263,6 +279,17 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
 
   const targetId = target?.id ?? "unknown";
 
+  // Check if this event type is enabled in the logging config.
+  // Permission enforcement still runs even for disabled events so that
+  // PreToolUse responses are not silently dropped.
+  if (!isEventEnabled(eventType)) {
+    // Skip storage but still handle permission enforcement below
+    if (eventType === "PreToolUse" && toolName) {
+      return buildPermissionResponse(toolName, data, target);
+    }
+    return {};
+  }
+
   insertHookEvent({
     session_id: sessionId,
     event_type: eventType,
@@ -274,12 +301,17 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     payload: data,
   });
 
-  // Upsert session — each event type contributes different fields
+  // Upsert session — each event type contributes different fields.
+  // SessionStart seeds the row; subsequent events enrich it. The session
+  // row is the primary join target for queries across hook_events, otel,
+  // and scanner tables.
   const sessionFields: Parameters<typeof upsertSession>[0] = {
     session_id: sessionId,
     target: targetId,
   };
   if (eventType === "SessionStart") {
+    // First event in a session — capture initial state. cwd and
+    // permission_mode are snapshot values from launch time.
     sessionFields.started_at_ms = timestampMs;
     sessionFields.cwd = data.cwd;
     sessionFields.permission_mode =
@@ -290,6 +322,9 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       typeof data.agent_version === "string" ? data.agent_version : undefined;
   }
   if (eventType === "UserPromptSubmit") {
+    // Capture the first user prompt for session search/display. Only the
+    // first prompt is stored (upsertSession uses INSERT OR IGNORE semantics
+    // for first_prompt).
     const prompt =
       typeof data.prompt === "string"
         ? data.prompt
@@ -299,6 +334,9 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     if (prompt) sessionFields.first_prompt = prompt;
   }
   if (eventType === "Stop" || eventType === "SessionEnd") {
+    // Mark session end time. Stop fires on every turn completion, so
+    // ended_at_ms gets updated repeatedly — the last Stop or SessionEnd
+    // wins, giving us the true end time.
     sessionFields.ended_at_ms = timestampMs;
   }
   upsertSession(sessionFields);
@@ -315,38 +353,51 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
 
   // Permission enforcement via allowed.json
   if (eventType === "PreToolUse" && toolName) {
-    let decision: { allow: true; reason: string } | null = null;
+    return buildPermissionResponse(toolName, data, target);
+  }
 
-    // Always auto-allow panopticon's own MCP tools
-    if (isPanopticonMcpTool(toolName)) {
-      decision = { allow: true, reason: "Panopticon tool (always allowed)" };
-    } else {
-      const allowed = loadAllowed();
-      if (allowed) {
-        if (toolName === "Bash") {
-          const command = data.tool_input?.command;
-          if (typeof command === "string" && allowed.bash_commands?.length) {
-            decision = checkBashPermission(command, allowed.bash_commands);
-          }
-        } else if (allowed.tools?.includes(toolName)) {
-          decision = { allow: true, reason: `Tool "${toolName}" is allowed` };
+  return {};
+}
+
+/**
+ * Evaluate PreToolUse permission for a tool call.
+ * Returns a formatted permission response if auto-allowed, otherwise {}.
+ */
+function buildPermissionResponse(
+  toolName: string,
+  data: HookInput,
+  target: TargetAdapter | undefined,
+): Record<string, unknown> {
+  let decision: { allow: true; reason: string } | null = null;
+
+  // Always auto-allow panopticon's own MCP tools
+  if (isPanopticonMcpTool(toolName)) {
+    decision = { allow: true, reason: "Panopticon tool (always allowed)" };
+  } else {
+    const allowed = loadAllowed();
+    if (allowed) {
+      if (toolName === "Bash") {
+        const command = data.tool_input?.command;
+        if (typeof command === "string" && allowed.bash_commands?.length) {
+          decision = checkBashPermission(command, allowed.bash_commands);
         }
+      } else if (allowed.tools?.includes(toolName)) {
+        decision = { allow: true, reason: `Tool "${toolName}" is allowed` };
       }
     }
+  }
 
-    if (decision) {
-      // Use target adapter to format the response, fall back to Claude Code format
-      if (target) {
-        return target.events.formatPermissionResponse(decision);
-      }
-      return {
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "allow",
-          permissionDecisionReason: decision.reason,
-        },
-      };
+  if (decision) {
+    if (target) {
+      return target.events.formatPermissionResponse(decision);
     }
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        permissionDecisionReason: decision.reason,
+      },
+    };
   }
 
   return {};

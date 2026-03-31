@@ -277,9 +277,12 @@ export async function runHandler(opts: {
       source: data.source,
     });
 
-    // On SessionStart, ensure the unified server is running.
-    // Uses an atomic lock file (O_EXCL) to prevent two concurrent hook
-    // invocations from both spawning a server (TOCTOU race).
+    // On SessionStart, ensure the unified server is running. This is the
+    // only event that triggers server startup — all other events POST to
+    // the already-running server and silently drop if it's unreachable.
+    // The server process outlives any single session and serves all
+    // concurrent ones. Uses an atomic lock file (O_EXCL) to prevent two
+    // concurrent hook invocations from both spawning a server (TOCTOU race).
     if (eventType === "SessionStart" || eventType === "session_start") {
       const serverRunning = isServerRunning();
       logHook("session start", { serverRunning });
