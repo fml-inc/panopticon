@@ -2,23 +2,14 @@ import { execSync } from "node:child_process";
 import { getDb } from "../db/schema.js";
 import { captureException } from "../sentry.js";
 import { chunk, postOtlp } from "./post.js";
-import {
-  readHookEvents,
-  readMetrics,
-  readOtelLogs,
-  readOtelSpans,
-  readScannerEvents,
-  readScannerTurns,
-} from "./reader.js";
-import {
-  serializeHookEvents,
-  serializeMetrics,
-  serializeOtelLogs,
-  serializeOtelSpans,
-  serializeScannerEvents,
-  serializeScannerTurns,
-} from "./serialize.js";
-import type { SyncHandle, SyncOptions, SyncTarget } from "./types.js";
+import { TABLE_SYNC_REGISTRY } from "./registry.js";
+import type {
+  ReaderContext,
+  SyncHandle,
+  SyncOptions,
+  SyncTarget,
+  TableSyncDescriptor,
+} from "./types.js";
 import {
   closeWatermarkDb,
   readWatermark,
@@ -97,6 +88,8 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const log =
     opts.log ?? ((msg: string) => console.error(`[panopticon-sync] ${msg}`));
 
+  const readerCtx: ReaderContext = { hooksInstalled };
+
   function resolveHeaders(target: SyncTarget): Record<string, string> {
     const headers: Record<string, string> = { ...target.headers };
     const token = resolveToken(target);
@@ -121,157 +114,30 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     }
   }
 
-  async function syncHookEvents(target: SyncTarget): Promise<boolean> {
-    const wmKey = watermarkKey("hook_events", target.name);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function syncTable(
+    desc: TableSyncDescriptor<any>,
+    target: SyncTarget,
+  ): Promise<boolean> {
+    const wmKey = watermarkKey(desc.table, target.name);
     const wm = readWatermark(wmKey);
 
-    const { rows, maxId } = readHookEvents(wm, batchSize);
+    const { rows, maxId } = desc.read(wm, batchSize, readerCtx);
     if (rows.length === 0) return false;
 
-    const filtered = rows.filter((r) => shouldSync(r.repository, opts));
-    log(`hook_events: ${filtered.length} events (watermark ${wm} → ${maxId})`);
-    const batches = chunk(filtered, postBatchSize);
+    const filtered = desc.extractRepo
+      ? rows.filter((r: unknown) => shouldSync(desc.extractRepo!(r), opts))
+      : rows;
 
-    for (const batch of batches) {
+    log(
+      `${desc.table}: ${filtered.length} ${desc.logNoun} (watermark ${wm} → ${maxId})`,
+    );
+
+    for (const batch of chunk(filtered, postBatchSize)) {
       if (batch.length > 0) {
-        const payload = serializeHookEvents(batch);
+        const payload = desc.serialize(batch);
         await postOtlp(
-          `${target.url}/v1/logs`,
-          payload,
-          resolveHeaders(target),
-        );
-      }
-    }
-
-    writeWatermark(wmKey, maxId);
-    return rows.length === batchSize;
-  }
-
-  async function syncOtelLogs(target: SyncTarget): Promise<boolean> {
-    const wmKey = watermarkKey("otel_logs", target.name);
-    const wm = readWatermark(wmKey);
-
-    const { rows, maxId } = readOtelLogs(wm, batchSize, hooksInstalled);
-    if (rows.length === 0) return false;
-
-    log(`otel_logs: ${rows.length} logs (watermark ${wm} → ${maxId})`);
-    const filtered = rows.filter((r) => {
-      const repo =
-        (r.resourceAttributes?.["repository.full_name"] as string) ?? null;
-      return shouldSync(repo, opts);
-    });
-    const batches = chunk(filtered, postBatchSize);
-
-    for (const batch of batches) {
-      if (batch.length > 0) {
-        const payload = serializeOtelLogs(batch);
-        await postOtlp(
-          `${target.url}/v1/logs`,
-          payload,
-          resolveHeaders(target),
-        );
-      }
-    }
-
-    writeWatermark(wmKey, maxId);
-    return rows.length === batchSize;
-  }
-
-  async function syncMetrics(target: SyncTarget): Promise<boolean> {
-    const wmKey = watermarkKey("otel_metrics", target.name);
-    const wm = readWatermark(wmKey);
-
-    const { rows, maxId } = readMetrics(wm, batchSize);
-    if (rows.length === 0) return false;
-
-    log(`otel_metrics: ${rows.length} metrics (watermark ${wm} → ${maxId})`);
-    const filtered = rows.filter((r) => {
-      const repo =
-        (r.resourceAttributes?.["repository.full_name"] as string) ?? null;
-      return shouldSync(repo, opts);
-    });
-    const batches = chunk(filtered, postBatchSize);
-
-    for (const batch of batches) {
-      if (batch.length > 0) {
-        const payload = serializeMetrics(batch);
-        await postOtlp(
-          `${target.url}/v1/metrics`,
-          payload,
-          resolveHeaders(target),
-        );
-      }
-    }
-
-    writeWatermark(wmKey, maxId);
-    return rows.length === batchSize;
-  }
-
-  async function syncScannerTurns(target: SyncTarget): Promise<boolean> {
-    const wmKey = watermarkKey("scanner_turns", target.name);
-    const wm = readWatermark(wmKey);
-
-    const { rows, maxId } = readScannerTurns(wm, batchSize);
-    if (rows.length === 0) return false;
-
-    log(`scanner_turns: ${rows.length} turns (watermark ${wm} → ${maxId})`);
-    const batches = chunk(rows, postBatchSize);
-
-    for (const batch of batches) {
-      if (batch.length > 0) {
-        const payload = serializeScannerTurns(batch);
-        await postOtlp(
-          `${target.url}/v1/logs`,
-          payload,
-          resolveHeaders(target),
-        );
-      }
-    }
-
-    writeWatermark(wmKey, maxId);
-    return rows.length === batchSize;
-  }
-
-  async function syncOtelSpans(target: SyncTarget): Promise<boolean> {
-    const wmKey = watermarkKey("otel_spans", target.name);
-    const wm = readWatermark(wmKey);
-
-    const { rows, maxId } = readOtelSpans(wm, batchSize);
-    if (rows.length === 0) return false;
-
-    log(`otel_spans: ${rows.length} spans (watermark ${wm} → ${maxId})`);
-    const batches = chunk(rows, postBatchSize);
-
-    for (const batch of batches) {
-      if (batch.length > 0) {
-        const payload = serializeOtelSpans(batch);
-        await postOtlp(
-          `${target.url}/v1/traces`,
-          payload,
-          resolveHeaders(target),
-        );
-      }
-    }
-
-    writeWatermark(wmKey, maxId);
-    return rows.length === batchSize;
-  }
-
-  async function syncScannerEvents(target: SyncTarget): Promise<boolean> {
-    const wmKey = watermarkKey("scanner_events", target.name);
-    const wm = readWatermark(wmKey);
-
-    const { rows, maxId } = readScannerEvents(wm, batchSize);
-    if (rows.length === 0) return false;
-
-    log(`scanner_events: ${rows.length} events (watermark ${wm} → ${maxId})`);
-    const batches = chunk(rows, postBatchSize);
-
-    for (const batch of batches) {
-      if (batch.length > 0) {
-        const payload = serializeScannerEvents(batch);
-        await postOtlp(
-          `${target.url}/v1/logs`,
+          `${target.url}${desc.endpoint}`,
           payload,
           resolveHeaders(target),
         );
@@ -291,12 +157,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         // tables make progress together and no single backlog blocks others.
         for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
           let anyWork = false;
-          if (await syncHookEvents(target)) anyWork = true;
-          if (await syncOtelLogs(target)) anyWork = true;
-          if (await syncMetrics(target)) anyWork = true;
-          if (await syncScannerTurns(target)) anyWork = true;
-          if (await syncScannerEvents(target)) anyWork = true;
-          if (await syncOtelSpans(target)) anyWork = true;
+          for (const desc of TABLE_SYNC_REGISTRY) {
+            if (await syncTable(desc, target)) anyWork = true;
+          }
           if (!anyWork) break;
           hasMore = true;
         }

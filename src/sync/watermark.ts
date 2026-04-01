@@ -1,6 +1,7 @@
 import path from "node:path";
 import Database from "better-sqlite3";
 import { config, ensureDataDir } from "../config.js";
+import { TABLE_SYNC_REGISTRY } from "./registry.js";
 
 const WATERMARK_DB_NAME = "sync-watermarks.db";
 
@@ -45,21 +46,12 @@ export function writeWatermark(key: string, value: number): void {
   ).run(key, value);
 }
 
-const SYNCED_TABLES = [
-  "hook_events",
-  "otel_logs",
-  "otel_metrics",
-  "scanner_turns",
-  "scanner_events",
-  "otel_spans",
-];
-
 export function resetWatermarks(targetName?: string): void {
   const db = getWatermarkDb();
   if (targetName) {
     const stmt = db.prepare("DELETE FROM watermarks WHERE key = ?");
-    for (const table of SYNCED_TABLES) {
-      stmt.run(watermarkKey(table, targetName));
+    for (const desc of TABLE_SYNC_REGISTRY) {
+      stmt.run(watermarkKey(desc.table, targetName));
     }
   } else {
     db.prepare("DELETE FROM watermarks").run();

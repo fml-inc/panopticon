@@ -135,6 +135,37 @@ export interface OtelSpanRecord {
   sessionId: string | null;
 }
 
+// ── Sync registry ───────────────────────────────────────────────────────────
+
+/** Context passed to reader functions that need values from SyncOptions. */
+export interface ReaderContext {
+  hooksInstalled: boolean;
+}
+
+/**
+ * Descriptor for a single table that participates in the sync loop.
+ * The generic loop reads rows, optionally filters by repo, serializes,
+ * and POSTs — this descriptor captures all the per-table variation.
+ */
+export interface TableSyncDescriptor<TRow = unknown> {
+  /** Table name, used as the watermark namespace key. */
+  table: string;
+  /** Noun for log messages (e.g. "events", "logs"). */
+  logNoun: string;
+  /** Read rows from SQLite starting after the given watermark. */
+  read: (
+    afterId: number,
+    limit: number,
+    ctx: ReaderContext,
+  ) => { rows: TRow[]; maxId: number };
+  /** Serialize a batch of rows into the POST body. */
+  serialize: (rows: TRow[]) => unknown;
+  /** URL path suffix appended to target.url (e.g. "/v1/logs"). */
+  endpoint: string;
+  /** Extract repo string from a row for shouldSync filtering. If omitted, no filtering. */
+  extractRepo?: (row: TRow) => string | null;
+}
+
 // ── OTLP JSON types ──────────────────────────────────────────────────────────
 
 export interface OtlpAnyValue {
