@@ -396,7 +396,8 @@ export function upsertSession(row: SessionUpsert): void {
          WHEN sessions.models IS NULL THEN excluded.model
          WHEN sessions.models LIKE '%' || excluded.model || '%' THEN sessions.models
          ELSE sessions.models || ',' || excluded.model
-       END`,
+       END,
+       sync_dirty = 1`,
   ).run({
     session_id: row.session_id,
     target: row.target ?? null,
@@ -420,6 +421,15 @@ export function upsertSession(row: SessionUpsert): void {
     otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
     otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
   });
+}
+
+export function clearSessionDirtyFlags(sessionIds: string[]): void {
+  if (sessionIds.length === 0) return;
+  const db = getDb();
+  const placeholders = sessionIds.map(() => "?").join(", ");
+  db.prepare(
+    `UPDATE sessions SET sync_dirty = 0 WHERE session_id IN (${placeholders})`,
+  ).run(...sessionIds);
 }
 
 function extractStr(

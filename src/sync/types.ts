@@ -1,3 +1,6 @@
+/** Which class of sync data a target can receive. */
+export type SyncCapability = "otlp" | "api";
+
 export interface SyncTarget {
   /** Unique name for this target, used as watermark namespace */
   name: string;
@@ -9,6 +12,8 @@ export interface SyncTarget {
   tokenCommand?: string;
   /** Additional headers (merged with token auth if both provided) */
   headers?: Record<string, string>;
+  /** Which table classes this target receives. Default: ["otlp"]. */
+  capabilities?: SyncCapability[];
 }
 
 export interface SyncFilter {
@@ -135,6 +140,72 @@ export interface OtelSpanRecord {
   sessionId: string | null;
 }
 
+// ── Config snapshot records ──────────────────────────────────────────────────
+
+export interface UserConfigSnapshotRecord {
+  id: number;
+  deviceName: string;
+  snapshotAtMs: number;
+  contentHash: string;
+  permissions: Record<string, unknown>;
+  enabledPlugins: unknown[];
+  hooks: unknown[];
+  commands: unknown[];
+  rules: unknown[];
+  skills: unknown[];
+}
+
+export interface RepoConfigSnapshotRecord {
+  id: number;
+  repository: string;
+  cwd: string;
+  sessionId: string | null;
+  snapshotAtMs: number;
+  contentHash: string;
+  hooks: unknown[];
+  mcpServers: unknown[];
+  commands: unknown[];
+  agents: unknown[];
+  rules: unknown[];
+  localHooks: unknown[];
+  localMcpServers: unknown[];
+  localPermissions: Record<string, unknown>;
+  localIsGitignored: boolean;
+  instructions: unknown[];
+}
+
+// ── Session sync record ─────────────────────────────────────────────────────
+
+export interface SessionSyncRecord {
+  sessionId: string;
+  target: string | null;
+  startedAtMs: number | null;
+  endedAtMs: number | null;
+  cwd: string | null;
+  firstPrompt: string | null;
+  permissionMode: string | null;
+  agentVersion: string | null;
+  totalInputTokens: number | null;
+  totalOutputTokens: number | null;
+  totalCacheReadTokens: number | null;
+  totalCacheCreationTokens: number | null;
+  totalReasoningTokens: number | null;
+  turnCount: number | null;
+  models: string | null;
+  summary: string | null;
+  repositories: Array<{
+    repository: string;
+    firstSeenMs: number;
+    gitUserName: string | null;
+    gitUserEmail: string | null;
+    branch: string | null;
+  }>;
+  cwds: Array<{
+    cwd: string;
+    firstSeenMs: number;
+  }>;
+}
+
 // ── Sync registry ───────────────────────────────────────────────────────────
 
 /** Context passed to reader functions that need values from SyncOptions. */
@@ -152,6 +223,8 @@ export interface TableSyncDescriptor<TRow = unknown> {
   table: string;
   /** Noun for log messages (e.g. "events", "logs"). */
   logNoun: string;
+  /** Which capability class this table belongs to. */
+  capability: SyncCapability;
   /** Read rows from SQLite starting after the given watermark. */
   read: (
     afterId: number,
@@ -164,6 +237,10 @@ export interface TableSyncDescriptor<TRow = unknown> {
   endpoint: string;
   /** Extract repo string from a row for shouldSync filtering. If omitted, no filtering. */
   extractRepo?: (row: TRow) => string | null;
+  /** If true, uses dirty-flag pattern instead of watermarks. read() ignores afterId. */
+  dirtyFlag?: boolean;
+  /** Called after successful sync to clear dirty flags. Only used when dirtyFlag=true. */
+  clearDirty?: (rows: TRow[]) => void;
 }
 
 // ── OTLP JSON types ──────────────────────────────────────────────────────────

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
 
 describe("TABLE_SYNC_REGISTRY", () => {
-  it("has exactly 6 table descriptors", () => {
-    expect(TABLE_SYNC_REGISTRY).toHaveLength(6);
+  it("has exactly 9 table descriptors", () => {
+    expect(TABLE_SYNC_REGISTRY).toHaveLength(9);
   });
 
   it("has unique table names", () => {
@@ -20,6 +20,9 @@ describe("TABLE_SYNC_REGISTRY", () => {
       "scanner_turns",
       "scanner_events",
       "otel_spans",
+      "user_config_snapshots",
+      "repo_config_snapshots",
+      "sessions",
     ]);
   });
 
@@ -36,24 +39,45 @@ describe("TABLE_SYNC_REGISTRY", () => {
       expect(typeof desc.table).toBe("string");
       expect(typeof desc.logNoun).toBe("string");
       expect(typeof desc.endpoint).toBe("string");
+      expect(["otlp", "api"]).toContain(desc.capability);
     }
   });
 
-  it("hook_events, otel_logs, otel_metrics have extractRepo", () => {
+  it("OTLP tables have capability 'otlp'", () => {
+    const otlp = TABLE_SYNC_REGISTRY.filter((d) => d.capability === "otlp");
+    expect(otlp.map((d) => d.table)).toEqual([
+      "hook_events",
+      "otel_logs",
+      "otel_metrics",
+      "scanner_turns",
+      "scanner_events",
+      "otel_spans",
+    ]);
+  });
+
+  it("API tables have capability 'api'", () => {
+    const api = TABLE_SYNC_REGISTRY.filter((d) => d.capability === "api");
+    expect(api.map((d) => d.table)).toEqual([
+      "user_config_snapshots",
+      "repo_config_snapshots",
+      "sessions",
+    ]);
+  });
+
+  it("only sessions uses dirty flag", () => {
+    const dirty = TABLE_SYNC_REGISTRY.filter((d) => d.dirtyFlag);
+    expect(dirty).toHaveLength(1);
+    expect(dirty[0].table).toBe("sessions");
+    expect(typeof dirty[0].clearDirty).toBe("function");
+  });
+
+  it("tables with repo filtering", () => {
     const withRepo = TABLE_SYNC_REGISTRY.filter((d) => d.extractRepo);
     expect(withRepo.map((d) => d.table)).toEqual([
       "hook_events",
       "otel_logs",
       "otel_metrics",
-    ]);
-  });
-
-  it("scanner_turns, scanner_events, otel_spans have no extractRepo", () => {
-    const withoutRepo = TABLE_SYNC_REGISTRY.filter((d) => !d.extractRepo);
-    expect(withoutRepo.map((d) => d.table)).toEqual([
-      "scanner_turns",
-      "scanner_events",
-      "otel_spans",
+      "repo_config_snapshots",
     ]);
   });
 });

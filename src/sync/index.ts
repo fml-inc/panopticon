@@ -9,11 +9,15 @@ export { createSyncLoop } from "./loop.js";
 export { TABLE_SYNC_REGISTRY } from "./registry.js";
 export type {
   ReaderContext,
+  RepoConfigSnapshotRecord,
+  SessionSyncRecord,
+  SyncCapability,
   SyncFilter,
   SyncHandle,
   SyncOptions,
   SyncTarget,
   TableSyncDescriptor,
+  UserConfigSnapshotRecord,
 } from "./types.js";
 export {
   closeWatermarkDb,
