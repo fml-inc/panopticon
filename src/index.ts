@@ -37,7 +37,7 @@ export {
 // ── Permissions ───────────────────────────────────────────────────────────────
 export { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 // ── Repo ──────────────────────────────────────────────────────────────────────
-export { resolveRepoFromCwd } from "./repo.js";
+export { type RepoInfo, resolveRepoFromCwd } from "./repo.js";
 // ── Scanner ──────────────────────────────────────────────────────────────────
 export {
   type ClaudeCodeConfig,

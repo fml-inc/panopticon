@@ -163,20 +163,23 @@ export function upsertSessionRepository(
   repository: string,
   timestampMs: number,
   gitIdentity?: { name: string | null; email: string | null },
+  branch?: string | null,
 ): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(session_id, repository) DO UPDATE SET
        git_user_name = COALESCE(session_repositories.git_user_name, excluded.git_user_name),
-       git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email)`,
+       git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email),
+       branch = COALESCE(excluded.branch, session_repositories.branch)`,
   ).run(
     sessionId,
     repository,
     timestampMs,
     gitIdentity?.name ?? null,
     gitIdentity?.email ?? null,
+    branch ?? null,
   );
 }
 
