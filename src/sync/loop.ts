@@ -122,28 +122,23 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     return TABLE_SYNC_REGISTRY.filter((d) => caps.includes(d.capability));
   }
 
-  /**
-   * Sync one table to one target. Returns the synced rows (needed for
-   * dirty-flag tables where we must clear flags after all targets succeed).
-   */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function syncTable(
     desc: TableSyncDescriptor<any>,
     target: SyncTarget,
-  ): Promise<{ hadWork: boolean; rows: unknown[] }> {
-    const wm = desc.dirtyFlag
-      ? 0
-      : readWatermark(watermarkKey(desc.table, target.name));
+  ): Promise<boolean> {
+    const wmKey = watermarkKey(desc.table, target.name);
+    const wm = readWatermark(wmKey);
 
     const { rows, maxId } = desc.read(wm, batchSize, readerCtx);
-    if (rows.length === 0) return { hadWork: false, rows: [] };
+    if (rows.length === 0) return false;
 
     const filtered = desc.extractRepo
       ? rows.filter((r: unknown) => shouldSync(desc.extractRepo!(r), opts))
       : rows;
 
     log(
-      `${desc.table}: ${filtered.length} ${desc.logNoun}${desc.dirtyFlag ? " (dirty)" : ` (watermark ${wm} → ${maxId})`}`,
+      `${desc.table}: ${filtered.length} ${desc.logNoun} (watermark ${wm} → ${maxId})`,
     );
 
     for (const batch of chunk(filtered, postBatchSize)) {
@@ -157,23 +152,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       }
     }
 
-    if (!desc.dirtyFlag) {
-      writeWatermark(watermarkKey(desc.table, target.name), maxId);
-    }
-
-    return { hadWork: rows.length === batchSize, rows };
+    writeWatermark(wmKey, maxId);
+    return rows.length === batchSize;
   }
 
   async function runOnce(): Promise<boolean> {
     let hasMore = false;
-
-    // Collect dirty-flag rows synced to each target so we can clear
-    // flags only after ALL targets have received the data.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dirtyResults = new Map<
-      string,
-      { desc: TableSyncDescriptor<any>; rowsByTarget: unknown[][] }
-    >();
 
     for (const target of opts.targets) {
       try {
@@ -183,18 +167,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
           let anyWork = false;
           for (const desc of descs) {
-            const result = await syncTable(desc, target);
-            if (result.hadWork) anyWork = true;
-
-            // Track dirty-flag rows per target
-            if (desc.dirtyFlag && result.rows.length > 0) {
-              let entry = dirtyResults.get(desc.table);
-              if (!entry) {
-                entry = { desc, rowsByTarget: [] };
-                dirtyResults.set(desc.table, entry);
-              }
-              entry.rowsByTarget.push(result.rows);
-            }
+            if (await syncTable(desc, target)) anyWork = true;
           }
           if (!anyWork) break;
           hasMore = true;
@@ -207,17 +180,6 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           component: "sync",
           target: target.name,
         });
-      }
-    }
-
-    // Clear dirty flags for tables that synced to all targets
-    for (const [, { desc, rowsByTarget }] of dirtyResults) {
-      const targetCount = opts.targets.filter((t) =>
-        (t.capabilities ?? ["otlp"]).includes(desc.capability),
-      ).length;
-      if (rowsByTarget.length >= targetCount && desc.clearDirty) {
-        // Use the rows from the first target (they're all the same batch)
-        desc.clearDirty(rowsByTarget[0]);
       }
     }
 
