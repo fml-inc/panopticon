@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
-import os from "node:os";
-import path from "node:path";
-import Database from "better-sqlite3";
+import { SupersetProvider } from "./workspaces/superset.js";
+import type { WorkspaceProvider } from "./workspaces/types.js";
 
 export interface RepoInfo {
   repo: string;
@@ -11,71 +10,8 @@ export interface RepoInfo {
 // Cache: cwd → RepoInfo | null
 const repoCache = new Map<string, RepoInfo | null>();
 
-const SUPERSET_MARKER = `${path.sep}.superset${path.sep}`;
-const SUPERSET_DB_PATH = path.join(os.homedir(), ".superset", "local.db");
-
-let _supersetDb: Database.Database | null = null;
-let _supersetDbFailed = false;
-
-function getSupersetDb(): Database.Database | null {
-  if (_supersetDbFailed) return null;
-  if (_supersetDb) return _supersetDb;
-  try {
-    _supersetDb = new Database(SUPERSET_DB_PATH, {
-      readonly: true,
-      fileMustExist: true,
-    });
-    return _supersetDb;
-  } catch {
-    _supersetDbFailed = true;
-    return null;
-  }
-}
-
-interface SupersetWorktreeInfo {
-  main_repo_path: string;
-  branch: string | null;
-}
-
-/**
- * Look up a Superset path in local.db. Checks worktrees first (for
- * ~/.superset/worktrees/ paths), then falls back to projects (for
- * ~/.superset/projects/ paths).
- */
-function resolveSupersetWorktree(
-  worktreeCwd: string,
-): SupersetWorktreeInfo | null {
-  const db = getSupersetDb();
-  if (!db) return null;
-  try {
-    // Try worktrees table first (most common case)
-    const wt = db
-      .prepare(
-        `SELECT p.main_repo_path, w.branch
-         FROM worktrees w
-         JOIN projects p ON w.project_id = p.id
-         WHERE ? LIKE w.path || '%'
-         ORDER BY LENGTH(w.path) DESC
-         LIMIT 1`,
-      )
-      .get(worktreeCwd) as SupersetWorktreeInfo | undefined;
-    if (wt) return wt;
-
-    // Fall back to projects table (for ~/.superset/projects/ paths)
-    const proj = db
-      .prepare(
-        `SELECT main_repo_path, default_branch AS branch
-         FROM projects
-         WHERE ? LIKE main_repo_path || '%'
-         ORDER BY LENGTH(main_repo_path) DESC
-         LIMIT 1`,
-      )
-      .get(worktreeCwd) as SupersetWorktreeInfo | undefined;
-    return proj ?? null;
-  } catch {
-    return null;
-  }
-}
+// Registered workspace providers — checked in order when git fails.
+const providers: WorkspaceProvider[] = [new SupersetProvider()];
 
 /** Resolve "org/repo" from a directory's git remote origin URL. */
 function resolveGitRemote(dir: string): string | null {
@@ -122,8 +58,9 @@ function resolveGitBranch(dir: string): string | null {
  * Resolve the GitHub "org/repo" and branch for a working directory.
  * Results are cached for the lifetime of the process.
  *
- * Falls back to Superset's local DB for worktree paths where the worktree
- * may have been cleaned up but the parent project's repo still exists.
+ * 1. Try git directly on the CWD
+ * 2. On failure, ask registered workspace providers (e.g. Superset)
+ *    for an alternative repo directory to resolve against
  */
 export function resolveRepoFromCwd(cwd: string): RepoInfo | null {
   if (repoCache.has(cwd)) return repoCache.get(cwd)!;
@@ -133,13 +70,17 @@ export function resolveRepoFromCwd(cwd: string): RepoInfo | null {
   const repo = resolveGitRemote(cwd);
   if (repo) {
     result = { repo, branch: resolveGitBranch(cwd) };
-  } else if (cwd.includes(SUPERSET_MARKER)) {
-    // Fallback: resolve via Superset DB for deleted worktrees
-    const wt = resolveSupersetWorktree(cwd);
-    if (wt) {
-      const fallbackRepo = resolveGitRemote(wt.main_repo_path);
-      if (fallbackRepo) {
-        result = { repo: fallbackRepo, branch: wt.branch };
+  } else {
+    // Ask workspace providers for a fallback
+    for (const provider of providers) {
+      if (!provider.canResolve(cwd)) continue;
+      const resolved = provider.resolve(cwd);
+      if (resolved) {
+        const fallbackRepo = resolveGitRemote(resolved.repoDir);
+        if (fallbackRepo) {
+          result = { repo: fallbackRepo, branch: resolved.branch };
+          break;
+        }
       }
     }
   }
@@ -151,11 +92,5 @@ export function resolveRepoFromCwd(cwd: string): RepoInfo | null {
 /** Reset caches (for testing). */
 export function _resetRepoCache(): void {
   repoCache.clear();
-  if (_supersetDb) {
-    try {
-      _supersetDb.close();
-    } catch {}
-  }
-  _supersetDb = null;
-  _supersetDbFailed = false;
+  for (const p of providers) p.close?.();
 }
