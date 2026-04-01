@@ -38,8 +38,9 @@ interface SupersetWorktreeInfo {
 }
 
 /**
- * Look up a Superset worktree path in local.db to find the parent project's
- * main_repo_path and the worktree's branch name.
+ * Look up a Superset path in local.db. Checks worktrees first (for
+ * ~/.superset/worktrees/ paths), then falls back to projects (for
+ * ~/.superset/projects/ paths).
  */
 function resolveSupersetWorktree(
   worktreeCwd: string,
@@ -47,7 +48,8 @@ function resolveSupersetWorktree(
   const db = getSupersetDb();
   if (!db) return null;
   try {
-    const row = db
+    // Try worktrees table first (most common case)
+    const wt = db
       .prepare(
         `SELECT p.main_repo_path, w.branch
          FROM worktrees w
@@ -57,7 +59,19 @@ function resolveSupersetWorktree(
          LIMIT 1`,
       )
       .get(worktreeCwd) as SupersetWorktreeInfo | undefined;
-    return row ?? null;
+    if (wt) return wt;
+
+    // Fall back to projects table (for ~/.superset/projects/ paths)
+    const proj = db
+      .prepare(
+        `SELECT main_repo_path, default_branch AS branch
+         FROM projects
+         WHERE ? LIKE main_repo_path || '%'
+         ORDER BY LENGTH(main_repo_path) DESC
+         LIMIT 1`,
+      )
+      .get(worktreeCwd) as SupersetWorktreeInfo | undefined;
+    return proj ?? null;
   } catch {
     return null;
   }
