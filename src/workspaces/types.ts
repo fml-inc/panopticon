@@ -1,5 +1,3 @@
-import type { RepoInfo } from "../repo.js";
-
 /**
  * A workspace provider resolves repository and branch info for CWDs that
  * git alone can't handle — e.g. ephemeral worktrees managed by external
