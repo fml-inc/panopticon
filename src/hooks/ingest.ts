@@ -1,15 +1,19 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
 import {
   insertHookEvent,
+  insertRepoConfigSnapshot,
+  insertUserConfigSnapshot,
   upsertSession,
   upsertSessionCwd,
   upsertSessionRepository,
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
 import { resolveRepoFromCwd } from "../repo.js";
+import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
@@ -55,6 +59,12 @@ function resolveGitIdentity(cwd: string): {
 // Last resolved repo per session — used as fallback for events without paths
 // (e.g. Stop, UserPromptSubmit). Long-lived in the server process.
 const lastSessionRepo = new Map<string, string>();
+
+// Track sessions where we've already captured user config
+const userConfigCaptured = new Set<string>();
+
+// Track session:repo pairs where we've already captured repo config
+const seenSessionRepos = new Set<string>();
 
 export interface HookInput {
   session_id: string;
@@ -102,6 +112,52 @@ export function extractShellPwd(data: HookInput): string | null {
   return null;
 }
 
+export type PathSource =
+  | "shell_pwd"
+  | "tool_input.file_path"
+  | "tool_input.path"
+  | "cwd";
+
+export interface EventPath {
+  dir: string;
+  source: PathSource;
+}
+
+/**
+ * Extract every directory path we can find from a hook event, in priority
+ * order. Consumers can iterate the list to greedily resolve repos, capture
+ * config snapshots, etc. without duplicating extraction logic.
+ */
+export function extractEventPaths(data: HookInput): EventPath[] {
+  const paths: EventPath[] = [];
+  const seen = new Set<string>();
+  const add = (dir: string, source: PathSource) => {
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      paths.push({ dir, source });
+    }
+  };
+
+  const shellPwd = extractShellPwd(data);
+  if (shellPwd) add(shellPwd, "shell_pwd");
+
+  const toolInput = data.tool_input;
+  if (toolInput && typeof toolInput === "object") {
+    const fp = (toolInput as Record<string, unknown>).file_path;
+    if (typeof fp === "string" && path.isAbsolute(fp)) {
+      add(path.dirname(fp), "tool_input.file_path");
+    }
+    const p = (toolInput as Record<string, unknown>).path;
+    if (typeof p === "string" && path.isAbsolute(p)) {
+      add(path.dirname(p), "tool_input.path");
+    }
+  }
+
+  if (typeof data.cwd === "string") add(data.cwd, "cwd");
+
+  return paths;
+}
+
 /**
  * Resolve the repository for an event, trying multiple sources in priority order:
  * 1. Explicit repository field
@@ -119,26 +175,10 @@ export function resolveEventRepo(
   let repo = data.repository ?? null;
 
   if (!repo) {
-    const shellPwd = extractShellPwd(data);
-    if (shellPwd) {
-      repo = resolveFn(shellPwd);
+    for (const { dir } of extractEventPaths(data)) {
+      repo = resolveFn(dir);
+      if (repo) break;
     }
-  }
-
-  if (!repo) {
-    const toolInput = data.tool_input;
-    if (toolInput && typeof toolInput === "object") {
-      const filePath =
-        (toolInput as Record<string, unknown>).file_path ??
-        (toolInput as Record<string, unknown>).path;
-      if (typeof filePath === "string" && path.isAbsolute(filePath)) {
-        repo = resolveFn(path.dirname(filePath));
-      }
-    }
-  }
-
-  if (!repo && data.cwd) {
-    repo = resolveFn(data.cwd as string);
   }
 
   // Fallback: use the last resolved repo for this session
@@ -152,6 +192,39 @@ export function resolveEventRepo(
   }
 
   return repo;
+}
+
+/**
+ * Resolve ALL repos touched by this event — the primary repo plus any
+ * additional repos referenced via tool_input paths.
+ * Returns deduplicated { repo, dir } pairs.
+ */
+export function resolveAllEventRepos(
+  data: HookInput,
+  resolveFn: (dir: string) => string | null = resolveRepoFromCwd,
+): Array<{ repo: string; dir: string }> {
+  const results: Array<{ repo: string; dir: string }> = [];
+  const seen = new Set<string>();
+
+  // Explicit repository field first
+  if (data.repository) {
+    seen.add(data.repository);
+    const shellPwd = extractShellPwd(data);
+    results.push({
+      repo: data.repository,
+      dir: shellPwd ?? (data.cwd as string) ?? ".",
+    });
+  }
+
+  for (const { dir } of extractEventPaths(data)) {
+    const repo = resolveFn(dir);
+    if (repo && !seen.has(repo)) {
+      seen.add(repo);
+      results.push({ repo, dir });
+    }
+  }
+
+  return results;
 }
 
 /** Clear the session repo cache (for testing). */
@@ -341,14 +414,70 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   }
   upsertSession(sessionFields);
 
-  // Populate session junction tables
-  if (repo) {
-    const cwd = extractShellPwd(data) ?? (data.cwd as string | undefined);
-    const gitId = cwd ? resolveGitIdentity(cwd) : undefined;
-    upsertSessionRepository(sessionId, repo, timestampMs, gitId);
+  // Populate session junction tables — greedily resolve all repos touched
+  // by this event (primary cwd + any paths in tool_input).
+  const allRepos = resolveAllEventRepos(data);
+  for (const { repo: r, dir } of allRepos) {
+    const gitId = resolveGitIdentity(dir);
+    upsertSessionRepository(sessionId, r, timestampMs, gitId);
+
+    // Capture repo config on first encounter per session
+    const repoKey = `${sessionId}:${r}`;
+    if (!seenSessionRepos.has(repoKey)) {
+      seenSessionRepos.add(repoKey);
+      try {
+        const cfg = readConfig(dir);
+        const gitRoot = resolveGitRoot(dir);
+        const localSettingsPath = path.join(
+          gitRoot ?? dir,
+          ".claude",
+          "settings.local.json",
+        );
+        insertRepoConfigSnapshot({
+          repository: r,
+          cwd: dir,
+          sessionId,
+          hooks: cfg.project?.hooks ?? [],
+          mcpServers: cfg.project?.mcpServers ?? [],
+          commands: cfg.project?.commands ?? [],
+          agents: cfg.project?.agents ?? [],
+          rules: cfg.project?.rules ?? [],
+          localHooks: cfg.projectLocal?.hooks ?? [],
+          localMcpServers: cfg.projectLocal?.mcpServers ?? [],
+          localPermissions: cfg.projectLocal?.permissions ?? {
+            allow: [],
+            ask: [],
+            deny: [],
+          },
+          localIsGitignored: isGitignored(localSettingsPath, gitRoot ?? dir),
+          instructions: cfg.instructions,
+        });
+      } catch {
+        // Non-fatal — config scan failure shouldn't break hook processing
+      }
+    }
   }
   if (data.cwd) {
     upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+  }
+
+  // Capture user config on SessionStart (once per session)
+  if (eventType === "SessionStart" && !userConfigCaptured.has(sessionId)) {
+    userConfigCaptured.add(sessionId);
+    try {
+      const config = readConfig(data.cwd as string | undefined);
+      insertUserConfigSnapshot({
+        deviceName: os.hostname(),
+        permissions: config.user.permissions,
+        enabledPlugins: config.enabledPlugins,
+        hooks: config.user.hooks,
+        commands: config.user.commands,
+        rules: config.user.rules,
+        skills: config.user.skills,
+      });
+    } catch {
+      // Non-fatal
+    }
   }
 
   // Permission enforcement via allowed.json

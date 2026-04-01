@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,7 @@ export interface ClaudeCodeConfig {
   project: ConfigLayer | null;
   projectLocal: ConfigLayer | null;
   instructions: Array<{ path: string; content: string; lineCount: number }>;
+  enabledPlugins: Array<{ pluginName: string; marketplace: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +172,28 @@ function parsePermissions(
   return { allow, ask, deny };
 }
 
+function parseEnabledPlugins(
+  settings: Record<string, unknown> | null,
+): Array<{ pluginName: string; marketplace: string }> {
+  if (!settings) return [];
+  const raw = settings.enabledPlugins;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const result: Array<{ pluginName: string; marketplace: string }> = [];
+  for (const [key, enabled] of Object.entries(raw as Record<string, unknown>)) {
+    if (!enabled) continue;
+    const atIndex = key.indexOf("@");
+    if (atIndex > 0) {
+      result.push({
+        pluginName: key.slice(0, atIndex),
+        marketplace: key.slice(atIndex + 1),
+      });
+    } else {
+      result.push({ pluginName: key, marketplace: "" });
+    }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Layer builder
 // ---------------------------------------------------------------------------
@@ -212,6 +236,47 @@ function buildLayer(
 }
 
 // ---------------------------------------------------------------------------
+// Git helpers
+// ---------------------------------------------------------------------------
+
+const gitRootCache = new Map<string, string | null>();
+
+/**
+ * Resolve the git repository root for a directory.
+ * Cached per cwd for the lifetime of the process.
+ */
+export function resolveGitRoot(cwd: string): string | null {
+  if (gitRootCache.has(cwd)) return gitRootCache.get(cwd)!;
+  let root: string | null = null;
+  try {
+    root = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // Not a git repo
+  }
+  gitRootCache.set(cwd, root);
+  return root;
+}
+
+/**
+ * Check if a file path is gitignored.
+ */
+export function isGitignored(filePath: string, cwd: string): boolean {
+  try {
+    execFileSync("git", ["-C", cwd, "check-ignore", "-q", filePath], {
+      timeout: 3000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true; // exit code 0 = ignored
+  } catch {
+    return false; // exit code 1 = not ignored, or not a git repo
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Instruction discovery
 // ---------------------------------------------------------------------------
 
@@ -219,29 +284,63 @@ function findPerDirectoryClaudeMd(
   root: string,
   excludePaths: Set<string>,
 ): string[] {
-  const results: string[] = [];
-  const EXCLUDED_DIRS = new Set([".git", "node_modules", ".claude"]);
-
-  function walk(dir: string): void {
-    let entries: fs.Dirent[];
+  // Try git ls-files first (fast, respects .gitignore)
+  const gitRoot = resolveGitRoot(root);
+  if (gitRoot) {
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!EXCLUDED_DIRS.has(entry.name)) walk(full);
-      } else if (entry.isFile() && entry.name === "CLAUDE.md") {
-        const resolved = path.resolve(full);
-        if (!excludePaths.has(resolved)) results.push(resolved);
+      const output = execFileSync(
+        "git",
+        ["-C", gitRoot, "ls-files", "--full-name", "*/CLAUDE.md", "CLAUDE.md"],
+        {
+          encoding: "utf-8",
+          timeout: 5000,
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      ).trim();
+      if (output) {
+        return output
+          .split("\n")
+          .map((rel) => path.resolve(gitRoot, rel))
+          .filter((p) => !excludePaths.has(p));
       }
+      return [];
+    } catch {
+      // Fall through to find
     }
   }
 
-  walk(root);
-  return results;
+  // Fallback: use find command
+  try {
+    const output = execFileSync(
+      "find",
+      [
+        root,
+        "-name",
+        "CLAUDE.md",
+        "-not",
+        "-path",
+        "*/node_modules/*",
+        "-not",
+        "-path",
+        "*/.git/*",
+      ],
+      {
+        encoding: "utf-8",
+        timeout: 10000,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+    if (output) {
+      return output
+        .split("\n")
+        .map((p) => path.resolve(p))
+        .filter((p) => !excludePaths.has(p));
+    }
+  } catch {
+    // Fall through
+  }
+
+  return [];
 }
 
 function buildInstruction(
@@ -270,7 +369,9 @@ function getManagedDir(): string {
  * instruction files.
  */
 export function readConfig(cwd?: string): ClaudeCodeConfig {
-  const root = cwd ? path.resolve(cwd) : process.cwd();
+  const rawCwd = cwd ? path.resolve(cwd) : process.cwd();
+  // Use git root if available so project config is found even from subdirs
+  const root = resolveGitRoot(rawCwd) ?? rawCwd;
   const home = os.homedir();
   const claudeHome = path.join(home, ".claude");
   const dotClaude = path.join(root, ".claude");
@@ -368,7 +469,20 @@ export function readConfig(cwd?: string): ClaudeCodeConfig {
     if (inst) instructions.push(inst);
   }
 
-  return { managed, user, project, projectLocal, instructions };
+  // Enabled plugins — merge user + project, deduplicate
+  const pluginSet = new Set<string>();
+  const enabledPlugins: ClaudeCodeConfig["enabledPlugins"] = [];
+  for (const layer of [project, user]) {
+    for (const p of parseEnabledPlugins(layer?.settings ?? null)) {
+      const key = `${p.pluginName}@${p.marketplace}`;
+      if (!pluginSet.has(key)) {
+        pluginSet.add(key);
+        enabledPlugins.push(p);
+      }
+    }
+  }
+
+  return { managed, user, project, projectLocal, instructions, enabledPlugins };
 }
 
 /**

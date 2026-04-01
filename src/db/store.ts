@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
 import { getDb } from "./schema.js";
@@ -188,6 +189,141 @@ export function upsertSessionCwd(
   db.prepare(
     "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
   ).run(sessionId, cwd, timestampMs);
+}
+
+// ---------------------------------------------------------------------------
+// Config snapshots
+// ---------------------------------------------------------------------------
+
+function contentHash(obj: Record<string, unknown>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(obj, Object.keys(obj).sort()))
+    .digest("hex");
+}
+
+export interface UserConfigSnapshot {
+  deviceName: string;
+  permissions: unknown;
+  enabledPlugins: unknown;
+  hooks: unknown;
+  commands: unknown;
+  rules: unknown;
+  skills: unknown;
+}
+
+/**
+ * Insert a user config snapshot if the content has changed since the last one
+ * for this device. Returns true if a new row was inserted.
+ */
+export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
+  const db = getDb();
+  const hash = contentHash({
+    permissions: snap.permissions,
+    enabledPlugins: snap.enabledPlugins,
+    hooks: snap.hooks,
+    commands: snap.commands,
+    rules: snap.rules,
+    skills: snap.skills,
+  });
+
+  // Check if latest snapshot for this device has the same hash
+  const existing = db
+    .prepare(
+      "SELECT content_hash FROM user_config_snapshots WHERE device_name = ? ORDER BY snapshot_at_ms DESC LIMIT 1",
+    )
+    .get(snap.deviceName) as { content_hash: string } | undefined;
+
+  if (existing?.content_hash === hash) return false;
+
+  db.prepare(
+    `INSERT INTO user_config_snapshots
+       (device_name, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    snap.deviceName,
+    Date.now(),
+    hash,
+    JSON.stringify(snap.permissions),
+    JSON.stringify(snap.enabledPlugins),
+    JSON.stringify(snap.hooks),
+    JSON.stringify(snap.commands),
+    JSON.stringify(snap.rules),
+    JSON.stringify(snap.skills),
+  );
+  return true;
+}
+
+export interface RepoConfigSnapshot {
+  repository: string;
+  cwd: string;
+  sessionId?: string;
+  // project layer
+  hooks: unknown;
+  mcpServers: unknown;
+  commands: unknown;
+  agents: unknown;
+  rules: unknown;
+  // project local layer
+  localHooks: unknown;
+  localMcpServers: unknown;
+  localPermissions: unknown;
+  localIsGitignored: boolean;
+  // instructions
+  instructions: unknown;
+}
+
+/**
+ * Insert a repo config snapshot if the content has changed since the last one
+ * for this repository. Returns true if a new row was inserted.
+ */
+export function insertRepoConfigSnapshot(snap: RepoConfigSnapshot): boolean {
+  const db = getDb();
+  const hash = contentHash({
+    hooks: snap.hooks,
+    mcpServers: snap.mcpServers,
+    commands: snap.commands,
+    agents: snap.agents,
+    rules: snap.rules,
+    localHooks: snap.localHooks,
+    localMcpServers: snap.localMcpServers,
+    localPermissions: snap.localPermissions,
+    localIsGitignored: snap.localIsGitignored,
+    instructions: snap.instructions,
+  });
+
+  const existing = db
+    .prepare(
+      "SELECT content_hash FROM repo_config_snapshots WHERE repository = ? ORDER BY snapshot_at_ms DESC LIMIT 1",
+    )
+    .get(snap.repository) as { content_hash: string } | undefined;
+
+  if (existing?.content_hash === hash) return false;
+
+  db.prepare(
+    `INSERT INTO repo_config_snapshots
+       (repository, cwd, session_id, snapshot_at_ms, content_hash,
+        hooks, mcp_servers, commands, agents, rules,
+        local_hooks, local_mcp_servers, local_permissions, local_is_gitignored,
+        instructions)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    snap.repository,
+    snap.cwd,
+    snap.sessionId ?? null,
+    Date.now(),
+    hash,
+    JSON.stringify(snap.hooks),
+    JSON.stringify(snap.mcpServers),
+    JSON.stringify(snap.commands),
+    JSON.stringify(snap.agents),
+    JSON.stringify(snap.rules),
+    JSON.stringify(snap.localHooks),
+    JSON.stringify(snap.localMcpServers),
+    JSON.stringify(snap.localPermissions),
+    snap.localIsGitignored ? 1 : 0,
+    JSON.stringify(snap.instructions),
+  );
+  return true;
 }
 
 export interface SessionUpsert {

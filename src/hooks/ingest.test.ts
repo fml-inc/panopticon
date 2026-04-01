@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   _resetSessionRepoCache,
+  extractEventPaths,
   extractShellPwd,
   type HookInput,
   isPanopticonMcpTool,
+  resolveAllEventRepos,
   resolveEventRepo,
 } from "./ingest.js";
 
@@ -219,6 +221,103 @@ describe("resolveEventRepo", () => {
       });
       expect(resolveEventRepo(data, stubResolve)).toBe("isoapp/district");
     });
+  });
+});
+
+describe("extractEventPaths", () => {
+  it("extracts all path sources in priority order", () => {
+    const data = makeInput({
+      shell_pwd: "/workspace/fml",
+      cwd: "/workspace/panopticon",
+      tool_input: { file_path: "/workspace/panopticon/src/index.ts" },
+    });
+    const paths = extractEventPaths(data);
+    expect(paths).toEqual([
+      { dir: "/workspace/fml", source: "shell_pwd" },
+      { dir: "/workspace/panopticon/src", source: "tool_input.file_path" },
+      { dir: "/workspace/panopticon", source: "cwd" },
+    ]);
+  });
+
+  it("deduplicates identical directories", () => {
+    const data = makeInput({
+      shell_pwd: "/workspace/fml",
+      cwd: "/workspace/fml",
+    });
+    const paths = extractEventPaths(data);
+    expect(paths).toEqual([{ dir: "/workspace/fml", source: "shell_pwd" }]);
+  });
+
+  it("extracts both file_path and path when different", () => {
+    const data = makeInput({
+      tool_input: {
+        file_path: "/workspace/fml/src/cli.ts",
+        path: "/workspace/panopticon/src",
+      },
+    });
+    const paths = extractEventPaths(data);
+    expect(paths.map((p) => p.source)).toEqual([
+      "tool_input.file_path",
+      "tool_input.path",
+    ]);
+  });
+
+  it("ignores relative paths in tool_input", () => {
+    const data = makeInput({
+      tool_input: { file_path: "relative/path.ts" },
+      cwd: "/workspace/fml",
+    });
+    const paths = extractEventPaths(data);
+    expect(paths).toEqual([{ dir: "/workspace/fml", source: "cwd" }]);
+  });
+
+  it("returns empty for events with no paths", () => {
+    const data = makeInput({ hook_event_name: "Stop" });
+    expect(extractEventPaths(data)).toEqual([]);
+  });
+});
+
+describe("resolveAllEventRepos", () => {
+  it("returns both repos when cwd and file_path are in different repos", () => {
+    const data = makeInput({
+      shell_pwd: "/workspace/fml",
+      tool_input: {
+        file_path: "/workspace/panopticon/scripts/test-superset-db.sh",
+      },
+    });
+    const repos = resolveAllEventRepos(data, stubResolve);
+    expect(repos).toEqual([
+      { repo: "fml-inc/fml", dir: "/workspace/fml" },
+      { repo: "fml-inc/panopticon", dir: "/workspace/panopticon/scripts" },
+    ]);
+  });
+
+  it("returns single repo when all paths point to same repo", () => {
+    const data = makeInput({
+      shell_pwd: "/workspace/fml/src",
+      tool_input: { file_path: "/workspace/fml/src/cli.ts" },
+      cwd: "/workspace/fml",
+    });
+    const repos = resolveAllEventRepos(data, stubResolve);
+    expect(repos).toEqual([{ repo: "fml-inc/fml", dir: "/workspace/fml/src" }]);
+  });
+
+  it("returns empty when nothing resolves", () => {
+    const data = makeInput({ cwd: "/Users/home" });
+    expect(resolveAllEventRepos(data, stubResolve)).toEqual([]);
+  });
+
+  it("uses explicit repository field", () => {
+    const data = makeInput({
+      repository: "explicit/repo",
+      shell_pwd: "/workspace/fml",
+    });
+    const repos = resolveAllEventRepos(data, stubResolve);
+    expect(repos[0]).toEqual({ repo: "explicit/repo", dir: "/workspace/fml" });
+    // shell_pwd also resolves to fml — but explicit/repo is different, so fml
+    // appears as a second entry
+    expect(repos).toHaveLength(2);
+    expect(repos[1]).toEqual({ repo: "fml-inc/fml", dir: "/workspace/fml" });
   });
 });
 
