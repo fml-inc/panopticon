@@ -4,8 +4,11 @@ import type {
   MetricRow,
   OtelLogRecord,
   OtelSpanRecord,
+  RepoConfigSnapshotRecord,
   ScannerEventRecord,
   ScannerTurnRecord,
+  SessionSyncRecord,
+  UserConfigSnapshotRecord,
 } from "./types.js";
 
 function parseJson(raw: string | null): Record<string, unknown> | null {
@@ -381,4 +384,250 @@ export function readOtelSpans(
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
   return { rows, maxId };
+}
+
+// ── JSON parse helpers for config snapshots ─────────────────────────────────
+
+function parseJsonArray(raw: string | null): unknown[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonObject(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+// ── User config snapshots ──────────────────────────────────────────────────
+
+const USER_CONFIG_SQL = `
+  SELECT id, device_name, snapshot_at_ms, content_hash,
+         permissions, enabled_plugins, hooks, commands, rules, skills
+  FROM user_config_snapshots
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readUserConfigSnapshots(
+  afterId: number,
+  limit: number,
+): { rows: UserConfigSnapshotRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(USER_CONFIG_SQL).all(afterId, limit) as Array<{
+    id: number;
+    device_name: string;
+    snapshot_at_ms: number;
+    content_hash: string;
+    permissions: string | null;
+    enabled_plugins: string | null;
+    hooks: string | null;
+    commands: string | null;
+    rules: string | null;
+    skills: string | null;
+  }>;
+
+  const rows: UserConfigSnapshotRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    deviceName: r.device_name,
+    snapshotAtMs: r.snapshot_at_ms,
+    contentHash: r.content_hash,
+    permissions: parseJsonObject(r.permissions),
+    enabledPlugins: parseJsonArray(r.enabled_plugins),
+    hooks: parseJsonArray(r.hooks),
+    commands: parseJsonArray(r.commands),
+    rules: parseJsonArray(r.rules),
+    skills: parseJsonArray(r.skills),
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Repo config snapshots ──────────────────────────────────────────────────
+
+const REPO_CONFIG_SQL = `
+  SELECT id, repository, cwd, session_id, snapshot_at_ms, content_hash,
+         hooks, mcp_servers, commands, agents, rules,
+         local_hooks, local_mcp_servers, local_permissions,
+         local_is_gitignored, instructions
+  FROM repo_config_snapshots
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readRepoConfigSnapshots(
+  afterId: number,
+  limit: number,
+): { rows: RepoConfigSnapshotRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(REPO_CONFIG_SQL).all(afterId, limit) as Array<{
+    id: number;
+    repository: string;
+    cwd: string;
+    session_id: string | null;
+    snapshot_at_ms: number;
+    content_hash: string;
+    hooks: string | null;
+    mcp_servers: string | null;
+    commands: string | null;
+    agents: string | null;
+    rules: string | null;
+    local_hooks: string | null;
+    local_mcp_servers: string | null;
+    local_permissions: string | null;
+    local_is_gitignored: number;
+    instructions: string | null;
+  }>;
+
+  const rows: RepoConfigSnapshotRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    repository: r.repository,
+    cwd: r.cwd,
+    sessionId: r.session_id,
+    snapshotAtMs: r.snapshot_at_ms,
+    contentHash: r.content_hash,
+    hooks: parseJsonArray(r.hooks),
+    mcpServers: parseJsonArray(r.mcp_servers),
+    commands: parseJsonArray(r.commands),
+    agents: parseJsonArray(r.agents),
+    rules: parseJsonArray(r.rules),
+    localHooks: parseJsonArray(r.local_hooks),
+    localMcpServers: parseJsonArray(r.local_mcp_servers),
+    localPermissions: parseJsonObject(r.local_permissions),
+    localIsGitignored: r.local_is_gitignored === 1,
+    instructions: parseJsonArray(r.instructions),
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Dirty sessions ─────────────────────────────────────────────────────────
+
+const DIRTY_SESSIONS_SQL = `
+  SELECT session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+         permission_mode, agent_version,
+         total_input_tokens, total_output_tokens, total_cache_read_tokens,
+         total_cache_creation_tokens, total_reasoning_tokens, turn_count,
+         models, summary
+  FROM sessions
+  WHERE sync_dirty = 1
+  ORDER BY rowid
+  LIMIT ?
+`;
+
+export function readDirtySessions(
+  _afterId: number,
+  limit: number,
+): { rows: SessionSyncRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(DIRTY_SESSIONS_SQL).all(limit) as Array<{
+    session_id: string;
+    target: string | null;
+    started_at_ms: number | null;
+    ended_at_ms: number | null;
+    cwd: string | null;
+    first_prompt: string | null;
+    permission_mode: string | null;
+    agent_version: string | null;
+    total_input_tokens: number | null;
+    total_output_tokens: number | null;
+    total_cache_read_tokens: number | null;
+    total_cache_creation_tokens: number | null;
+    total_reasoning_tokens: number | null;
+    turn_count: number | null;
+    models: string | null;
+    summary: string | null;
+  }>;
+
+  if (rawRows.length === 0) return { rows: [], maxId: 0 };
+
+  const sessionIds = rawRows.map((r) => r.session_id);
+  const placeholders = sessionIds.map(() => "?").join(", ");
+
+  const repoRows = db
+    .prepare(
+      `SELECT session_id, repository, first_seen_ms, git_user_name, git_user_email, branch
+       FROM session_repositories
+       WHERE session_id IN (${placeholders})`,
+    )
+    .all(...sessionIds) as Array<{
+    session_id: string;
+    repository: string;
+    first_seen_ms: number;
+    git_user_name: string | null;
+    git_user_email: string | null;
+    branch: string | null;
+  }>;
+
+  const cwdRows = db
+    .prepare(
+      `SELECT session_id, cwd, first_seen_ms
+       FROM session_cwds
+       WHERE session_id IN (${placeholders})`,
+    )
+    .all(...sessionIds) as Array<{
+    session_id: string;
+    cwd: string;
+    first_seen_ms: number;
+  }>;
+
+  const reposBySession = new Map<string, SessionSyncRecord["repositories"]>();
+  for (const r of repoRows) {
+    const list = reposBySession.get(r.session_id) ?? [];
+    list.push({
+      repository: r.repository,
+      firstSeenMs: r.first_seen_ms,
+      gitUserName: r.git_user_name,
+      gitUserEmail: r.git_user_email,
+      branch: r.branch,
+    });
+    reposBySession.set(r.session_id, list);
+  }
+
+  const cwdsBySession = new Map<string, SessionSyncRecord["cwds"]>();
+  for (const r of cwdRows) {
+    const list = cwdsBySession.get(r.session_id) ?? [];
+    list.push({ cwd: r.cwd, firstSeenMs: r.first_seen_ms });
+    cwdsBySession.set(r.session_id, list);
+  }
+
+  const rows: SessionSyncRecord[] = rawRows.map((r) => ({
+    sessionId: r.session_id,
+    target: r.target,
+    startedAtMs: r.started_at_ms,
+    endedAtMs: r.ended_at_ms,
+    cwd: r.cwd,
+    firstPrompt: r.first_prompt,
+    permissionMode: r.permission_mode,
+    agentVersion: r.agent_version,
+    totalInputTokens: r.total_input_tokens,
+    totalOutputTokens: r.total_output_tokens,
+    totalCacheReadTokens: r.total_cache_read_tokens,
+    totalCacheCreationTokens: r.total_cache_creation_tokens,
+    totalReasoningTokens: r.total_reasoning_tokens,
+    turnCount: r.turn_count,
+    models: r.models,
+    summary: r.summary,
+    repositories: reposBySession.get(r.session_id) ?? [],
+    cwds: cwdsBySession.get(r.session_id) ?? [],
+  }));
+
+  return { rows, maxId: 0 };
 }
