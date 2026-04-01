@@ -193,6 +193,8 @@ export interface SessionSyncRecord {
   turnCount: number | null;
   models: string | null;
   summary: string | null;
+  toolCounts: Record<string, number>;
+  eventTypeCounts: Record<string, number>;
   repositories: Array<{
     repository: string;
     firstSeenMs: number;
@@ -237,10 +239,6 @@ export interface TableSyncDescriptor<TRow = unknown> {
   endpoint: string;
   /** Extract repo string from a row for shouldSync filtering. If omitted, no filtering. */
   extractRepo?: (row: TRow) => string | null;
-  /** If true, uses dirty-flag pattern instead of watermarks. read() ignores afterId. */
-  dirtyFlag?: boolean;
-  /** Called after successful sync to clear dirty flags. Only used when dirtyFlag=true. */
-  clearDirty?: (rows: TRow[]) => void;
 }
 
 // ── OTLP JSON types ──────────────────────────────────────────────────────────

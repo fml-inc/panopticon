@@ -1,6 +1,4 @@
-import { clearSessionDirtyFlags } from "../db/store.js";
 import {
-  readDirtySessions,
   readHookEvents,
   readMetrics,
   readOtelLogs,
@@ -8,6 +6,7 @@ import {
   readRepoConfigSnapshots,
   readScannerEvents,
   readScannerTurns,
+  readSessions,
   readUserConfigSnapshots,
 } from "./reader.js";
 import {
@@ -124,13 +123,8 @@ export const TABLE_SYNC_REGISTRY: TableSyncDescriptor<any>[] = [
     table: "sessions",
     logNoun: "sessions",
     capability: "api",
-    dirtyFlag: true,
-    read: (_afterId, limit, _ctx) => readDirtySessions(0, limit),
+    read: (afterId, limit, _ctx) => readSessions(afterId, limit),
     serialize: (rows) => rows,
     endpoint: "/v1/sessions",
-    clearDirty: (rows) => {
-      const ids = rows.map((r) => r.sessionId);
-      if (ids.length > 0) clearSessionDirtyFlags(ids);
-    },
   } satisfies TableSyncDescriptor<SessionSyncRecord>,
 ];

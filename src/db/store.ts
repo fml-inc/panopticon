@@ -397,7 +397,8 @@ export function upsertSession(row: SessionUpsert): void {
          WHEN sessions.models LIKE '%' || excluded.model || '%' THEN sessions.models
          ELSE sessions.models || ',' || excluded.model
        END,
-       sync_dirty = 1`,
+       sync_dirty = 1,
+       sync_seq = COALESCE(sessions.sync_seq, 0) + 1`,
   ).run({
     session_id: row.session_id,
     target: row.target ?? null,
@@ -423,13 +424,42 @@ export function upsertSession(row: SessionUpsert): void {
   });
 }
 
-export function clearSessionDirtyFlags(sessionIds: string[]): void {
-  if (sessionIds.length === 0) return;
+/**
+ * Increment a tool count for a session. Uses JSON_SET to atomically
+ * update the tool_counts JSON object, bumping sync_seq.
+ */
+export function incrementToolCount(sessionId: string, toolName: string): void {
   const db = getDb();
-  const placeholders = sessionIds.map(() => "?").join(", ");
   db.prepare(
-    `UPDATE sessions SET sync_dirty = 0 WHERE session_id IN (${placeholders})`,
-  ).run(...sessionIds);
+    `UPDATE sessions
+     SET tool_counts = JSON_SET(
+           COALESCE(tool_counts, '{}'),
+           '$.' || @tool,
+           COALESCE(JSON_EXTRACT(tool_counts, '$.' || @tool), 0) + 1
+         ),
+         sync_seq = COALESCE(sync_seq, 0) + 1
+     WHERE session_id = @session_id`,
+  ).run({ session_id: sessionId, tool: toolName });
+}
+
+/**
+ * Increment an event type count for a session.
+ */
+export function incrementEventTypeCount(
+  sessionId: string,
+  eventType: string,
+): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE sessions
+     SET event_type_counts = JSON_SET(
+           COALESCE(event_type_counts, '{}'),
+           '$.' || @event_type,
+           COALESCE(JSON_EXTRACT(event_type_counts, '$.' || @event_type), 0) + 1
+         ),
+         sync_seq = COALESCE(sync_seq, 0) + 1
+     WHERE session_id = @session_id`,
+  ).run({ session_id: sessionId, event_type: eventType });
 }
 
 function extractStr(

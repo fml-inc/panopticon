@@ -64,13 +64,6 @@ describe("TABLE_SYNC_REGISTRY", () => {
     ]);
   });
 
-  it("only sessions uses dirty flag", () => {
-    const dirty = TABLE_SYNC_REGISTRY.filter((d) => d.dirtyFlag);
-    expect(dirty).toHaveLength(1);
-    expect(dirty[0].table).toBe("sessions");
-    expect(typeof dirty[0].clearDirty).toBe("function");
-  });
-
   it("tables with repo filtering", () => {
     const withRepo = TABLE_SYNC_REGISTRY.filter((d) => d.extractRepo);
     expect(withRepo.map((d) => d.table)).toEqual([

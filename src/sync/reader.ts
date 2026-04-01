@@ -518,26 +518,26 @@ export function readRepoConfigSnapshots(
   return { rows, maxId };
 }
 
-// ── Dirty sessions ─────────────────────────────────────────────────────────
+// ── Sessions (watermark on sync_seq) ────────────────────────────────────────
 
-const DIRTY_SESSIONS_SQL = `
+const SESSIONS_SQL = `
   SELECT session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
          permission_mode, agent_version,
          total_input_tokens, total_output_tokens, total_cache_read_tokens,
          total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-         models, summary
+         models, summary, tool_counts, event_type_counts, sync_seq
   FROM sessions
-  WHERE sync_dirty = 1
-  ORDER BY rowid
+  WHERE sync_seq > ?
+  ORDER BY sync_seq
   LIMIT ?
 `;
 
-export function readDirtySessions(
-  _afterId: number,
+export function readSessions(
+  afterSeq: number,
   limit: number,
 ): { rows: SessionSyncRecord[]; maxId: number } {
   const db = getDb();
-  const rawRows = db.prepare(DIRTY_SESSIONS_SQL).all(limit) as Array<{
+  const rawRows = db.prepare(SESSIONS_SQL).all(afterSeq, limit) as Array<{
     session_id: string;
     target: string | null;
     started_at_ms: number | null;
@@ -554,9 +554,12 @@ export function readDirtySessions(
     turn_count: number | null;
     models: string | null;
     summary: string | null;
+    tool_counts: string | null;
+    event_type_counts: string | null;
+    sync_seq: number;
   }>;
 
-  if (rawRows.length === 0) return { rows: [], maxId: 0 };
+  if (rawRows.length === 0) return { rows: [], maxId: afterSeq };
 
   const sessionIds = rawRows.map((r) => r.session_id);
   const placeholders = sessionIds.map(() => "?").join(", ");
@@ -625,9 +628,15 @@ export function readDirtySessions(
     turnCount: r.turn_count,
     models: r.models,
     summary: r.summary,
+    toolCounts: parseJsonObject(r.tool_counts) as Record<string, number>,
+    eventTypeCounts: parseJsonObject(r.event_type_counts) as Record<
+      string,
+      number
+    >,
     repositories: reposBySession.get(r.session_id) ?? [],
     cwds: cwdsBySession.get(r.session_id) ?? [],
   }));
 
-  return { rows, maxId: 0 };
+  const maxId = rawRows[rawRows.length - 1].sync_seq;
+  return { rows, maxId };
 }

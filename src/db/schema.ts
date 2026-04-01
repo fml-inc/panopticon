@@ -428,6 +428,26 @@ const migrations: Migration[] = [
       db.exec("ALTER TABLE session_repositories ADD COLUMN branch TEXT");
     },
   },
+  {
+    version: 12,
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE sessions ADD COLUMN sync_seq INTEGER DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_sessions_sync_seq ON sessions(sync_seq);
+      `);
+      // Seed sync_seq from rowid so existing sessions are picked up
+      db.exec("UPDATE sessions SET sync_seq = rowid WHERE sync_seq = 0");
+    },
+  },
+  {
+    version: 13,
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE sessions ADD COLUMN tool_counts JSON DEFAULT '{}';
+        ALTER TABLE sessions ADD COLUMN event_type_counts JSON DEFAULT '{}';
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {
