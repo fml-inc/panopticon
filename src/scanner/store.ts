@@ -31,12 +31,14 @@ export function upsertSession(
 
   // Resolve repo from cwd for scanner-only sessions
   if (meta.cwd) {
-    const repo = resolveRepoFromCwd(meta.cwd);
-    if (repo) {
+    const info = resolveRepoFromCwd(meta.cwd);
+    if (info) {
       upsertSessionRepository(
         meta.sessionId,
-        repo,
+        info.repo,
         meta.startedAtMs ?? Date.now(),
+        undefined,
+        info.branch,
       );
     }
   }

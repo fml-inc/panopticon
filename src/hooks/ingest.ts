@@ -12,7 +12,7 @@ import {
   upsertSessionRepository,
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
-import { resolveRepoFromCwd } from "../repo.js";
+import { type RepoInfo, resolveRepoFromCwd } from "../repo.js";
 import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
@@ -158,6 +158,19 @@ export function extractEventPaths(data: HookInput): EventPath[] {
   return paths;
 }
 
+export type ResolveFn = (dir: string) => RepoInfo | string | null;
+
+function normalizeResolveFn(
+  resolveFn: ResolveFn,
+): (dir: string) => RepoInfo | null {
+  return (dir: string) => {
+    const result = resolveFn(dir);
+    if (!result) return null;
+    if (typeof result === "string") return { repo: result };
+    return result;
+  };
+}
+
 /**
  * Resolve the repository for an event, trying multiple sources in priority order:
  * 1. Explicit repository field
@@ -168,16 +181,20 @@ export function extractEventPaths(data: HookInput): EventPath[] {
  */
 export function resolveEventRepo(
   data: HookInput,
-  resolveFn: (dir: string) => string | null = resolveRepoFromCwd,
+  resolveFn: ResolveFn = resolveRepoFromCwd,
 ): string | null {
   const sessionId = data.session_id ?? "unknown";
 
   let repo = data.repository ?? null;
 
   if (!repo) {
+    const resolve = normalizeResolveFn(resolveFn);
     for (const { dir } of extractEventPaths(data)) {
-      repo = resolveFn(dir);
-      if (repo) break;
+      const info = resolve(dir);
+      if (info) {
+        repo = info.repo;
+        break;
+      }
     }
   }
 
@@ -197,14 +214,19 @@ export function resolveEventRepo(
 /**
  * Resolve ALL repos touched by this event — the primary repo plus any
  * additional repos referenced via tool_input paths.
- * Returns deduplicated { repo, dir } pairs.
+ * Returns deduplicated { repo, dir, branch } tuples.
  */
 export function resolveAllEventRepos(
   data: HookInput,
-  resolveFn: (dir: string) => string | null = resolveRepoFromCwd,
-): Array<{ repo: string; dir: string }> {
-  const results: Array<{ repo: string; dir: string }> = [];
+  resolveFn: ResolveFn = resolveRepoFromCwd,
+): Array<{ repo: string; dir: string; branch?: string | null }> {
+  const results: Array<{
+    repo: string;
+    dir: string;
+    branch?: string | null;
+  }> = [];
   const seen = new Set<string>();
+  const resolve = normalizeResolveFn(resolveFn);
 
   // Explicit repository field first
   if (data.repository) {
@@ -217,10 +239,10 @@ export function resolveAllEventRepos(
   }
 
   for (const { dir } of extractEventPaths(data)) {
-    const repo = resolveFn(dir);
-    if (repo && !seen.has(repo)) {
-      seen.add(repo);
-      results.push({ repo, dir });
+    const info = resolve(dir);
+    if (info && !seen.has(info.repo)) {
+      seen.add(info.repo);
+      results.push({ repo: info.repo, dir, branch: info.branch });
     }
   }
 
@@ -417,9 +439,9 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   // Populate session junction tables — greedily resolve all repos touched
   // by this event (primary cwd + any paths in tool_input).
   const allRepos = resolveAllEventRepos(data);
-  for (const { repo: r, dir } of allRepos) {
+  for (const { repo: r, dir, branch } of allRepos) {
     const gitId = resolveGitIdentity(dir);
-    upsertSessionRepository(sessionId, r, timestampMs, gitId);
+    upsertSessionRepository(sessionId, r, timestampMs, gitId, branch);
 
     // Capture repo config on first encounter per session
     const repoKey = `${sessionId}:${r}`;

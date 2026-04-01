@@ -422,6 +422,12 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 11,
+    up: (db) => {
+      db.exec("ALTER TABLE session_repositories ADD COLUMN branch TEXT");
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {
