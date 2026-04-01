@@ -4,9 +4,15 @@ import {
   serializeHookEvents,
   serializeMetrics,
   serializeOtelLogs,
+  serializeOtelSpans,
   toAnyValue,
 } from "./serialize.js";
-import type { HookEventRecord, MetricRow, OtelLogRecord } from "./types.js";
+import type {
+  HookEventRecord,
+  MetricRow,
+  OtelLogRecord,
+  OtelSpanRecord,
+} from "./types.js";
 
 // ── toAnyValue ───────────────────────────────────────────────────────────────
 
@@ -245,5 +251,93 @@ describe("serializeMetrics", () => {
     const keys = dp.attributes.map((a) => a.key);
     expect(keys).toContain("type");
     expect(keys).toContain("model");
+  });
+});
+
+// ── serializeOtelSpans ─────────────────────────────────────────────────────
+
+function makeSpan(overrides: Partial<OtelSpanRecord> = {}): OtelSpanRecord {
+  return {
+    id: 1,
+    traceId: "abc123",
+    spanId: "def456",
+    parentSpanId: null,
+    name: "LLM generate",
+    kind: 2,
+    startTimeNs: 1700000000000000000,
+    endTimeNs: 1700000001000000000,
+    statusCode: null,
+    statusMessage: null,
+    attributes: { model: "claude-opus-4-6" },
+    resourceAttributes: null,
+    sessionId: "sess-1",
+    ...overrides,
+  };
+}
+
+describe("serializeOtelSpans", () => {
+  it("produces valid OTLP resourceSpans structure", () => {
+    const result = serializeOtelSpans([makeSpan()]);
+    expect(result.resourceSpans).toHaveLength(1);
+    const rs = result.resourceSpans[0];
+    expect(rs.resource.attributes).toEqual(
+      expect.arrayContaining([
+        { key: "service.name", value: { stringValue: "panopticon" } },
+        { key: "session.id", value: { stringValue: "sess-1" } },
+      ]),
+    );
+    expect(rs.scopeSpans).toHaveLength(1);
+    expect(rs.scopeSpans[0].spans).toHaveLength(1);
+  });
+
+  it("sets trace/span IDs and timestamps", () => {
+    const result = serializeOtelSpans([makeSpan()]);
+    const span = result.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(span.traceId).toBe("abc123");
+    expect(span.spanId).toBe("def456");
+    expect(span.startTimeUnixNano).toBe("1700000000000000000");
+    expect(span.endTimeUnixNano).toBe("1700000001000000000");
+  });
+
+  it("includes parentSpanId when present", () => {
+    const result = serializeOtelSpans([makeSpan({ parentSpanId: "parent-1" })]);
+    const span = result.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(span.parentSpanId).toBe("parent-1");
+  });
+
+  it("omits parentSpanId when null", () => {
+    const result = serializeOtelSpans([makeSpan({ parentSpanId: null })]);
+    const span = result.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(span.parentSpanId).toBeUndefined();
+  });
+
+  it("includes kind and status when present", () => {
+    const result = serializeOtelSpans([
+      makeSpan({ kind: 3, statusCode: 2, statusMessage: "error" }),
+    ]);
+    const span = result.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(span.kind).toBe(3);
+    expect(span.status).toEqual({ code: 2, message: "error" });
+  });
+
+  it("includes emitter attribute", () => {
+    const result = serializeOtelSpans([makeSpan()]);
+    const span = result.resourceSpans[0].scopeSpans[0].spans[0];
+    const keys = span.attributes.map((a) => a.key);
+    expect(keys).toContain("emitter");
+    expect(keys).toContain("model");
+  });
+
+  it("groups spans by session", () => {
+    const result = serializeOtelSpans([
+      makeSpan({ sessionId: "s1" }),
+      makeSpan({ id: 2, spanId: "ghi789", sessionId: "s1" }),
+      makeSpan({ id: 3, spanId: "jkl012", sessionId: "s2" }),
+    ]);
+    expect(result.resourceSpans).toHaveLength(2);
+    const counts = result.resourceSpans.map(
+      (rs) => rs.scopeSpans[0].spans.length,
+    );
+    expect(counts.sort()).toEqual([1, 2]);
   });
 });

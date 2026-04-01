@@ -199,3 +199,53 @@ export function getTurnCount(sessionId: string, source: string): number {
     .get(sessionId, source) as { count: number };
   return row.count;
 }
+
+// ── Archive watermarks ─────────────────────────────────────────────────────
+
+export function readArchivedSize(filePath: string): number {
+  const db = getDb();
+  const row = db
+    .prepare(
+      "SELECT archived_size FROM scanner_file_watermarks WHERE file_path = ?",
+    )
+    .get(filePath) as { archived_size: number } | undefined;
+  return row?.archived_size ?? 0;
+}
+
+export function writeArchivedSize(filePath: string, size: number): void {
+  const db = getDb();
+  db.prepare(
+    "UPDATE scanner_file_watermarks SET archived_size = ? WHERE file_path = ?",
+  ).run(size, filePath);
+}
+
+// ── Turn summaries ─────────────────────────────────────────────────────────
+
+export function updateTurnSummary(id: number, summary: string): void {
+  const db = getDb();
+  db.prepare("UPDATE scanner_turns SET summary = ? WHERE id = ?").run(
+    summary,
+    id,
+  );
+}
+
+export function getTurnsWithoutSummary(
+  sessionId: string,
+  source: string,
+  limit: number,
+): Array<{
+  id: number;
+  role: string | null;
+  content_preview: string | null;
+}> {
+  const db = getDb();
+  return db
+    .prepare(
+      "SELECT id, role, content_preview FROM scanner_turns WHERE session_id = ? AND source = ? AND summary IS NULL LIMIT ?",
+    )
+    .all(sessionId, source, limit) as Array<{
+    id: number;
+    role: string | null;
+    content_preview: string | null;
+  }>;
+}

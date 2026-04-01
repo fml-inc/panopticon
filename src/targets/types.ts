@@ -6,15 +6,121 @@
 
 import type { HookInput } from "../hooks/ingest.js";
 
-/** Canonical event names used internally by panopticon. */
-export type CanonicalEvent =
-  | "SessionStart"
-  | "SessionEnd"
-  | "UserPromptSubmit"
-  | "PreToolUse"
-  | "PostToolUse"
-  | "PostToolUseFailure"
-  | "Stop";
+/**
+ * All hook event names panopticon registers for.
+ *
+ * Claude Code fires these as shell commands via hooks.json — each invocation
+ * pipes a JSON payload to stdin with session_id, hook_event_name, and
+ * event-specific fields. Panopticon's hook-handler POSTs the payload to
+ * the local server, which calls processHookEvent() in ingest.ts.
+ *
+ * Non-Claude targets (Gemini, Codex) map their native event names to these
+ * canonical names via their adapter's eventMap.
+ */
+export const ALL_EVENTS = [
+  // ── Session lifecycle ────────────────────────────────────────────────────
+  // SessionStart: Fired once when `claude` launches or a new conversation begins.
+  //   Payload: cwd, permission_mode, model, agent_version.
+  //   Panopticon uses this to auto-start the server process (see handler.ts).
+  "SessionStart",
+  // SessionEnd: Fired when the session process exits (user quits, ctrl+C, or
+  //   process terminates). May not fire on SIGKILL. Carries final session state.
+  "SessionEnd",
+  // Setup: Fired early in startup, after setCwd() but before the REPL renders.
+  //   Runs before trust dialogs, so git commands may not have executed yet.
+  "Setup",
+
+  // ── User interaction ─────────────────────────────────────────────────────
+  // UserPromptSubmit: Fired when the user submits a prompt (presses Enter in
+  //   REPL or sends via SDK). Payload: prompt text. Fires before model inference.
+  "UserPromptSubmit",
+
+  // ── Tool lifecycle (highest volume events) ───────────────────────────────
+  // PreToolUse: Fired BEFORE each tool execution. Payload: tool_name, tool_input.
+  //   This is the permission enforcement point — hooks can return a
+  //   permissionDecision ("allow"/"deny") to approve/reject without user prompt.
+  //   Panopticon checks allowed.json here for auto-approval rules.
+  "PreToolUse",
+  // PostToolUse: Fired AFTER a tool executes successfully. Payload: tool_name,
+  //   tool_input, tool_result. Good for auditing what tools actually did.
+  "PostToolUse",
+  // PostToolUseFailure: Fired AFTER a tool execution fails (error, file not found,
+  //   permission denied, etc). Same shape as PostToolUse but indicates failure.
+  "PostToolUseFailure",
+
+  // ── Permission prompts ───────────────────────────────────────────────────
+  // PermissionRequest: Fired when Claude Code is about to show the user a
+  //   permission prompt (tool needs approval). Payload: tool_name, tool_input.
+  "PermissionRequest",
+  // PermissionDenied: Fired when the user denies a permission prompt.
+  "PermissionDenied",
+
+  // ── Model turn lifecycle ─────────────────────────────────────────────────
+  // Stop: Fired when the model finishes a turn and stops generating (no more
+  //   tool calls to make). Natural end of each assistant response cycle.
+  //   A session has many Stop events but only one SessionEnd.
+  "Stop",
+  // StopFailure: Fired when the model stops due to an error — rate limit,
+  //   prompt too long, auth failure, etc. The model never produced a valid
+  //   response for this turn.
+  "StopFailure",
+
+  // ── Subagents ────────────────────────────────────────────────────────────
+  // SubagentStart: Fired when a subagent is spawned via the Agent tool.
+  //   Payload includes the agent type and description.
+  "SubagentStart",
+  // SubagentStop: Fired when a subagent completes (success or failure).
+  "SubagentStop",
+
+  // ── Context compaction ───────────────────────────────────────────────────
+  // PreCompact: Fired before conversation context is compacted (summarized to
+  //   reduce token count). Useful for capturing pre-compaction state.
+  "PreCompact",
+  // PostCompact: Fired after compaction completes. Payload includes token
+  //   counts before/after compaction.
+  "PostCompact",
+
+  // ── Notifications ────────────────────────────────────────────────────────
+  // Notification: System notifications — rate limit warnings, usage alerts, etc.
+  "Notification",
+
+  // ── Team / background tasks ──────────────────────────────────────────────
+  // TeammateIdle: Fired when a teammate agent (swarm mode) has no work to do.
+  "TeammateIdle",
+  // TaskCreated: Fired when a background task is created (via TaskCreate tool).
+  "TaskCreated",
+  // TaskCompleted: Fired when a background task finishes.
+  "TaskCompleted",
+
+  // ── MCP auth / elicitation ───────────────────────────────────────────────
+  // Elicitation: Fired when an MCP server triggers an OAuth/auth flow prompt.
+  "Elicitation",
+  // ElicitationResult: Fired when the user completes or cancels the auth flow.
+  "ElicitationResult",
+
+  // ── Configuration & file system ──────────────────────────────────────────
+  // ConfigChange: Fired when settings.json, CLAUDE.md, or similar config changes.
+  "ConfigChange",
+  // InstructionsLoaded: Fired when CLAUDE.md files are loaded into context.
+  "InstructionsLoaded",
+  // CwdChanged: Fired when Claude Code's working directory changes (via /add-dir
+  //   or similar). NOTE: `cd` in Bash does NOT trigger this — that only affects
+  //   the subprocess shell, not the harness's cwd.
+  "CwdChanged",
+  // FileChanged: Fired when a watched file is modified on disk (external edit).
+  "FileChanged",
+
+  // ── Worktree management ──────────────────────────────────────────────────
+  // WorktreeCreate: Fired when a git worktree is created (--worktree flag or
+  //   EnterWorktree tool).
+  "WorktreeCreate",
+  // WorktreeRemove: Fired when a git worktree is removed (ExitWorktree tool
+  //   or session cleanup).
+  "WorktreeRemove",
+] as const;
+
+/** Union type of all supported event names. */
+export type CanonicalEvent = (typeof ALL_EVENTS)[number];
 
 // ── Config & Paths ──────────────────────────────────────────────────────────
 
@@ -195,6 +301,13 @@ export interface ScannerParseResult {
   turns: ScannerParsedTurn[];
   events: ScannerParsedEvent[];
   newByteOffset: number;
+  /**
+   * When true, turn indices are absolute (0-based from start of session)
+   * and the caller should NOT re-index them. Used by parsers that re-read
+   * the full file (e.g. Gemini JSON) rather than reading incrementally.
+   * INSERT OR IGNORE handles dedup via the UNIQUE constraint.
+   */
+  absoluteIndices?: boolean;
 }
 
 export interface TargetScannerSpec {

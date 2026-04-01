@@ -3,6 +3,7 @@ import type {
   HookEventRecord,
   MetricRow,
   OtelLogRecord,
+  OtelSpanRecord,
   ScannerEventRecord,
   ScannerTurnRecord,
 } from "./types.js";
@@ -323,6 +324,59 @@ export function readScannerEvents(
     toolOutput: r.tool_output,
     content: r.content,
     metadata: parseJson(r.metadata),
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── OTLP spans ─────────────────────────────────────────────────────────────
+
+const SPANS_SQL = `
+  SELECT id, trace_id, span_id, parent_span_id, name, kind,
+         start_time_ns, end_time_ns, status_code, status_message,
+         attributes, resource_attributes, session_id
+  FROM otel_spans
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readOtelSpans(
+  afterId: number,
+  limit: number,
+): { rows: OtelSpanRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(SPANS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    trace_id: string;
+    span_id: string;
+    parent_span_id: string | null;
+    name: string;
+    kind: number | null;
+    start_time_ns: number;
+    end_time_ns: number;
+    status_code: number | null;
+    status_message: string | null;
+    attributes: string | null;
+    resource_attributes: string | null;
+    session_id: string | null;
+  }>;
+
+  const rows: OtelSpanRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    traceId: r.trace_id,
+    spanId: r.span_id,
+    parentSpanId: r.parent_span_id,
+    name: r.name,
+    kind: r.kind,
+    startTimeNs: r.start_time_ns,
+    endTimeNs: r.end_time_ns,
+    statusCode: r.status_code,
+    statusMessage: r.status_message,
+    attributes: parseJson(r.attributes),
+    resourceAttributes: parseJson(r.resource_attributes),
+    sessionId: r.session_id,
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;

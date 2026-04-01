@@ -1,5 +1,6 @@
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 2000;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export async function postOtlp(
   url: string,
@@ -10,11 +11,18 @@ export async function postOtlp(
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        REQUEST_TIMEOUT_MS,
+      );
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (response.ok) return;
 

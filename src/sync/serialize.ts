@@ -2,6 +2,7 @@ import type {
   HookEventRecord,
   MetricRow,
   OtelLogRecord,
+  OtelSpanRecord,
   OtlpAnyValue,
   OtlpKeyValue,
   OtlpLogRecord,
@@ -9,6 +10,8 @@ import type {
   OtlpNumberDataPoint,
   OtlpResourceLogs,
   OtlpResourceMetrics,
+  OtlpResourceSpans,
+  OtlpSpan,
   ScannerEventRecord,
   ScannerTurnRecord,
 } from "./types.js";
@@ -331,6 +334,55 @@ export function serializeScannerEvents(
     resourceLogs: Array.from(groups.values()).map((g) => ({
       resource: { attributes: g.attrs },
       scopeLogs: [{ logRecords: g.records }],
+    })),
+  };
+}
+
+// ── OTLP spans → OTLP traces ─────────────────────────────────────────────
+
+function otelSpanToSpan(record: OtelSpanRecord): OtlpSpan {
+  const span: OtlpSpan = {
+    traceId: record.traceId,
+    spanId: record.spanId,
+    name: record.name,
+    startTimeUnixNano: String(record.startTimeNs),
+    endTimeUnixNano: String(record.endTimeNs),
+    attributes: [kv("emitter", "otel"), ...mapToKvList(record.attributes)],
+  };
+
+  if (record.parentSpanId) span.parentSpanId = record.parentSpanId;
+  if (record.kind != null) span.kind = record.kind;
+  if (record.statusCode != null || record.statusMessage) {
+    span.status = {};
+    if (record.statusCode != null) span.status.code = record.statusCode;
+    if (record.statusMessage) span.status.message = record.statusMessage;
+  }
+
+  return span;
+}
+
+export function serializeOtelSpans(spans: OtelSpanRecord[]): OtlpResourceSpans {
+  const groups = new Map<
+    string,
+    { attrs: OtlpKeyValue[]; spans: OtlpSpan[] }
+  >();
+
+  for (const span of spans) {
+    const sessionId = span.sessionId ?? "unknown";
+    const key = resourceKey(sessionId, null);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        attrs: resourceAttributes(sessionId, null),
+        spans: [],
+      });
+    }
+    groups.get(key)!.spans.push(otelSpanToSpan(span));
+  }
+
+  return {
+    resourceSpans: Array.from(groups.values()).map((g) => ({
+      resource: { attributes: g.attrs },
+      scopeSpans: [{ spans: g.spans }],
     })),
   };
 }

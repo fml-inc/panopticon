@@ -309,6 +309,119 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS otel_spans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trace_id TEXT NOT NULL,
+          span_id TEXT NOT NULL,
+          parent_span_id TEXT,
+          name TEXT NOT NULL,
+          kind INTEGER,
+          start_time_ns INTEGER NOT NULL,
+          end_time_ns INTEGER NOT NULL,
+          status_code INTEGER,
+          status_message TEXT,
+          attributes JSON,
+          resource_attributes JSON,
+          session_id TEXT,
+          UNIQUE(trace_id, span_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_spans_session ON otel_spans(session_id);
+        CREATE INDEX IF NOT EXISTS idx_spans_trace ON otel_spans(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_spans_start ON otel_spans(start_time_ns);
+
+        CREATE TABLE IF NOT EXISTS session_summary_deltas (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          delta_index INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          from_turn INTEGER NOT NULL,
+          to_turn INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          method TEXT NOT NULL DEFAULT 'deterministic',
+          UNIQUE(session_id, delta_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_summary_deltas_session ON session_summary_deltas(session_id);
+      `);
+
+      // ALTER TABLE columns added conditionally to handle DBs from
+      // earlier development where these were part of migration v8.
+      const addColumnIfMissing = (
+        table: string,
+        column: string,
+        type: string,
+      ) => {
+        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as {
+          name: string;
+        }[];
+        if (!cols.some((c) => c.name === column)) {
+          db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        }
+      };
+
+      addColumnIfMissing(
+        "scanner_file_watermarks",
+        "archived_size",
+        "INTEGER DEFAULT 0",
+      );
+      addColumnIfMissing("scanner_turns", "summary", "TEXT");
+      addColumnIfMissing("sessions", "summary", "TEXT");
+      addColumnIfMissing("sessions", "summary_version", "INTEGER DEFAULT 0");
+      addColumnIfMissing("sessions", "sync_dirty", "INTEGER DEFAULT 0");
+    },
+  },
+  {
+    version: 10,
+    up: (db) => {
+      // Drop the single-table version if it exists from an earlier dev build
+      db.exec("DROP TABLE IF EXISTS config_snapshots");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS user_config_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_name TEXT NOT NULL,
+          snapshot_at_ms INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          permissions JSON NOT NULL DEFAULT '{}',
+          enabled_plugins JSON NOT NULL DEFAULT '[]',
+          hooks JSON NOT NULL DEFAULT '[]',
+          commands JSON NOT NULL DEFAULT '[]',
+          rules JSON NOT NULL DEFAULT '[]',
+          skills JSON NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_config_ts ON user_config_snapshots(snapshot_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_user_config_device_hash ON user_config_snapshots(device_name, content_hash);
+
+        CREATE TABLE IF NOT EXISTS repo_config_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repository TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          session_id TEXT,
+          snapshot_at_ms INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          -- project layer (.claude/settings.json)
+          hooks JSON NOT NULL DEFAULT '[]',
+          mcp_servers JSON NOT NULL DEFAULT '[]',
+          commands JSON NOT NULL DEFAULT '[]',
+          agents JSON NOT NULL DEFAULT '[]',
+          rules JSON NOT NULL DEFAULT '[]',
+          -- project local layer (.claude/settings.local.json)
+          local_hooks JSON NOT NULL DEFAULT '[]',
+          local_mcp_servers JSON NOT NULL DEFAULT '[]',
+          local_permissions JSON NOT NULL DEFAULT '{}',
+          local_is_gitignored INTEGER NOT NULL DEFAULT 1,
+          -- instructions (CLAUDE.md files at all depths)
+          instructions JSON NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_repo_config_repo_ts ON repo_config_snapshots(repository, snapshot_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_repo_config_session ON repo_config_snapshots(session_id);
+        CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(repository, content_hash);
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {

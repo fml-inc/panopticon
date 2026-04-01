@@ -423,7 +423,10 @@ function tunnelWebSocket(
       try {
         pendingRequest = JSON.parse(msg);
         requestTimestamp = Date.now();
-      } catch {}
+      } catch (err) {
+        console.error("[proxy] Failed to parse client WebSocket message:", err);
+        captureException(err, { component: "proxy", phase: "ws-client-parse" });
+      }
     };
 
     serverExtractor.onMessage = (msg) => {
@@ -448,7 +451,10 @@ function tunnelWebSocket(
           processCapture(capture);
           pendingRequest = undefined;
         }
-      } catch {}
+      } catch (err) {
+        console.error("[proxy] Failed to parse server WebSocket message:", err);
+        captureException(err, { component: "proxy", phase: "ws-server-parse" });
+      }
     };
 
     proxySocket.on("data", (chunk: Buffer) => {
