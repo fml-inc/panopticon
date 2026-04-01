@@ -181,7 +181,6 @@ export interface SessionSyncRecord {
   target: string | null;
   startedAtMs: number | null;
   endedAtMs: number | null;
-  cwd: string | null;
   firstPrompt: string | null;
   permissionMode: string | null;
   agentVersion: string | null;

@@ -334,7 +334,6 @@ export interface SessionUpsert {
   target?: string;
   started_at_ms?: number;
   ended_at_ms?: number;
-  cwd?: string;
   first_prompt?: string;
   permission_mode?: string;
   agent_version?: string;
@@ -358,13 +357,13 @@ export interface SessionUpsert {
 export function upsertSession(row: SessionUpsert): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, first_prompt,
        permission_mode, agent_version, model, cli_version, scanner_file_path,
        total_input_tokens, total_output_tokens, total_cache_read_tokens,
        total_cache_creation_tokens, total_reasoning_tokens, turn_count,
        otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
        models)
-     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @cwd, @first_prompt,
+     VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @first_prompt,
        @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
        @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
        @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
@@ -374,7 +373,6 @@ export function upsertSession(row: SessionUpsert): void {
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
        ended_at_ms = COALESCE(excluded.ended_at_ms, sessions.ended_at_ms),
-       cwd = COALESCE(excluded.cwd, sessions.cwd),
        first_prompt = COALESCE(sessions.first_prompt, excluded.first_prompt),
        permission_mode = COALESCE(excluded.permission_mode, sessions.permission_mode),
        agent_version = COALESCE(excluded.agent_version, sessions.agent_version),
@@ -404,7 +402,6 @@ export function upsertSession(row: SessionUpsert): void {
     target: row.target ?? null,
     started_at_ms: row.started_at_ms ?? null,
     ended_at_ms: row.ended_at_ms ?? null,
-    cwd: row.cwd ?? null,
     first_prompt: row.first_prompt ?? null,
     permission_mode: row.permission_mode ?? null,
     agent_version: row.agent_version ?? null,

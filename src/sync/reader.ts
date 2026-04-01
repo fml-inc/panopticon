@@ -521,7 +521,7 @@ export function readRepoConfigSnapshots(
 // ── Sessions (watermark on sync_seq) ────────────────────────────────────────
 
 const SESSIONS_SQL = `
-  SELECT session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+  SELECT session_id, target, started_at_ms, ended_at_ms, first_prompt,
          permission_mode, agent_version,
          total_input_tokens, total_output_tokens, total_cache_read_tokens,
          total_cache_creation_tokens, total_reasoning_tokens, turn_count,
@@ -542,7 +542,6 @@ export function readSessions(
     target: string | null;
     started_at_ms: number | null;
     ended_at_ms: number | null;
-    cwd: string | null;
     first_prompt: string | null;
     permission_mode: string | null;
     agent_version: string | null;
@@ -616,7 +615,6 @@ export function readSessions(
     target: r.target,
     startedAtMs: r.started_at_ms,
     endedAtMs: r.ended_at_ms,
-    cwd: r.cwd,
     firstPrompt: r.first_prompt,
     permissionMode: r.permission_mode,
     agentVersion: r.agent_version,

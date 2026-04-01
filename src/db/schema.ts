@@ -448,6 +448,13 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 14,
+    up: (db) => {
+      // cwd is redundant with session_cwds junction table
+      db.exec("ALTER TABLE sessions DROP COLUMN cwd");
+    },
+  },
 ];
 
 function runMigrations(db: Database.Database): void {
