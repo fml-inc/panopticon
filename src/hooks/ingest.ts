@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
 import {
+  incrementEventTypeCount,
+  incrementToolCount,
   insertHookEvent,
   insertRepoConfigSnapshot,
   insertUserConfigSnapshot,
@@ -435,6 +437,12 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     sessionFields.ended_at_ms = timestampMs;
   }
   upsertSession(sessionFields);
+
+  // Increment event type + tool counts on the session
+  incrementEventTypeCount(sessionId, eventType);
+  if (eventType === "PreToolUse" && toolName) {
+    incrementToolCount(sessionId, toolName);
+  }
 
   // Populate session junction tables — greedily resolve all repos touched
   // by this event (primary cwd + any paths in tool_input).

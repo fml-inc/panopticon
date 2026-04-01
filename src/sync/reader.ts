@@ -525,7 +525,7 @@ const SESSIONS_SQL = `
          permission_mode, agent_version,
          total_input_tokens, total_output_tokens, total_cache_read_tokens,
          total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-         models, summary, sync_seq
+         models, summary, tool_counts, event_type_counts, sync_seq
   FROM sessions
   WHERE sync_seq > ?
   ORDER BY sync_seq
@@ -554,6 +554,8 @@ export function readSessions(
     turn_count: number | null;
     models: string | null;
     summary: string | null;
+    tool_counts: string | null;
+    event_type_counts: string | null;
     sync_seq: number;
   }>;
 
@@ -626,6 +628,11 @@ export function readSessions(
     turnCount: r.turn_count,
     models: r.models,
     summary: r.summary,
+    toolCounts: parseJsonObject(r.tool_counts) as Record<string, number>,
+    eventTypeCounts: parseJsonObject(r.event_type_counts) as Record<
+      string,
+      number
+    >,
     repositories: reposBySession.get(r.session_id) ?? [],
     cwds: cwdsBySession.get(r.session_id) ?? [],
   }));

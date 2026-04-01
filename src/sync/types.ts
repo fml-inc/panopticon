@@ -193,6 +193,8 @@ export interface SessionSyncRecord {
   turnCount: number | null;
   models: string | null;
   summary: string | null;
+  toolCounts: Record<string, number>;
+  eventTypeCounts: Record<string, number>;
   repositories: Array<{
     repository: string;
     firstSeenMs: number;
