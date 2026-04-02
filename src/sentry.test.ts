@@ -1,11 +1,9 @@
-import type * as Sentry from "@sentry/node";
+import type { ErrorEvent } from "@sentry/core";
 import { describe, expect, it } from "vitest";
 import { filterBreadcrumb, scrubEvent } from "./sentry.js";
 
-function makeEvent(
-  overrides: Partial<Sentry.ErrorEvent> = {},
-): Sentry.ErrorEvent {
-  return { event_id: "test-id", ...overrides } as Sentry.ErrorEvent;
+function makeEvent(overrides: Partial<ErrorEvent> = {}): ErrorEvent {
+  return { event_id: "test-id", ...overrides } as ErrorEvent;
 }
 
 describe("scrubEvent", () => {
