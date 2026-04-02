@@ -257,12 +257,94 @@ const claude: TargetAdapter = {
               (usage?.cache_creation_input_tokens as number) ?? 0,
             reasoningTokens: 0,
           });
+
+          // Extract content blocks from assistant messages
+          const content = msg?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (typeof block !== "object" || block === null) continue;
+              const b = block as Record<string, unknown>;
+
+              if (b.type === "tool_use") {
+                const input = b.input as Record<string, unknown> | undefined;
+                events.push({
+                  sessionId: sid,
+                  eventType: "tool_call",
+                  timestampMs: tsMs,
+                  toolName: b.name as string | undefined,
+                  toolInput: input
+                    ? JSON.stringify(input).slice(0, 10_000)
+                    : undefined,
+                  metadata: { tool_use_id: b.id },
+                });
+              }
+
+              if (b.type === "thinking") {
+                events.push({
+                  sessionId: sid,
+                  eventType: "thinking",
+                  timestampMs: tsMs,
+                  content:
+                    typeof b.thinking === "string"
+                      ? b.thinking.slice(0, 2_000)
+                      : undefined,
+                  metadata: {
+                    has_signature: !!b.signature,
+                  },
+                });
+              }
+            }
+          }
         }
 
-        // System events: API errors, retries
+        // Extract content blocks from user messages
+        if (type === "user") {
+          const msg = obj.message as Record<string, unknown> | undefined;
+          const content = msg?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (typeof block !== "object" || block === null) continue;
+              const b = block as Record<string, unknown>;
+
+              if (b.type === "tool_result") {
+                const resultContent = b.content;
+                events.push({
+                  sessionId: sid,
+                  eventType: "tool_result",
+                  timestampMs: tsMs,
+                  toolOutput:
+                    typeof resultContent === "string"
+                      ? resultContent.slice(0, 500)
+                      : undefined,
+                  metadata: {
+                    tool_use_id: b.tool_use_id,
+                    is_error: b.is_error,
+                  },
+                });
+              }
+
+              if (b.type === "image") {
+                const src = b.source as Record<string, unknown> | undefined;
+                events.push({
+                  sessionId: sid,
+                  eventType: "image",
+                  timestampMs: tsMs,
+                  metadata: {
+                    media_type: src?.media_type,
+                    source_type: src?.type,
+                  },
+                });
+              }
+            }
+          }
+        }
+
+        // System events
         if (type === "system") {
           const data = obj.data as Record<string, unknown> | undefined;
           const level = obj.level as string | undefined;
+          const subtype = obj.subtype as string | undefined;
+
           if (data?.type === "api_error" || level === "error") {
             events.push({
               sessionId: sid,
@@ -275,6 +357,23 @@ const claude: TargetAdapter = {
                 retryAttempt: data?.retryAttempt,
                 maxRetries: data?.maxRetries,
                 retryInMs: data?.retryInMs,
+              },
+            });
+          } else if (
+            subtype === "stop_hook_summary" ||
+            level === "suggestion"
+          ) {
+            events.push({
+              sessionId: sid,
+              eventType: subtype ?? "system",
+              timestampMs: tsMs,
+              metadata: {
+                subtype,
+                level,
+                hookCount: obj.hookCount,
+                hookInfos: obj.hookInfos,
+                stopReason: obj.stopReason,
+                preventedContinuation: obj.preventedContinuation,
               },
             });
           }
@@ -292,21 +391,65 @@ const claude: TargetAdapter = {
           });
         }
 
-        // Progress events with duration
+        // Progress events
         if (type === "progress") {
           const data = obj.data as Record<string, unknown> | undefined;
-          if (data?.durationMs || data?.hookEvent) {
+          const hookEvent = data?.hookEvent as string | undefined;
+          const progressType = data?.type as string | undefined;
+
+          if (hookEvent || data?.durationMs) {
+            // Hook-related progress (PreToolUse, PostToolUse, Stop, etc.)
             events.push({
               sessionId: sid,
-              eventType: "progress",
+              eventType: hookEvent ? `progress:${hookEvent}` : "progress",
               timestampMs: tsMs,
-              toolName: data.hookName as string | undefined,
+              toolName: (data?.hookName ?? data?.toolName) as
+                | string
+                | undefined,
               metadata: {
-                hookEvent: data.hookEvent,
-                durationMs: data.durationMs,
+                hookEvent,
+                durationMs: data?.durationMs,
+              },
+            });
+          } else if (progressType === "agent_progress") {
+            // Subagent activity
+            events.push({
+              sessionId: sid,
+              eventType: "agent_progress",
+              timestampMs: tsMs,
+              metadata: {
+                parentToolUseID: data?.parentToolUseID ?? obj.parentToolUseID,
+                toolUseID: obj.toolUseID,
               },
             });
           }
+        }
+
+        // Queue operations (user prompt queue)
+        if (type === "queue-operation") {
+          const operation = obj.operation as string | undefined;
+          events.push({
+            sessionId: sid,
+            eventType: `queue:${operation ?? "unknown"}`,
+            timestampMs: tsMs,
+            content:
+              typeof obj.content === "string"
+                ? obj.content.slice(0, 500)
+                : undefined,
+          });
+        }
+
+        // Last prompt marker
+        if (type === "last-prompt") {
+          events.push({
+            sessionId: sid,
+            eventType: "last_prompt",
+            timestampMs: tsMs,
+            content:
+              typeof obj.lastPrompt === "string"
+                ? obj.lastPrompt.slice(0, 500)
+                : undefined,
+          });
         }
       }
 

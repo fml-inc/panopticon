@@ -607,7 +607,9 @@ describe("claude event capture", () => {
     const file = path.join(tmpDir, "s.jsonl");
     fs.writeFileSync(file, `${lines.join("\n")}\n`);
     const result = getTarget("claude")!.scanner!.parseFile(file, 0);
-    const prog = result!.events.find((e) => e.eventType === "progress");
+    const prog = result!.events.find(
+      (e) => e.eventType === "progress:PreToolUse",
+    );
     expect(prog).toBeDefined();
     expect(prog!.metadata?.durationMs).toBe(150);
     expect(prog!.toolName).toBe("PreToolUse:Bash");
