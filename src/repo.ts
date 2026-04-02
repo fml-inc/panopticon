@@ -75,7 +75,16 @@ export function resolveRepoFromCwd(cwd: string): RepoInfo | null {
     for (const provider of providers) {
       if (!provider.canResolve(cwd)) continue;
       const resolved = provider.resolve(cwd);
-      if (resolved) {
+      if (!resolved) continue;
+
+      // Provider returned repo name directly (no git needed)
+      if (resolved.repo) {
+        result = { repo: resolved.repo, branch: resolved.branch };
+        break;
+      }
+
+      // Provider returned a directory to resolve via git
+      if (resolved.repoDir) {
         const fallbackRepo = resolveGitRemote(resolved.repoDir);
         if (fallbackRepo) {
           result = { repo: fallbackRepo, branch: resolved.branch };

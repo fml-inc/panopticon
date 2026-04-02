@@ -62,14 +62,12 @@ describe("hooks only", () => {
       session_id: "claude-hook-1",
       target: "claude",
       started_at_ms: 1700000000000,
-      cwd: "/workspace/project",
       permission_mode: "default",
       agent_version: "2.1.84",
     });
     const s = getSession("claude-hook-1")!;
     expect(s.target).toBe("claude");
     expect(s.started_at_ms).toBe(1700000000000);
-    expect(s.cwd).toBe("/workspace/project");
     expect(s.permission_mode).toBe("default");
     expect(s.agent_version).toBe("2.1.84");
     // Scanner fields should be null (not yet populated)
@@ -100,13 +98,11 @@ describe("hooks only", () => {
       session_id: "claude-hook-3",
       target: "claude",
       started_at_ms: 1700000000000,
-      cwd: "/workspace",
     });
     upsertSession({ session_id: "claude-hook-3", ended_at_ms: 1700000060000 });
     const s = getSession("claude-hook-3")!;
     expect(s.started_at_ms).toBe(1700000000000);
     expect(s.ended_at_ms).toBe(1700000060000);
-    expect(s.cwd).toBe("/workspace");
   });
 
   it("codex: creates session with target=codex", () => {
@@ -146,7 +142,6 @@ describe("scanner only", () => {
       target: "claude",
       model: "claude-opus-4-6",
       cli_version: "2.1.84",
-      cwd: "/workspace",
       first_prompt: "Write tests",
       scanner_file_path: "/home/user/.claude/projects/proj/abc.jsonl",
       started_at_ms: 1700000000000,
@@ -240,7 +235,6 @@ describe("hooks then scanner", () => {
       session_id: "claude-both-1",
       target: "claude",
       started_at_ms: 1700000000000,
-      cwd: "/workspace",
       permission_mode: "default",
       agent_version: "2.1.84",
       first_prompt: "Write tests",
@@ -261,7 +255,6 @@ describe("hooks then scanner", () => {
     // Hook fields preserved
     expect(s.target).toBe("claude");
     expect(s.started_at_ms).toBe(1700000000000);
-    expect(s.cwd).toBe("/workspace");
     expect(s.permission_mode).toBe("default");
     expect(s.agent_version).toBe("2.1.84");
     expect(s.first_prompt).toBe("Write tests");
@@ -354,12 +347,10 @@ describe("COALESCE merge semantics", () => {
     upsertSession({
       session_id: "coalesce-1",
       target: "claude",
-      cwd: "/workspace",
     });
     upsertSession({ session_id: "coalesce-1" }); // all fields undefined → null
     const s = getSession("coalesce-1")!;
     expect(s.target).toBe("claude");
-    expect(s.cwd).toBe("/workspace");
   });
 
   it("new non-null values overwrite null fields", () => {
@@ -460,13 +451,11 @@ describe("OTLP-derived sessions", () => {
     upsertSession({
       session_id: "otel-then-hook",
       started_at_ms: 1700000000000,
-      cwd: "/workspace",
       first_prompt: "Use some tools",
     });
     const s = getSession("otel-then-hook")!;
     expect(s.target).toBe("gemini");
     expect(s.started_at_ms).toBe(1700000000000);
-    expect(s.cwd).toBe("/workspace");
     expect(s.first_prompt).toBe("Use some tools");
   });
 

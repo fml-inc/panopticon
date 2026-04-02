@@ -1,6 +1,7 @@
 import { refreshIfStale } from "../db/pricing.js";
 import { getDb } from "../db/schema.js";
 import {
+  upsertSessionCwd,
   upsertSessionRepository,
   upsertSession as upsertSessionRow,
 } from "../db/store.js";
@@ -22,14 +23,16 @@ export function upsertSession(
     session_id: meta.sessionId,
     target: source,
     started_at_ms: meta.startedAtMs,
-    cwd: meta.cwd,
     first_prompt: meta.firstPrompt,
     model: meta.model,
     cli_version: meta.cliVersion,
     scanner_file_path: filePath,
   });
 
-  // Resolve repo from cwd for scanner-only sessions
+  // Record cwd and repo for scanner-only sessions
+  if (meta.cwd) {
+    upsertSessionCwd(meta.sessionId, meta.cwd, meta.startedAtMs ?? Date.now());
+  }
   if (meta.cwd) {
     const info = resolveRepoFromCwd(meta.cwd);
     if (info) {

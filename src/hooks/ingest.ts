@@ -410,7 +410,6 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     // First event in a session — capture initial state. cwd and
     // permission_mode are snapshot values from launch time.
     sessionFields.started_at_ms = timestampMs;
-    sessionFields.cwd = data.cwd;
     sessionFields.permission_mode =
       typeof data.permission_mode === "string"
         ? data.permission_mode

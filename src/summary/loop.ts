@@ -8,9 +8,15 @@ import {
   updateSessionSummary,
 } from "./store.js";
 
+// Max sessions to summarize per cycle. Each invocation spawns a claude -p
+// process, so we cap to avoid resource spikes after a cold-start backfill.
+const MAX_SESSIONS_PER_CYCLE = 5;
+
 /**
- * Generate summaries for all sessions that have new turn data.
- * Called after scanner completes a scan cycle.
+ * Generate summaries for sessions that have new turn data.
+ * Called when the scanner is idle (no new files to process).
+ * Processes at most MAX_SESSIONS_PER_CYCLE sessions per call,
+ * prioritizing the most recently active.
  */
 export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
   updated: number;
@@ -18,8 +24,8 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
   const db = getDb();
   let updated = 0;
 
-  // Find sessions with enough new turns since last summary
-  // summary_version tracks how many turns have been summarized (in units of DELTA_INTERVAL)
+  // Find sessions with enough new turns since last summary.
+  // Prioritize recently active sessions and cap per cycle.
   const sessions = db
     .prepare(
       `
@@ -27,9 +33,11 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
     FROM sessions
     WHERE turn_count > 0
       AND turn_count >= (COALESCE(summary_version, 0) + 1) * ?
+    ORDER BY started_at_ms DESC
+    LIMIT ?
   `,
     )
-    .all(DELTA_INTERVAL) as Array<{
+    .all(DELTA_INTERVAL, MAX_SESSIONS_PER_CYCLE) as Array<{
     session_id: string;
     turn_count: number;
     summary_version: number | null;
