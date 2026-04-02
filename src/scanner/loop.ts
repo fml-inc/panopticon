@@ -125,15 +125,6 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
     log(`Scanned ${filesScanned} files, ${newTurns} new turns`);
   }
 
-  // Generate session summaries for sessions with enough new turns
-  if (newTurns > 0) {
-    try {
-      generateSummariesOnce(log);
-    } catch (err) {
-      log(`Session summary error: ${err instanceof Error ? err.message : err}`);
-    }
-  }
-
   return { filesScanned, newTurns };
 }
 
@@ -167,6 +158,19 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     try {
       const { newTurns } = scanOnce(log);
       hadWork = newTurns > 0;
+
+      // Only generate summaries when idle (no new turns found).
+      // This prevents a cold-start stampede where thousands of
+      // sessions would each spawn a claude -p summarization call.
+      if (!hadWork) {
+        try {
+          generateSummariesOnce(log);
+        } catch (err) {
+          log(
+            `Session summary error: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
     } catch (err) {
       log(`Scan error: ${err instanceof Error ? err.message : err}`);
     }

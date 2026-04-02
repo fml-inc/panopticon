@@ -9,6 +9,8 @@ const SUPERSET_DB_PATH = path.join(os.homedir(), ".superset", "local.db");
 interface WorktreeRow {
   main_repo_path: string;
   branch: string | null;
+  github_owner: string | null;
+  project_name: string;
 }
 
 export class SupersetProvider implements WorkspaceProvider {
@@ -21,7 +23,9 @@ export class SupersetProvider implements WorkspaceProvider {
     return cwd.includes(SUPERSET_MARKER);
   }
 
-  resolve(cwd: string): { repoDir: string; branch?: string | null } | null {
+  resolve(
+    cwd: string,
+  ): { repo?: string; repoDir?: string; branch?: string | null } | null {
     const db = this.getDb();
     if (!db) return null;
 
@@ -29,7 +33,7 @@ export class SupersetProvider implements WorkspaceProvider {
       // Try worktrees table first (for ~/.superset/worktrees/ paths)
       const wt = db
         .prepare(
-          `SELECT p.main_repo_path, w.branch
+          `SELECT p.main_repo_path, w.branch, p.github_owner, p.name as project_name
            FROM worktrees w
            JOIN projects p ON w.project_id = p.id
            WHERE ? LIKE w.path || '%'
@@ -37,19 +41,19 @@ export class SupersetProvider implements WorkspaceProvider {
            LIMIT 1`,
         )
         .get(cwd) as WorktreeRow | undefined;
-      if (wt) return { repoDir: wt.main_repo_path, branch: wt.branch };
+      if (wt) return this.buildResult(wt);
 
       // Fall back to projects table (for ~/.superset/projects/ paths)
       const proj = db
         .prepare(
-          `SELECT main_repo_path, default_branch AS branch
+          `SELECT main_repo_path, default_branch AS branch, github_owner, name as project_name
            FROM projects
            WHERE ? LIKE main_repo_path || '%'
            ORDER BY LENGTH(main_repo_path) DESC
            LIMIT 1`,
         )
         .get(cwd) as WorktreeRow | undefined;
-      if (proj) return { repoDir: proj.main_repo_path, branch: proj.branch };
+      if (proj) return this.buildResult(proj);
     } catch {
       // Schema mismatch, corrupt DB, etc.
     }
@@ -65,6 +69,22 @@ export class SupersetProvider implements WorkspaceProvider {
       this.db = null;
     }
     this.dbFailed = false;
+  }
+
+  private buildResult(row: WorktreeRow): {
+    repo?: string;
+    repoDir?: string;
+    branch?: string | null;
+  } {
+    // Prefer deriving repo name directly from Superset DB (no git needed)
+    if (row.github_owner) {
+      return {
+        repo: `${row.github_owner}/${row.project_name}`,
+        branch: row.branch,
+      };
+    }
+    // Fall back to git resolution on the main repo path
+    return { repoDir: row.main_repo_path, branch: row.branch };
   }
 
   private getDb(): Database.Database | null {

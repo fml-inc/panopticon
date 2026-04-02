@@ -59,6 +59,7 @@ export function invokeLlm(
     "--model",
     "haiku",
     "--bare",
+    "--no-session-persistence",
     "--tools",
     "",
   ];

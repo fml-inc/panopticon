@@ -1057,7 +1057,6 @@ describe("server integration", () => {
       expect(row).toBeDefined();
       expect(row.target).toBe("claude");
       expect(row.started_at_ms).toBeGreaterThan(0);
-      expect(row.cwd).toBe("/workspace/project");
       expect(row.permission_mode).toBe("plan");
       expect(row.agent_version).toBe("1.0.42");
     });

@@ -11,11 +11,17 @@ export interface WorkspaceProvider {
   canResolve(cwd: string): boolean;
 
   /**
-   * Resolve repo info for the given CWD.  May return a `repoDir` that
-   * differs from `cwd` (e.g. the parent project's main repo path) so
-   * the caller can run git against a directory that still exists.
+   * Resolve repo info for the given CWD.
+   *
+   * Can return either:
+   * - `repo`: the GitHub "org/repo" name directly (preferred, no git needed)
+   * - `repoDir`: a directory to run git against (fallback)
    */
-  resolve(cwd: string): { repoDir: string; branch?: string | null } | null;
+  resolve(cwd: string): {
+    repo?: string;
+    repoDir?: string;
+    branch?: string | null;
+  } | null;
 
   /** Clean up resources (DB connections, etc.). */
   close?(): void;
