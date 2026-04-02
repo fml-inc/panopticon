@@ -10,9 +10,9 @@ import os from "node:os";
 import * as Sentry from "@sentry/node";
 import { localVariablesIntegration } from "@sentry/node";
 import { config } from "./config.js";
-import { loadUnifiedConfig } from "./unified-config.js";
 
 declare const __PANOPTICON_VERSION__: string;
+declare const __SENTRY_DSN__: string;
 
 let initialized = false;
 
@@ -119,8 +119,7 @@ export function initSentry(): boolean {
 
   initialized = true;
 
-  const dsn =
-    process.env.PANOPTICON_SENTRY_DSN ?? loadUnifiedConfig().sentryDsn;
+  const dsn = process.env.PANOPTICON_SENTRY_DSN ?? __SENTRY_DSN__;
   if (!dsn) return false;
 
   const version = getVersion();

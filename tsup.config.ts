@@ -43,6 +43,9 @@ export default defineConfig({
   platform: "node",
   define: {
     __PANOPTICON_VERSION__: JSON.stringify(getPanopticonVersion()),
+    __SENTRY_DSN__: JSON.stringify(
+      "https://dcf9fb5ae8ac18803d98c3ee577faf39@o4510167429873664.ingest.us.sentry.io/4511107500343296",
+    ),
   },
   splitting: true,
   clean: true,
