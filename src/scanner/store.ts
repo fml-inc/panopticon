@@ -1,3 +1,4 @@
+import path from "node:path";
 import { refreshIfStale } from "../db/pricing.js";
 import { getDb } from "../db/schema.js";
 import {
@@ -113,6 +114,32 @@ export function insertScannerEvents(
     }
   });
   tx();
+
+  // Resolve repos from file paths in tool_call events (greedy attribution)
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (e.eventType !== "tool_call" || !e.toolInput) continue;
+    try {
+      const input = JSON.parse(e.toolInput);
+      const fp = input.file_path ?? input.path;
+      if (typeof fp !== "string" || !path.isAbsolute(fp)) continue;
+      const dir = path.dirname(fp);
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      const info = resolveRepoFromCwd(dir);
+      if (info) {
+        upsertSessionRepository(
+          e.sessionId,
+          info.repo,
+          e.timestampMs,
+          undefined,
+          info.branch,
+        );
+      }
+    } catch {
+      // malformed tool_input JSON
+    }
+  }
 }
 
 // ── Session totals update (writes to unified sessions table) ────────────────
