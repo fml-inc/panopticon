@@ -13,7 +13,6 @@ import type { ParseResult } from "../targets/types.js";
 import {
   getMaxOrdinal,
   getTurnCount,
-  getTurnsWithoutSummary,
   insertMessages,
   insertScannerEvents,
   insertTurns,
@@ -22,12 +21,10 @@ import {
   readFileWatermark,
   resetFileForReparse,
   updateSessionTotals,
-  updateTurnSummary,
   upsertSession,
   writeArchivedSize,
   writeFileWatermark,
 } from "./store.js";
-import { summarizeTurn } from "./summarize.js";
 import type { ScannerHandle, ScannerOptions } from "./types.js";
 
 const DEFAULT_IDLE_MS = 60_000;
@@ -163,28 +160,6 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         log(
           `Archive error for ${filePath}: ${archiveErr instanceof Error ? archiveErr.message : archiveErr}`,
         );
-      }
-
-      // Generate deterministic summaries for new turns
-      if (result.turns.length > 0) {
-        try {
-          const unsummarized = getTurnsWithoutSummary(
-            result.meta.sessionId,
-            source,
-            100,
-          );
-          for (const turn of unsummarized) {
-            const { summary } = summarizeTurn({
-              role: turn.role,
-              contentPreview: turn.content_preview,
-            });
-            updateTurnSummary(turn.id, summary);
-          }
-        } catch (summaryErr) {
-          log(
-            `Summary error: ${summaryErr instanceof Error ? summaryErr.message : summaryErr}`,
-          );
-        }
       }
     }
   }

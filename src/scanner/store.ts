@@ -333,35 +333,6 @@ export function writeArchivedSize(filePath: string, size: number): void {
 
 // ── Turn summaries ─────────────────────────────────────────────────────────
 
-export function updateTurnSummary(id: number, summary: string): void {
-  const db = getDb();
-  db.prepare("UPDATE scanner_turns SET summary = ? WHERE id = ?").run(
-    summary,
-    id,
-  );
-}
-
-export function getTurnsWithoutSummary(
-  sessionId: string,
-  source: string,
-  limit: number,
-): Array<{
-  id: number;
-  role: string | null;
-  content_preview: string | null;
-}> {
-  const db = getDb();
-  return db
-    .prepare(
-      "SELECT id, role, content_preview FROM scanner_turns WHERE session_id = ? AND source = ? AND summary IS NULL LIMIT ?",
-    )
-    .all(sessionId, source, limit) as Array<{
-    id: number;
-    role: string | null;
-    content_preview: string | null;
-  }>;
-}
-
 // ── Messages & tool calls insert ───────────────────────────────────────────
 
 const INSERT_MESSAGE_SQL = `

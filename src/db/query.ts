@@ -115,7 +115,7 @@ export function listSessions(
 
   const sql = `
     SELECT s.session_id, s.target, s.model, s.project,
-           s.started_at_ms, s.ended_at_ms, s.first_prompt,
+           s.started_at_ms, s.ended_at_ms, s.first_prompt, s.summary,
            COALESCE(s.turn_count, 0) as turn_count,
            COALESCE(s.message_count, 0) as message_count,
            COALESCE(s.total_input_tokens, 0) as total_input_tokens,
@@ -137,6 +137,7 @@ export function listSessions(
     started_at_ms: number | null;
     ended_at_ms: number | null;
     first_prompt: string | null;
+    summary: string | null;
     turn_count: number;
     message_count: number;
     total_input_tokens: number;
@@ -185,6 +186,7 @@ export function listSessions(
     })),
     parentSessionId: row.parent_session_id,
     relationshipType: row.relationship_type,
+    summary: row.summary,
   }));
 
   return {
@@ -613,15 +615,36 @@ export function search(opts: {
     WHERE ${msgConditions.join(" AND ")}
   `;
 
-  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql})`;
+  // Session summary search
+  const summaryConditions: string[] = [
+    "s.summary IS NOT NULL",
+    "s.summary LIKE ?",
+  ];
+  const summaryParams: unknown[] = [pattern];
+  if (sinceMs) {
+    summaryConditions.push("s.started_at_ms >= ?");
+    summaryParams.push(sinceMs);
+  }
+
+  const summarySql = `
+    SELECT 'summary' as source, s.session_id as id, s.session_id,
+           'summary' as event_type, s.started_at_ms as timestamp_ms,
+           NULL as tool_name, NULL as cwd, SUBSTR(s.summary, 1, 500) as payload
+    FROM sessions s
+    WHERE ${summaryConditions.join(" AND ")}
+  `;
+
+  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql} UNION ALL ${summarySql})`;
   const total = (
-    db.prepare(countSql).get(...hookParams, ...otelParams, ...msgParams) as {
+    db
+      .prepare(countSql)
+      .get(...hookParams, ...otelParams, ...msgParams, ...summaryParams) as {
       total: number;
     }
   ).total;
 
   const sql = `
-    SELECT * FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql})
+    SELECT * FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql} UNION ALL ${summarySql})
     ORDER BY timestamp_ms DESC
     LIMIT ? OFFSET ?
   `;
@@ -632,6 +655,7 @@ export function search(opts: {
       ...hookParams,
       ...otelParams,
       ...msgParams,
+      ...summaryParams,
       limit,
       offset,
     ) as RawSearchRow[];
@@ -639,13 +663,15 @@ export function search(opts: {
   const results: SearchMatch[] = rows.map((row) => {
     const snippet = row.payload ?? row.event_type ?? "";
     const matchType =
-      row.source === "message"
-        ? "message"
-        : row.event_type === "UserPromptSubmit"
-          ? "prompt"
-          : row.tool_name
-            ? "tool_use"
-            : "event";
+      row.source === "summary"
+        ? "summary"
+        : row.source === "message"
+          ? "message"
+          : row.event_type === "UserPromptSubmit"
+            ? "prompt"
+            : row.tool_name
+              ? "tool_use"
+              : "event";
 
     return {
       sessionId: row.session_id,
