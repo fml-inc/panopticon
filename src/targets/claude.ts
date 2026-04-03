@@ -39,6 +39,64 @@ function claudeToolCategory(toolName: string): string {
   return defaultToolCategory(toolName);
 }
 
+// ── System message detection & command envelope handling ────────────────────
+
+/** Patterns for system-injected user messages that should be marked isSystem. */
+const SYSTEM_MESSAGE_PREFIXES = [
+  "This session is being continued",
+  "[Request interrupted",
+  "<task-notification>",
+  "<local-command-",
+  "Stop hook feedback:",
+];
+
+/** Check if content matches a known system-injected pattern. */
+function isSystemMessage(content: string): boolean {
+  const trimmed = content.trimStart();
+  return SYSTEM_MESSAGE_PREFIXES.some((p) => trimmed.startsWith(p));
+}
+
+const CMD_NAME_RE = /<command-name>([^<]+)<\/command-name>/;
+const CMD_ARGS_RE = /<command-args>([^<]*)<\/command-args>/;
+const CMD_MSG_RE = /<command-message>([^<]+)<\/command-message>/;
+const CMD_STRIP_RE =
+  /<\/?(?:command-name|command-message|command-args)>[^<]*<\/(?:command-name|command-message|command-args)>|<\/?(?:command-name|command-message|command-args)>/g;
+
+/**
+ * Detect command/skill XML envelopes and convert to readable form.
+ * Returns [convertedText, true] if it was a command envelope,
+ * or [originalText, false] if not.
+ */
+function extractCommandText(content: string): [string, boolean] {
+  // Strip BOM and leading whitespace for matching
+  const trimmed = content.replace(/^\uFEFF/, "").trimStart();
+  if (
+    !trimmed.startsWith("<command-message>") &&
+    !trimmed.startsWith("<command-name>")
+  ) {
+    return [content, false];
+  }
+  // Verify it's purely command XML (no trailing prose)
+  const stripped = trimmed.replace(CMD_STRIP_RE, "");
+  if (stripped.trim() !== "") {
+    return [content, false];
+  }
+
+  const nameMatch = CMD_NAME_RE.exec(content);
+  if (!nameMatch) {
+    // Bare <command-message> without <command-name>
+    const msgMatch = CMD_MSG_RE.exec(content);
+    if (msgMatch) return [`/${msgMatch[1]}`, true];
+    return [content, false];
+  }
+
+  let name = nameMatch[1];
+  if (!name.startsWith("/")) name = `/${name}`;
+  const argsMatch = CMD_ARGS_RE.exec(content);
+  const args = argsMatch?.[1]?.trim();
+  return [args ? `${name} ${args}` : name, true];
+}
+
 /** Extract total text length from a tool_result content field. */
 function extractToolResultTextLength(content: unknown): number {
   if (typeof content === "string") return content.length;
@@ -58,6 +116,125 @@ function extractToolResultTextLength(content: unknown): number {
   }
   return 0;
 }
+
+// ── DAG fork detection ─────────────────────────────────────────────────────
+// Adapted from agentsview's parseDAG/walkBranch (internal/parser/claude.go).
+// Detects uuid/parentUuid branching in JSONL files and separates large-gap
+// forks (>FORK_THRESHOLD user turns on first child) into separate sessions.
+
+interface DagEntry {
+  uuid: string;
+  parentUuid: string;
+  type: "user" | "assistant";
+  lineIndex: number;
+  timestampMs: number;
+}
+
+const FORK_THRESHOLD = 3;
+
+/** True if entries don't form a simple linear chain. */
+function hasDAGFork(entries: DagEntry[]): boolean {
+  for (let i = 1; i < entries.length; i++) {
+    if (entries[i].parentUuid !== entries[i - 1].uuid) return true;
+  }
+  return false;
+}
+
+interface ForkBranch {
+  parentId: string;
+  dagIndices: number[];
+}
+
+/**
+ * Walk the DAG from root, detecting large-gap forks.
+ * Returns which dag entry indices belong to the main path vs fork branches.
+ */
+function detectForks(
+  entries: DagEntry[],
+  sessionId: string,
+): { mainDagIndices: number[]; forkBranches: ForkBranch[] } {
+  const children = new Map<string, number[]>();
+  const roots: number[] = [];
+  const uuidSet = new Set<string>();
+
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    uuidSet.add(e.uuid);
+    if (!e.parentUuid) {
+      roots.push(i);
+    } else {
+      const kids = children.get(e.parentUuid) ?? [];
+      kids.push(i);
+      children.set(e.parentUuid, kids);
+    }
+  }
+
+  // Need exactly one root; all parentUuids must reference known uuids
+  if (roots.length !== 1) {
+    return { mainDagIndices: entries.map((_, i) => i), forkBranches: [] };
+  }
+  for (const e of entries) {
+    if (e.parentUuid && !uuidSet.has(e.parentUuid)) {
+      return { mainDagIndices: entries.map((_, i) => i), forkBranches: [] };
+    }
+  }
+
+  const forkBranches: ForkBranch[] = [];
+
+  /** Count ALL user entries reachable from startIdx (full subtree DFS). */
+  function countUserTurns(startIdx: number): number {
+    const stack = [startIdx];
+    let count = 0;
+    while (stack.length > 0) {
+      const idx = stack.pop()!;
+      if (entries[idx].type === "user") count++;
+      for (const k of children.get(entries[idx].uuid) ?? []) stack.push(k);
+    }
+    return count;
+  }
+
+  function walkBranch(startIdx: number, ownerId: string): number[] {
+    const pathIndices: number[] = [];
+    let current: number | null = startIdx;
+
+    while (current !== null) {
+      pathIndices.push(current);
+      const kids: number[] = children.get(entries[current].uuid) ?? [];
+
+      if (kids.length === 0) {
+        current = null;
+      } else if (kids.length === 1) {
+        current = kids[0];
+      } else {
+        // Fork point — check first child's subtree user turn count
+        const firstChildTurns = countUserTurns(kids[0]);
+        if (firstChildTurns <= FORK_THRESHOLD) {
+          // Small-gap retry: follow latest child (last), skip earlier
+          current = kids[kids.length - 1];
+        } else {
+          // Large-gap fork: follow first child on main path,
+          // collect other children as separate fork branches
+          for (let k = 1; k < kids.length; k++) {
+            const branchIndices = walkBranch(kids[k], ownerId);
+            forkBranches.push({
+              parentId: ownerId,
+              dagIndices: branchIndices,
+            });
+          }
+          current = kids[0];
+        }
+      }
+    }
+    return pathIndices;
+  }
+
+  const mainDagIndices = walkBranch(roots[0], sessionId);
+  return { mainDagIndices, forkBranches };
+}
+
+/** Claude Code session files use standard UUIDs as filenames. */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 
@@ -254,6 +431,11 @@ const claude: TargetAdapter = {
       const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
       if (lines.length === 0) return null;
 
+      // For continuation detection: extract UUID from file path
+      // File pattern: ~/.claude/projects/{slug}/{uuid}.jsonl
+      const fileUuid = path.basename(filePath, ".jsonl");
+      const isSubagentPath = filePath.includes("/subagents/");
+
       let meta: ParseResult["meta"];
       const turns: ParseResult["turns"] = [];
       const events: ParseResult["events"] = [];
@@ -263,8 +445,21 @@ const claude: TargetAdapter = {
       let firstPrompt: string | undefined;
       // Map tool_use_id → subagent session ID (e.g. "agent-abc123")
       const subagentMap = new Map<string, string>();
+      // Tool results from filtered-out messages (tool-result-only user entries)
+      const orphanedToolResults = new Map<
+        string,
+        { contentLength: number; contentRaw: string }
+      >();
 
-      for (const line of lines) {
+      // DAG tracking: collect uuid/parentUuid entries and map them to
+      // message/turn indices for fork partitioning
+      const dagEntries: DagEntry[] = [];
+      // Per-message and per-turn: which line index produced it (-1 = no DAG)
+      const msgLineIdx: number[] = [];
+      const turnLineIdx: number[] = [];
+
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
         let obj: Record<string, unknown>;
         try {
           obj = JSON.parse(line);
@@ -279,24 +474,50 @@ const claude: TargetAdapter = {
           ? new Date(obj.timestamp as string).getTime()
           : Date.now();
 
+        // Track uuid/parentUuid for DAG fork detection
+        const uuid = obj.uuid as string | undefined;
+        const parentUuid = obj.parentUuid as string | undefined;
+        if (uuid && (type === "user" || type === "assistant")) {
+          dagEntries.push({
+            uuid,
+            parentUuid: parentUuid ?? "",
+            type,
+            lineIndex: lineIdx,
+            timestampMs: tsMs,
+          });
+        }
+
         if (!meta && sessionId) {
-          // Subagent files have agentId set and sessionId is the parent's ID.
-          // Use "agent-{agentId}" as the session ID (matches file naming).
+          const common = {
+            cliVersion: obj.version as string | undefined,
+            cwd: obj.cwd as string | undefined,
+            startedAtMs: tsMs,
+          };
           if (agentId) {
+            // Subagent files have agentId set and sessionId is the parent's ID.
+            // Use "agent-{agentId}" as the session ID (matches file naming).
             meta = {
               sessionId: `agent-${agentId}`,
               parentSessionId: sessionId,
-              cliVersion: obj.version as string | undefined,
-              cwd: obj.cwd as string | undefined,
-              startedAtMs: tsMs,
+              relationshipType: "subagent",
+              ...common,
+            };
+          } else if (
+            !isSubagentPath &&
+            UUID_RE.test(fileUuid) &&
+            sessionId !== fileUuid
+          ) {
+            // Continuation: file UUID differs from JSONL sessionId.
+            // This file continues the original session under a new file
+            // (e.g. claude --continue / --resume).
+            meta = {
+              sessionId: fileUuid,
+              parentSessionId: sessionId,
+              relationshipType: "continuation",
+              ...common,
             };
           } else {
-            meta = {
-              sessionId,
-              cliVersion: obj.version as string | undefined,
-              cwd: obj.cwd as string | undefined,
-              startedAtMs: tsMs,
-            };
+            meta = { sessionId, ...common };
           }
         }
 
@@ -340,16 +561,29 @@ const claude: TargetAdapter = {
           }
           if (!firstPrompt && preview) firstPrompt = preview;
 
-          const fullContent = textParts.join("\n");
+          let fullContent = textParts.join("\n");
 
-          // Skip meta/system messages (following agentsview's filtering)
+          // Skip meta/compact messages
           const isMeta = obj.isMeta === true;
           const isCompact = obj.isCompactSummary === true;
-          if (
-            !isMeta &&
-            !isCompact &&
-            (fullContent.length > 0 || toolResults.size > 0)
-          ) {
+          if (isMeta || isCompact) {
+            // still push turn below, but skip message
+          } else if (fullContent.length === 0 && toolResults.size > 0) {
+            // Tool-result-only user message (no text content).
+            // Don't create a message — collect results for backfill.
+            for (const [id, result] of toolResults) {
+              orphanedToolResults.set(id, result);
+            }
+          } else if (fullContent.length > 0) {
+            // Convert command envelopes to readable form
+            const [converted, wasCommand] = extractCommandText(fullContent);
+            if (wasCommand) {
+              fullContent = converted;
+            }
+
+            // Detect system-injected messages
+            const isSystem = isSystemMessage(fullContent);
+
             messages.push({
               sessionId: sid,
               ordinal: ordinal++,
@@ -358,13 +592,14 @@ const claude: TargetAdapter = {
               timestampMs: tsMs,
               hasThinking: false,
               hasToolUse: false,
-              isSystem: false,
+              isSystem,
               contentLength: fullContent.length,
               hasContextTokens: false,
               hasOutputTokens: false,
               toolCalls: [],
               toolResults,
             });
+            msgLineIdx.push(lineIdx);
           }
 
           turns.push({
@@ -379,6 +614,7 @@ const claude: TargetAdapter = {
             cacheCreationTokens: 0,
             reasoningTokens: 0,
           });
+          turnLineIdx.push(lineIdx);
         }
 
         if (type === "assistant") {
@@ -483,6 +719,7 @@ const claude: TargetAdapter = {
             toolCalls,
             toolResults: new Map(),
           });
+          msgLineIdx.push(lineIdx);
 
           turns.push({
             sessionId: sid,
@@ -496,6 +733,7 @@ const claude: TargetAdapter = {
             cacheCreationTokens: cacheCreation,
             reasoningTokens: 0,
           });
+          turnLineIdx.push(lineIdx);
         }
 
         // Extract content blocks from user messages (events only — message already built above)
@@ -699,7 +937,121 @@ const claude: TargetAdapter = {
         }
       }
 
-      return { meta, turns, events, messages, newByteOffset };
+      // DAG fork detection on incremental reads: if new lines contain a fork,
+      // signal the caller to reset the watermark and reparse from byte 0.
+      if (
+        fromByteOffset > 0 &&
+        dagEntries.length > 1 &&
+        hasDAGFork(dagEntries)
+      ) {
+        return {
+          meta,
+          turns: [],
+          events: [],
+          messages: [],
+          newByteOffset: fromByteOffset, // don't advance watermark
+          needsFullReparse: true,
+        };
+      }
+
+      // DAG fork detection on full file reads
+      if (
+        fromByteOffset === 0 &&
+        meta &&
+        dagEntries.length > 1 &&
+        hasDAGFork(dagEntries)
+      ) {
+        const { mainDagIndices, forkBranches } = detectForks(
+          dagEntries,
+          meta.sessionId,
+        );
+
+        if (forkBranches.length > 0) {
+          // Build line index sets for main path and each fork branch
+          const mainLineSet = new Set(
+            mainDagIndices.map((i) => dagEntries[i].lineIndex),
+          );
+
+          // Partition messages and turns by line index membership
+          const mainMessages = messages.filter((_, i) =>
+            mainLineSet.has(msgLineIdx[i]),
+          );
+          const mainTurns = turns.filter((_, i) =>
+            mainLineSet.has(turnLineIdx[i]),
+          );
+
+          // Re-index ordinals and turn indices for main path
+          for (let i = 0; i < mainMessages.length; i++) {
+            mainMessages[i] = { ...mainMessages[i], ordinal: i };
+          }
+          for (let i = 0; i < mainTurns.length; i++) {
+            mainTurns[i] = { ...mainTurns[i], turnIndex: i };
+          }
+
+          // Build fork ParseResults
+          const forks: ParseResult[] = [];
+          for (const branch of forkBranches) {
+            const branchLineSet = new Set(
+              branch.dagIndices.map((i) => dagEntries[i].lineIndex),
+            );
+            const forkUuid = dagEntries[branch.dagIndices[0]].uuid;
+            const forkSessionId = `${meta.sessionId}-${forkUuid}`;
+            const forkStartMs = dagEntries[branch.dagIndices[0]].timestampMs;
+
+            const forkMessages = messages
+              .filter((_, i) => branchLineSet.has(msgLineIdx[i]))
+              .map((m, i) => ({
+                ...m,
+                sessionId: forkSessionId,
+                ordinal: i,
+              }));
+            const forkTurns = turns
+              .filter((_, i) => branchLineSet.has(turnLineIdx[i]))
+              .map((t, i) => ({
+                ...t,
+                sessionId: forkSessionId,
+                turnIndex: i,
+              }));
+
+            forks.push({
+              meta: {
+                sessionId: forkSessionId,
+                parentSessionId: branch.parentId,
+                relationshipType: "fork",
+                model: meta.model,
+                cwd: meta.cwd,
+                cliVersion: meta.cliVersion,
+                startedAtMs: forkStartMs,
+              },
+              turns: forkTurns,
+              events: [], // events stay in main result
+              messages: forkMessages,
+              newByteOffset,
+            });
+          }
+
+          return {
+            meta,
+            turns: mainTurns,
+            events, // all events stay in main
+            messages: mainMessages,
+            newByteOffset,
+            forks,
+            orphanedToolResults:
+              orphanedToolResults.size > 0 ? orphanedToolResults : undefined,
+          };
+        }
+      }
+
+      return {
+        meta,
+        turns,
+        events,
+        messages,
+        newByteOffset,
+        orphanedToolResults:
+          orphanedToolResults.size > 0 ? orphanedToolResults : undefined,
+      };
     },
   },
 };

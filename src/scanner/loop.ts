@@ -20,6 +20,7 @@ import {
   linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
+  resetFileForReparse,
   updateSessionTotals,
   updateTurnSummary,
   upsertSession,
@@ -46,9 +47,19 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
     const source = target.id;
 
     for (const { filePath } of target.scanner.discover()) {
-      const offset = readFileWatermark(filePath);
-      const result = target.scanner.parseFile(filePath, offset);
+      let offset = readFileWatermark(filePath);
+      let result = target.scanner.parseFile(filePath, offset);
       if (!result) continue;
+
+      // If incremental parse detected a DAG fork, reset watermark
+      // and reparse from byte 0 so fork detection runs on the full file.
+      if (result.needsFullReparse && offset > 0) {
+        resetFileForReparse(filePath, result.meta?.sessionId);
+        offset = 0;
+        result = target.scanner.parseFile(filePath, 0);
+        if (!result) continue;
+        log(`Reparsing ${filePath} from start (fork detected)`);
+      }
 
       filesScanned++;
 
@@ -93,8 +104,11 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
             insertScannerEvents(fileResult.events, source);
           }
 
-          if (fileResult.messages.length > 0) {
-            insertMessages(fileResult.messages);
+          if (
+            fileResult.messages.length > 0 ||
+            fileResult.orphanedToolResults?.size
+          ) {
+            insertMessages(fileResult.messages, fileResult.orphanedToolResults);
             updateSessionMessageCounts(sessionId);
           }
 
@@ -103,6 +117,33 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
       )();
 
       newTurns += result.turns.length;
+
+      // Process fork results (additional sessions from DAG analysis)
+      if (result.forks) {
+        for (const fork of result.forks) {
+          if (!fork.meta?.sessionId) continue;
+          const forkSessionId = fork.meta.sessionId;
+          const forkMeta = fork.meta;
+          (
+            db.transaction(() => {
+              upsertSession(forkMeta, filePath, source);
+              if (fork.turns.length > 0) {
+                insertTurns(fork.turns, source);
+                updateSessionTotals(forkSessionId);
+              }
+              if (fork.events.length > 0) {
+                insertScannerEvents(fork.events, source);
+              }
+              if (fork.messages.length > 0 || fork.orphanedToolResults?.size) {
+                insertMessages(fork.messages, fork.orphanedToolResults);
+                updateSessionMessageCounts(forkSessionId);
+              }
+              // No watermark — shared file, one watermark for the whole file
+            }) as Database.Transaction
+          )();
+          newTurns += fork.turns.length;
+        }
+      }
 
       // Archive raw file for 100% recall
       try {

@@ -444,6 +444,31 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   }
   upsertSession(sessionFields);
 
+  // Link subagent sessions to their parents in real-time.
+  // SubagentStart fires on the PARENT session with agent_id identifying
+  // the child. The subagent session ID follows the scanner convention:
+  // "agent-{agent_id}" (matches file naming agent-*.jsonl).
+  if (eventType === "SubagentStart" || eventType === "SubagentStop") {
+    const agentId = data.agent_id as string | undefined;
+    if (agentId) {
+      const subagentSessionId = `agent-${agentId}`;
+      const subagentFields: Parameters<typeof upsertSession>[0] = {
+        session_id: subagentSessionId,
+        target: targetId,
+        parent_session_id: sessionId,
+        relationship_type: "subagent",
+        is_automated: 1,
+      };
+      if (eventType === "SubagentStart") {
+        subagentFields.started_at_ms = timestampMs;
+        subagentFields.created_at = timestampMs;
+      } else {
+        subagentFields.ended_at_ms = timestampMs;
+      }
+      upsertSession(subagentFields);
+    }
+  }
+
   // Increment event type + tool counts on the session
   incrementEventTypeCount(sessionId, eventType);
   if (eventType === "PreToolUse" && toolName) {
