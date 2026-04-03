@@ -377,8 +377,8 @@ const INSERT_TOOL_CALL_SQL = `
   INSERT INTO tool_calls
     (message_id, session_id, tool_name, category, tool_use_id,
      input_json, skill_name, result_content_length, result_content,
-     subagent_session_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     subagent_session_id, duration_ms)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 /**
@@ -393,7 +393,7 @@ export function insertMessages(
   messages: ParsedMessage[],
   orphanedToolResults?: Map<
     string,
-    { contentLength: number; contentRaw: string }
+    { contentLength: number; contentRaw: string; timestampMs?: number }
   >,
 ): void {
   if (messages.length === 0 && !orphanedToolResults?.size) return;
@@ -402,7 +402,7 @@ export function insertMessages(
   // Collect all tool results across user messages for backfilling
   const toolResultMap = new Map<
     string,
-    { contentLength: number; contentRaw: string }
+    { contentLength: number; contentRaw: string; timestampMs?: number }
   >();
   // Include orphaned results from filtered-out messages
   if (orphanedToolResults) {
@@ -453,6 +453,10 @@ export function insertMessages(
       for (const tc of msg.toolCalls) {
         // Look up result from the tool_result blocks
         const toolResult = toolResultMap.get(tc.toolUseId);
+        const durationMs =
+          tc.timestampMs && toolResult?.timestampMs
+            ? toolResult.timestampMs - tc.timestampMs
+            : null;
         tcStmt.run(
           messageId,
           msg.sessionId,
@@ -464,6 +468,7 @@ export function insertMessages(
           toolResult?.contentLength ?? null,
           toolResult?.contentRaw ?? null,
           tc.subagentSessionId ?? null,
+          durationMs != null && durationMs >= 0 ? durationMs : null,
         );
       }
     }
