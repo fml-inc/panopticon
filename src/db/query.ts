@@ -1,5 +1,4 @@
 import { allTargets } from "../targets/index.js";
-import type { MetricSpec } from "../targets/types.js";
 import type {
   ActivitySessionDetail,
   ActivitySummaryResult,
@@ -16,79 +15,6 @@ import type {
 } from "../types.js";
 import { getDb } from "./schema.js";
 
-// ── Adapter-driven SQL helpers ───────────────────────────────────────────────
-
-/** Build a COALESCE SQL expr to extract the model from metric attributes. */
-function buildModelExpr(spec: MetricSpec): string {
-  const exprs = spec.modelAttrs.map((a) => `json_extract(attributes, '${a}')`);
-  return exprs.length === 1 ? exprs[0] : `COALESCE(${exprs.join(", ")})`;
-}
-
-/** Build a SQL expr to extract and optionally remap token_type from metric attributes. */
-function buildTokenTypeExpr(spec: MetricSpec): string {
-  const exprs = spec.tokenTypeAttrs.map(
-    (a) => `json_extract(attributes, '${a}')`,
-  );
-  const inner = exprs.length === 1 ? exprs[0] : `COALESCE(${exprs.join(", ")})`;
-
-  if (!spec.tokenTypeMap || Object.keys(spec.tokenTypeMap).length === 0) {
-    return inner;
-  }
-
-  const whenClauses = Object.entries(spec.tokenTypeMap)
-    .map(([from, to]) => `WHEN '${from}' THEN '${to}'`)
-    .join(" ");
-  return `CASE ${inner} ${whenClauses} ELSE ${inner} END`;
-}
-
-/**
- * Resolved metrics CTE — generates one UNION ALL branch per target that
- * declares otel.metrics, using the adapter's aggregation strategy.
- */
-function _resolvedMetricsCTE(extraWhere = ""): string {
-  const branches: string[] = [];
-
-  for (const target of allTargets()) {
-    const spec = target.otel?.metrics;
-    if (!spec) continue;
-
-    const nameList = spec.metricNames.map((n) => `'${n}'`).join(", ");
-    const modelExpr = buildModelExpr(spec);
-    const tokenTypeExpr = buildTokenTypeExpr(spec);
-
-    let whereClause = `WHERE name IN (${nameList})`;
-    if (spec.excludeTokenTypes?.length) {
-      const rawCoalesce = spec.tokenTypeAttrs
-        .map((a) => `json_extract(attributes, '${a}')`)
-        .join(", ");
-      const rawExpr =
-        spec.tokenTypeAttrs.length === 1
-          ? rawCoalesce
-          : `COALESCE(${rawCoalesce})`;
-      for (const excluded of spec.excludeTokenTypes) {
-        whereClause += `\n        AND ${rawExpr} != '${excluded}'`;
-      }
-    }
-    whereClause += `\n      ${extraWhere}`;
-
-    branches.push(`
-      -- ${target.id}: ${spec.aggregation}
-      SELECT session_id,
-             ${modelExpr} as model,
-             ${tokenTypeExpr} as token_type,
-             ${spec.aggregation}(value) as tokens
-      FROM otel_metrics
-      ${whereClause}
-      GROUP BY session_id, model, token_type`);
-  }
-
-  if (branches.length === 0) {
-    return `resolved_tokens AS (SELECT NULL as session_id, NULL as model, NULL as token_type, 0 as tokens WHERE 0)`;
-  }
-
-  return `resolved_tokens AS (${branches.join("\n\n      UNION ALL\n")}\n    )`;
-}
-
 function parseSince(since?: string): number | null {
   if (!since) return null;
   const match = since.match(/^(\d+)(h|d|m)$/);
@@ -103,15 +29,6 @@ function parseSince(since?: string): number | null {
 
 function toIso(ms: number): string {
   return new Date(ms).toISOString();
-}
-
-function _parseJson(raw: string | null): unknown {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }
 
 // ── OTel log SQL helpers (adapter-driven) ────────────────────────────────────
@@ -170,7 +87,7 @@ interface RawRepoRow {
 /** Cost SQL fragment for a session row with model + token columns. */
 const SESSION_COST_SQL = `
   COALESCE((
-    SELECT (s.total_input_tokens + s.total_cache_read_tokens + s.total_cache_creation_tokens) * COALESCE(mp.input_per_m, 0) / 1000000.0
+    SELECT s.total_input_tokens * COALESCE(mp.input_per_m, 0) / 1000000.0
          + s.total_output_tokens * COALESCE(mp.output_per_m, 0) / 1000000.0
          + s.total_cache_read_tokens * COALESCE(mp.cache_read_per_m, 0) / 1000000.0
          + s.total_cache_creation_tokens * COALESCE(mp.cache_write_per_m, 0) / 1000000.0
