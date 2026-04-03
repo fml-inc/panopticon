@@ -53,7 +53,7 @@ vi.mock("./config.js", () => {
 import path from "node:path";
 import { LocalArchiveBackend } from "./archive/local.js";
 import { config } from "./config.js";
-import { costBreakdown, searchEvents, sessionTimeline } from "./db/query.js";
+import { costBreakdown, search, sessionTimeline } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
 import {
   insertOtelMetrics,
@@ -1159,15 +1159,21 @@ describe("server integration", () => {
       expect(rows.every((r) => r.session_id === GEMINI_SESSION)).toBe(true);
     });
 
-    it("uses MAX aggregation for Gemini cumulative counters in cost queries", () => {
-      // costBreakdown groups by session — the Gemini session should reflect
-      // MAX(500) for input, not SUM(100+500)=600
+    it("uses session token totals for cost queries", () => {
+      // costBreakdown now uses sessions table, so seed a session with tokens
+      upsertSession({
+        session_id: GEMINI_SESSION,
+        target: "gemini",
+        model: "gemini-3-flash-preview",
+        total_input_tokens: 500,
+        total_output_tokens: 200,
+        started_at_ms: Date.now(),
+      });
       const result = costBreakdown({ since: "1h", groupBy: "session" });
       expect(result).toBeDefined();
 
       const geminiGroup = result.groups.find((g) => g.key === GEMINI_SESSION);
       expect(geminiGroup).toBeDefined();
-      // input MAX(500) + output MAX(200) = 700, NOT SUM(100+500) + 200 = 800
       expect(geminiGroup!.totalTokens).toBe(700);
     });
   });
@@ -1305,28 +1311,22 @@ describe("server integration", () => {
       });
     });
 
-    it("sessionTimeline returns Codex OTel events with correct event type and timestamp", () => {
+    it("sessionTimeline returns messages for a session", () => {
+      // Timeline now returns messages, not hook/otel events.
+      // The Codex timeline session has no messages (only otel data),
+      // so it should return an empty list.
       const result = sessionTimeline({
         sessionId: CODEX_TIMELINE_SESSION,
         limit: 50,
       });
 
-      expect(result.events.length).toBeGreaterThanOrEqual(2);
-
-      // Should have both hook and otel events
-      const otelEvents = result.events.filter(
-        (e) => e.eventType === "exec_apply",
-      );
-      expect(otelEvents.length).toBe(1);
-
-      // The timestamp should be derived from event.timestamp, not 0
-      const otelEvent = otelEvents[0];
-      const parsedTs = new Date(otelEvent.timestamp).getTime();
-      expect(parsedTs).toBeGreaterThan(0);
+      // Session exists (from upsert) but has no scanner messages
+      expect(result.messages).toBeDefined();
+      expect(result.totalMessages).toBe(0);
     });
 
-    it("searchEvents finds Codex OTel events by attribute content", () => {
-      const result = searchEvents({
+    it("search finds Codex OTel events by attribute content", () => {
+      const result = search({
         query: "exec_apply",
         limit: 10,
       });
@@ -1341,14 +1341,12 @@ describe("server integration", () => {
   // ── Multi-target cost breakdown ────────────────────────────────────────
 
   describe("multi-target cost breakdown", () => {
-    it("costBreakdown aggregates across Claude, Codex, and Gemini targets", () => {
-      // Data was already seeded by previous tests:
-      // - Claude metrics from proxy capture pipeline
-      // - Codex metrics from "Codex OTel format" test
-      // - Gemini metrics from "Gemini OTel metrics" test
+    it("costBreakdown aggregates across sessions with token data", () => {
+      // costBreakdown now uses sessions table token totals
       const result = costBreakdown({ since: "1h" });
       expect(result).toBeDefined();
       expect(result.groups.length).toBeGreaterThanOrEqual(1);
+      // At least the Gemini session seeded earlier has tokens
       expect(result.totals.totalTokens).toBeGreaterThan(0);
     });
 

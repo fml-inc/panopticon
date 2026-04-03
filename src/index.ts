@@ -14,13 +14,12 @@ export {
   activitySummary,
   costBreakdown,
   dbStats,
-  getEvent,
   listPlans,
   listSessions,
+  print,
   rawQuery,
-  searchEvents,
+  search,
   sessionTimeline,
-  toolStats,
 } from "./db/query.js";
 // ── Database ──────────────────────────────────────────────────────────────────
 export { closeDb, getDb } from "./db/schema.js";
@@ -60,6 +59,7 @@ export {
 export type {
   ActivitySessionDetail,
   ActivitySummaryResult,
+  ChildSession,
   SearchMatch,
   SearchResult,
   Session,
@@ -67,7 +67,8 @@ export type {
   SessionTimelineResult,
   SpendingGroup,
   SpendingResult,
-  TimelineEvent,
+  TimelineMessage,
+  TimelineToolCall,
 } from "./types.js";
 // ── Config ───────────────────────────────────────────────────────────────────
 export {

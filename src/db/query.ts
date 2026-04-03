@@ -1,8 +1,8 @@
 import { allTargets } from "../targets/index.js";
-import type { MetricSpec } from "../targets/types.js";
 import type {
   ActivitySessionDetail,
   ActivitySummaryResult,
+  ChildSession,
   SearchMatch,
   SearchResult,
   Session,
@@ -10,83 +10,10 @@ import type {
   SessionTimelineResult,
   SpendingGroup,
   SpendingResult,
-  TimelineEvent,
+  TimelineMessage,
+  TimelineToolCall,
 } from "../types.js";
-import { COST_EXPR } from "./pricing.js";
 import { getDb } from "./schema.js";
-
-// ── Adapter-driven SQL helpers ───────────────────────────────────────────────
-
-/** Build a COALESCE SQL expr to extract the model from metric attributes. */
-function buildModelExpr(spec: MetricSpec): string {
-  const exprs = spec.modelAttrs.map((a) => `json_extract(attributes, '${a}')`);
-  return exprs.length === 1 ? exprs[0] : `COALESCE(${exprs.join(", ")})`;
-}
-
-/** Build a SQL expr to extract and optionally remap token_type from metric attributes. */
-function buildTokenTypeExpr(spec: MetricSpec): string {
-  const exprs = spec.tokenTypeAttrs.map(
-    (a) => `json_extract(attributes, '${a}')`,
-  );
-  const inner = exprs.length === 1 ? exprs[0] : `COALESCE(${exprs.join(", ")})`;
-
-  if (!spec.tokenTypeMap || Object.keys(spec.tokenTypeMap).length === 0) {
-    return inner;
-  }
-
-  const whenClauses = Object.entries(spec.tokenTypeMap)
-    .map(([from, to]) => `WHEN '${from}' THEN '${to}'`)
-    .join(" ");
-  return `CASE ${inner} ${whenClauses} ELSE ${inner} END`;
-}
-
-/**
- * Resolved metrics CTE — generates one UNION ALL branch per target that
- * declares otel.metrics, using the adapter's aggregation strategy.
- */
-function resolvedMetricsCTE(extraWhere = ""): string {
-  const branches: string[] = [];
-
-  for (const target of allTargets()) {
-    const spec = target.otel?.metrics;
-    if (!spec) continue;
-
-    const nameList = spec.metricNames.map((n) => `'${n}'`).join(", ");
-    const modelExpr = buildModelExpr(spec);
-    const tokenTypeExpr = buildTokenTypeExpr(spec);
-
-    let whereClause = `WHERE name IN (${nameList})`;
-    if (spec.excludeTokenTypes?.length) {
-      const rawCoalesce = spec.tokenTypeAttrs
-        .map((a) => `json_extract(attributes, '${a}')`)
-        .join(", ");
-      const rawExpr =
-        spec.tokenTypeAttrs.length === 1
-          ? rawCoalesce
-          : `COALESCE(${rawCoalesce})`;
-      for (const excluded of spec.excludeTokenTypes) {
-        whereClause += `\n        AND ${rawExpr} != '${excluded}'`;
-      }
-    }
-    whereClause += `\n      ${extraWhere}`;
-
-    branches.push(`
-      -- ${target.id}: ${spec.aggregation}
-      SELECT session_id,
-             ${modelExpr} as model,
-             ${tokenTypeExpr} as token_type,
-             ${spec.aggregation}(value) as tokens
-      FROM otel_metrics
-      ${whereClause}
-      GROUP BY session_id, model, token_type`);
-  }
-
-  if (branches.length === 0) {
-    return `resolved_tokens AS (SELECT NULL as session_id, NULL as model, NULL as token_type, 0 as tokens WHERE 0)`;
-  }
-
-  return `resolved_tokens AS (${branches.join("\n\n      UNION ALL\n")}\n    )`;
-}
 
 function parseSince(since?: string): number | null {
   if (!since) return null;
@@ -102,15 +29,6 @@ function parseSince(since?: string): number | null {
 
 function toIso(ms: number): string {
   return new Date(ms).toISOString();
-}
-
-function parseJson(raw: string | null): unknown {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }
 
 // ── OTel log SQL helpers (adapter-driven) ────────────────────────────────────
@@ -159,25 +77,25 @@ function otelLogExprs() {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
-interface RawSessionRow {
-  session_id: string;
-  start_ms: number;
-  end_ms: number;
-  event_count: number;
-  tool_count: number;
-  total_tokens: number;
-  total_cost: number;
-  cwd: string | null;
-  first_prompt: string | null;
-  event_type_counts: string | null;
-}
-
 interface RawRepoRow {
   session_id: string;
   repository: string;
   git_user_name: string | null;
   git_user_email: string | null;
 }
+
+/** Cost SQL fragment for a session row with model + token columns. */
+const SESSION_COST_SQL = `
+  COALESCE((
+    SELECT s.total_input_tokens * COALESCE(mp.input_per_m, 0) / 1000000.0
+         + s.total_output_tokens * COALESCE(mp.output_per_m, 0) / 1000000.0
+         + s.total_cache_read_tokens * COALESCE(mp.cache_read_per_m, 0) / 1000000.0
+         + s.total_cache_creation_tokens * COALESCE(mp.cache_write_per_m, 0) / 1000000.0
+    FROM model_pricing mp
+    WHERE s.model LIKE mp.model_id || '%'
+    ORDER BY LENGTH(mp.model_id) DESC, mp.updated_ms DESC
+    LIMIT 1
+  ), 0)`;
 
 export function listSessions(
   opts: { limit?: number; since?: string } = {},
@@ -186,77 +104,47 @@ export function listSessions(
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
 
-  const sinceClause = sinceMs ? "WHERE timestamp_ms >= ?" : "";
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (sinceMs) {
+    conditions.push("s.started_at_ms >= ?");
+    params.push(sinceMs);
+  }
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const sql = `
-    WITH all_sessions AS (
-      SELECT session_id,
-             MIN(timestamp_ms) as start_ms,
-             MAX(timestamp_ms) as end_ms,
-             COUNT(*) as event_count,
-             COUNT(DISTINCT tool_name) as tool_count
-      FROM hook_events
-      ${sinceClause}
-      GROUP BY session_id
-    ),
-    ${resolvedMetricsCTE()},
-    otel_costs AS (
-      SELECT session_id,
-             SUM(tokens) as total_tokens,
-             SUM(${COST_EXPR}) as total_cost
-      FROM resolved_tokens
-      GROUP BY session_id
-    ),
-    session_cwds AS (
-      SELECT h.session_id, h.cwd
-      FROM hook_events h
-      INNER JOIN all_sessions a ON h.session_id = a.session_id
-      WHERE h.event_type = 'SessionStart' AND h.cwd IS NOT NULL
-      GROUP BY h.session_id
-    ),
-    session_prompts AS (
-      SELECT h.session_id, MIN(h.timestamp_ms) as ts, SUBSTR(h.user_prompt, 1, 200) as prompt
-      FROM hook_events h
-      INNER JOIN all_sessions a ON h.session_id = a.session_id
-      WHERE h.event_type = 'UserPromptSubmit' AND h.user_prompt IS NOT NULL
-      GROUP BY h.session_id
-    ),
-    session_event_types AS (
-      SELECT session_id,
-             json_group_object(event_type, cnt) as event_type_counts
-      FROM (
-        SELECT h.session_id, h.event_type, COUNT(*) as cnt
-        FROM hook_events h
-        INNER JOIN all_sessions a ON h.session_id = a.session_id
-        GROUP BY h.session_id, h.event_type
-      )
-      GROUP BY session_id
-    )
-    SELECT s.session_id,
-           s.start_ms,
-           s.end_ms,
-           s.event_count,
-           s.tool_count,
-           COALESCE(c.total_tokens, 0) as total_tokens,
-           COALESCE(c.total_cost, 0) as total_cost,
-           sc.cwd,
-           sp.prompt as first_prompt,
-           se.event_type_counts
-    FROM all_sessions s
-    LEFT JOIN otel_costs c ON s.session_id = c.session_id
-    LEFT JOIN session_cwds sc ON s.session_id = sc.session_id
-    LEFT JOIN session_prompts sp ON s.session_id = sp.session_id
-    LEFT JOIN session_event_types se ON s.session_id = se.session_id
-    GROUP BY s.session_id
-    ORDER BY s.start_ms DESC
+    SELECT s.session_id, s.target, s.model, s.project,
+           s.started_at_ms, s.ended_at_ms, s.first_prompt,
+           COALESCE(s.turn_count, 0) as turn_count,
+           COALESCE(s.message_count, 0) as message_count,
+           COALESCE(s.total_input_tokens, 0) as total_input_tokens,
+           COALESCE(s.total_output_tokens, 0) as total_output_tokens,
+           s.parent_session_id, s.relationship_type,
+           ${SESSION_COST_SQL} as total_cost
+    FROM sessions s
+    ${where}
+    ORDER BY s.started_at_ms DESC
     LIMIT ?
   `;
-
-  const params: unknown[] = [];
-  if (sinceMs) params.push(sinceMs);
   params.push(limit);
 
-  const rows = db.prepare(sql).all(...params) as RawSessionRow[];
+  const rows = db.prepare(sql).all(...params) as Array<{
+    session_id: string;
+    target: string | null;
+    model: string | null;
+    project: string | null;
+    started_at_ms: number | null;
+    ended_at_ms: number | null;
+    first_prompt: string | null;
+    turn_count: number;
+    message_count: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    parent_session_id: string | null;
+    relationship_type: string | null;
+    total_cost: number;
+  }>;
 
   const sessionIds = rows.map((r) => r.session_id);
   const repoRows =
@@ -279,21 +167,24 @@ export function listSessions(
 
   const sessions: Session[] = rows.map((row) => ({
     sessionId: row.session_id,
-    startedAt: toIso(row.start_ms),
-    endedAt: toIso(row.end_ms),
-    eventCount: row.event_count,
-    toolCount: row.tool_count,
-    totalTokens: row.total_tokens,
+    target: row.target,
+    model: row.model,
+    project: row.project,
+    startedAt: row.started_at_ms ? toIso(row.started_at_ms) : null,
+    endedAt: row.ended_at_ms ? toIso(row.ended_at_ms) : null,
+    firstPrompt: row.first_prompt,
+    turnCount: row.turn_count,
+    messageCount: row.message_count,
+    totalInputTokens: row.total_input_tokens,
+    totalOutputTokens: row.total_output_tokens,
     totalCost: row.total_cost,
     repositories: (reposBySession.get(row.session_id) ?? []).map((r) => ({
       name: r.repository,
       gitUserName: r.git_user_name,
       gitUserEmail: r.git_user_email,
     })),
-    cwd: row.cwd ?? null,
-    firstPrompt: row.first_prompt ?? null,
-    eventTypeCounts:
-      (parseJson(row.event_type_counts) as Record<string, number>) ?? {},
+    parentSessionId: row.parent_session_id,
+    relationshipType: row.relationship_type,
   }));
 
   return {
@@ -305,87 +196,42 @@ export function listSessions(
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
-interface RawTimelineRow {
-  source: string;
-  id: number;
-  session_id: string;
-  event_type: string;
-  timestamp_ms: number;
-  tool_name: string | null;
-  cwd: string | null;
-  payload: string | null;
-  user_prompt: string | null;
-  body: string | null;
-  attributes: string | null;
-  severity_text: string | null;
-}
-
 export function sessionTimeline(opts: {
   sessionId: string;
-  eventTypes?: string[];
   limit?: number;
   offset?: number;
   fullPayloads?: boolean;
 }): SessionTimelineResult {
   const db = getDb();
-  const limit = opts.limit ?? 20;
+  const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
   const truncate = !opts.fullPayloads;
 
-  const payloadCol = truncate
-    ? "SUBSTR(decompress(payload), 1, 500)"
-    : "decompress(payload)";
-  const attrsCol = truncate ? "SUBSTR(attributes, 1, 500)" : "attributes";
-
-  let hookSql = `
-    SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
-           tool_name, cwd, ${payloadCol} as payload, user_prompt,
-           NULL as body, NULL as attributes, NULL as severity_text
-    FROM hook_events
-    WHERE session_id = ?
-  `;
-  const hookParams: unknown[] = [opts.sessionId];
-
-  if (opts.eventTypes?.length) {
-    hookSql += ` AND event_type IN (${opts.eventTypes.map(() => "?").join(",")})`;
-    hookParams.push(...opts.eventTypes);
-  }
-
-  let otelSql = `
-    SELECT 'otel' as source, id, session_id, ${otelLogExprs().eventType} as event_type,
-           ${otelLogExprs().timestampMs} as timestamp_ms,
-           NULL as tool_name, NULL as cwd, NULL as payload, NULL as user_prompt,
-           ${otelLogExprs().eventType} as body, ${attrsCol} as attributes, severity_text
-    FROM otel_logs
-    WHERE session_id = ?
-  `;
-  const otelParams: unknown[] = [opts.sessionId];
-
-  if (opts.eventTypes?.length) {
-    otelSql += ` AND ${otelLogExprs().eventType} IN (${opts.eventTypes.map(() => "?").join(",")})`;
-    otelParams.push(...opts.eventTypes);
-  }
-
-  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})`;
-  const total = (
-    db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }
-  ).total;
-
-  const sql = `
-    SELECT * FROM (${hookSql} UNION ALL ${otelSql})
-    ORDER BY timestamp_ms ASC
-    LIMIT ? OFFSET ?
-  `;
-  const rows = db
-    .prepare(sql)
-    .all(...hookParams, ...otelParams, limit, offset) as RawTimelineRow[];
-
   // Session metadata
-  const cwdRow = db
+  const sessionRow = db
     .prepare(
-      "SELECT cwd FROM hook_events WHERE session_id = ? AND event_type = 'SessionStart' LIMIT 1",
+      "SELECT session_id, target, model, project, parent_session_id, relationship_type FROM sessions WHERE session_id = ?",
     )
-    .get(opts.sessionId) as { cwd: string | null } | undefined;
+    .get(opts.sessionId) as
+    | {
+        session_id: string;
+        target: string | null;
+        model: string | null;
+        project: string | null;
+        parent_session_id: string | null;
+        relationship_type: string | null;
+      }
+    | undefined;
+
+  if (!sessionRow) {
+    return {
+      session: null,
+      messages: [],
+      totalMessages: 0,
+      hasMore: false,
+      source: "local",
+    };
+  }
 
   const repoRows = db
     .prepare(
@@ -393,89 +239,201 @@ export function sessionTimeline(opts: {
     )
     .all(opts.sessionId) as RawRepoRow[];
 
-  const events: TimelineEvent[] = rows.map((row) => {
-    let promptPreview: string | null = null;
-    let payload: unknown = null;
+  // Child sessions (forks + subagents)
+  const childRows = db
+    .prepare(
+      "SELECT session_id, relationship_type, model, COALESCE(turn_count, 0) as turn_count, first_prompt, started_at_ms FROM sessions WHERE parent_session_id = ?",
+    )
+    .all(opts.sessionId) as Array<{
+    session_id: string;
+    relationship_type: string;
+    model: string | null;
+    turn_count: number;
+    first_prompt: string | null;
+    started_at_ms: number | null;
+  }>;
 
-    if (row.source === "hook") {
-      payload = parseJson(row.payload);
-      if (row.user_prompt) {
-        promptPreview = row.user_prompt.slice(0, 300);
-      }
-    } else {
-      payload = parseJson(row.attributes);
+  const childSessions: ChildSession[] = childRows.map((r) => ({
+    sessionId: r.session_id,
+    relationshipType: r.relationship_type,
+    model: r.model,
+    turnCount: r.turn_count,
+    firstPrompt: r.first_prompt,
+    startedAtMs: r.started_at_ms,
+  }));
+
+  // Message count
+  const totalMessages = (
+    db
+      .prepare("SELECT COUNT(*) as c FROM messages WHERE session_id = ?")
+      .get(opts.sessionId) as { c: number }
+  ).c;
+
+  // Messages
+  const contentCol = truncate ? "SUBSTR(m.content, 1, 500)" : "m.content";
+  const msgRows = db
+    .prepare(
+      `SELECT m.id, m.ordinal, m.role, ${contentCol} as content, m.timestamp_ms,
+              m.model, m.is_system, m.has_thinking, m.has_tool_use,
+              m.content_length, m.uuid, m.parent_uuid,
+              m.token_usage, m.context_tokens, m.output_tokens
+       FROM messages m
+       WHERE m.session_id = ?
+       ORDER BY m.ordinal ASC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(opts.sessionId, limit, offset) as Array<{
+    id: number;
+    ordinal: number;
+    role: string;
+    content: string;
+    timestamp_ms: number | null;
+    model: string | null;
+    is_system: number;
+    has_thinking: number;
+    has_tool_use: number;
+    content_length: number;
+    uuid: string | null;
+    parent_uuid: string | null;
+    token_usage: string | null;
+    context_tokens: number;
+    output_tokens: number;
+  }>;
+
+  // Batch-load tool calls
+  const msgIds = msgRows.map((m) => m.id);
+  const tcRows =
+    msgIds.length > 0
+      ? (db
+          .prepare(
+            `SELECT tc.message_id, tc.tool_name, tc.category, tc.tool_use_id,
+                    tc.input_json, tc.skill_name, tc.result_content_length,
+                    tc.duration_ms, tc.subagent_session_id
+             FROM tool_calls tc
+             WHERE tc.message_id IN (${msgIds.map(() => "?").join(",")})
+             ORDER BY tc.id ASC`,
+          )
+          .all(...msgIds) as Array<{
+          message_id: number;
+          tool_name: string;
+          category: string;
+          tool_use_id: string | null;
+          input_json: string | null;
+          skill_name: string | null;
+          result_content_length: number | null;
+          duration_ms: number | null;
+          subagent_session_id: string | null;
+        }>)
+      : [];
+
+  // Subagent metadata lookup
+  const subagentIds = [
+    ...new Set(
+      tcRows.map((tc) => tc.subagent_session_id).filter(Boolean) as string[],
+    ),
+  ];
+  const subagentMap = new Map<
+    string,
+    { model: string | null; turn_count: number; first_prompt: string | null }
+  >();
+  if (subagentIds.length > 0) {
+    const subRows = db
+      .prepare(
+        `SELECT session_id, model, COALESCE(turn_count, 0) as turn_count, first_prompt
+         FROM sessions WHERE session_id IN (${subagentIds.map(() => "?").join(",")})`,
+      )
+      .all(...subagentIds) as Array<{
+      session_id: string;
+      model: string | null;
+      turn_count: number;
+      first_prompt: string | null;
+    }>;
+    for (const r of subRows) {
+      subagentMap.set(r.session_id, {
+        model: r.model,
+        turn_count: r.turn_count,
+        first_prompt: r.first_prompt,
+      });
     }
+  }
 
+  // Group tool calls by message_id
+  const tcByMessage = new Map<number, typeof tcRows>();
+  for (const tc of tcRows) {
+    const list = tcByMessage.get(tc.message_id) ?? [];
+    list.push(tc);
+    tcByMessage.set(tc.message_id, list);
+  }
+
+  const messages: TimelineMessage[] = msgRows.map((m) => {
+    const tcs = tcByMessage.get(m.id) ?? [];
     return {
-      eventType: row.event_type,
-      timestamp: toIso(row.timestamp_ms),
-      toolName: row.tool_name,
-      promptPreview,
-      payload,
+      id: m.id,
+      ordinal: m.ordinal,
+      role: m.role,
+      content: m.content,
+      timestampMs: m.timestamp_ms,
+      model: m.model,
+      isSystem: m.is_system === 1,
+      hasThinking: m.has_thinking === 1,
+      hasToolUse: m.has_tool_use === 1,
+      contentLength: m.content_length,
+      uuid: m.uuid,
+      parentUuid: m.parent_uuid,
+      tokenUsage: m.token_usage,
+      contextTokens: m.context_tokens,
+      outputTokens: m.output_tokens,
+      toolCalls: tcs.map((tc): TimelineToolCall => {
+        const sub = tc.subagent_session_id
+          ? subagentMap.get(tc.subagent_session_id)
+          : undefined;
+        return {
+          toolName: tc.tool_name,
+          category: tc.category,
+          toolUseId: tc.tool_use_id,
+          inputJson: truncate
+            ? (tc.input_json?.slice(0, 500) ?? null)
+            : tc.input_json,
+          skillName: tc.skill_name,
+          resultContentLength: tc.result_content_length,
+          durationMs: tc.duration_ms,
+          subagentSessionId: tc.subagent_session_id,
+          subagent: sub
+            ? {
+                sessionId: tc.subagent_session_id!,
+                model: sub.model,
+                turnCount: sub.turn_count,
+                firstPrompt: sub.first_prompt,
+              }
+            : null,
+        };
+      }),
     };
   });
 
   return {
     session: {
       sessionId: opts.sessionId,
+      target: sessionRow.target,
+      model: sessionRow.model,
+      project: sessionRow.project,
+      parentSessionId: sessionRow.parent_session_id,
+      relationshipType: sessionRow.relationship_type,
       repositories: repoRows.map((r) => ({
         name: r.repository,
         gitUserName: r.git_user_name,
         gitUserEmail: r.git_user_email,
       })),
-      cwd: cwdRow?.cwd ?? null,
+      childSessions,
     },
-    events,
-    totalEvents: total,
-    hasMore: offset + rows.length < total,
+    messages,
+    totalMessages,
+    hasMore: offset + limit < totalMessages,
     source: "local",
   };
 }
 
-// ── Tool Stats (not in unified types — panopticon-specific) ───────────────────
-
-export function toolStats(opts: { since?: string; session_id?: string } = {}) {
-  const db = getDb();
-  const sinceMs = parseSince(opts.since);
-
-  const conditions: string[] = ["tool_name IS NOT NULL"];
-  const params: unknown[] = [];
-
-  if (opts.session_id) {
-    conditions.push("session_id = ?");
-    params.push(opts.session_id);
-  }
-  if (sinceMs) {
-    conditions.push("timestamp_ms >= ?");
-    params.push(sinceMs);
-  }
-
-  const where = conditions.join(" AND ");
-
-  const sql = `
-    SELECT tool_name,
-           COUNT(*) as call_count,
-           SUM(CASE WHEN event_type = 'PostToolUse' THEN 1 ELSE 0 END) as success_count,
-           SUM(CASE WHEN event_type = 'PostToolUseFailure' THEN 1 ELSE 0 END) as failure_count
-    FROM hook_events
-    WHERE ${where}
-    GROUP BY tool_name
-    ORDER BY call_count DESC
-  `;
-
-  return db.prepare(sql).all(...params);
-}
-
 // ── Spending ──────────────────────────────────────────────────────────────────
-
-interface RawCostRow {
-  group_key: string;
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  total_cost: number;
-  session_count: number;
-}
 
 export function costBreakdown(
   opts: { since?: string; groupBy?: "session" | "model" | "day" } = {},
@@ -484,52 +442,49 @@ export function costBreakdown(
   const sinceMs = parseSince(opts.since);
   const groupBy = opts.groupBy ?? "session";
 
-  const extraWhere = sinceMs
-    ? `AND CAST(timestamp_ns / 1000000 AS INTEGER) >= ${Number(sinceMs)}`
-    : "";
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (sinceMs) {
+    conditions.push("s.started_at_ms >= ?");
+    params.push(sinceMs);
+  }
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  let sql: string;
-
+  let groupExpr: string;
+  let selectExpr: string;
   if (groupBy === "day") {
-    // Day grouping needs session start times — join resolved_tokens with hook_events
-    sql = `
-      WITH ${resolvedMetricsCTE(extraWhere)},
-      session_starts AS (
-        SELECT session_id, date(MIN(timestamp_ms) / 1000, 'unixepoch') as day
-        FROM hook_events
-        GROUP BY session_id
-      )
-      SELECT ss.day as group_key,
-             SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
-             SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
-             SUM(tokens) as total_tokens,
-             SUM(${COST_EXPR}) as total_cost,
-             COUNT(DISTINCT resolved_tokens.session_id) as session_count
-      FROM resolved_tokens
-      INNER JOIN session_starts ss ON resolved_tokens.session_id = ss.session_id
-      GROUP BY ss.day
-      ORDER BY ss.day DESC
-    `;
+    groupExpr = "date(s.started_at_ms / 1000, 'unixepoch')";
+    selectExpr = `${groupExpr} as group_key`;
+  } else if (groupBy === "model") {
+    groupExpr = "COALESCE(s.model, 'unknown')";
+    selectExpr = `${groupExpr} as group_key`;
   } else {
-    const groupExpr = groupBy === "model" ? "model" : "session_id";
-    const selectExpr =
-      groupBy === "model" ? "model as group_key" : "session_id as group_key";
-
-    sql = `
-      WITH ${resolvedMetricsCTE(extraWhere)}
-      SELECT ${selectExpr},
-             SUM(CASE WHEN token_type IN ('input', 'cacheRead', 'cacheWrite') THEN tokens ELSE 0 END) as input_tokens,
-             SUM(CASE WHEN token_type = 'output' THEN tokens ELSE 0 END) as output_tokens,
-             SUM(tokens) as total_tokens,
-             SUM(${COST_EXPR}) as total_cost,
-             COUNT(DISTINCT session_id) as session_count
-      FROM resolved_tokens
-      GROUP BY ${groupExpr}
-      ORDER BY total_tokens DESC
-    `;
+    groupExpr = "s.session_id";
+    selectExpr = "s.session_id as group_key";
   }
 
-  const rows = db.prepare(sql).all() as RawCostRow[];
+  const sql = `
+    SELECT ${selectExpr},
+           SUM(COALESCE(s.total_input_tokens, 0) + COALESCE(s.total_cache_read_tokens, 0) + COALESCE(s.total_cache_creation_tokens, 0)) as input_tokens,
+           SUM(COALESCE(s.total_output_tokens, 0)) as output_tokens,
+           SUM(COALESCE(s.total_input_tokens, 0) + COALESCE(s.total_output_tokens, 0) + COALESCE(s.total_cache_read_tokens, 0) + COALESCE(s.total_cache_creation_tokens, 0)) as total_tokens,
+           SUM(${SESSION_COST_SQL}) as total_cost,
+           COUNT(DISTINCT s.session_id) as session_count
+    FROM sessions s
+    ${where}
+    GROUP BY ${groupExpr}
+    ORDER BY ${groupBy === "day" ? "group_key DESC" : "total_tokens DESC"}
+  `;
+
+  const rows = db.prepare(sql).all(...params) as Array<{
+    group_key: string;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    total_cost: number;
+    session_count: number;
+  }>;
 
   const groups: SpendingGroup[] = rows.map((row) => ({
     key: row.group_key,
@@ -563,7 +518,7 @@ interface RawSearchRow {
   payload: string | null;
 }
 
-export function searchEvents(opts: {
+export function search(opts: {
   query: string;
   eventTypes?: string[];
   since?: string;
@@ -722,45 +677,55 @@ export function activitySummary(
   const sinceMs = parseSince(opts.since ?? "24h") ?? Date.now() - 86400000;
   const now = Date.now();
 
-  const sessionsSql = `
-    SELECT session_id,
-           MIN(timestamp_ms) as start_ms,
-           MAX(timestamp_ms) as end_ms,
-           COUNT(*) as event_count
-    FROM hook_events
-    WHERE timestamp_ms >= ?
-    GROUP BY session_id
-    ORDER BY start_ms ASC
-  `;
-  const rawSessions = db.prepare(sessionsSql).all(sinceMs) as {
+  const rawSessions = db
+    .prepare(
+      `SELECT s.session_id, s.model, s.project,
+              s.started_at_ms, s.ended_at_ms,
+              COALESCE(s.total_input_tokens, 0) + COALESCE(s.total_output_tokens, 0) +
+              COALESCE(s.total_cache_read_tokens, 0) + COALESCE(s.total_cache_creation_tokens, 0) as total_tokens,
+              ${SESSION_COST_SQL} as total_cost
+       FROM sessions s
+       WHERE s.started_at_ms >= ?
+       ORDER BY s.started_at_ms ASC`,
+    )
+    .all(sinceMs) as Array<{
     session_id: string;
-    start_ms: number;
-    end_ms: number;
-    event_count: number;
-  }[];
+    model: string | null;
+    project: string | null;
+    started_at_ms: number | null;
+    ended_at_ms: number | null;
+    total_tokens: number;
+    total_cost: number;
+  }>;
 
   let totalCost = 0;
   let totalTokens = 0;
   const sessions: ActivitySessionDetail[] = [];
 
   for (const s of rawSessions) {
+    totalCost += s.total_cost;
+    totalTokens += s.total_tokens;
+
+    // User prompts from messages
     const prompts = db
       .prepare(
-        "SELECT SUBSTR(user_prompt, 1, 100) as prompt FROM hook_events WHERE session_id = ? AND event_type = 'UserPromptSubmit' AND timestamp_ms >= ? ORDER BY timestamp_ms ASC",
+        "SELECT SUBSTR(content, 1, 100) as prompt FROM messages WHERE session_id = ? AND role = 'user' AND is_system = 0 ORDER BY ordinal ASC LIMIT 10",
       )
-      .all(s.session_id, sinceMs) as { prompt: string | null }[];
+      .all(s.session_id) as { prompt: string }[];
 
+    // Tool usage from tool_calls
     const tools = db
       .prepare(
-        "SELECT tool_name, COUNT(*) as count FROM hook_events WHERE session_id = ? AND event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ? GROUP BY tool_name ORDER BY count DESC",
+        "SELECT tool_name, COUNT(*) as count FROM tool_calls WHERE session_id = ? GROUP BY tool_name ORDER BY count DESC",
       )
-      .all(s.session_id, sinceMs) as { tool_name: string; count: number }[];
+      .all(s.session_id) as { tool_name: string; count: number }[];
 
-    const files = db
+    // Files from Write/Edit tool_calls input_json
+    const fileRows = db
       .prepare(
-        "SELECT DISTINCT file_path FROM hook_events WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND event_type = 'PostToolUse' AND file_path IS NOT NULL AND timestamp_ms >= ?",
+        "SELECT DISTINCT json_extract(input_json, '$.file_path') as file_path FROM tool_calls WHERE session_id = ? AND tool_name IN ('Write', 'Edit') AND input_json IS NOT NULL",
       )
-      .all(s.session_id, sinceMs) as { file_path: string | null }[];
+      .all(s.session_id) as { file_path: string | null }[];
 
     const repos = db
       .prepare(
@@ -768,60 +733,39 @@ export function activitySummary(
       )
       .all(s.session_id) as RawRepoRow[];
 
-    const cwdRow = db
-      .prepare(
-        "SELECT cwd FROM hook_events WHERE session_id = ? AND event_type = 'SessionStart' LIMIT 1",
-      )
-      .get(s.session_id) as { cwd: string | null } | undefined;
-
-    const costRow = db
-      .prepare(
-        `WITH ${resolvedMetricsCTE("AND session_id = @sid")} SELECT SUM(tokens) as tokens, SUM(${COST_EXPR}) as cost FROM resolved_tokens`,
-      )
-      .get({ sid: s.session_id }) as
-      | { tokens: number; cost: number }
-      | undefined;
-
-    const sessionCost = costRow?.cost ?? 0;
-    const sessionTokens = costRow?.tokens ?? 0;
-    totalCost += sessionCost;
-    totalTokens += sessionTokens;
+    const durationMs =
+      s.started_at_ms && s.ended_at_ms ? s.ended_at_ms - s.started_at_ms : 0;
 
     sessions.push({
       sessionId: s.session_id,
-      startedAt: toIso(s.start_ms),
-      durationMinutes: Math.round((s.end_ms - s.start_ms) / 60000),
-      cwd: cwdRow?.cwd ?? null,
+      startedAt: s.started_at_ms ? toIso(s.started_at_ms) : null,
+      durationMinutes: Math.round(durationMs / 60000),
+      model: s.model,
+      project: s.project,
       repositories: repos.map((r) => ({
         name: r.repository,
         gitUserName: r.git_user_name,
         gitUserEmail: r.git_user_email,
       })),
-      userPrompts: prompts.map((p) => p.prompt).filter(Boolean) as string[],
+      userPrompts: prompts.map((p) => p.prompt),
       toolsUsed: tools.map((t) => ({ tool: t.tool_name, count: t.count })),
-      filesModified: files.map((f) => f.file_path).filter(Boolean) as string[],
-      totalCost: sessionCost,
+      filesModified: fileRows
+        .map((f) => f.file_path)
+        .filter(Boolean) as string[],
+      totalCost: s.total_cost,
     });
   }
 
-  // Global top tools
+  // Global top tools from tool_calls
   const topTools = db
     .prepare(
-      "SELECT tool_name, COUNT(*) as count FROM hook_events WHERE event_type = 'PostToolUse' AND tool_name IS NOT NULL AND timestamp_ms >= ? GROUP BY tool_name ORDER BY count DESC LIMIT 10",
+      `SELECT tc.tool_name, COUNT(*) as count
+       FROM tool_calls tc
+       INNER JOIN sessions s ON tc.session_id = s.session_id
+       WHERE s.started_at_ms >= ?
+       GROUP BY tc.tool_name ORDER BY count DESC LIMIT 10`,
     )
     .all(sinceMs) as { tool_name: string; count: number }[];
-
-  // Global event type counts
-  const eventTypeRows = db
-    .prepare(
-      "SELECT event_type, COUNT(*) as count FROM hook_events WHERE timestamp_ms >= ? GROUP BY event_type",
-    )
-    .all(sinceMs) as { event_type: string; count: number }[];
-
-  const eventTypeCounts: Record<string, number> = {};
-  for (const r of eventTypeRows) {
-    eventTypeCounts[r.event_type] = r.count;
-  }
 
   return {
     period: {
@@ -832,8 +776,6 @@ export function activitySummary(
     totalTokens,
     totalCost,
     topTools: topTools.map((t) => ({ tool: t.tool_name, count: t.count })),
-    eventTypeCounts,
-    engineers: [], // local — single user, no engineer breakdown
     sessions,
     source: "local",
   };
@@ -891,7 +833,10 @@ export function listPlans(
 
 // ── Get Event (panopticon-specific) ───────────────────────────────────────────
 
-export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
+export function print(opts: {
+  source: "hook" | "otel" | "message";
+  id: number;
+}) {
   const db = getDb();
 
   if (opts.source === "hook") {
@@ -903,6 +848,27 @@ export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
       WHERE id = ?
     `;
     return db.prepare(sql).get(opts.id) ?? null;
+  }
+
+  if (opts.source === "message") {
+    const msg = db
+      .prepare(
+        `SELECT m.id, m.session_id, m.ordinal, m.role, m.content, m.timestamp_ms,
+              m.has_thinking, m.has_tool_use, m.content_length, m.is_system,
+              m.model, m.token_usage, m.context_tokens, m.output_tokens,
+              m.uuid, m.parent_uuid
+       FROM messages m WHERE m.id = ?`,
+      )
+      .get(opts.id) as Record<string, unknown> | undefined;
+    if (!msg) return null;
+    const toolCalls = db
+      .prepare(
+        `SELECT tool_name, category, tool_use_id, input_json, skill_name,
+              result_content_length, duration_ms, subagent_session_id
+       FROM tool_calls WHERE message_id = ?`,
+      )
+      .all(opts.id);
+    return { source: "message", ...msg, tool_calls: toolCalls };
   }
 
   const sql = `
@@ -963,13 +929,22 @@ export function dbStats() {
     .prepare("SELECT COUNT(*) as count FROM scanner_events")
     .get() as { count: number };
 
+  const messages = db
+    .prepare("SELECT COUNT(*) as count FROM messages")
+    .get() as { count: number };
+  const toolCalls = db
+    .prepare("SELECT COUNT(*) as count FROM tool_calls")
+    .get() as { count: number };
+
   return {
+    sessions: sessions.count,
+    messages: messages.count,
+    tool_calls: toolCalls.count,
+    scanner_turns: scannerTurns.count,
+    scanner_events: scannerEvents.count,
+    hook_events: hooks.count,
     otel_logs: logs.count,
     otel_metrics: metrics.count,
     otel_spans: spans.count,
-    hook_events: hooks.count,
-    sessions: sessions.count,
-    scanner_turns: scannerTurns.count,
-    scanner_events: scannerEvents.count,
   };
 }

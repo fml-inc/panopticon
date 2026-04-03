@@ -23,16 +23,20 @@ export interface Repository {
 
 export interface Session {
   sessionId: string;
-  startedAt: string;
+  target: string | null;
+  model: string | null;
+  project: string | null;
+  startedAt: string | null;
   endedAt: string | null;
-  eventCount: number;
-  toolCount: number;
-  totalTokens: number;
+  firstPrompt: string | null;
+  turnCount: number;
+  messageCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
   totalCost: number;
   repositories: Repository[];
-  cwd: string | null;
-  firstPrompt: string | null;
-  eventTypeCounts: Record<string, number>;
+  parentSessionId: string | null;
+  relationshipType: string | null;
 }
 
 export interface SessionListResult {
@@ -43,22 +47,65 @@ export interface SessionListResult {
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
-export interface TimelineEvent {
-  eventType: string;
-  timestamp: string;
-  toolName: string | null;
-  promptPreview: string | null;
-  payload: unknown | null;
+export interface TimelineToolCall {
+  toolName: string;
+  category: string;
+  toolUseId: string | null;
+  inputJson: string | null;
+  skillName: string | null;
+  resultContentLength: number | null;
+  durationMs: number | null;
+  subagentSessionId: string | null;
+  /** Subagent session metadata, present when subagentSessionId is set */
+  subagent: {
+    sessionId: string;
+    model: string | null;
+    turnCount: number;
+    firstPrompt: string | null;
+  } | null;
+}
+
+export interface TimelineMessage {
+  id: number;
+  ordinal: number;
+  role: string;
+  content: string;
+  timestampMs: number | null;
+  model: string | null;
+  isSystem: boolean;
+  hasThinking: boolean;
+  hasToolUse: boolean;
+  contentLength: number;
+  uuid: string | null;
+  parentUuid: string | null;
+  tokenUsage: string | null;
+  contextTokens: number;
+  outputTokens: number;
+  toolCalls: TimelineToolCall[];
+}
+
+export interface ChildSession {
+  sessionId: string;
+  relationshipType: string;
+  model: string | null;
+  turnCount: number;
+  firstPrompt: string | null;
+  startedAtMs: number | null;
 }
 
 export interface SessionTimelineResult {
   session: {
     sessionId: string;
+    target: string | null;
+    model: string | null;
+    project: string | null;
+    parentSessionId: string | null;
+    relationshipType: string | null;
     repositories: Repository[];
-    cwd: string | null;
+    childSessions: ChildSession[];
   } | null;
-  events: TimelineEvent[];
-  totalEvents: number;
+  messages: TimelineMessage[];
+  totalMessages: number;
   hasMore: boolean;
   source: "local" | "remote";
 }
@@ -90,9 +137,10 @@ export interface SpendingResult {
 
 export interface ActivitySessionDetail {
   sessionId: string;
-  startedAt: string;
+  startedAt: string | null;
   durationMinutes: number;
-  cwd: string | null;
+  model: string | null;
+  project: string | null;
   repositories: Repository[];
   userPrompts: string[];
   toolsUsed: Array<{ tool: string; count: number }>;
@@ -109,12 +157,6 @@ export interface ActivitySummaryResult {
   totalTokens: number;
   totalCost: number;
   topTools: Array<{ tool: string; count: number }>;
-  eventTypeCounts: Record<string, number>;
-  engineers: Array<{
-    gitUserEmail: string;
-    sessionCount: number;
-    lastActiveAt: string;
-  }>;
   sessions: ActivitySessionDetail[];
   source: "local" | "remote";
 }

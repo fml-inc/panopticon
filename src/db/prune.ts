@@ -9,6 +9,11 @@ export interface PruneResult {
   session_repositories: number;
   session_cwds: number;
   model_pricing: number;
+  sessions: number;
+  messages: number;
+  tool_calls: number;
+  scanner_turns: number;
+  scanner_events: number;
 }
 
 export function pruneEstimate(cutoffMs: number): PruneResult {
@@ -59,6 +64,45 @@ export function pruneEstimate(cutoffMs: number): PruneResult {
       .get(cutoffMs) as { c: number }
   ).c;
 
+  // Scanner-derived data pruned by session age
+  const sessionsToDelete =
+    "SELECT session_id FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ?";
+  const sessions = (
+    db
+      .prepare(
+        "SELECT COUNT(*) as c FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ?",
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+  const messages = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM messages WHERE session_id IN (${sessionsToDelete})`,
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+  const toolCalls = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM tool_calls WHERE session_id IN (${sessionsToDelete})`,
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+  const scannerTurns = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM scanner_turns WHERE session_id IN (${sessionsToDelete})`,
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+  const scannerEvents = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM scanner_events WHERE session_id IN (${sessionsToDelete})`,
+      )
+      .get(cutoffMs) as { c: number }
+  ).c;
+
   return {
     otel_logs: logs,
     otel_metrics: metrics,
@@ -66,6 +110,11 @@ export function pruneEstimate(cutoffMs: number): PruneResult {
     session_repositories: sessionRepos,
     session_cwds: sessionCwds,
     model_pricing: pricing,
+    sessions,
+    messages,
+    tool_calls: toolCalls,
+    scanner_turns: scannerTurns,
+    scanner_events: scannerEvents,
   };
 }
 
@@ -111,6 +160,42 @@ export function pruneExecute(cutoffMs: number): PruneResult {
       )
       .run(cutoffMs).changes;
 
+    // Prune scanner-derived data for old sessions
+    const oldSessions =
+      "SELECT session_id FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ?";
+
+    // FTS before messages
+    db.prepare(
+      `DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id IN (${oldSessions}))`,
+    ).run(cutoffMs);
+    const messages = db
+      .prepare(`DELETE FROM messages WHERE session_id IN (${oldSessions})`)
+      .run(cutoffMs).changes;
+    const toolCalls = db
+      .prepare(`DELETE FROM tool_calls WHERE session_id IN (${oldSessions})`)
+      .run(cutoffMs).changes;
+    const scannerTurns = db
+      .prepare(`DELETE FROM scanner_turns WHERE session_id IN (${oldSessions})`)
+      .run(cutoffMs).changes;
+    const scannerEvents = db
+      .prepare(
+        `DELETE FROM scanner_events WHERE session_id IN (${oldSessions})`,
+      )
+      .run(cutoffMs).changes;
+    // Delete watermarks for files backing these sessions
+    db.prepare(
+      "DELETE FROM scanner_file_watermarks WHERE file_path IN (SELECT scanner_file_path FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ? AND scanner_file_path IS NOT NULL)",
+    ).run(cutoffMs);
+    // Summary deltas
+    db.prepare(
+      `DELETE FROM session_summary_deltas WHERE session_id IN (${oldSessions})`,
+    ).run(cutoffMs);
+    const sessions = db
+      .prepare(
+        "DELETE FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ?",
+      )
+      .run(cutoffMs).changes;
+
     return {
       otel_logs: logs,
       otel_metrics: metrics,
@@ -118,6 +203,11 @@ export function pruneExecute(cutoffMs: number): PruneResult {
       session_repositories: sessionRepos,
       session_cwds: sessionCwds,
       model_pricing: pricing,
+      sessions,
+      messages,
+      tool_calls: toolCalls,
+      scanner_turns: scannerTurns,
+      scanner_events: scannerEvents,
     };
   });
 

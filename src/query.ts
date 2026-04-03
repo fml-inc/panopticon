@@ -9,11 +9,10 @@ export {
   activitySummary,
   costBreakdown,
   dbStats,
-  getEvent,
   listPlans,
   listSessions,
+  print,
   rawQuery,
-  searchEvents,
+  search,
   sessionTimeline,
-  toolStats,
 } from "./db/query.js";
