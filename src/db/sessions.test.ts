@@ -18,7 +18,7 @@ vi.mock("../config.js", () => {
   return {
     config: {
       dataDir: tmpDir,
-      dbPath: _path.join(tmpDir, "data.db"),
+      dbPath: _path.join(tmpDir, "panopticon.db"),
       port: 4318,
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),

@@ -38,11 +38,7 @@ import {
   loadSyncConfig,
   removeTarget,
 } from "./sync/config.js";
-import {
-  closeWatermarkDb,
-  watermarkKey,
-  writeWatermark,
-} from "./sync/watermark.js";
+import { watermarkKey, writeWatermark } from "./sync/watermark.js";
 import {
   loadRetentionConfig,
   loadUnifiedConfig,
@@ -133,7 +129,6 @@ describe("integration: unified config + sync-aware retention", () => {
 
   afterEach(() => {
     closeDb();
-    closeWatermarkDb();
     fs.rmSync(config.dataDir, { recursive: true, force: true });
   });
 

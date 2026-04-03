@@ -16,11 +16,7 @@ vi.mock("../config.js", () => {
 });
 
 import { config } from "../config.js";
-import {
-  closeWatermarkDb,
-  watermarkKey,
-  writeWatermark,
-} from "../sync/watermark.js";
+import { watermarkKey, writeWatermark } from "../sync/watermark.js";
 import type { RetentionConfig } from "../unified-config.js";
 import { closeDb, getDb } from "./schema.js";
 import { minWatermarkForTable, syncAwarePrune } from "./sync-prune.js";
@@ -87,7 +83,6 @@ describe("sync-prune", () => {
 
   afterEach(() => {
     closeDb();
-    closeWatermarkDb();
     fs.rmSync(config.dataDir, { recursive: true, force: true });
   });
 

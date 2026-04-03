@@ -1,38 +1,12 @@
-import path from "node:path";
-import Database from "better-sqlite3";
-import { config, ensureDataDir } from "../config.js";
+import { getDb } from "../db/schema.js";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
-
-const WATERMARK_DB_NAME = "sync-watermarks.db";
-
-let _db: Database.Database | null = null;
-
-function getWatermarkDb(): Database.Database {
-  if (_db) return _db;
-
-  ensureDataDir();
-  const dbPath = path.join(config.dataDir, WATERMARK_DB_NAME);
-  _db = new Database(dbPath);
-  _db.pragma("journal_mode = WAL");
-  _db.exec(
-    "CREATE TABLE IF NOT EXISTS watermarks (key TEXT PRIMARY KEY, value INTEGER NOT NULL)",
-  );
-  return _db;
-}
-
-export function closeWatermarkDb(): void {
-  if (_db) {
-    _db.close();
-    _db = null;
-  }
-}
 
 export function watermarkKey(table: string, targetName: string): string {
   return `${table}:${targetName}`;
 }
 
 export function readWatermark(key: string): number {
-  const db = getWatermarkDb();
+  const db = getDb();
   const row = db
     .prepare("SELECT value FROM watermarks WHERE key = ?")
     .get(key) as { value: number } | undefined;
@@ -40,14 +14,14 @@ export function readWatermark(key: string): number {
 }
 
 export function writeWatermark(key: string, value: number): void {
-  const db = getWatermarkDb();
+  const db = getDb();
   db.prepare(
     "INSERT INTO watermarks (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(key, value);
 }
 
 export function resetWatermarks(targetName?: string): void {
-  const db = getWatermarkDb();
+  const db = getDb();
   if (targetName) {
     const stmt = db.prepare("DELETE FROM watermarks WHERE key = ?");
     for (const desc of TABLE_SYNC_REGISTRY) {

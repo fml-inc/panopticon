@@ -2,9 +2,62 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
+import { defaultToolCategory } from "../scanner/categories.js";
 import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { ScannerParseResult, TargetAdapter } from "./types.js";
+import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
+
+const CLAUDE_TOOL_CATEGORIES: Record<string, string> = {
+  Read: "Read",
+  read_file: "Read",
+  ReadNotebook: "Read",
+  Edit: "Edit",
+  StrReplace: "Edit",
+  MultiEdit: "Edit",
+  Write: "Write",
+  create_file: "Write",
+  NotebookEdit: "Write",
+  Bash: "Bash",
+  Grep: "Grep",
+  Glob: "Glob",
+  list_dir: "Glob",
+  Task: "Task",
+  Agent: "Task",
+  TaskCreate: "Task",
+  TaskUpdate: "Task",
+  Skill: "Tool",
+  WebSearch: "Web",
+  WebFetch: "Web",
+  ToolSearch: "Web",
+};
+
+function claudeToolCategory(toolName: string): string {
+  const mapped = CLAUDE_TOOL_CATEGORIES[toolName];
+  if (mapped) return mapped;
+  if (toolName.startsWith("mcp__")) return "MCP";
+  if (toolName.toLowerCase().includes("subagent")) return "Task";
+  return defaultToolCategory(toolName);
+}
+
+/** Extract total text length from a tool_result content field. */
+function extractToolResultTextLength(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    let len = 0;
+    for (const b of content) {
+      if (
+        typeof b === "object" &&
+        b !== null &&
+        (b as Record<string, unknown>).type === "text"
+      ) {
+        const text = (b as Record<string, unknown>).text;
+        if (typeof text === "string") len += text.length;
+      }
+    }
+    return len;
+  }
+  return 0;
+}
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 
@@ -150,20 +203,44 @@ const claude: TargetAdapter = {
   },
 
   scanner: {
+    normalizeToolCategory: claudeToolCategory,
     discover() {
       const projectsDir = path.join(CLAUDE_DIR, "projects");
       const files: { filePath: string }[] = [];
+      const safeReaddir = (d: string) => {
+        try {
+          return fs.readdirSync(d);
+        } catch {
+          return [];
+        }
+      };
+      const safeIsDir = (d: string) => {
+        try {
+          return fs.statSync(d).isDirectory();
+        } catch {
+          return false;
+        }
+      };
       try {
         for (const slug of fs.readdirSync(projectsDir)) {
           const slugDir = path.join(projectsDir, slug);
-          try {
-            if (!fs.statSync(slugDir).isDirectory()) continue;
-          } catch {
-            continue;
-          }
+          if (!safeIsDir(slugDir)) continue;
           for (const entry of fs.readdirSync(slugDir)) {
+            const entryPath = path.join(slugDir, entry);
             if (entry.endsWith(".jsonl")) {
-              files.push({ filePath: path.join(slugDir, entry) });
+              files.push({ filePath: entryPath });
+            }
+            // Recurse into session UUID directories for subagent JSONL files
+            // e.g. {slug}/{uuid}/subagents/agent-*.jsonl
+            if (safeIsDir(entryPath)) {
+              const subagentsDir = path.join(entryPath, "subagents");
+              for (const sub of safeReaddir(subagentsDir)) {
+                if (sub.endsWith(".jsonl")) {
+                  files.push({
+                    filePath: path.join(subagentsDir, sub),
+                  });
+                }
+              }
             }
           }
         }
@@ -173,18 +250,19 @@ const claude: TargetAdapter = {
       return files;
     },
 
-    parseFile(
-      filePath: string,
-      fromByteOffset: number,
-    ): ScannerParseResult | null {
+    parseFile(filePath: string, fromByteOffset: number): ParseResult | null {
       const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
       if (lines.length === 0) return null;
 
-      let meta: ScannerParseResult["meta"];
-      const turns: ScannerParseResult["turns"] = [];
-      const events: ScannerParseResult["events"] = [];
+      let meta: ParseResult["meta"];
+      const turns: ParseResult["turns"] = [];
+      const events: ParseResult["events"] = [];
+      const messages: ParseResult["messages"] = [];
       let turnIndex = 0;
+      let ordinal = 0;
       let firstPrompt: string | undefined;
+      // Map tool_use_id → subagent session ID (e.g. "agent-abc123")
+      const subagentMap = new Map<string, string>();
 
       for (const line of lines) {
         let obj: Record<string, unknown>;
@@ -196,33 +274,98 @@ const claude: TargetAdapter = {
 
         const type = obj.type as string;
         const sessionId = obj.sessionId as string | undefined;
-        const sid = sessionId ?? meta?.sessionId ?? "";
+        const agentId = obj.agentId as string | undefined;
         const tsMs = obj.timestamp
           ? new Date(obj.timestamp as string).getTime()
           : Date.now();
 
         if (!meta && sessionId) {
-          meta = {
-            sessionId,
-            cliVersion: obj.version as string | undefined,
-            cwd: obj.cwd as string | undefined,
-            startedAtMs: tsMs,
-          };
+          // Subagent files have agentId set and sessionId is the parent's ID.
+          // Use "agent-{agentId}" as the session ID (matches file naming).
+          if (agentId) {
+            meta = {
+              sessionId: `agent-${agentId}`,
+              parentSessionId: sessionId,
+              cliVersion: obj.version as string | undefined,
+              cwd: obj.cwd as string | undefined,
+              startedAtMs: tsMs,
+            };
+          } else {
+            meta = {
+              sessionId,
+              cliVersion: obj.version as string | undefined,
+              cwd: obj.cwd as string | undefined,
+              startedAtMs: tsMs,
+            };
+          }
         }
+
+        const sid = meta?.sessionId ?? sessionId ?? "";
 
         if (type === "user") {
           const msg = obj.message as Record<string, unknown> | undefined;
           const content = msg?.content;
           let preview: string | undefined;
+          const textParts: string[] = [];
+          const toolResults = new Map<
+            string,
+            { contentLength: number; contentRaw: string }
+          >();
+
           if (typeof content === "string") {
             preview = content.slice(0, 200);
+            textParts.push(content);
           } else if (Array.isArray(content)) {
-            const text = content.find(
-              (b: Record<string, unknown>) => b.type === "text",
-            );
-            if (text) preview = (text.text as string)?.slice(0, 200);
+            for (const block of content) {
+              if (typeof block !== "object" || block === null) continue;
+              const b = block as Record<string, unknown>;
+              if (b.type === "text" && typeof b.text === "string") {
+                textParts.push(b.text);
+              } else if (b.type === "tool_result") {
+                const textLen = extractToolResultTextLength(b.content);
+                // Store raw content as-is: string stays string, arrays/objects get serialized
+                const raw =
+                  typeof b.content === "string"
+                    ? b.content
+                    : JSON.stringify(b.content ?? "");
+                toolResults.set(b.tool_use_id as string, {
+                  contentLength: textLen,
+                  contentRaw: raw,
+                });
+              }
+            }
+            if (textParts.length > 0) {
+              preview = textParts[0].slice(0, 200);
+            }
           }
           if (!firstPrompt && preview) firstPrompt = preview;
+
+          const fullContent = textParts.join("\n");
+
+          // Skip meta/system messages (following agentsview's filtering)
+          const isMeta = obj.isMeta === true;
+          const isCompact = obj.isCompactSummary === true;
+          if (
+            !isMeta &&
+            !isCompact &&
+            (fullContent.length > 0 || toolResults.size > 0)
+          ) {
+            messages.push({
+              sessionId: sid,
+              ordinal: ordinal++,
+              role: "user",
+              content: fullContent,
+              timestampMs: tsMs,
+              hasThinking: false,
+              hasToolUse: false,
+              isSystem: false,
+              contentLength: fullContent.length,
+              hasContextTokens: false,
+              hasOutputTokens: false,
+              toolCalls: [],
+              toolResults,
+            });
+          }
 
           turns.push({
             sessionId: sid,
@@ -244,42 +387,28 @@ const claude: TargetAdapter = {
           const model = msg?.model as string | undefined;
           if (meta && model && !meta.model) meta.model = model;
 
-          turns.push({
-            sessionId: sid,
-            turnIndex: turnIndex++,
-            timestampMs: tsMs,
-            model,
-            role: "assistant",
-            inputTokens: (usage?.input_tokens as number) ?? 0,
-            outputTokens: (usage?.output_tokens as number) ?? 0,
-            cacheReadTokens: (usage?.cache_read_input_tokens as number) ?? 0,
-            cacheCreationTokens:
-              (usage?.cache_creation_input_tokens as number) ?? 0,
-            reasoningTokens: 0,
-          });
+          // Build message content and tool calls from content blocks
+          const textParts: string[] = [];
+          let hasThinking = false;
+          let hasToolUse = false;
+          const toolCalls: ParsedToolCall[] = [];
 
-          // Extract content blocks from assistant messages
           const content = msg?.content;
           if (Array.isArray(content)) {
             for (const block of content) {
               if (typeof block !== "object" || block === null) continue;
               const b = block as Record<string, unknown>;
 
-              if (b.type === "tool_use") {
-                const input = b.input as Record<string, unknown> | undefined;
-                events.push({
-                  sessionId: sid,
-                  eventType: "tool_call",
-                  timestampMs: tsMs,
-                  toolName: b.name as string | undefined,
-                  toolInput: input
-                    ? JSON.stringify(input).slice(0, 10_000)
-                    : undefined,
-                  metadata: { tool_use_id: b.id },
-                });
+              if (b.type === "text" && typeof b.text === "string") {
+                textParts.push(b.text);
               }
 
               if (b.type === "thinking") {
+                hasThinking = true;
+                if (typeof b.thinking === "string") {
+                  textParts.push(`[Thinking]\n${b.thinking}\n[/Thinking]`);
+                }
+
                 events.push({
                   sessionId: sid,
                   eventType: "thinking",
@@ -293,11 +422,83 @@ const claude: TargetAdapter = {
                   },
                 });
               }
+
+              if (b.type === "tool_use") {
+                hasToolUse = true;
+                const toolName = (b.name as string) ?? "";
+                const input = b.input as Record<string, unknown> | undefined;
+                const inputJson = input ? JSON.stringify(input) : undefined;
+
+                // Extract skill name for Skill tools
+                let skillName: string | undefined;
+                if (toolName === "Skill" && input) {
+                  skillName = (input.skill ?? input.name) as string | undefined;
+                }
+
+                toolCalls.push({
+                  toolUseId: (b.id as string) ?? "",
+                  toolName,
+                  category: claudeToolCategory(toolName),
+                  inputJson,
+                  skillName,
+                });
+
+                events.push({
+                  sessionId: sid,
+                  eventType: "tool_call",
+                  timestampMs: tsMs,
+                  toolName,
+                  toolInput: inputJson?.slice(0, 10_000),
+                  metadata: { tool_use_id: b.id },
+                });
+              }
             }
           }
+
+          const fullContent = textParts.join("\n");
+          const inputTokens = (usage?.input_tokens as number) ?? 0;
+          const outTokens = (usage?.output_tokens as number) ?? 0;
+          const cacheRead = (usage?.cache_read_input_tokens as number) ?? 0;
+          const cacheCreation =
+            (usage?.cache_creation_input_tokens as number) ?? 0;
+          const ctxTokens = inputTokens + cacheRead + cacheCreation;
+          const hasCtx = inputTokens > 0 || cacheRead > 0 || cacheCreation > 0;
+
+          messages.push({
+            sessionId: sid,
+            ordinal: ordinal++,
+            role: "assistant",
+            content: fullContent,
+            timestampMs: tsMs,
+            hasThinking,
+            hasToolUse,
+            isSystem: false,
+            contentLength: fullContent.length,
+            model,
+            tokenUsage: usage ? JSON.stringify(usage) : undefined,
+            contextTokens: hasCtx ? ctxTokens : undefined,
+            outputTokens: outTokens > 0 ? outTokens : undefined,
+            hasContextTokens: hasCtx,
+            hasOutputTokens: outTokens > 0,
+            toolCalls,
+            toolResults: new Map(),
+          });
+
+          turns.push({
+            sessionId: sid,
+            turnIndex: turnIndex++,
+            timestampMs: tsMs,
+            model,
+            role: "assistant",
+            inputTokens,
+            outputTokens: outTokens,
+            cacheReadTokens: cacheRead,
+            cacheCreationTokens: cacheCreation,
+            reasoningTokens: 0,
+          });
         }
 
-        // Extract content blocks from user messages
+        // Extract content blocks from user messages (events only — message already built above)
         if (type === "user") {
           const msg = obj.message as Record<string, unknown> | undefined;
           const content = msg?.content;
@@ -412,13 +613,22 @@ const claude: TargetAdapter = {
               },
             });
           } else if (progressType === "agent_progress") {
-            // Subagent activity
+            // Subagent activity — build tool_use_id → agent session mapping
+            const tuid = (data?.parentToolUseID ?? obj.parentToolUseID) as
+              | string
+              | undefined;
+            const agentId = (data?.agentId ?? obj.agentId) as
+              | string
+              | undefined;
+            if (tuid && agentId) {
+              subagentMap.set(tuid, `agent-${agentId}`);
+            }
             events.push({
               sessionId: sid,
               eventType: "agent_progress",
               timestampMs: tsMs,
               metadata: {
-                parentToolUseID: data?.parentToolUseID ?? obj.parentToolUseID,
+                parentToolUseID: tuid,
                 toolUseID: obj.toolUseID,
               },
             });
@@ -428,6 +638,28 @@ const claude: TargetAdapter = {
         // Queue operations (user prompt queue)
         if (type === "queue-operation") {
           const operation = obj.operation as string | undefined;
+          // Extract subagent mapping from enqueue operations
+          if (operation === "enqueue" && typeof obj.content === "string") {
+            try {
+              const qc = JSON.parse(obj.content) as Record<string, unknown>;
+              const tuid = qc.tool_use_id as string | undefined;
+              const taskId = qc.task_id as string | undefined;
+              if (tuid && taskId) {
+                subagentMap.set(tuid, `agent-${taskId}`);
+              }
+            } catch {
+              // Try XML-style extraction as fallback
+              const tuidMatch = obj.content.match(
+                /<tool-use-id>([^<]+)<\/tool-use-id>/,
+              );
+              const taskMatch = obj.content.match(
+                /<task-id>([^<]+)<\/task-id>/,
+              );
+              if (tuidMatch?.[1] && taskMatch?.[1]) {
+                subagentMap.set(tuidMatch[1], `agent-${taskMatch[1]}`);
+              }
+            }
+          }
           events.push({
             sessionId: sid,
             eventType: `queue:${operation ?? "unknown"}`,
@@ -455,7 +687,19 @@ const claude: TargetAdapter = {
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
-      return { meta, turns, events, newByteOffset };
+
+      // Annotate tool calls with subagent session IDs
+      if (subagentMap.size > 0) {
+        for (const msg of messages) {
+          for (const tc of msg.toolCalls) {
+            const agentSid = subagentMap.get(tc.toolUseId);
+            if (agentSid && (tc.category === "Task" || tc.toolName === "Agent"))
+              tc.subagentSessionId = agentSid;
+          }
+        }
+      }
+
+      return { meta, turns, events, messages, newByteOffset };
     },
   },
 };

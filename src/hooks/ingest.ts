@@ -410,12 +410,19 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     // First event in a session — capture initial state. cwd and
     // permission_mode are snapshot values from launch time.
     sessionFields.started_at_ms = timestampMs;
+    sessionFields.created_at = timestampMs;
     sessionFields.permission_mode =
       typeof data.permission_mode === "string"
         ? data.permission_mode
         : undefined;
     sessionFields.agent_version =
       typeof data.agent_version === "string" ? data.agent_version : undefined;
+    // Derive project from cwd
+    const cwd = data.cwd as string | undefined;
+    if (cwd) {
+      const repoInfo = resolveRepoFromCwd(cwd);
+      sessionFields.project = repoInfo?.repo ?? path.basename(cwd);
+    }
   }
   if (eventType === "UserPromptSubmit") {
     // Capture the first user prompt for session search/display. Only the

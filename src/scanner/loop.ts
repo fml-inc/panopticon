@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import type Database from "better-sqlite3";
 import { getDb } from "../db/schema.js";
+import { updateSessionMessageCounts } from "../db/store.js";
 // Import targets so they self-register before we iterate the registry
 import "../targets/claude.js";
 import "../targets/codex.js";
@@ -7,12 +9,15 @@ import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
-import type { ScannerParseResult } from "../targets/types.js";
+import type { ParseResult } from "../targets/types.js";
 import {
+  getMaxOrdinal,
   getTurnCount,
   getTurnsWithoutSummary,
+  insertMessages,
   insertScannerEvents,
   insertTurns,
+  linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
   updateSessionTotals,
@@ -56,6 +61,11 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         if (existingCount > 0) {
           reindexTurns(result, existingCount);
         }
+        // Re-index message ordinals for incremental reads
+        if (result.messages.length > 0) {
+          const maxOrd = getMaxOrdinal(result.meta.sessionId);
+          reindexMessages(result, maxOrd + 1);
+        }
       }
 
       if (!result.meta?.sessionId) {
@@ -63,19 +73,36 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         continue;
       }
 
-      upsertSession(result.meta, filePath, source);
+      // Wrap all per-file DB writes in a single transaction so that
+      // a crash can't leave messages inserted without watermark advancement
+      // (which would cause tool_call duplication on retry).
+      const sessionId = result.meta.sessionId;
+      const fileMeta = result.meta;
+      const fileResult = result;
+      const db = getDb();
+      (
+        db.transaction(() => {
+          upsertSession(fileMeta, filePath, source);
 
-      if (result.turns.length > 0) {
-        insertTurns(result.turns, source);
-        newTurns += result.turns.length;
-        updateSessionTotals(result.meta.sessionId);
-      }
+          if (fileResult.turns.length > 0) {
+            insertTurns(fileResult.turns, source);
+            updateSessionTotals(sessionId);
+          }
 
-      if (result.events.length > 0) {
-        insertScannerEvents(result.events, source);
-      }
+          if (fileResult.events.length > 0) {
+            insertScannerEvents(fileResult.events, source);
+          }
 
-      writeFileWatermark(filePath, result.newByteOffset);
+          if (fileResult.messages.length > 0) {
+            insertMessages(fileResult.messages);
+            updateSessionMessageCounts(sessionId);
+          }
+
+          writeFileWatermark(filePath, fileResult.newByteOffset);
+        }) as Database.Transaction
+      )();
+
+      newTurns += result.turns.length;
 
       // Archive raw file for 100% recall
       try {
@@ -121,16 +148,27 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
     }
   }
 
+  // Link subagent sessions to parents after all files are processed
   if (filesScanned > 0) {
+    const linked = linkSubagentSessions();
+    if (linked > 0) {
+      log(`Linked ${linked} subagent session${linked > 1 ? "s" : ""}`);
+    }
     log(`Scanned ${filesScanned} files, ${newTurns} new turns`);
   }
 
   return { filesScanned, newTurns };
 }
 
-function reindexTurns(result: ScannerParseResult, startIndex: number): void {
+function reindexTurns(result: ParseResult, startIndex: number): void {
   for (let i = 0; i < result.turns.length; i++) {
     result.turns[i].turnIndex = startIndex + i;
+  }
+}
+
+function reindexMessages(result: ParseResult, startOrdinal: number): void {
+  for (let i = 0; i < result.messages.length; i++) {
+    result.messages[i].ordinal = startOrdinal + i;
   }
 }
 

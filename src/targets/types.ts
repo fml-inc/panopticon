@@ -262,7 +262,7 @@ export interface DiscoveredFile {
   filePath: string;
 }
 
-export interface ScannerParsedTurn {
+export interface ParsedTurn {
   sessionId: string;
   turnIndex: number;
   timestampMs: number;
@@ -276,8 +276,9 @@ export interface ScannerParsedTurn {
   reasoningTokens: number;
 }
 
-export interface ScannerParsedSession {
+export interface ParsedSession {
   sessionId: string;
+  parentSessionId?: string;
   model?: string;
   cwd?: string;
   cliVersion?: string;
@@ -285,7 +286,7 @@ export interface ScannerParsedSession {
   firstPrompt?: string;
 }
 
-export interface ScannerParsedEvent {
+export interface ParsedEvent {
   sessionId: string;
   eventType: string; // tool_call, tool_result, error, agent_message, reasoning, file_snapshot, info
   timestampMs: number;
@@ -296,10 +297,45 @@ export interface ScannerParsedEvent {
   metadata?: Record<string, unknown>;
 }
 
-export interface ScannerParseResult {
-  meta?: ScannerParsedSession;
-  turns: ScannerParsedTurn[];
-  events: ScannerParsedEvent[];
+// ── Parsed messages & tool calls (for messages/tool_calls tables) ───────────
+
+export interface ParsedToolCall {
+  toolUseId: string;
+  toolName: string;
+  category: string;
+  inputJson?: string;
+  skillName?: string;
+  resultContentLength?: number;
+  resultContent?: string;
+  subagentSessionId?: string;
+}
+
+export interface ParsedMessage {
+  sessionId: string;
+  ordinal: number;
+  role: "user" | "assistant";
+  content: string;
+  timestampMs?: number;
+  hasThinking: boolean;
+  hasToolUse: boolean;
+  isSystem: boolean;
+  contentLength: number;
+  model?: string;
+  tokenUsage?: string;
+  contextTokens?: number;
+  outputTokens?: number;
+  hasContextTokens: boolean;
+  hasOutputTokens: boolean;
+  toolCalls: ParsedToolCall[];
+  /** tool_use_id → raw result content (from tool_result blocks in user messages) */
+  toolResults: Map<string, { contentLength: number; contentRaw: string }>;
+}
+
+export interface ParseResult {
+  meta?: ParsedSession;
+  turns: ParsedTurn[];
+  events: ParsedEvent[];
+  messages: ParsedMessage[];
   newByteOffset: number;
   /**
    * When true, turn indices are absolute (0-based from start of session)
@@ -317,10 +353,9 @@ export interface TargetScannerSpec {
    * Parse a session file. Receives the file path and current byte offset.
    * Returns parsed data and new byte offset, or null if no new data.
    */
-  parseFile(
-    filePath: string,
-    fromByteOffset: number,
-  ): ScannerParseResult | null;
+  parseFile(filePath: string, fromByteOffset: number): ParseResult | null;
+  /** Normalize a tool name to a standard category for analytics grouping. */
+  normalizeToolCategory(toolName: string): string;
 }
 
 // ── The Adapter ─────────────────────────────────────────────────────────────

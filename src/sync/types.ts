@@ -195,6 +195,14 @@ export interface SessionSyncRecord {
   summary: string | null;
   toolCounts: Record<string, number>;
   eventTypeCounts: Record<string, number>;
+  project: string | null;
+  machine: string;
+  messageCount: number;
+  userMessageCount: number;
+  parentSessionId: string | null;
+  relationshipType: string;
+  isAutomated: boolean;
+  createdAt: number | null;
   repositories: Array<{
     repository: string;
     firstSeenMs: number;
@@ -206,6 +214,41 @@ export interface SessionSyncRecord {
     cwd: string;
     firstSeenMs: number;
   }>;
+}
+
+// ── Message sync records ────────────────────────────────────────────────────
+
+export interface MessageSyncRecord {
+  id: number;
+  sessionId: string;
+  ordinal: number;
+  role: string;
+  content: string;
+  timestampMs: number | null;
+  hasThinking: boolean;
+  hasToolUse: boolean;
+  contentLength: number;
+  isSystem: boolean;
+  model: string;
+  tokenUsage: string;
+  contextTokens: number;
+  outputTokens: number;
+  hasContextTokens: boolean;
+  hasOutputTokens: boolean;
+}
+
+export interface ToolCallSyncRecord {
+  id: number;
+  messageId: number;
+  sessionId: string;
+  toolName: string;
+  category: string;
+  toolUseId: string | null;
+  inputJson: string | null;
+  skillName: string | null;
+  resultContentLength: number | null;
+  resultContent: string | null;
+  subagentSessionId: string | null;
 }
 
 // ── Sync registry ───────────────────────────────────────────────────────────

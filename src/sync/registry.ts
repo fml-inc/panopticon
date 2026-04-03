@@ -1,5 +1,6 @@
 import {
   readHookEvents,
+  readMessages,
   readMetrics,
   readOtelLogs,
   readOtelSpans,
@@ -7,6 +8,7 @@ import {
   readScannerEvents,
   readScannerTurns,
   readSessions,
+  readToolCalls,
   readUserConfigSnapshots,
 } from "./reader.js";
 import {
@@ -19,6 +21,7 @@ import {
 } from "./serialize.js";
 import type {
   HookEventRecord,
+  MessageSyncRecord,
   MetricRow,
   OtelLogRecord,
   OtelSpanRecord,
@@ -27,6 +30,7 @@ import type {
   ScannerTurnRecord,
   SessionSyncRecord,
   TableSyncDescriptor,
+  ToolCallSyncRecord,
   UserConfigSnapshotRecord,
 } from "./types.js";
 
@@ -118,6 +122,24 @@ export const TABLE_SYNC_REGISTRY: TableSyncDescriptor<any>[] = [
     endpoint: "/v1/repo-config-snapshots",
     extractRepo: (row) => row.repository,
   } satisfies TableSyncDescriptor<RepoConfigSnapshotRecord>,
+
+  {
+    table: "messages",
+    logNoun: "messages",
+    capability: "api",
+    read: (afterId, limit, _ctx) => readMessages(afterId, limit),
+    serialize: (rows) => rows,
+    endpoint: "/v1/messages",
+  } satisfies TableSyncDescriptor<MessageSyncRecord>,
+
+  {
+    table: "tool_calls",
+    logNoun: "tool calls",
+    capability: "api",
+    read: (afterId, limit, _ctx) => readToolCalls(afterId, limit),
+    serialize: (rows) => rows,
+    endpoint: "/v1/tool-calls",
+  } satisfies TableSyncDescriptor<ToolCallSyncRecord>,
 
   {
     table: "sessions",

@@ -11,12 +11,7 @@ import type {
   SyncTarget,
   TableSyncDescriptor,
 } from "./types.js";
-import {
-  closeWatermarkDb,
-  readWatermark,
-  watermarkKey,
-  writeWatermark,
-} from "./watermark.js";
+import { readWatermark, watermarkKey, writeWatermark } from "./watermark.js";
 
 const DEFAULT_BATCH_SIZE = 2000;
 const DEFAULT_POST_BATCH_SIZE = 25;
@@ -221,7 +216,6 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         timer = null;
         log("Stopped sync");
       }
-      closeWatermarkDb();
     },
   };
 }

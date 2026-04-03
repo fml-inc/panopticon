@@ -1,6 +1,7 @@
 import { getDb } from "../db/schema.js";
 import type {
   HookEventRecord,
+  MessageSyncRecord,
   MetricRow,
   OtelLogRecord,
   OtelSpanRecord,
@@ -8,6 +9,7 @@ import type {
   ScannerEventRecord,
   ScannerTurnRecord,
   SessionSyncRecord,
+  ToolCallSyncRecord,
   UserConfigSnapshotRecord,
 } from "./types.js";
 
@@ -518,6 +520,115 @@ export function readRepoConfigSnapshots(
   return { rows, maxId };
 }
 
+// ── Messages ────────────────────────────────────────────────────────────────
+
+const MESSAGES_SQL = `
+  SELECT id, session_id, ordinal, role, content, timestamp_ms,
+         has_thinking, has_tool_use, content_length, is_system,
+         model, token_usage, context_tokens, output_tokens,
+         has_context_tokens, has_output_tokens
+  FROM messages
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readMessages(
+  afterId: number,
+  limit: number,
+): { rows: MessageSyncRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(MESSAGES_SQL).all(afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    ordinal: number;
+    role: string;
+    content: string;
+    timestamp_ms: number | null;
+    has_thinking: number;
+    has_tool_use: number;
+    content_length: number;
+    is_system: number;
+    model: string;
+    token_usage: string;
+    context_tokens: number;
+    output_tokens: number;
+    has_context_tokens: number;
+    has_output_tokens: number;
+  }>;
+
+  const rows: MessageSyncRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    ordinal: r.ordinal,
+    role: r.role,
+    content: r.content,
+    timestampMs: r.timestamp_ms,
+    hasThinking: r.has_thinking === 1,
+    hasToolUse: r.has_tool_use === 1,
+    contentLength: r.content_length,
+    isSystem: r.is_system === 1,
+    model: r.model,
+    tokenUsage: r.token_usage,
+    contextTokens: r.context_tokens,
+    outputTokens: r.output_tokens,
+    hasContextTokens: r.has_context_tokens === 1,
+    hasOutputTokens: r.has_output_tokens === 1,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+// ── Tool calls ──────────────────────────────────────────────────────────────
+
+const TOOL_CALLS_SQL = `
+  SELECT id, message_id, session_id, tool_name, category, tool_use_id,
+         input_json, skill_name, result_content_length, result_content,
+         subagent_session_id
+  FROM tool_calls
+  WHERE id > ?
+  ORDER BY id
+  LIMIT ?
+`;
+
+export function readToolCalls(
+  afterId: number,
+  limit: number,
+): { rows: ToolCallSyncRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db.prepare(TOOL_CALLS_SQL).all(afterId, limit) as Array<{
+    id: number;
+    message_id: number;
+    session_id: string;
+    tool_name: string;
+    category: string;
+    tool_use_id: string | null;
+    input_json: string | null;
+    skill_name: string | null;
+    result_content_length: number | null;
+    result_content: string | null;
+    subagent_session_id: string | null;
+  }>;
+
+  const rows: ToolCallSyncRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    messageId: r.message_id,
+    sessionId: r.session_id,
+    toolName: r.tool_name,
+    category: r.category,
+    toolUseId: r.tool_use_id,
+    inputJson: r.input_json,
+    skillName: r.skill_name,
+    resultContentLength: r.result_content_length,
+    resultContent: r.result_content,
+    subagentSessionId: r.subagent_session_id,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
 // ── Sessions (watermark on sync_seq) ────────────────────────────────────────
 
 const SESSIONS_SQL = `
@@ -525,7 +636,9 @@ const SESSIONS_SQL = `
          permission_mode, agent_version,
          total_input_tokens, total_output_tokens, total_cache_read_tokens,
          total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-         models, summary, tool_counts, event_type_counts, sync_seq
+         models, summary, tool_counts, event_type_counts, sync_seq,
+         project, machine, message_count, user_message_count,
+         parent_session_id, relationship_type, is_automated, created_at
   FROM sessions
   WHERE sync_seq > ?
   ORDER BY sync_seq
@@ -557,6 +670,14 @@ export function readSessions(
     tool_counts: string | null;
     event_type_counts: string | null;
     sync_seq: number;
+    project: string | null;
+    machine: string;
+    message_count: number;
+    user_message_count: number;
+    parent_session_id: string | null;
+    relationship_type: string;
+    is_automated: number;
+    created_at: number | null;
   }>;
 
   if (rawRows.length === 0) return { rows: [], maxId: afterSeq };
@@ -633,6 +754,14 @@ export function readSessions(
       string,
       number
     >,
+    project: r.project,
+    machine: r.machine,
+    messageCount: r.message_count,
+    userMessageCount: r.user_message_count,
+    parentSessionId: r.parent_session_id,
+    relationshipType: r.relationship_type,
+    isAutomated: r.is_automated === 1,
+    createdAt: r.created_at,
     repositories: reposBySession.get(r.session_id) ?? [],
     cwds: cwdsBySession.get(r.session_id) ?? [],
   }));

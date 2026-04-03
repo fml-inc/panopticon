@@ -2,8 +2,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { HookInput } from "../hooks/ingest.js";
+import { defaultToolCategory } from "../scanner/categories.js";
 import { registerTarget } from "./registry.js";
-import type { ScannerParseResult, TargetAdapter } from "./types.js";
+import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
+
+const GEMINI_TOOL_CATEGORIES: Record<string, string> = {
+  read_file: "Read",
+  read_many_files: "Read",
+  write_file: "Write",
+  edit_file: "Edit",
+  run_shell_command: "Bash",
+  shell: "Bash",
+  glob: "Glob",
+  list_directory: "Glob",
+  grep: "Grep",
+  search_files: "Grep",
+  web_search: "Web",
+};
+
+function geminiToolCategory(toolName: string): string {
+  return GEMINI_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
+}
 
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
 
@@ -201,6 +220,7 @@ const gemini: TargetAdapter = {
   },
 
   scanner: {
+    normalizeToolCategory: geminiToolCategory,
     discover() {
       const tmpDir = path.join(GEMINI_DIR, "tmp");
       const files: { filePath: string }[] = [];
@@ -221,10 +241,7 @@ const gemini: TargetAdapter = {
       return files;
     },
 
-    parseFile(
-      filePath: string,
-      fromByteOffset: number,
-    ): ScannerParseResult | null {
+    parseFile(filePath: string, fromByteOffset: number): ParseResult | null {
       let size: number;
       try {
         size = fs.statSync(filePath).size;
@@ -249,16 +266,18 @@ const gemini: TargetAdapter = {
         | undefined;
       if (!messages?.length) return null;
 
-      const meta: ScannerParseResult["meta"] = {
+      const meta: ParseResult["meta"] = {
         sessionId,
         startedAtMs: session.startTime
           ? new Date(session.startTime as string).getTime()
           : undefined,
       };
 
-      const turns: ScannerParseResult["turns"] = [];
-      const events: ScannerParseResult["events"] = [];
+      const turns: ParseResult["turns"] = [];
+      const events: ParseResult["events"] = [];
+      const parsedMessages: ParseResult["messages"] = [];
       let turnIndex = 0;
+      let ordinal = 0;
       let firstPrompt: string | undefined;
 
       for (const msg of messages) {
@@ -270,26 +289,58 @@ const gemini: TargetAdapter = {
 
         if (type === "user") {
           const content = msg.content as Array<{ text?: string }> | undefined;
-          const text = content?.[0]?.text;
-          if (!firstPrompt && text) firstPrompt = text.slice(0, 200);
+          const textParts: string[] = [];
+          if (content) {
+            for (const block of content) {
+              if (block.text) textParts.push(block.text);
+            }
+          }
+          const fullContent = textParts.join("\n");
+          const preview = textParts[0]?.slice(0, 200);
+          if (!firstPrompt && preview) firstPrompt = preview;
+
           turns.push({
             sessionId,
             turnIndex: turnIndex++,
             timestampMs,
             role: "user",
-            contentPreview: text?.slice(0, 200),
+            contentPreview: preview,
             inputTokens: 0,
             outputTokens: 0,
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
             reasoningTokens: 0,
           });
+
+          if (fullContent.length > 0) {
+            parsedMessages.push({
+              sessionId,
+              ordinal: ordinal++,
+              role: "user",
+              content: fullContent,
+              timestampMs,
+              hasThinking: false,
+              hasToolUse: false,
+              isSystem: false,
+              contentLength: fullContent.length,
+              hasContextTokens: false,
+              hasOutputTokens: false,
+              toolCalls: [],
+              toolResults: new Map(),
+            });
+          }
         }
 
         if (type === "gemini") {
           const model = msg.model as string | undefined;
           const tokens = msg.tokens as Record<string, number> | undefined;
           if (model && !meta.model) meta.model = model;
+
+          const inputTokens = tokens?.input ?? 0;
+          const outTokens = tokens?.output ?? 0;
+          const cacheRead = tokens?.cached ?? 0;
+          const reasoning = tokens?.thoughts ?? 0;
+
           turns.push({
             sessionId,
             turnIndex: turnIndex++,
@@ -300,55 +351,117 @@ const gemini: TargetAdapter = {
               typeof msg.content === "string"
                 ? msg.content.slice(0, 200)
                 : undefined,
-            inputTokens: tokens?.input ?? 0,
-            outputTokens: tokens?.output ?? 0,
-            cacheReadTokens: tokens?.cached ?? 0,
+            inputTokens,
+            outputTokens: outTokens,
+            cacheReadTokens: cacheRead,
             cacheCreationTokens: 0,
-            reasoningTokens: tokens?.thoughts ?? 0,
+            reasoningTokens: reasoning,
           });
 
+          // Build message content
+          const textParts: string[] = [];
+          if (typeof msg.content === "string") textParts.push(msg.content);
+
           // Tool calls
-          const toolCalls = msg.toolCalls as
+          const msgToolCalls = msg.toolCalls as
             | Array<Record<string, unknown>>
             | undefined;
-          if (toolCalls) {
-            for (const tc of toolCalls) {
+          const toolCalls: ParsedToolCall[] = [];
+          const toolResults = new Map<
+            string,
+            { contentLength: number; contentRaw: string }
+          >();
+
+          if (msgToolCalls) {
+            for (let tcIdx = 0; tcIdx < msgToolCalls.length; tcIdx++) {
+              const tc = msgToolCalls[tcIdx];
+              const toolName = ((tc.name ?? tc.displayName) as string) ?? "";
+              const inputJson = tc.args ? JSON.stringify(tc.args) : undefined;
+              const toolUseId =
+                (tc.id as string) || `${toolName}-${timestampMs}-${tcIdx}`;
+
+              toolCalls.push({
+                toolUseId,
+                toolName,
+                category: geminiToolCategory(toolName),
+                inputJson,
+              });
+
               const result = tc.result as
                 | Array<Record<string, unknown>>
                 | undefined;
-              const output = result?.[0]?.functionResponse;
+              const fnResponse = result?.[0]?.functionResponse as
+                | Record<string, unknown>
+                | undefined;
+              const responseObj = fnResponse?.response as
+                | Record<string, unknown>
+                | undefined;
+              const output =
+                typeof responseObj?.output === "string"
+                  ? responseObj.output
+                  : fnResponse
+                    ? JSON.stringify(fnResponse)
+                    : undefined;
+              if (output) {
+                toolResults.set(toolUseId, {
+                  contentLength: output.length,
+                  contentRaw: output,
+                });
+              }
+
               events.push({
                 sessionId,
                 eventType: "tool_call",
                 timestampMs,
-                toolName: (tc.name ?? tc.displayName) as string | undefined,
-                toolInput: tc.args
-                  ? JSON.stringify(tc.args).slice(0, 1000)
-                  : undefined,
-                toolOutput: output
-                  ? JSON.stringify(output).slice(0, 1000)
-                  : undefined,
+                toolName,
+                toolInput: inputJson?.slice(0, 1000),
+                toolOutput: output?.slice(0, 1000),
               });
             }
           }
 
           // Thoughts/reasoning
+          let hasThinking = false;
           const thoughts = msg.thoughts as
             | Array<Record<string, unknown>>
             | undefined;
           if (thoughts) {
+            hasThinking = true;
             for (const t of thoughts) {
+              const text = (t.description ?? t.subject) as string | undefined;
+              if (text) textParts.push(`[Thinking]\n${text}\n[/Thinking]`);
               events.push({
                 sessionId,
                 eventType: "reasoning",
                 timestampMs,
-                content: ((t.description ?? t.subject) as string)?.slice(
-                  0,
-                  500,
-                ),
+                content: text?.slice(0, 500),
               });
             }
           }
+
+          const fullContent = textParts.join("\n");
+          const ctxTokens = inputTokens + cacheRead;
+          const hasCtx = inputTokens > 0 || cacheRead > 0;
+
+          parsedMessages.push({
+            sessionId,
+            ordinal: ordinal++,
+            role: "assistant",
+            content: fullContent,
+            timestampMs,
+            hasThinking,
+            hasToolUse: toolCalls.length > 0,
+            isSystem: false,
+            contentLength: fullContent.length,
+            model,
+            tokenUsage: tokens ? JSON.stringify(tokens) : undefined,
+            contextTokens: hasCtx ? ctxTokens : undefined,
+            outputTokens: outTokens > 0 ? outTokens : undefined,
+            hasContextTokens: hasCtx,
+            hasOutputTokens: outTokens > 0,
+            toolCalls,
+            toolResults,
+          });
         }
 
         if (type === "info") {
@@ -369,6 +482,7 @@ const gemini: TargetAdapter = {
         meta,
         turns,
         events,
+        messages: parsedMessages,
         newByteOffset: size,
         absoluteIndices: true,
       };
