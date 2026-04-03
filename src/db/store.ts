@@ -410,9 +410,9 @@ export function upsertSession(row: SessionUpsert): void {
        parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
        relationship_type = COALESCE(excluded.relationship_type, sessions.relationship_type),
        is_automated = COALESCE(excluded.is_automated, sessions.is_automated),
-       has_hooks = MAX(sessions.has_hooks, COALESCE(excluded.has_hooks, 0)),
-       has_otel = MAX(sessions.has_otel, COALESCE(excluded.has_otel, 0)),
-       has_scanner = MAX(sessions.has_scanner, COALESCE(excluded.has_scanner, 0)),
+       has_hooks = MAX(COALESCE(sessions.has_hooks, 0), COALESCE(excluded.has_hooks, 0)),
+       has_otel = MAX(COALESCE(sessions.has_otel, 0), COALESCE(excluded.has_otel, 0)),
+       has_scanner = MAX(COALESCE(sessions.has_scanner, 0), COALESCE(excluded.has_scanner, 0)),
        sync_dirty = 1,
        sync_seq = COALESCE(sessions.sync_seq, 0) + 1`,
   ).run({
