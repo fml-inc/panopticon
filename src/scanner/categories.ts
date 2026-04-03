@@ -6,5 +6,5 @@
 export function defaultToolCategory(toolName: string): string {
   if (toolName.startsWith("mcp__")) return "MCP";
   if (toolName.toLowerCase().includes("subagent")) return "Task";
-  return "Other";
+  return "";
 }
