@@ -36,6 +36,7 @@ function summarizeSession(
       timeoutMs: AGENT_TIMEOUT_MS,
       withMcp: true,
       systemPrompt: SYSTEM_PROMPT,
+      model: "sonnet",
     });
     if (result) return result;
     log(`LLM summary failed for ${sessionId}, falling back to deterministic`);

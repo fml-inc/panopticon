@@ -42,7 +42,9 @@ function cleanEnv(): Record<string, string> {
 /** Get the path to the panopticon MCP server script. */
 function getMcpServerPath(): string {
   const dir = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(dir, "..", "mcp", "server.js");
+  // In the built dist/, summary code is in a chunk at dist/ level,
+  // and mcp/server.js is at dist/mcp/server.js (same level)
+  return path.resolve(dir, "mcp", "server.js");
 }
 
 /**
@@ -55,6 +57,7 @@ export function invokeLlm(
     timeoutMs?: number;
     withMcp?: boolean;
     systemPrompt?: string;
+    model?: string;
   } = {},
 ): string | null {
   const claudePath = detectAgent();
@@ -69,8 +72,10 @@ export function invokeLlm(
     "--output-format",
     "text",
     "--model",
-    "haiku",
+    opts.model ?? "haiku",
     "--no-session-persistence",
+    "--permission-mode",
+    "auto",
   ];
 
   if (opts.systemPrompt) {
@@ -90,8 +95,12 @@ export function invokeLlm(
           },
         },
       }),
-      "--allowedTools",
-      "mcp__panopticon__timeline,mcp__panopticon__get,mcp__panopticon__query,mcp__panopticon__search,mcp__panopticon__status",
+      "--allowed-tools",
+      "mcp__panopticon__timeline",
+      "mcp__panopticon__get",
+      "mcp__panopticon__query",
+      "mcp__panopticon__search",
+      "mcp__panopticon__status",
     );
   } else {
     args.push("--tools", "");
@@ -105,11 +114,16 @@ export function invokeLlm(
   });
 
   const text = result.stdout?.toString().trim();
+  const stderr = result.stderr?.toString().trim();
 
+  if (stderr) console.error(`[llm] stderr: ${stderr.slice(0, 500)}`);
   if (result.signal) {
     console.error(`[llm] killed by signal: ${result.signal}`);
     return null;
   }
+  console.error(
+    `[llm] exit=${result.status} stdout=${text?.length ?? 0} chars`,
+  );
 
   // Accept output even with non-zero exit (hooks may cause exit code 1
   // after successful response)

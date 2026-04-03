@@ -1415,6 +1415,7 @@ Instructions:
       timeoutMs: 120_000,
       withMcp: true,
       systemPrompt: SYSTEM_PROMPT,
+      model: "sonnet",
     });
 
     if (result) {
