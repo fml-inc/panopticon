@@ -111,18 +111,19 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
   const sessions = db
     .prepare(
       `
-    SELECT session_id, message_count, summary_version, ended_at_ms
-    FROM sessions
-    WHERE message_count >= ?
+    SELECT s.session_id, s.message_count, s.summary_version, s.ended_at_ms,
+           EXISTS(SELECT 1 FROM session_repositories WHERE session_id = s.session_id) as has_repo
+    FROM sessions s
+    WHERE s.message_count >= ?
       AND (
-        summary IS NULL
-        OR (message_count - COALESCE(summary_version, 0)) >= ?
-        OR (ended_at_ms IS NOT NULL AND ended_at_ms > COALESCE(
-          (SELECT MAX(created_at_ms) FROM session_summary_deltas WHERE session_id = sessions.session_id),
+        s.summary IS NULL
+        OR (s.message_count - COALESCE(s.summary_version, 0)) >= ?
+        OR (s.ended_at_ms IS NOT NULL AND s.ended_at_ms > COALESCE(
+          (SELECT MAX(created_at_ms) FROM session_summary_deltas WHERE session_id = s.session_id),
           0
         ))
       )
-    ORDER BY started_at_ms DESC
+    ORDER BY s.started_at_ms DESC
     LIMIT ?
   `,
     )
@@ -131,11 +132,16 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
     message_count: number;
     summary_version: number | null;
     ended_at_ms: number | null;
+    has_repo: number;
   }>;
 
   for (const sess of sessions) {
     try {
-      const summary = summarizeSession(sess.session_id, log);
+      // Use AI summaries for sessions with repo attribution,
+      // deterministic for everything else
+      const summary = sess.has_repo
+        ? summarizeSession(sess.session_id, log)
+        : buildDeterministicSummary(sess.session_id);
       if (!summary) continue;
 
       db.prepare(
