@@ -2,9 +2,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { HookInput } from "../hooks/ingest.js";
-import { normalizeToolCategory } from "../scanner/categories.js";
+import { defaultToolCategory } from "../scanner/categories.js";
 import { registerTarget } from "./registry.js";
 import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
+
+const GEMINI_TOOL_CATEGORIES: Record<string, string> = {
+  read_file: "Read",
+  read_many_files: "Read",
+  write_file: "Write",
+  edit_file: "Edit",
+  run_shell_command: "Bash",
+  shell: "Bash",
+  glob: "Glob",
+  list_directory: "Glob",
+  grep: "Grep",
+  search_files: "Grep",
+  web_search: "Web",
+};
+
+function geminiToolCategory(toolName: string): string {
+  return GEMINI_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
+}
 
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
 
@@ -202,6 +220,7 @@ const gemini: TargetAdapter = {
   },
 
   scanner: {
+    normalizeToolCategory: geminiToolCategory,
     discover() {
       const tmpDir = path.join(GEMINI_DIR, "tmp");
       const files: { filePath: string }[] = [];
@@ -363,7 +382,7 @@ const gemini: TargetAdapter = {
               toolCalls.push({
                 toolUseId,
                 toolName,
-                category: normalizeToolCategory(toolName),
+                category: geminiToolCategory(toolName),
                 inputJson,
               });
 

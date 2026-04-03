@@ -1,10 +1,27 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { normalizeToolCategory } from "../scanner/categories.js";
+import { defaultToolCategory } from "../scanner/categories.js";
 import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
 import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
+
+const CODEX_TOOL_CATEGORIES: Record<string, string> = {
+  shell_command: "Bash",
+  run_command: "Bash",
+  read_file: "Read",
+  write_file: "Write",
+  create_file: "Write",
+  edit_file: "Edit",
+  list_dir: "Glob",
+  grep_search: "Grep",
+  finder: "Grep",
+  spawn_agent: "Task",
+};
+
+function codexToolCategory(toolName: string): string {
+  return CODEX_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
+}
 
 const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
@@ -261,6 +278,7 @@ const codex: TargetAdapter = {
   },
 
   scanner: {
+    normalizeToolCategory: codexToolCategory,
     discover() {
       const sessionsDir = path.join(CODEX_DIR, "sessions");
       const files: { filePath: string }[] = [];
@@ -463,7 +481,7 @@ const codex: TargetAdapter = {
             pendingToolCalls.push({
               toolUseId: callId,
               toolName,
-              category: normalizeToolCategory(toolName),
+              category: codexToolCategory(toolName),
               inputJson,
             });
 

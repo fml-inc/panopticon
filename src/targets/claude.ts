@@ -2,10 +2,38 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
-import { normalizeToolCategory } from "../scanner/categories.js";
+import { defaultToolCategory } from "../scanner/categories.js";
 import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
 import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
+
+const CLAUDE_TOOL_CATEGORIES: Record<string, string> = {
+  Read: "Read",
+  read_file: "Read",
+  ReadNotebook: "Read",
+  Edit: "Edit",
+  StrReplace: "Edit",
+  MultiEdit: "Edit",
+  Write: "Write",
+  create_file: "Write",
+  NotebookEdit: "Write",
+  Bash: "Bash",
+  Grep: "Grep",
+  Glob: "Glob",
+  list_dir: "Glob",
+  Task: "Task",
+  Agent: "Task",
+  TaskCreate: "Task",
+  TaskUpdate: "Task",
+  Skill: "Tool",
+  WebSearch: "Web",
+  WebFetch: "Web",
+  ToolSearch: "Web",
+};
+
+function claudeToolCategory(toolName: string): string {
+  return CLAUDE_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
+}
 
 /** Extract total text length from a tool_result content field. */
 function extractToolResultTextLength(content: unknown): number {
@@ -171,6 +199,7 @@ const claude: TargetAdapter = {
   },
 
   scanner: {
+    normalizeToolCategory: claudeToolCategory,
     discover() {
       const projectsDir = path.join(CLAUDE_DIR, "projects");
       const files: { filePath: string }[] = [];
@@ -387,7 +416,7 @@ const claude: TargetAdapter = {
                 toolCalls.push({
                   toolUseId: (b.id as string) ?? "",
                   toolName,
-                  category: normalizeToolCategory(toolName),
+                  category: claudeToolCategory(toolName),
                   inputJson,
                   skillName,
                 });

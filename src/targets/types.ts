@@ -353,6 +353,8 @@ export interface TargetScannerSpec {
    * Returns parsed data and new byte offset, or null if no new data.
    */
   parseFile(filePath: string, fromByteOffset: number): ParseResult | null;
+  /** Normalize a tool name to a standard category for analytics grouping. */
+  normalizeToolCategory(toolName: string): string;
 }
 
 // ── The Adapter ─────────────────────────────────────────────────────────────
