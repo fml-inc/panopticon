@@ -433,40 +433,6 @@ export function sessionTimeline(opts: {
   };
 }
 
-// ── Tool Stats (not in unified types — panopticon-specific) ───────────────────
-
-export function toolStats(opts: { since?: string; session_id?: string } = {}) {
-  const db = getDb();
-  const sinceMs = parseSince(opts.since);
-
-  const conditions: string[] = ["tool_name IS NOT NULL"];
-  const params: unknown[] = [];
-
-  if (opts.session_id) {
-    conditions.push("session_id = ?");
-    params.push(opts.session_id);
-  }
-  if (sinceMs) {
-    conditions.push("timestamp_ms >= ?");
-    params.push(sinceMs);
-  }
-
-  const where = conditions.join(" AND ");
-
-  const sql = `
-    SELECT tool_name,
-           COUNT(*) as call_count,
-           SUM(CASE WHEN event_type = 'PostToolUse' THEN 1 ELSE 0 END) as success_count,
-           SUM(CASE WHEN event_type = 'PostToolUseFailure' THEN 1 ELSE 0 END) as failure_count
-    FROM hook_events
-    WHERE ${where}
-    GROUP BY tool_name
-    ORDER BY call_count DESC
-  `;
-
-  return db.prepare(sql).all(...params);
-}
-
 // ── Spending ──────────────────────────────────────────────────────────────────
 
 export function costBreakdown(

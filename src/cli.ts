@@ -25,7 +25,6 @@ import {
   rawQuery,
   search,
   sessionTimeline,
-  toolStats,
 } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
@@ -1108,18 +1107,6 @@ program
       fullPayloads: opts.full,
     });
     output(result);
-  });
-
-program
-  .command("tools")
-  .description("Per-tool usage aggregates: call count, success/failure")
-  .option(
-    "--since <duration>",
-    'Time filter: ISO date or relative like "24h", "7d"',
-  )
-  .option("--session <id>", "Filter to a specific session")
-  .action((opts: Opts) => {
-    output(toolStats({ since: opts.since, session_id: opts.session }));
   });
 
 program

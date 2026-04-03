@@ -15,5 +15,4 @@ export {
   rawQuery,
   search,
   sessionTimeline,
-  toolStats,
 } from "./db/query.js";

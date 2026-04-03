@@ -20,7 +20,6 @@ export {
   rawQuery,
   search,
   sessionTimeline,
-  toolStats,
 } from "./db/query.js";
 // ── Database ──────────────────────────────────────────────────────────────────
 export { closeDb, getDb } from "./db/schema.js";
