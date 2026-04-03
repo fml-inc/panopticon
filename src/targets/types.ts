@@ -276,9 +276,12 @@ export interface ParsedTurn {
   reasoningTokens: number;
 }
 
+export type RelationshipType = "subagent" | "continuation" | "fork";
+
 export interface ParsedSession {
   sessionId: string;
   parentSessionId?: string;
+  relationshipType?: RelationshipType;
   model?: string;
   cwd?: string;
   cliVersion?: string;
@@ -344,6 +347,22 @@ export interface ParseResult {
    * INSERT OR IGNORE handles dedup via the UNIQUE constraint.
    */
   absoluteIndices?: boolean;
+  /** Additional sessions from DAG fork detection (branched conversations). */
+  forks?: ParseResult[];
+  /**
+   * When true, the parser detected a DAG fork during incremental reading.
+   * The caller should reset the file watermark and reparse from byte 0
+   * so fork detection can run on the full file.
+   */
+  needsFullReparse?: boolean;
+  /**
+   * Tool results from filtered-out messages (e.g. tool-result-only user
+   * messages) that still need to be backfilled into tool_calls.
+   */
+  orphanedToolResults?: Map<
+    string,
+    { contentLength: number; contentRaw: string }
+  >;
 }
 
 export interface TargetScannerSpec {

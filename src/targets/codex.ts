@@ -8,6 +8,9 @@ import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
 
 const CODEX_TOOL_CATEGORIES: Record<string, string> = {
   shell_command: "Bash",
+  shell: "Bash",
+  exec_command: "Bash",
+  write_stdin: "Bash",
   run_command: "Bash",
   read_file: "Read",
   write_file: "Write",

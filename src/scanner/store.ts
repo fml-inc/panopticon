@@ -43,7 +43,8 @@ export function upsertSession(
     project,
     created_at: meta.startedAtMs ?? Date.now(),
     parent_session_id: meta.parentSessionId,
-    relationship_type: meta.parentSessionId ? "subagent" : undefined,
+    relationship_type:
+      meta.relationshipType ?? (meta.parentSessionId ? "subagent" : undefined),
   });
 
   // Record cwd and repo for scanner-only sessions
@@ -207,6 +208,45 @@ export function writeFileWatermark(filePath: string, byteOffset: number): void {
   ).run(filePath, byteOffset, Date.now());
 }
 
+/**
+ * Reset a single file for full reparse: clear its watermark and delete
+ * all turns, messages, tool_calls, and events for the session so the
+ * full-file parse can re-insert cleanly (including fork detection).
+ */
+export function resetFileForReparse(
+  filePath: string,
+  sessionId?: string,
+): void {
+  const db = getDb();
+  db.prepare("DELETE FROM scanner_file_watermarks WHERE file_path = ?").run(
+    filePath,
+  );
+  if (sessionId) {
+    db.prepare("DELETE FROM scanner_turns WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM scanner_events WHERE session_id = ?").run(
+      sessionId,
+    );
+    db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
+    // Also clean up any previously-detected fork sessions from this file
+    db.prepare(
+      "DELETE FROM scanner_turns WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+    ).run(sessionId);
+    db.prepare(
+      "DELETE FROM scanner_events WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+    ).run(sessionId);
+    db.prepare(
+      "DELETE FROM tool_calls WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+    ).run(sessionId);
+    db.prepare(
+      "DELETE FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+    ).run(sessionId);
+    db.prepare(
+      "DELETE FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
+    ).run(sessionId);
+  }
+}
+
 export function resetScanner(): void {
   const db = getDb();
   db.exec(`
@@ -332,9 +372,18 @@ const INSERT_TOOL_CALL_SQL = `
  * Insert parsed messages and their tool calls into the database.
  * Tool results from user messages are matched back to tool calls
  * from the preceding assistant message by tool_use_id.
+ *
+ * Also backfills tool_calls from previous scans whose result_content
+ * was NULL because the tool_result arrived in a later batch.
  */
-export function insertMessages(messages: ParsedMessage[]): void {
-  if (messages.length === 0) return;
+export function insertMessages(
+  messages: ParsedMessage[],
+  orphanedToolResults?: Map<
+    string,
+    { contentLength: number; contentRaw: string }
+  >,
+): void {
+  if (messages.length === 0 && !orphanedToolResults?.size) return;
   const db = getDb();
 
   // Collect all tool results across user messages for backfilling
@@ -342,6 +391,12 @@ export function insertMessages(messages: ParsedMessage[]): void {
     string,
     { contentLength: number; contentRaw: string }
   >();
+  // Include orphaned results from filtered-out messages
+  if (orphanedToolResults) {
+    for (const [id, result] of orphanedToolResults) {
+      toolResultMap.set(id, result);
+    }
+  }
   for (const msg of messages) {
     for (const [id, result] of msg.toolResults) {
       toolResultMap.set(id, result);
@@ -391,6 +446,18 @@ export function insertMessages(messages: ParsedMessage[]): void {
           toolResult?.contentRaw ?? null,
           tc.subagentSessionId ?? null,
         );
+      }
+    }
+
+    // Backfill tool_calls from previous scans whose results arrived in this batch.
+    if (toolResultMap.size > 0) {
+      const backfillStmt = db.prepare(
+        `UPDATE tool_calls
+         SET result_content = ?, result_content_length = ?
+         WHERE tool_use_id = ? AND result_content IS NULL`,
+      );
+      for (const [toolUseId, result] of toolResultMap) {
+        backfillStmt.run(result.contentRaw, result.contentLength, toolUseId);
       }
     }
   });
