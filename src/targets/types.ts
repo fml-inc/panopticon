@@ -329,6 +329,10 @@ export interface ParsedMessage {
   outputTokens?: number;
   hasContextTokens: boolean;
   hasOutputTokens: boolean;
+  /** DAG node UUID from the JSONL line that produced this message. */
+  uuid?: string;
+  /** Parent DAG node UUID (the line this message is a reply to). */
+  parentUuid?: string;
   toolCalls: ParsedToolCall[];
   /** tool_use_id → raw result content (from tool_result blocks in user messages) */
   toolResults: Map<string, { contentLength: number; contentRaw: string }>;

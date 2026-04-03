@@ -157,6 +157,8 @@ CREATE TABLE IF NOT EXISTS messages (
   output_tokens   INTEGER NOT NULL DEFAULT 0,
   has_context_tokens INTEGER NOT NULL DEFAULT 0,
   has_output_tokens  INTEGER NOT NULL DEFAULT 0,
+  uuid            TEXT,
+  parent_uuid     TEXT,
   UNIQUE(session_id, ordinal)
 );
 
@@ -180,6 +182,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   skill_name            TEXT,
   result_content_length INTEGER,
   result_content        TEXT,
+  duration_ms           INTEGER,
   subagent_session_id   TEXT
 );
 

@@ -40,6 +40,7 @@ export function upsertSession(
     model: meta.model,
     cli_version: meta.cliVersion,
     scanner_file_path: filePath,
+    has_scanner: 1,
     project,
     created_at: meta.startedAtMs ?? Date.now(),
     parent_session_id: meta.parentSessionId,
@@ -368,8 +369,8 @@ const INSERT_MESSAGE_SQL = `
     (session_id, ordinal, role, content, timestamp_ms,
      has_thinking, has_tool_use, content_length, is_system,
      model, token_usage, context_tokens, output_tokens,
-     has_context_tokens, has_output_tokens)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     has_context_tokens, has_output_tokens, uuid, parent_uuid)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const INSERT_TOOL_CALL_SQL = `
@@ -439,6 +440,8 @@ export function insertMessages(
         msg.outputTokens ?? 0,
         msg.hasContextTokens ? 1 : 0,
         msg.hasOutputTokens ? 1 : 0,
+        msg.uuid ?? null,
+        msg.parentUuid ?? null,
       );
 
       // INSERT OR IGNORE returns 0 changes if the row already exists

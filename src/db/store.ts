@@ -357,6 +357,7 @@ export interface SessionUpsert {
   created_at?: number;
   has_hooks?: number;
   has_otel?: number;
+  has_scanner?: number;
   parent_session_id?: string;
   relationship_type?: string;
   is_automated?: number;
@@ -371,14 +372,14 @@ export function upsertSession(row: SessionUpsert): void {
        total_cache_creation_tokens, total_reasoning_tokens, turn_count,
        otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
        models, project, created_at, parent_session_id, relationship_type, is_automated,
-       has_hooks, has_otel)
+       has_hooks, has_otel, has_scanner)
      VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @first_prompt,
        @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
        @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
        @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
        @otel_input_tokens, @otel_output_tokens, @otel_cache_read_tokens, @otel_cache_creation_tokens,
        @model, @project, @created_at, @parent_session_id, @relationship_type, @is_automated,
-       @has_hooks, @has_otel)
+       @has_hooks, @has_otel, @has_scanner)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
@@ -411,6 +412,7 @@ export function upsertSession(row: SessionUpsert): void {
        is_automated = COALESCE(excluded.is_automated, sessions.is_automated),
        has_hooks = MAX(sessions.has_hooks, COALESCE(excluded.has_hooks, 0)),
        has_otel = MAX(sessions.has_otel, COALESCE(excluded.has_otel, 0)),
+       has_scanner = MAX(sessions.has_scanner, COALESCE(excluded.has_scanner, 0)),
        sync_dirty = 1,
        sync_seq = COALESCE(sessions.sync_seq, 0) + 1`,
   ).run({
@@ -441,6 +443,7 @@ export function upsertSession(row: SessionUpsert): void {
     is_automated: row.is_automated ?? null,
     has_hooks: row.has_hooks ?? null,
     has_otel: row.has_otel ?? null,
+    has_scanner: row.has_scanner ?? null,
   });
 }
 

@@ -596,6 +596,8 @@ const claude: TargetAdapter = {
               contentLength: fullContent.length,
               hasContextTokens: false,
               hasOutputTokens: false,
+              uuid,
+              parentUuid: parentUuid ?? undefined,
               toolCalls: [],
               toolResults,
             });
@@ -716,6 +718,8 @@ const claude: TargetAdapter = {
             outputTokens: outTokens > 0 ? outTokens : undefined,
             hasContextTokens: hasCtx,
             hasOutputTokens: outTokens > 0,
+            uuid,
+            parentUuid: parentUuid ?? undefined,
             toolCalls,
             toolResults: new Map(),
           });
