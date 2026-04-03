@@ -37,6 +37,7 @@ export interface Session {
   repositories: Repository[];
   parentSessionId: string | null;
   relationshipType: string | null;
+  summary: string | null;
 }
 
 export interface SessionListResult {

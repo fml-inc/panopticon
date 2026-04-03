@@ -1351,6 +1351,93 @@ scanCmd
   });
 
 scanCmd
+  .command("summarize")
+  .description("Generate or regenerate a summary for a session")
+  .argument("<session-id>", "The session ID to summarize")
+  .option("--deterministic", "Skip LLM, use deterministic fallback only")
+  .action(async (sessionId: string, opts: Opts) => {
+    const { getDb } = await import("./db/schema.js");
+    getDb();
+
+    if (opts.deterministic) {
+      // Import the loop module to access buildDeterministicSummary
+      // Since it's not exported, we'll inline a simple version
+      const db = getDb();
+      const firstUser = db
+        .prepare(
+          "SELECT SUBSTR(content, 1, 200) as content FROM messages WHERE session_id = ? AND role = 'user' AND is_system = 0 ORDER BY ordinal ASC LIMIT 1",
+        )
+        .get(sessionId) as { content: string } | undefined;
+      const counts = db
+        .prepare(
+          "SELECT COUNT(*) as msg_count, SUM(CASE WHEN role = 'user' AND is_system = 0 THEN 1 ELSE 0 END) as user_count FROM messages WHERE session_id = ?",
+        )
+        .get(sessionId) as { msg_count: number; user_count: number };
+      const tools = db
+        .prepare(
+          "SELECT tool_name, COUNT(*) as cnt FROM tool_calls WHERE session_id = ? GROUP BY tool_name ORDER BY cnt DESC LIMIT 5",
+        )
+        .all(sessionId) as Array<{ tool_name: string; cnt: number }>;
+
+      const parts: string[] = [];
+      if (firstUser) parts.push(`Prompt: "${firstUser.content}"`);
+      parts.push(`${counts.msg_count} messages (${counts.user_count} user)`);
+      if (tools.length > 0)
+        parts.push(
+          `Tools: ${tools.map((t) => `${t.tool_name}(${t.cnt})`).join(", ")}`,
+        );
+      const summary = parts.join(". ");
+      console.log(summary);
+      return;
+    }
+
+    const { invokeLlm, detectAgent } = await import("./summary/llm.js");
+    if (!detectAgent()) {
+      console.error("Claude CLI not found");
+      process.exit(1);
+    }
+
+    const SYSTEM_PROMPT = `You are summarizing a coding session for search and retrieval. You have access to panopticon MCP tools to explore the session data.
+
+Instructions:
+1. Use the "timeline" tool to read the session's messages and tool calls
+2. If needed, use "get" to read full message content or "query" for specific data
+3. Produce a summary optimized for AI consumption and full-text search
+4. Include: what was accomplished, key decisions made, specific file/function/package names, problems encountered and how they were resolved
+5. Use concrete names rather than generic descriptions (e.g. "added FTS5 index on messages table" not "improved search")
+6. Format as 2-4 concise sentences
+7. Output ONLY the summary text, nothing else`;
+
+    const prompt = `Summarize session ${sessionId}. Start by calling the timeline tool with sessionId "${sessionId}" and limit 50.`;
+
+    console.log(`Summarizing ${sessionId}...`);
+    const result = invokeLlm(prompt, {
+      timeoutMs: 120_000,
+      withMcp: true,
+      systemPrompt: SYSTEM_PROMPT,
+      model: "sonnet",
+    });
+
+    if (result) {
+      console.log(`\nSummary:\n${result}`);
+      // Optionally save to DB
+      const db = getDb();
+      const msgCount = (
+        db
+          .prepare("SELECT COUNT(*) as c FROM messages WHERE session_id = ?")
+          .get(sessionId) as { c: number }
+      ).c;
+      db.prepare(
+        "UPDATE sessions SET summary = ?, summary_version = ? WHERE session_id = ?",
+      ).run(result, msgCount, sessionId);
+      console.log(`\nSaved to database.`);
+    } else {
+      console.error("LLM summary failed");
+      process.exit(1);
+    }
+  });
+
+scanCmd
   .command("compare")
   .description("Compare scanner data against hooks/OTLP data")
   .action(async () => {

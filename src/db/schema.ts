@@ -202,7 +202,6 @@ CREATE TABLE IF NOT EXISTS scanner_turns (
   cache_read_tokens INTEGER DEFAULT 0,
   cache_creation_tokens INTEGER DEFAULT 0,
   reasoning_tokens INTEGER DEFAULT 0,
-  summary TEXT,
   UNIQUE(session_id, source, turn_index)
 );
 

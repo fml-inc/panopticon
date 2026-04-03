@@ -220,7 +220,7 @@ Schema:
   session_cwds(session_id, cwd, first_seen_ms)
   messages(id, session_id, ordinal, role, content, timestamp_ms, has_thinking, has_tool_use, content_length, is_system, model, token_usage, context_tokens, output_tokens, has_context_tokens, has_output_tokens, uuid, parent_uuid)
   tool_calls(id, message_id, session_id, tool_name, category, tool_use_id, input_json, skill_name, result_content_length, result_content, subagent_session_id, duration_ms)
-  scanner_turns(id, session_id, source, turn_index, timestamp_ms, model, role, content_preview, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, summary)
+  scanner_turns(id, session_id, source, turn_index, timestamp_ms, model, role, content_preview, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens)
   scanner_events(id, session_id, source, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata JSON)
   session_summary_deltas(id, session_id, delta_index, created_at_ms, from_turn, to_turn, content, method)
   hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, target, user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload BLOB)
