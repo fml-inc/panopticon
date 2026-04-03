@@ -10,7 +10,7 @@ const MAX_PER_CYCLE = 5;
 /** Timeout for agent-based summary (longer than simple LLM call). */
 const AGENT_TIMEOUT_MS = 120_000;
 
-const _SYSTEM_PROMPT = `You are summarizing a coding session for search and retrieval. You have access to panopticon MCP tools to explore the session data.
+const SYSTEM_PROMPT = `You are summarizing a coding session for search and retrieval. You have access to panopticon MCP tools to explore the session data.
 
 Instructions:
 1. Use the "timeline" tool to read the session's messages and tool calls
@@ -32,7 +32,11 @@ function summarizeSession(
   // Try agent-based summary first
   if (detectAgent()) {
     const prompt = `Summarize session ${sessionId}. Start by calling the timeline tool with sessionId "${sessionId}" and limit 50.`;
-    const result = invokeLlm(prompt, AGENT_TIMEOUT_MS);
+    const result = invokeLlm(prompt, {
+      timeoutMs: AGENT_TIMEOUT_MS,
+      withMcp: true,
+      systemPrompt: SYSTEM_PROMPT,
+    });
     if (result) return result;
     log(`LLM summary failed for ${sessionId}, falling back to deterministic`);
   }
