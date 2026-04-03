@@ -2,7 +2,7 @@ import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import { config, ensureDataDir } from "../config.js";
 
-const SCHEMA_SQL = `
+export const SCHEMA_SQL = `
 
 -- ── OTLP tables ─────────────────────────────────────────────────────────────
 
@@ -157,7 +157,16 @@ CREATE TABLE IF NOT EXISTS messages (
   output_tokens   INTEGER NOT NULL DEFAULT 0,
   has_context_tokens INTEGER NOT NULL DEFAULT 0,
   has_output_tokens  INTEGER NOT NULL DEFAULT 0,
+  uuid            TEXT,
+  parent_uuid     TEXT,
   UNIQUE(session_id, ordinal)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  content,
+  content='',
+  contentless_delete=1,
+  tokenize='trigram'
 );
 
 -- ── Tool calls ──────────────────────────────────────────────────────────────
@@ -173,6 +182,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   skill_name            TEXT,
   result_content_length INTEGER,
   result_content        TEXT,
+  duration_ms           INTEGER,
   subagent_session_id   TEXT
 );
 
@@ -363,7 +373,16 @@ CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(re
 
 `;
 
+/**
+ * Scanner data version. Increment when parser logic changes in ways that
+ * affect stored data (new fields extracted, content formatting changes,
+ * fork detection improvements, etc.). On startup, if the DB's user_version
+ * is lower than this, a full resync is triggered automatically.
+ */
+export const SCANNER_DATA_VERSION = 1;
+
 let _db: Database.Database | null = null;
+let _needsResync = false;
 
 function registerCompressionFunctions(db: Database.Database): void {
   db.function("decompress", (blob: Buffer | null) =>
@@ -383,7 +402,28 @@ export function getDb(): Database.Database {
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
 
+  // Check data version for resync
+  const currentVersion = (_db.pragma("user_version", { simple: true }) ??
+    0) as number;
+  if (currentVersion < SCANNER_DATA_VERSION) {
+    _needsResync = true;
+  } else {
+    _needsResync = false;
+  }
+
   return _db;
+}
+
+/** True when the DB was opened with a stale data version. */
+export function needsResync(): boolean {
+  return _needsResync;
+}
+
+/** Mark resync as complete and stamp the current data version. */
+export function markResyncComplete(): void {
+  _needsResync = false;
+  const db = getDb();
+  db.pragma(`user_version = ${SCANNER_DATA_VERSION}`);
 }
 
 export function closeDb(): void {

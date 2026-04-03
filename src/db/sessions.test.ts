@@ -571,3 +571,51 @@ describe("OTEL token columns", () => {
     expect(s.total_cache_read_tokens).toBe(75000); // scanner
   });
 });
+
+// ── has_hooks / has_otel / has_scanner flags ────────────────────────────────
+
+describe("data source flags", () => {
+  it("has_hooks is set when hooks upsert", () => {
+    upsertSession({ session_id: "flag-hooks", target: "claude", has_hooks: 1 });
+    const s = getSession("flag-hooks")!;
+    expect(s.has_hooks).toBe(1);
+    expect(s.has_otel).toBeFalsy();
+    expect(s.has_scanner).toBeFalsy();
+  });
+
+  it("has_otel is set when OTLP upsert", () => {
+    upsertSession({ session_id: "flag-otel", target: "claude", has_otel: 1 });
+    const s = getSession("flag-otel")!;
+    expect(s.has_otel).toBe(1);
+    expect(s.has_hooks).toBeFalsy();
+  });
+
+  it("has_scanner is set when scanner upsert", () => {
+    upsertSession({
+      session_id: "flag-scanner",
+      target: "claude",
+      has_scanner: 1,
+    });
+    const s = getSession("flag-scanner")!;
+    expect(s.has_scanner).toBe(1);
+  });
+
+  it("flags stick via MAX — later upsert without flag does not clear it", () => {
+    upsertSession({ session_id: "flag-stick", target: "claude", has_hooks: 1 });
+    // Scanner upsert without has_hooks
+    upsertSession({ session_id: "flag-stick", has_scanner: 1 });
+    const s = getSession("flag-stick")!;
+    expect(s.has_hooks).toBe(1); // preserved
+    expect(s.has_scanner).toBe(1); // added
+  });
+
+  it("all three flags compose from different sources", () => {
+    upsertSession({ session_id: "flag-all", target: "claude", has_hooks: 1 });
+    upsertSession({ session_id: "flag-all", has_otel: 1 });
+    upsertSession({ session_id: "flag-all", has_scanner: 1 });
+    const s = getSession("flag-all")!;
+    expect(s.has_hooks).toBe(1);
+    expect(s.has_otel).toBe(1);
+    expect(s.has_scanner).toBe(1);
+  });
+});

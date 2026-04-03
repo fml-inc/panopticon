@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type Database from "better-sqlite3";
-import { getDb } from "../db/schema.js";
+import { getDb, markResyncComplete, needsResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 // Import targets so they self-register before we iterate the registry
 import "../targets/claude.js";
@@ -221,6 +221,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
+  let resyncChecked = false;
 
   function scheduleNext(hadWork: boolean): void {
     if (stopping) return;
@@ -233,6 +234,38 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
   function tick(): void {
     if (stopping) return;
+
+    // On first tick, check if data version requires a full resync
+    if (!resyncChecked) {
+      resyncChecked = true;
+      if (needsResync()) {
+        log("Data version outdated — running atomic resync...");
+        import("./resync.js")
+          .then(({ resyncAll }) => {
+            try {
+              const result = resyncAll(log);
+              if (result.success) {
+                markResyncComplete();
+              } else {
+                log(`Resync failed: ${result.error ?? "unknown"}`);
+              }
+            } catch (err) {
+              log(`Resync error: ${err instanceof Error ? err.message : err}`);
+            }
+            scheduleNext(true);
+          })
+          .catch((err) => {
+            log(
+              `Resync import error: ${err instanceof Error ? err.message : err}`,
+            );
+            scheduleNext(false);
+          });
+        return;
+      }
+      // No resync needed — stamp version if not already set
+      markResyncComplete();
+    }
+
     let hadWork = false;
     try {
       const { newTurns } = scanOnce(log);

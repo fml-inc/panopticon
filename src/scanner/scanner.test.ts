@@ -358,6 +358,85 @@ describe("claude scanner parseFile", () => {
     const result = writeAndParse(lines);
     expect(result!.turns).toHaveLength(1);
   });
+
+  it("populates uuid and parentUuid on messages", () => {
+    const lines = [
+      JSON.stringify({
+        type: "user",
+        sessionId: "uuid-test",
+        timestamp: "2026-01-01T00:00:00Z",
+        uuid: "aaa",
+        message: { content: "hello" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "uuid-test",
+        timestamp: "2026-01-01T00:00:01Z",
+        uuid: "bbb",
+        parentUuid: "aaa",
+        message: {
+          model: "claude-opus-4-6",
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+    ];
+    const result = writeAndParse(lines);
+    expect(result!.messages).toHaveLength(2);
+    expect(result!.messages[0].uuid).toBe("aaa");
+    expect(result!.messages[0].parentUuid).toBeUndefined();
+    expect(result!.messages[1].uuid).toBe("bbb");
+    expect(result!.messages[1].parentUuid).toBe("aaa");
+  });
+
+  it("stores timestampMs on tool calls and tool results", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "dur-test",
+        timestamp: "2026-01-01T00:00:00Z",
+        message: {
+          model: "claude-opus-4-6",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "Bash",
+              input: { command: "ls" },
+            },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        sessionId: "dur-test",
+        timestamp: "2026-01-01T00:00:03Z",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tu_1",
+              content: "file1.txt\nfile2.txt",
+            },
+            { type: "text", text: "next question" },
+          ],
+        },
+      }),
+    ];
+    const result = writeAndParse(lines);
+    // Assistant message has one tool call with timestamp
+    expect(result!.messages[0].toolCalls).toHaveLength(1);
+    expect(result!.messages[0].toolCalls[0].timestampMs).toBe(
+      new Date("2026-01-01T00:00:00Z").getTime(),
+    );
+    // User message has tool result with timestamp (3 seconds later)
+    const userResults = result!.messages[1].toolResults.get("tu_1");
+    expect(userResults).toBeDefined();
+    expect(userResults!.timestampMs).toBe(
+      new Date("2026-01-01T00:00:03Z").getTime(),
+    );
+  });
 });
 
 // ── Codex parser tests ──────────────────────────────────────────────────────

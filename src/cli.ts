@@ -1339,6 +1339,26 @@ scanCmd
   });
 
 scanCmd
+  .command("resync")
+  .description("Atomic full resync: rebuild scanner data in a temp DB and swap")
+  .action(async () => {
+    const { resyncAll } = await import("./scanner/index.js");
+    const { getDb } = await import("./db/schema.js");
+    getDb();
+
+    const result = resyncAll((msg) => console.log(`[resync] ${msg}`));
+    if (result.success) {
+      console.log(
+        `Done: ${result.filesScanned} files, ${result.newTurns} turns`,
+      );
+      await printScanSummary();
+    } else {
+      console.error(`Resync failed: ${result.error}`);
+      process.exit(1);
+    }
+  });
+
+scanCmd
   .command("compare")
   .description("Compare scanner data against hooks/OTLP data")
   .action(async () => {

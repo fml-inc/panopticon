@@ -448,7 +448,7 @@ const claude: TargetAdapter = {
       // Tool results from filtered-out messages (tool-result-only user entries)
       const orphanedToolResults = new Map<
         string,
-        { contentLength: number; contentRaw: string }
+        { contentLength: number; contentRaw: string; timestampMs?: number }
       >();
 
       // DAG tracking: collect uuid/parentUuid entries and map them to
@@ -530,7 +530,7 @@ const claude: TargetAdapter = {
           const textParts: string[] = [];
           const toolResults = new Map<
             string,
-            { contentLength: number; contentRaw: string }
+            { contentLength: number; contentRaw: string; timestampMs?: number }
           >();
 
           if (typeof content === "string") {
@@ -552,6 +552,7 @@ const claude: TargetAdapter = {
                 toolResults.set(b.tool_use_id as string, {
                   contentLength: textLen,
                   contentRaw: raw,
+                  timestampMs: tsMs,
                 });
               }
             }
@@ -596,6 +597,8 @@ const claude: TargetAdapter = {
               contentLength: fullContent.length,
               hasContextTokens: false,
               hasOutputTokens: false,
+              uuid,
+              parentUuid: parentUuid ?? undefined,
               toolCalls: [],
               toolResults,
             });
@@ -677,6 +680,7 @@ const claude: TargetAdapter = {
                   category: claudeToolCategory(toolName),
                   inputJson,
                   skillName,
+                  timestampMs: tsMs,
                 });
 
                 events.push({
@@ -716,6 +720,8 @@ const claude: TargetAdapter = {
             outputTokens: outTokens > 0 ? outTokens : undefined,
             hasContextTokens: hasCtx,
             hasOutputTokens: outTokens > 0,
+            uuid,
+            parentUuid: parentUuid ?? undefined,
             toolCalls,
             toolResults: new Map(),
           });

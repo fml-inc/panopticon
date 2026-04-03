@@ -40,6 +40,7 @@ export function upsertSession(
     model: meta.model,
     cli_version: meta.cliVersion,
     scanner_file_path: filePath,
+    has_scanner: 1,
     project,
     created_at: meta.startedAtMs ?? Date.now(),
     parent_session_id: meta.parentSessionId,
@@ -227,19 +228,27 @@ export function resetFileForReparse(
       sessionId,
     );
     db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
+    db.prepare(
+      "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id = ?)",
+    ).run(sessionId);
     db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
     // Also clean up any previously-detected fork sessions from this file
+    const forkSessionFilter =
+      "SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'";
     db.prepare(
-      "DELETE FROM scanner_turns WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM scanner_turns WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
-      "DELETE FROM scanner_events WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM scanner_events WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
-      "DELETE FROM tool_calls WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM tool_calls WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
-      "DELETE FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id IN (${forkSessionFilter}))`,
+    ).run(sessionId);
+    db.prepare(
+      `DELETE FROM messages WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
       "DELETE FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
@@ -254,6 +263,7 @@ export function resetScanner(): void {
     DELETE FROM scanner_turns;
     DELETE FROM scanner_events;
     DELETE FROM tool_calls;
+    DELETE FROM messages_fts;
     DELETE FROM messages;
     UPDATE sessions SET
       model = NULL, cli_version = NULL, scanner_file_path = NULL,
@@ -272,6 +282,9 @@ export function resetScannerSource(source: string): void {
   db.prepare("DELETE FROM scanner_turns WHERE source = ?").run(source);
   db.prepare(
     "DELETE FROM tool_calls WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?)",
+  ).run(source);
+  db.prepare(
+    "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?))",
   ).run(source);
   db.prepare(
     "DELETE FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?)",
@@ -356,16 +369,16 @@ const INSERT_MESSAGE_SQL = `
     (session_id, ordinal, role, content, timestamp_ms,
      has_thinking, has_tool_use, content_length, is_system,
      model, token_usage, context_tokens, output_tokens,
-     has_context_tokens, has_output_tokens)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     has_context_tokens, has_output_tokens, uuid, parent_uuid)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const INSERT_TOOL_CALL_SQL = `
   INSERT INTO tool_calls
     (message_id, session_id, tool_name, category, tool_use_id,
      input_json, skill_name, result_content_length, result_content,
-     subagent_session_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     subagent_session_id, duration_ms)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 /**
@@ -380,7 +393,7 @@ export function insertMessages(
   messages: ParsedMessage[],
   orphanedToolResults?: Map<
     string,
-    { contentLength: number; contentRaw: string }
+    { contentLength: number; contentRaw: string; timestampMs?: number }
   >,
 ): void {
   if (messages.length === 0 && !orphanedToolResults?.size) return;
@@ -389,7 +402,7 @@ export function insertMessages(
   // Collect all tool results across user messages for backfilling
   const toolResultMap = new Map<
     string,
-    { contentLength: number; contentRaw: string }
+    { contentLength: number; contentRaw: string; timestampMs?: number }
   >();
   // Include orphaned results from filtered-out messages
   if (orphanedToolResults) {
@@ -405,6 +418,9 @@ export function insertMessages(
 
   const msgStmt = db.prepare(INSERT_MESSAGE_SQL);
   const tcStmt = db.prepare(INSERT_TOOL_CALL_SQL);
+  const ftsStmt = db.prepare(
+    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+  );
 
   const tx = db.transaction(() => {
     for (const msg of messages) {
@@ -424,16 +440,23 @@ export function insertMessages(
         msg.outputTokens ?? 0,
         msg.hasContextTokens ? 1 : 0,
         msg.hasOutputTokens ? 1 : 0,
+        msg.uuid ?? null,
+        msg.parentUuid ?? null,
       );
 
       // INSERT OR IGNORE returns 0 changes if the row already exists
       if (result.changes === 0) continue;
 
       const messageId = result.lastInsertRowid;
+      ftsStmt.run(messageId, msg.content);
 
       for (const tc of msg.toolCalls) {
         // Look up result from the tool_result blocks
         const toolResult = toolResultMap.get(tc.toolUseId);
+        const durationMs =
+          tc.timestampMs && toolResult?.timestampMs
+            ? toolResult.timestampMs - tc.timestampMs
+            : null;
         tcStmt.run(
           messageId,
           msg.sessionId,
@@ -445,6 +468,7 @@ export function insertMessages(
           toolResult?.contentLength ?? null,
           toolResult?.contentRaw ?? null,
           tc.subagentSessionId ?? null,
+          durationMs != null && durationMs >= 0 ? durationMs : null,
         );
       }
     }

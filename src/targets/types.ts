@@ -311,6 +311,8 @@ export interface ParsedToolCall {
   resultContentLength?: number;
   resultContent?: string;
   subagentSessionId?: string;
+  /** Timestamp (ms) when the tool was invoked (from the assistant message). */
+  timestampMs?: number;
 }
 
 export interface ParsedMessage {
@@ -329,9 +331,16 @@ export interface ParsedMessage {
   outputTokens?: number;
   hasContextTokens: boolean;
   hasOutputTokens: boolean;
+  /** DAG node UUID from the JSONL line that produced this message. */
+  uuid?: string;
+  /** Parent DAG node UUID (the line this message is a reply to). */
+  parentUuid?: string;
   toolCalls: ParsedToolCall[];
   /** tool_use_id → raw result content (from tool_result blocks in user messages) */
-  toolResults: Map<string, { contentLength: number; contentRaw: string }>;
+  toolResults: Map<
+    string,
+    { contentLength: number; contentRaw: string; timestampMs?: number }
+  >;
 }
 
 export interface ParseResult {
@@ -361,7 +370,7 @@ export interface ParseResult {
    */
   orphanedToolResults?: Map<
     string,
-    { contentLength: number; contentRaw: string }
+    { contentLength: number; contentRaw: string; timestampMs?: number }
   >;
 }
 
