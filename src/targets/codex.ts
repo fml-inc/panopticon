@@ -23,6 +23,17 @@ function codexToolCategory(toolName: string): string {
   return CODEX_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
 }
 
+const CODEX_SYSTEM_PREFIXES = [
+  "# AGENTS.md",
+  "<environment_context>",
+  "<INSTRUCTIONS>",
+  "<subagent_notification>",
+];
+
+function isCodexSystemMessage(content: string): boolean {
+  return CODEX_SYSTEM_PREFIXES.some((p) => content.startsWith(p));
+}
+
 const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
 
@@ -318,6 +329,7 @@ const codex: TargetAdapter = {
 
       // Collect tool calls and results keyed by call_id to match them up
       let pendingToolCalls: ParsedToolCall[] = [];
+      let pendingAssistantContent = "";
       const toolResultsByCallId = new Map<
         string,
         { contentLength: number; contentRaw: string }
@@ -374,7 +386,7 @@ const codex: TargetAdapter = {
               reasoningTokens: 0,
             });
 
-            if (message) {
+            if (message && !isCodexSystemMessage(message)) {
               messages.push({
                 sessionId: sid,
                 ordinal: ordinal++,
@@ -436,12 +448,12 @@ const codex: TargetAdapter = {
               sessionId: sid,
               ordinal: ordinal++,
               role: "assistant",
-              content: "",
+              content: pendingAssistantContent,
               timestampMs: tsMs,
               hasThinking: false,
               hasToolUse: pendingToolCalls.length > 0,
               isSystem: false,
-              contentLength: 0,
+              contentLength: pendingAssistantContent.length,
               model: currentModel,
               tokenUsage: JSON.stringify(lastUsage),
               contextTokens: hasCtx ? ctxTokens : undefined,
@@ -452,6 +464,7 @@ const codex: TargetAdapter = {
               toolResults,
             });
             pendingToolCalls = [];
+            pendingAssistantContent = "";
           }
 
           if (eventType === "agent_message") {
@@ -465,10 +478,22 @@ const codex: TargetAdapter = {
           }
         }
 
-        // Tool calls from response_item
+        // Tool calls and content from response_item
         if (type === "response_item") {
           const p = obj.payload as Record<string, unknown> | undefined;
           const itemType = p?.type as string | undefined;
+
+          // Capture assistant text content from message/text items
+          if (itemType === "message" || itemType === "text") {
+            const text =
+              (p?.text as string) ??
+              (p?.content as string) ??
+              (p?.output_text as string);
+            if (text) {
+              pendingAssistantContent +=
+                (pendingAssistantContent ? "\n" : "") + text;
+            }
+          }
 
           if (itemType === "function_call") {
             const toolName = (p?.name as string) ?? "";
@@ -502,7 +527,7 @@ const codex: TargetAdapter = {
             if (output) {
               toolResultsByCallId.set(callId, {
                 contentLength: output.length,
-                contentRaw: JSON.stringify(output),
+                contentRaw: output,
               });
             }
 

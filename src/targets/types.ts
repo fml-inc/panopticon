@@ -278,6 +278,7 @@ export interface ParsedTurn {
 
 export interface ParsedSession {
   sessionId: string;
+  parentSessionId?: string;
   model?: string;
   cwd?: string;
   cliVersion?: string;

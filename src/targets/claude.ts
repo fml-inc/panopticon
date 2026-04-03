@@ -274,19 +274,33 @@ const claude: TargetAdapter = {
 
         const type = obj.type as string;
         const sessionId = obj.sessionId as string | undefined;
-        const sid = sessionId ?? meta?.sessionId ?? "";
+        const agentId = obj.agentId as string | undefined;
         const tsMs = obj.timestamp
           ? new Date(obj.timestamp as string).getTime()
           : Date.now();
 
         if (!meta && sessionId) {
-          meta = {
-            sessionId,
-            cliVersion: obj.version as string | undefined,
-            cwd: obj.cwd as string | undefined,
-            startedAtMs: tsMs,
-          };
+          // Subagent files have agentId set and sessionId is the parent's ID.
+          // Use "agent-{agentId}" as the session ID (matches file naming).
+          if (agentId) {
+            meta = {
+              sessionId: `agent-${agentId}`,
+              parentSessionId: sessionId,
+              cliVersion: obj.version as string | undefined,
+              cwd: obj.cwd as string | undefined,
+              startedAtMs: tsMs,
+            };
+          } else {
+            meta = {
+              sessionId,
+              cliVersion: obj.version as string | undefined,
+              cwd: obj.cwd as string | undefined,
+              startedAtMs: tsMs,
+            };
+          }
         }
+
+        const sid = meta?.sessionId ?? sessionId ?? "";
 
         if (type === "user") {
           const msg = obj.message as Record<string, unknown> | undefined;
@@ -308,8 +322,12 @@ const claude: TargetAdapter = {
               if (b.type === "text" && typeof b.text === "string") {
                 textParts.push(b.text);
               } else if (b.type === "tool_result") {
-                const raw = JSON.stringify(b.content ?? "");
                 const textLen = extractToolResultTextLength(b.content);
+                // Store raw content as-is: string stays string, arrays/objects get serialized
+                const raw =
+                  typeof b.content === "string"
+                    ? b.content
+                    : JSON.stringify(b.content ?? "");
                 toolResults.set(b.tool_use_id as string, {
                   contentLength: textLen,
                   contentRaw: raw,

@@ -373,11 +373,12 @@ const gemini: TargetAdapter = {
           >();
 
           if (msgToolCalls) {
-            for (const tc of msgToolCalls) {
+            for (let tcIdx = 0; tcIdx < msgToolCalls.length; tcIdx++) {
+              const tc = msgToolCalls[tcIdx];
               const toolName = ((tc.name ?? tc.displayName) as string) ?? "";
               const inputJson = tc.args ? JSON.stringify(tc.args) : undefined;
-              // Gemini uses name as the ID since there's no explicit tool_use_id
-              const toolUseId = `${toolName}-${timestampMs}`;
+              const toolUseId =
+                (tc.id as string) || `${toolName}-${timestampMs}-${tcIdx}`;
 
               toolCalls.push({
                 toolUseId,
@@ -389,12 +390,22 @@ const gemini: TargetAdapter = {
               const result = tc.result as
                 | Array<Record<string, unknown>>
                 | undefined;
-              const output = result?.[0]?.functionResponse;
+              const fnResponse = result?.[0]?.functionResponse as
+                | Record<string, unknown>
+                | undefined;
+              const responseObj = fnResponse?.response as
+                | Record<string, unknown>
+                | undefined;
+              const output =
+                typeof responseObj?.output === "string"
+                  ? responseObj.output
+                  : fnResponse
+                    ? JSON.stringify(fnResponse)
+                    : undefined;
               if (output) {
-                const raw = JSON.stringify(output);
                 toolResults.set(toolUseId, {
-                  contentLength: raw.length,
-                  contentRaw: raw,
+                  contentLength: output.length,
+                  contentRaw: output,
                 });
               }
 
@@ -404,9 +415,7 @@ const gemini: TargetAdapter = {
                 timestampMs,
                 toolName,
                 toolInput: inputJson?.slice(0, 1000),
-                toolOutput: output
-                  ? JSON.stringify(output).slice(0, 1000)
-                  : undefined,
+                toolOutput: output?.slice(0, 1000),
               });
             }
           }
