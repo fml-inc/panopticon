@@ -1,11 +1,9 @@
 import { execSync } from "node:child_process";
 import { getDb } from "../db/schema.js";
 import { captureException } from "../sentry.js";
-import { chunk, postOtlp } from "./post.js";
+import { postSync } from "./post.js";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
 import type {
-  ReaderContext,
-  SyncCapability,
   SyncHandle,
   SyncOptions,
   SyncTarget,
@@ -14,7 +12,7 @@ import type {
 import { readWatermark, watermarkKey, writeWatermark } from "./watermark.js";
 
 const DEFAULT_BATCH_SIZE = 2000;
-const DEFAULT_POST_BATCH_SIZE = 25;
+const DEFAULT_POST_BATCH_SIZE = 100;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 1_000;
 const MAX_ITERATIONS_PER_TABLE = 50;
@@ -27,24 +25,34 @@ function matchesGlob(value: string, pattern: string): boolean {
   return value === pattern;
 }
 
-function shouldSync(
-  repository: string | null | undefined,
-  opts: SyncOptions,
-): boolean {
-  if (!opts.filter) return true;
-  if (!repository) return !opts.filter.includeRepos?.length;
+/** Set of session IDs that have repo attribution matching the filter. */
+function buildSyncableSessionIds(opts: SyncOptions): Set<string> | null {
+  const requireRepo = opts.filter?.requireRepo ?? true;
+  if (!requireRepo && !opts.filter?.includeRepos?.length) return null; // no filtering
 
-  if (opts.filter.excludeRepos?.some((p) => matchesGlob(repository, p))) {
-    return false;
+  const db = getDb();
+  const rows = db
+    .prepare(
+      "SELECT DISTINCT sr.session_id, sr.repository FROM session_repositories sr",
+    )
+    .all() as Array<{ session_id: string; repository: string }>;
+
+  const sessionIds = new Set<string>();
+  for (const row of rows) {
+    // Check repo glob filters
+    if (opts.filter?.excludeRepos?.some((p) => matchesGlob(row.repository, p)))
+      continue;
+    if (opts.filter?.includeRepos?.length) {
+      if (!opts.filter.includeRepos.some((p) => matchesGlob(row.repository, p)))
+        continue;
+    }
+    sessionIds.add(row.session_id);
   }
-  if (opts.filter.includeRepos?.length) {
-    return opts.filter.includeRepos.some((p) => matchesGlob(repository, p));
-  }
-  return true;
+
+  return sessionIds;
 }
 
 const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
-
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 function resolveToken(target: SyncTarget): string | undefined {
@@ -80,11 +88,8 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const postBatchSize = opts.postBatchSize ?? DEFAULT_POST_BATCH_SIZE;
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
-  const hooksInstalled = opts.hooksInstalled ?? false;
   const log =
     opts.log ?? ((msg: string) => console.error(`[panopticon-sync] ${msg}`));
-
-  const readerCtx: ReaderContext = { hooksInstalled };
 
   function resolveHeaders(target: SyncTarget): Record<string, string> {
     const headers: Record<string, string> = { ...target.headers };
@@ -110,38 +115,39 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     }
   }
 
-  function descriptorsForTarget(
-    target: SyncTarget,
-  ): TableSyncDescriptor<unknown>[] {
-    const caps: SyncCapability[] = target.capabilities ?? ["otlp"];
-    return TABLE_SYNC_REGISTRY.filter((d) => caps.includes(d.capability));
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function syncTable(
-    desc: TableSyncDescriptor<any>,
+    desc: TableSyncDescriptor<unknown>,
     target: SyncTarget,
+    syncableSessionIds: Set<string> | null,
   ): Promise<boolean> {
     const wmKey = watermarkKey(desc.table, target.name);
     const wm = readWatermark(wmKey);
 
-    const { rows, maxId } = desc.read(wm, batchSize, readerCtx);
+    const { rows, maxId } = desc.read(wm, batchSize);
     if (rows.length === 0) return false;
 
-    const filtered = desc.extractRepo
-      ? rows.filter((r: unknown) => shouldSync(desc.extractRepo!(r), opts))
-      : rows;
+    // Filter session-linked tables by syncable session IDs
+    let filtered = rows;
+    if (desc.sessionLinked && syncableSessionIds) {
+      filtered = rows.filter((r: unknown) => {
+        const row = r as Record<string, unknown>;
+        const sessionId =
+          (row.sessionId as string) ?? (row.session_id as string);
+        return sessionId && syncableSessionIds.has(sessionId);
+      });
+    }
 
     log(
       `${desc.table}: ${filtered.length} ${desc.logNoun} (watermark ${wm} → ${maxId})`,
     );
 
-    for (const batch of chunk(filtered, postBatchSize)) {
+    // POST in batches to /v1/sync
+    for (let i = 0; i < filtered.length; i += postBatchSize) {
+      const batch = filtered.slice(i, i + postBatchSize);
       if (batch.length > 0) {
-        const payload = desc.serialize(batch);
-        await postOtlp(
-          `${target.url}${desc.endpoint}`,
-          payload,
+        await postSync(
+          `${target.url}/v1/sync`,
+          { table: desc.table, rows: batch },
           resolveHeaders(target),
         );
       }
@@ -154,15 +160,16 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   async function runOnce(): Promise<boolean> {
     let hasMore = false;
 
+    // Build the set of syncable session IDs (cached per cycle)
+    const syncableSessionIds = buildSyncableSessionIds(opts);
+
     for (const target of opts.targets) {
       try {
-        const descs = descriptorsForTarget(target);
-        // Round-robin: one batch from each table per iteration so all
-        // tables make progress together and no single backlog blocks others.
         for (let i = 0; i < MAX_ITERATIONS_PER_TABLE; i++) {
           let anyWork = false;
-          for (const desc of descs) {
-            if (await syncTable(desc, target)) anyWork = true;
+          for (const desc of TABLE_SYNC_REGISTRY) {
+            if (await syncTable(desc, target, syncableSessionIds))
+              anyWork = true;
           }
           if (!anyWork) break;
           hasMore = true;

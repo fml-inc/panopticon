@@ -11,70 +11,38 @@ describe("TABLE_SYNC_REGISTRY", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("contains the expected tables in order", () => {
+  it("contains the expected tables", () => {
     const names = TABLE_SYNC_REGISTRY.map((d) => d.table);
-    expect(names).toEqual([
-      "hook_events",
-      "otel_logs",
-      "otel_metrics",
-      "scanner_turns",
-      "scanner_events",
-      "otel_spans",
-      "user_config_snapshots",
-      "repo_config_snapshots",
-      "messages",
-      "tool_calls",
-      "sessions",
-    ]);
+    expect(names).toContain("sessions");
+    expect(names).toContain("messages");
+    expect(names).toContain("tool_calls");
+    expect(names).toContain("scanner_turns");
+    expect(names).toContain("scanner_events");
+    expect(names).toContain("hook_events");
+    expect(names).toContain("otel_logs");
+    expect(names).toContain("otel_metrics");
+    expect(names).toContain("otel_spans");
+    expect(names).toContain("user_config_snapshots");
+    expect(names).toContain("repo_config_snapshots");
   });
 
-  it("all endpoints start with /v1/", () => {
-    for (const desc of TABLE_SYNC_REGISTRY) {
-      expect(desc.endpoint).toMatch(/^\/v1\//);
-    }
-  });
-
-  it("all descriptors have required functions", () => {
+  it("all descriptors have required fields", () => {
     for (const desc of TABLE_SYNC_REGISTRY) {
       expect(typeof desc.read).toBe("function");
-      expect(typeof desc.serialize).toBe("function");
       expect(typeof desc.table).toBe("string");
       expect(typeof desc.logNoun).toBe("string");
-      expect(typeof desc.endpoint).toBe("string");
-      expect(["otlp", "api"]).toContain(desc.capability);
+      expect(typeof desc.sessionLinked).toBe("boolean");
     }
   });
 
-  it("OTLP tables have capability 'otlp'", () => {
-    const otlp = TABLE_SYNC_REGISTRY.filter((d) => d.capability === "otlp");
-    expect(otlp.map((d) => d.table)).toEqual([
-      "hook_events",
-      "otel_logs",
-      "otel_metrics",
-      "scanner_turns",
-      "scanner_events",
-      "otel_spans",
-    ]);
-  });
-
-  it("API tables have capability 'api'", () => {
-    const api = TABLE_SYNC_REGISTRY.filter((d) => d.capability === "api");
-    expect(api.map((d) => d.table)).toEqual([
-      "user_config_snapshots",
-      "repo_config_snapshots",
-      "messages",
-      "tool_calls",
-      "sessions",
-    ]);
-  });
-
-  it("tables with repo filtering", () => {
-    const withRepo = TABLE_SYNC_REGISTRY.filter((d) => d.extractRepo);
-    expect(withRepo.map((d) => d.table)).toEqual([
-      "hook_events",
-      "otel_logs",
-      "otel_metrics",
-      "repo_config_snapshots",
-    ]);
+  it("session-linked tables are marked correctly", () => {
+    const linked = TABLE_SYNC_REGISTRY.filter((d) => d.sessionLinked).map(
+      (d) => d.table,
+    );
+    expect(linked).toContain("sessions");
+    expect(linked).toContain("messages");
+    expect(linked).toContain("hook_events");
+    expect(linked).not.toContain("user_config_snapshots");
+    expect(linked).not.toContain("repo_config_snapshots");
   });
 });

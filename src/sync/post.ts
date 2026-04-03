@@ -2,9 +2,9 @@ const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 2000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-export async function postOtlp(
+export async function postSync(
   url: string,
-  body: unknown,
+  body: { table: string; rows: unknown[] },
   headers: Record<string, string>,
 ): Promise<void> {
   let lastError: Error | null = null;
@@ -52,13 +52,5 @@ export async function postOtlp(
     }
   }
 
-  throw lastError ?? new Error("postOtlp failed");
-}
-
-export function chunk<T>(arr: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    result.push(arr.slice(i, i + size));
-  }
-  return result;
+  throw lastError ?? new Error("postSync failed");
 }

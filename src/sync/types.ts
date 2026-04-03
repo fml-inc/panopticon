@@ -1,10 +1,7 @@
-/** Which class of sync data a target can receive. */
-export type SyncCapability = "otlp" | "api";
-
 export interface SyncTarget {
   /** Unique name for this target, used as watermark namespace */
   name: string;
-  /** OTLP HTTP endpoint base URL (e.g. "https://otlp.example.com") */
+  /** Sync endpoint base URL (e.g. "https://example.com") */
   url: string;
   /** Bearer token — sent as Authorization: Bearer <token> */
   token?: string;
@@ -12,8 +9,6 @@ export interface SyncTarget {
   tokenCommand?: string;
   /** Additional headers (merged with token auth if both provided) */
   headers?: Record<string, string>;
-  /** Which table classes this target receives. Default: ["otlp"]. */
-  capabilities?: SyncCapability[];
 }
 
 export interface SyncFilter {
@@ -21,13 +16,13 @@ export interface SyncFilter {
   includeRepos?: string[];
   /** Exclude repos matching these patterns (takes precedence over include) */
   excludeRepos?: string[];
+  /** Only sync sessions with associated repo attribution (default true) */
+  requireRepo?: boolean;
 }
 
 export interface SyncOptions {
   targets: SyncTarget[];
   filter?: SyncFilter;
-  /** When true, OTLP logs that hooks cover (tool_decision, tool_result, user_prompt) are filtered out */
-  hooksInstalled?: boolean;
   /** Max rows read from SQLite per batch (default 2000) */
   batchSize?: number;
   /** Max records per HTTP POST (default 25) */
@@ -253,114 +248,17 @@ export interface ToolCallSyncRecord {
 
 // ── Sync registry ───────────────────────────────────────────────────────────
 
-/** Context passed to reader functions that need values from SyncOptions. */
-export interface ReaderContext {
-  hooksInstalled: boolean;
-}
-
 /**
  * Descriptor for a single table that participates in the sync loop.
- * The generic loop reads rows, optionally filters by repo, serializes,
- * and POSTs — this descriptor captures all the per-table variation.
+ * All tables POST to /v1/sync with {table, rows} payload.
  */
 export interface TableSyncDescriptor<TRow = unknown> {
-  /** Table name, used as the watermark namespace key. */
+  /** Table name, used as watermark key and sent in the POST body. */
   table: string;
   /** Noun for log messages (e.g. "events", "logs"). */
   logNoun: string;
-  /** Which capability class this table belongs to. */
-  capability: SyncCapability;
   /** Read rows from SQLite starting after the given watermark. */
-  read: (
-    afterId: number,
-    limit: number,
-    ctx: ReaderContext,
-  ) => { rows: TRow[]; maxId: number };
-  /** Serialize a batch of rows into the POST body. */
-  serialize: (rows: TRow[]) => unknown;
-  /** URL path suffix appended to target.url (e.g. "/v1/logs"). */
-  endpoint: string;
-  /** Extract repo string from a row for shouldSync filtering. If omitted, no filtering. */
-  extractRepo?: (row: TRow) => string | null;
-}
-
-// ── OTLP JSON types ──────────────────────────────────────────────────────────
-
-export interface OtlpAnyValue {
-  stringValue?: string;
-  intValue?: string;
-  doubleValue?: number;
-  boolValue?: boolean;
-  arrayValue?: { values: OtlpAnyValue[] };
-  kvlistValue?: { values: OtlpKeyValue[] };
-}
-
-export interface OtlpKeyValue {
-  key: string;
-  value: OtlpAnyValue;
-}
-
-export interface OtlpLogRecord {
-  timeUnixNano: string;
-  severityText?: string;
-  body: OtlpAnyValue;
-  attributes: OtlpKeyValue[];
-  traceId?: string;
-  spanId?: string;
-}
-
-export interface OtlpResourceLogs {
-  resourceLogs: Array<{
-    resource: { attributes: OtlpKeyValue[] };
-    scopeLogs: Array<{
-      logRecords: OtlpLogRecord[];
-    }>;
-  }>;
-}
-
-export interface OtlpNumberDataPoint {
-  timeUnixNano: string;
-  asDouble: number;
-  attributes: OtlpKeyValue[];
-}
-
-export interface OtlpMetric {
-  name: string;
-  unit?: string;
-  gauge?: { dataPoints: OtlpNumberDataPoint[] };
-  sum?: {
-    dataPoints: OtlpNumberDataPoint[];
-    aggregationTemporality: number; // 1=CUMULATIVE, 2=DELTA
-    isMonotonic: boolean;
-  };
-}
-
-export interface OtlpResourceMetrics {
-  resourceMetrics: Array<{
-    resource: { attributes: OtlpKeyValue[] };
-    scopeMetrics: Array<{
-      metrics: OtlpMetric[];
-    }>;
-  }>;
-}
-
-export interface OtlpSpan {
-  traceId: string;
-  spanId: string;
-  parentSpanId?: string;
-  name: string;
-  kind?: number;
-  startTimeUnixNano: string;
-  endTimeUnixNano: string;
-  status?: { code?: number; message?: string };
-  attributes: OtlpKeyValue[];
-}
-
-export interface OtlpResourceSpans {
-  resourceSpans: Array<{
-    resource: { attributes: OtlpKeyValue[] };
-    scopeSpans: Array<{
-      spans: OtlpSpan[];
-    }>;
-  }>;
+  read: (afterId: number, limit: number) => { rows: TRow[]; maxId: number };
+  /** Whether this table's rows are linked to sessions (filtered by repo). */
+  sessionLinked: boolean;
 }
