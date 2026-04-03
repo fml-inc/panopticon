@@ -1095,16 +1095,14 @@ program
 
 program
   .command("timeline")
-  .description("Get chronological events for a session")
+  .description("Get messages and tool calls for a session")
   .argument("<session-id>", "The session ID to query")
-  .option("--types <types...>", "Filter to specific event types")
-  .option("--limit <n>", "Max events to return (default 20)", parseInt)
-  .option("--offset <n>", "Number of events to skip", parseInt)
-  .option("--full", "Return full payloads instead of truncated")
+  .option("--limit <n>", "Max messages to return (default 50)", parseInt)
+  .option("--offset <n>", "Number of messages to skip", parseInt)
+  .option("--full", "Return full content instead of truncated")
   .action((sessionId: string, opts: Opts) => {
     const result = sessionTimeline({
       sessionId,
-      eventTypes: opts.types,
       limit: opts.limit,
       offset: opts.offset,
       fullPayloads: opts.full,

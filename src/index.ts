@@ -60,6 +60,7 @@ export {
 export type {
   ActivitySessionDetail,
   ActivitySummaryResult,
+  ChildSession,
   SearchMatch,
   SearchResult,
   Session,
@@ -67,7 +68,8 @@ export type {
   SessionTimelineResult,
   SpendingGroup,
   SpendingResult,
-  TimelineEvent,
+  TimelineMessage,
+  TimelineToolCall,
 } from "./types.js";
 // ── Config ───────────────────────────────────────────────────────────────────
 export {

@@ -23,8 +23,8 @@ const server = new McpServer({
 });
 
 server.tool(
-  "panopticon_sessions",
-  "List recent Claude Code & Gemini CLI sessions with stats (event count, tools used, cost)",
+  "sessions",
+  "List recent sessions with stats (tokens, cost, model, project)",
   {
     limit: z
       .number()
@@ -39,56 +39,43 @@ server.tool(
     const results = listSessions({ limit, since });
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(results, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(results, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_session_timeline",
-  "Get chronological events for a specific session (hook events + OTel logs merged). Payloads are truncated to 500 chars by default — use fullPayloads: true for complete data.",
+  "timeline",
+  "Get messages and tool calls for a session. Includes child sessions (forks, subagents) and DAG metadata (uuid/parentUuid). Content truncated to 500 chars by default.",
   {
     sessionId: z.string().describe("The session ID to query"),
-    eventTypes: z
-      .array(z.string())
+    limit: z
+      .number()
       .optional()
-      .describe("Filter to specific event types"),
-    limit: z.number().optional().describe("Max events to return (default 20)"),
+      .describe("Max messages to return (default 50)"),
     offset: z
       .number()
       .optional()
-      .describe("Number of events to skip (for pagination)"),
+      .describe("Number of messages to skip (for pagination)"),
     fullPayloads: z
       .boolean()
       .optional()
-      .describe("Return full payloads instead of truncated (default false)"),
+      .describe("Return full content instead of truncated (default false)"),
   },
-  async ({ sessionId, eventTypes, limit, offset, fullPayloads }) => {
-    const result = sessionTimeline({
-      sessionId,
-      eventTypes,
-      limit,
-      offset,
-      fullPayloads,
-    });
+  async ({ sessionId, limit, offset, fullPayloads }) => {
+    const result = sessionTimeline({ sessionId, limit, offset, fullPayloads });
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(result, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_costs",
-  "Token usage and cost breakdowns, grouped by session, model, or day",
+  "costs",
+  "Token usage and cost breakdowns from scanner data, grouped by session, model, or day",
   {
     since: z
       .string()
@@ -103,18 +90,15 @@ server.tool(
     const results = costBreakdown({ since, groupBy });
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(results, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(results, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_summary",
-  "Generate a summary of recent Claude Code & Gemini CLI activity — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates, daily reports, and progress reviews.",
+  "summary",
+  "Activity summary — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates and daily reports.",
   {
     since: z
       .string()
@@ -127,18 +111,15 @@ server.tool(
     const summary = activitySummary({ since });
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(summary, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(summary, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_plans",
-  "List plans created by Claude Code (from ExitPlanMode events). Returns the full plan markdown, allowed prompts, session ID, and timestamp.",
+  "plans",
+  "List plans created by Claude Code (from ExitPlanMode events). Returns plan markdown, allowed prompts, session ID, and timestamp.",
   {
     session_id: z.string().optional().describe("Filter to a specific session"),
     since: z
@@ -151,17 +132,14 @@ server.tool(
     const plans = listPlans({ session_id, since, limit });
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(plans, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(plans, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_search",
+  "search",
   "Full-text search across events and messages (FTS5). Returns matching hook events, OTel logs, and message content. Payloads truncated to 500 chars by default.",
   {
     query: z.string().describe("Text to search for"),
@@ -194,17 +172,14 @@ server.tool(
     });
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(result, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_get",
+  "get",
   "Get full details for a record by source and ID. Returns complete content without truncation.",
   {
     source: z
@@ -229,17 +204,14 @@ server.tool(
     }
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(result, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
       ],
     };
   },
 );
 
 server.tool(
-  "panopticon_query",
+  "query",
   `Execute a read-only SQL query against the panopticon database.
 
 Schema:
@@ -266,10 +238,7 @@ Join on session_id across tables. hook_events payload is gzipped — use decompr
       const results = rawQuery(sql);
       return {
         content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(results, null, 2),
-          },
+          { type: "text" as const, text: JSON.stringify(results, null, 2) },
         ],
       };
     } catch (err: unknown) {
@@ -287,17 +256,14 @@ Join on session_id across tables. hook_events payload is gzipped — use decompr
 );
 
 server.tool(
-  "panopticon_status",
+  "status",
   "Show panopticon database stats: row counts for each table",
   {},
   async () => {
     const stats = dbStats();
     return {
       content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(stats, null, 2),
-        },
+        { type: "text" as const, text: JSON.stringify(stats, null, 2) },
       ],
     };
   },
