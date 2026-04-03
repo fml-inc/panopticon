@@ -16,6 +16,7 @@ import {
   insertMessages,
   insertScannerEvents,
   insertTurns,
+  linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
   updateSessionTotals,
@@ -134,7 +135,12 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
     }
   }
 
+  // Link subagent sessions to parents after all files are processed
   if (filesScanned > 0) {
+    const linked = linkSubagentSessions();
+    if (linked > 0) {
+      log(`Linked ${linked} subagent session${linked > 1 ? "s" : ""}`);
+    }
     log(`Scanned ${filesScanned} files, ${newTurns} new turns`);
   }
 

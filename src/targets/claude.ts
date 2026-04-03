@@ -174,17 +174,40 @@ const claude: TargetAdapter = {
     discover() {
       const projectsDir = path.join(CLAUDE_DIR, "projects");
       const files: { filePath: string }[] = [];
+      const safeReaddir = (d: string) => {
+        try {
+          return fs.readdirSync(d);
+        } catch {
+          return [];
+        }
+      };
+      const safeIsDir = (d: string) => {
+        try {
+          return fs.statSync(d).isDirectory();
+        } catch {
+          return false;
+        }
+      };
       try {
         for (const slug of fs.readdirSync(projectsDir)) {
           const slugDir = path.join(projectsDir, slug);
-          try {
-            if (!fs.statSync(slugDir).isDirectory()) continue;
-          } catch {
-            continue;
-          }
+          if (!safeIsDir(slugDir)) continue;
           for (const entry of fs.readdirSync(slugDir)) {
+            const entryPath = path.join(slugDir, entry);
             if (entry.endsWith(".jsonl")) {
-              files.push({ filePath: path.join(slugDir, entry) });
+              files.push({ filePath: entryPath });
+            }
+            // Recurse into session UUID directories for subagent JSONL files
+            // e.g. {slug}/{uuid}/subagents/agent-*.jsonl
+            if (safeIsDir(entryPath)) {
+              const subagentsDir = path.join(entryPath, "subagents");
+              for (const sub of safeReaddir(subagentsDir)) {
+                if (sub.endsWith(".jsonl")) {
+                  files.push({
+                    filePath: path.join(subagentsDir, sub),
+                  });
+                }
+              }
             }
           }
         }
@@ -205,6 +228,8 @@ const claude: TargetAdapter = {
       let turnIndex = 0;
       let ordinal = 0;
       let firstPrompt: string | undefined;
+      // Map tool_use_id → subagent session ID (e.g. "agent-abc123")
+      const subagentMap = new Map<string, string>();
 
       for (const line of lines) {
         let obj: Record<string, unknown>;
@@ -537,13 +562,22 @@ const claude: TargetAdapter = {
               },
             });
           } else if (progressType === "agent_progress") {
-            // Subagent activity
+            // Subagent activity — build tool_use_id → agent session mapping
+            const tuid = (data?.parentToolUseID ?? obj.parentToolUseID) as
+              | string
+              | undefined;
+            const agentId = (data?.agentId ?? obj.agentId) as
+              | string
+              | undefined;
+            if (tuid && agentId) {
+              subagentMap.set(tuid, `agent-${agentId}`);
+            }
             events.push({
               sessionId: sid,
               eventType: "agent_progress",
               timestampMs: tsMs,
               metadata: {
-                parentToolUseID: data?.parentToolUseID ?? obj.parentToolUseID,
+                parentToolUseID: tuid,
                 toolUseID: obj.toolUseID,
               },
             });
@@ -553,6 +587,28 @@ const claude: TargetAdapter = {
         // Queue operations (user prompt queue)
         if (type === "queue-operation") {
           const operation = obj.operation as string | undefined;
+          // Extract subagent mapping from enqueue operations
+          if (operation === "enqueue" && typeof obj.content === "string") {
+            try {
+              const qc = JSON.parse(obj.content) as Record<string, unknown>;
+              const tuid = qc.tool_use_id as string | undefined;
+              const taskId = qc.task_id as string | undefined;
+              if (tuid && taskId) {
+                subagentMap.set(tuid, `agent-${taskId}`);
+              }
+            } catch {
+              // Try XML-style extraction as fallback
+              const tuidMatch = obj.content.match(
+                /<tool-use-id>([^<]+)<\/tool-use-id>/,
+              );
+              const taskMatch = obj.content.match(
+                /<task-id>([^<]+)<\/task-id>/,
+              );
+              if (tuidMatch?.[1] && taskMatch?.[1]) {
+                subagentMap.set(tuidMatch[1], `agent-${taskMatch[1]}`);
+              }
+            }
+          }
           events.push({
             sessionId: sid,
             eventType: `queue:${operation ?? "unknown"}`,
@@ -580,6 +636,18 @@ const claude: TargetAdapter = {
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
+
+      // Annotate tool calls with subagent session IDs
+      if (subagentMap.size > 0) {
+        for (const msg of messages) {
+          for (const tc of msg.toolCalls) {
+            const agentSid = subagentMap.get(tc.toolUseId);
+            if (agentSid && (tc.category === "Task" || tc.toolName === "Agent"))
+              tc.subagentSessionId = agentSid;
+          }
+        }
+      }
+
       return { meta, turns, events, messages, newByteOffset };
     },
   },

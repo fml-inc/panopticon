@@ -385,6 +385,34 @@ export function insertMessages(messages: ParsedMessage[]): void {
 }
 
 /**
+ * Link subagent sessions to their parents.
+ * Finds sessions whose ID appears in tool_calls.subagent_session_id
+ * and sets their parent_session_id and relationship_type accordingly.
+ */
+export function linkSubagentSessions(): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `UPDATE sessions
+     SET parent_session_id = (
+           SELECT tc.session_id
+           FROM tool_calls tc
+           WHERE tc.subagent_session_id = sessions.session_id
+           LIMIT 1
+         ),
+         relationship_type = 'subagent',
+         sync_seq = COALESCE(sync_seq, 0) + 1
+     WHERE (relationship_type = '' OR relationship_type IS NULL)
+       AND EXISTS (
+           SELECT 1 FROM tool_calls tc
+           WHERE tc.subagent_session_id = sessions.session_id
+         )`,
+    )
+    .run();
+  return result.changes;
+}
+
+/**
  * Get the highest message ordinal for a session, or -1 if no messages exist.
  */
 export function getMaxOrdinal(sessionId: string): number {
