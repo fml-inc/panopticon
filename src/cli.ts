@@ -31,11 +31,7 @@ import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 import { addTarget, listTargets, removeTarget } from "./sync/config.js";
-import {
-  closeWatermarkDb,
-  readWatermark,
-  watermarkKey,
-} from "./sync/watermark.js";
+import { readWatermark, watermarkKey } from "./sync/watermark.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -894,10 +890,9 @@ program
           const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
           console.log(`  ${t.name} → ${t.url} (${wmLabel})`);
         }
-        closeWatermarkDb();
       }
     } catch {
-      // Sync not configured or watermark DB not available
+      // Sync not configured
     }
   });
 

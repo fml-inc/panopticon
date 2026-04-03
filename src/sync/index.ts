@@ -20,7 +20,6 @@ export type {
   UserConfigSnapshotRecord,
 } from "./types.js";
 export {
-  closeWatermarkDb,
   readWatermark,
   resetWatermarks,
   watermarkKey,

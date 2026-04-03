@@ -2,9 +2,30 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
+import { normalizeToolCategory } from "../scanner/categories.js";
 import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { ScannerParseResult, TargetAdapter } from "./types.js";
+import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
+
+/** Extract total text length from a tool_result content field. */
+function extractToolResultTextLength(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    let len = 0;
+    for (const b of content) {
+      if (
+        typeof b === "object" &&
+        b !== null &&
+        (b as Record<string, unknown>).type === "text"
+      ) {
+        const text = (b as Record<string, unknown>).text;
+        if (typeof text === "string") len += text.length;
+      }
+    }
+    return len;
+  }
+  return 0;
+}
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 
@@ -173,17 +194,16 @@ const claude: TargetAdapter = {
       return files;
     },
 
-    parseFile(
-      filePath: string,
-      fromByteOffset: number,
-    ): ScannerParseResult | null {
+    parseFile(filePath: string, fromByteOffset: number): ParseResult | null {
       const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
       if (lines.length === 0) return null;
 
-      let meta: ScannerParseResult["meta"];
-      const turns: ScannerParseResult["turns"] = [];
-      const events: ScannerParseResult["events"] = [];
+      let meta: ParseResult["meta"];
+      const turns: ParseResult["turns"] = [];
+      const events: ParseResult["events"] = [];
+      const messages: ParseResult["messages"] = [];
       let turnIndex = 0;
+      let ordinal = 0;
       let firstPrompt: string | undefined;
 
       for (const line of lines) {
@@ -214,15 +234,62 @@ const claude: TargetAdapter = {
           const msg = obj.message as Record<string, unknown> | undefined;
           const content = msg?.content;
           let preview: string | undefined;
+          const textParts: string[] = [];
+          const toolResults = new Map<
+            string,
+            { contentLength: number; contentRaw: string }
+          >();
+
           if (typeof content === "string") {
             preview = content.slice(0, 200);
+            textParts.push(content);
           } else if (Array.isArray(content)) {
-            const text = content.find(
-              (b: Record<string, unknown>) => b.type === "text",
-            );
-            if (text) preview = (text.text as string)?.slice(0, 200);
+            for (const block of content) {
+              if (typeof block !== "object" || block === null) continue;
+              const b = block as Record<string, unknown>;
+              if (b.type === "text" && typeof b.text === "string") {
+                textParts.push(b.text);
+              } else if (b.type === "tool_result") {
+                const raw = JSON.stringify(b.content ?? "");
+                const textLen = extractToolResultTextLength(b.content);
+                toolResults.set(b.tool_use_id as string, {
+                  contentLength: textLen,
+                  contentRaw: raw,
+                });
+              }
+            }
+            if (textParts.length > 0) {
+              preview = textParts[0].slice(0, 200);
+            }
           }
           if (!firstPrompt && preview) firstPrompt = preview;
+
+          const fullContent = textParts.join("\n");
+
+          // Skip meta/system messages (following agentsview's filtering)
+          const isMeta = obj.isMeta === true;
+          const isCompact = obj.isCompactSummary === true;
+          if (
+            !isMeta &&
+            !isCompact &&
+            (fullContent.length > 0 || toolResults.size > 0)
+          ) {
+            messages.push({
+              sessionId: sid,
+              ordinal: ordinal++,
+              role: "user",
+              content: fullContent,
+              timestampMs: tsMs,
+              hasThinking: false,
+              hasToolUse: false,
+              isSystem: false,
+              contentLength: fullContent.length,
+              hasContextTokens: false,
+              hasOutputTokens: false,
+              toolCalls: [],
+              toolResults,
+            });
+          }
 
           turns.push({
             sessionId: sid,
@@ -244,42 +311,28 @@ const claude: TargetAdapter = {
           const model = msg?.model as string | undefined;
           if (meta && model && !meta.model) meta.model = model;
 
-          turns.push({
-            sessionId: sid,
-            turnIndex: turnIndex++,
-            timestampMs: tsMs,
-            model,
-            role: "assistant",
-            inputTokens: (usage?.input_tokens as number) ?? 0,
-            outputTokens: (usage?.output_tokens as number) ?? 0,
-            cacheReadTokens: (usage?.cache_read_input_tokens as number) ?? 0,
-            cacheCreationTokens:
-              (usage?.cache_creation_input_tokens as number) ?? 0,
-            reasoningTokens: 0,
-          });
+          // Build message content and tool calls from content blocks
+          const textParts: string[] = [];
+          let hasThinking = false;
+          let hasToolUse = false;
+          const toolCalls: ParsedToolCall[] = [];
 
-          // Extract content blocks from assistant messages
           const content = msg?.content;
           if (Array.isArray(content)) {
             for (const block of content) {
               if (typeof block !== "object" || block === null) continue;
               const b = block as Record<string, unknown>;
 
-              if (b.type === "tool_use") {
-                const input = b.input as Record<string, unknown> | undefined;
-                events.push({
-                  sessionId: sid,
-                  eventType: "tool_call",
-                  timestampMs: tsMs,
-                  toolName: b.name as string | undefined,
-                  toolInput: input
-                    ? JSON.stringify(input).slice(0, 10_000)
-                    : undefined,
-                  metadata: { tool_use_id: b.id },
-                });
+              if (b.type === "text" && typeof b.text === "string") {
+                textParts.push(b.text);
               }
 
               if (b.type === "thinking") {
+                hasThinking = true;
+                if (typeof b.thinking === "string") {
+                  textParts.push(`[Thinking]\n${b.thinking}\n[/Thinking]`);
+                }
+
                 events.push({
                   sessionId: sid,
                   eventType: "thinking",
@@ -293,11 +346,83 @@ const claude: TargetAdapter = {
                   },
                 });
               }
+
+              if (b.type === "tool_use") {
+                hasToolUse = true;
+                const toolName = (b.name as string) ?? "";
+                const input = b.input as Record<string, unknown> | undefined;
+                const inputJson = input ? JSON.stringify(input) : undefined;
+
+                // Extract skill name for Skill tools
+                let skillName: string | undefined;
+                if (toolName === "Skill" && input) {
+                  skillName = (input.skill ?? input.name) as string | undefined;
+                }
+
+                toolCalls.push({
+                  toolUseId: (b.id as string) ?? "",
+                  toolName,
+                  category: normalizeToolCategory(toolName),
+                  inputJson,
+                  skillName,
+                });
+
+                events.push({
+                  sessionId: sid,
+                  eventType: "tool_call",
+                  timestampMs: tsMs,
+                  toolName,
+                  toolInput: inputJson?.slice(0, 10_000),
+                  metadata: { tool_use_id: b.id },
+                });
+              }
             }
           }
+
+          const fullContent = textParts.join("\n");
+          const inputTokens = (usage?.input_tokens as number) ?? 0;
+          const outTokens = (usage?.output_tokens as number) ?? 0;
+          const cacheRead = (usage?.cache_read_input_tokens as number) ?? 0;
+          const cacheCreation =
+            (usage?.cache_creation_input_tokens as number) ?? 0;
+          const ctxTokens = inputTokens + cacheRead + cacheCreation;
+          const hasCtx = inputTokens > 0 || cacheRead > 0 || cacheCreation > 0;
+
+          messages.push({
+            sessionId: sid,
+            ordinal: ordinal++,
+            role: "assistant",
+            content: fullContent,
+            timestampMs: tsMs,
+            hasThinking,
+            hasToolUse,
+            isSystem: false,
+            contentLength: fullContent.length,
+            model,
+            tokenUsage: usage ? JSON.stringify(usage) : undefined,
+            contextTokens: hasCtx ? ctxTokens : undefined,
+            outputTokens: outTokens > 0 ? outTokens : undefined,
+            hasContextTokens: hasCtx,
+            hasOutputTokens: outTokens > 0,
+            toolCalls,
+            toolResults: new Map(),
+          });
+
+          turns.push({
+            sessionId: sid,
+            turnIndex: turnIndex++,
+            timestampMs: tsMs,
+            model,
+            role: "assistant",
+            inputTokens,
+            outputTokens: outTokens,
+            cacheReadTokens: cacheRead,
+            cacheCreationTokens: cacheCreation,
+            reasoningTokens: 0,
+          });
         }
 
-        // Extract content blocks from user messages
+        // Extract content blocks from user messages (events only — message already built above)
         if (type === "user") {
           const msg = obj.message as Record<string, unknown> | undefined;
           const content = msg?.content;
@@ -455,7 +580,7 @@ const claude: TargetAdapter = {
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
-      return { meta, turns, events, newByteOffset };
+      return { meta, turns, events, messages, newByteOffset };
     },
   },
 };

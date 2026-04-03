@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
 
 describe("TABLE_SYNC_REGISTRY", () => {
-  it("has exactly 9 table descriptors", () => {
-    expect(TABLE_SYNC_REGISTRY).toHaveLength(9);
+  it("has exactly 12 table descriptors", () => {
+    expect(TABLE_SYNC_REGISTRY).toHaveLength(12);
   });
 
   it("has unique table names", () => {
@@ -22,6 +22,9 @@ describe("TABLE_SYNC_REGISTRY", () => {
       "otel_spans",
       "user_config_snapshots",
       "repo_config_snapshots",
+      "messages",
+      "tool_calls",
+      "tool_result_events",
       "sessions",
     ]);
   });
@@ -60,6 +63,9 @@ describe("TABLE_SYNC_REGISTRY", () => {
     expect(api.map((d) => d.table)).toEqual([
       "user_config_snapshots",
       "repo_config_snapshots",
+      "messages",
+      "tool_calls",
+      "tool_result_events",
       "sessions",
     ]);
   });

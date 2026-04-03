@@ -352,6 +352,9 @@ export interface SessionUpsert {
   otel_output_tokens?: number;
   otel_cache_read_tokens?: number;
   otel_cache_creation_tokens?: number;
+  // Metadata
+  project?: string;
+  created_at?: number;
 }
 
 export function upsertSession(row: SessionUpsert): void {
@@ -362,13 +365,13 @@ export function upsertSession(row: SessionUpsert): void {
        total_input_tokens, total_output_tokens, total_cache_read_tokens,
        total_cache_creation_tokens, total_reasoning_tokens, turn_count,
        otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
-       models)
+       models, project, created_at)
      VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @first_prompt,
        @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
        @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
        @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
        @otel_input_tokens, @otel_output_tokens, @otel_cache_read_tokens, @otel_cache_creation_tokens,
-       @model)
+       @model, @project, @created_at)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
        started_at_ms = COALESCE(excluded.started_at_ms, sessions.started_at_ms),
@@ -395,6 +398,7 @@ export function upsertSession(row: SessionUpsert): void {
          WHEN sessions.models LIKE '%' || excluded.model || '%' THEN sessions.models
          ELSE sessions.models || ',' || excluded.model
        END,
+       project = COALESCE(sessions.project, excluded.project),
        sync_dirty = 1,
        sync_seq = COALESCE(sessions.sync_seq, 0) + 1`,
   ).run({
@@ -418,7 +422,23 @@ export function upsertSession(row: SessionUpsert): void {
     otel_output_tokens: row.otel_output_tokens ?? null,
     otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
     otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
+    project: row.project ?? null,
+    created_at: row.created_at ?? null,
   });
+}
+
+/**
+ * Recompute message_count and user_message_count from the messages table.
+ */
+export function updateSessionMessageCounts(sessionId: string): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE sessions SET
+       message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ?),
+       user_message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user'),
+       sync_seq = COALESCE(sync_seq, 0) + 1
+     WHERE session_id = ?`,
+  ).run(sessionId, sessionId, sessionId);
 }
 
 /**

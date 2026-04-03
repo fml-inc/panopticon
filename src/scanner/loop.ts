@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { getDb } from "../db/schema.js";
+import { updateSessionMessageCounts } from "../db/store.js";
 // Import targets so they self-register before we iterate the registry
 import "../targets/claude.js";
 import "../targets/codex.js";
@@ -7,10 +8,12 @@ import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
-import type { ScannerParseResult } from "../targets/types.js";
+import type { ParseResult } from "../targets/types.js";
 import {
+  getMaxOrdinal,
   getTurnCount,
   getTurnsWithoutSummary,
+  insertMessages,
   insertScannerEvents,
   insertTurns,
   readArchivedSize,
@@ -56,6 +59,11 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         if (existingCount > 0) {
           reindexTurns(result, existingCount);
         }
+        // Re-index message ordinals for incremental reads
+        if (result.messages.length > 0) {
+          const maxOrd = getMaxOrdinal(result.meta.sessionId);
+          reindexMessages(result, maxOrd + 1);
+        }
       }
 
       if (!result.meta?.sessionId) {
@@ -73,6 +81,11 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
 
       if (result.events.length > 0) {
         insertScannerEvents(result.events, source);
+      }
+
+      if (result.messages.length > 0) {
+        insertMessages(result.messages);
+        updateSessionMessageCounts(result.meta.sessionId);
       }
 
       writeFileWatermark(filePath, result.newByteOffset);
@@ -128,9 +141,15 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
   return { filesScanned, newTurns };
 }
 
-function reindexTurns(result: ScannerParseResult, startIndex: number): void {
+function reindexTurns(result: ParseResult, startIndex: number): void {
   for (let i = 0; i < result.turns.length; i++) {
     result.turns[i].turnIndex = startIndex + i;
+  }
+}
+
+function reindexMessages(result: ParseResult, startOrdinal: number): void {
+  for (let i = 0; i < result.messages.length; i++) {
+    result.messages[i].ordinal = startOrdinal + i;
   }
 }
 

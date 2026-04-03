@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeToolCategory } from "../scanner/categories.js";
 import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { ScannerParseResult, TargetAdapter } from "./types.js";
+import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
 
 const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
@@ -284,19 +285,25 @@ const codex: TargetAdapter = {
       return files;
     },
 
-    parseFile(
-      filePath: string,
-      fromByteOffset: number,
-    ): ScannerParseResult | null {
+    parseFile(filePath: string, fromByteOffset: number): ParseResult | null {
       const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
       if (lines.length === 0) return null;
 
-      let meta: ScannerParseResult["meta"];
-      const turns: ScannerParseResult["turns"] = [];
-      const events: ScannerParseResult["events"] = [];
+      let meta: ParseResult["meta"];
+      const turns: ParseResult["turns"] = [];
+      const events: ParseResult["events"] = [];
+      const messages: ParseResult["messages"] = [];
       let turnIndex = 0;
+      let ordinal = 0;
       let currentModel: string | undefined;
       let firstPrompt: string | undefined;
+
+      // Collect tool calls and results keyed by call_id to match them up
+      let pendingToolCalls: ParsedToolCall[] = [];
+      const toolResultsByCallId = new Map<
+        string,
+        { contentLength: number; contentRaw: string }
+      >();
 
       for (const line of lines) {
         let obj: Record<string, unknown>;
@@ -348,6 +355,24 @@ const codex: TargetAdapter = {
               cacheCreationTokens: 0,
               reasoningTokens: 0,
             });
+
+            if (message) {
+              messages.push({
+                sessionId: sid,
+                ordinal: ordinal++,
+                role: "user",
+                content: message,
+                timestampMs: tsMs,
+                hasThinking: false,
+                hasToolUse: false,
+                isSystem: false,
+                contentLength: message.length,
+                hasContextTokens: false,
+                hasOutputTokens: false,
+                toolCalls: [],
+                toolResults: new Map(),
+              });
+            }
           }
 
           if (eventType === "token_count") {
@@ -358,19 +383,57 @@ const codex: TargetAdapter = {
               | undefined;
             if (!lastUsage) continue;
 
+            const inputTokens = (lastUsage.input_tokens as number) ?? 0;
+            const outTokens = (lastUsage.output_tokens as number) ?? 0;
+            const cacheRead = (lastUsage.cached_input_tokens as number) ?? 0;
+            const reasoning =
+              (lastUsage.reasoning_output_tokens as number) ?? 0;
+            const ctxTokens = inputTokens + cacheRead;
+            const hasCtx = inputTokens > 0 || cacheRead > 0;
+
             turns.push({
               sessionId: sid,
               turnIndex: turnIndex++,
               timestampMs: tsMs,
               model: currentModel,
               role: "assistant",
-              inputTokens: (lastUsage.input_tokens as number) ?? 0,
-              outputTokens: (lastUsage.output_tokens as number) ?? 0,
-              cacheReadTokens: (lastUsage.cached_input_tokens as number) ?? 0,
+              inputTokens,
+              outputTokens: outTokens,
+              cacheReadTokens: cacheRead,
               cacheCreationTokens: 0,
-              reasoningTokens:
-                (lastUsage.reasoning_output_tokens as number) ?? 0,
+              reasoningTokens: reasoning,
             });
+
+            // Flush accumulated tool calls into an assistant message
+            const toolResults = new Map<
+              string,
+              { contentLength: number; contentRaw: string }
+            >();
+            for (const tc of pendingToolCalls) {
+              const result = toolResultsByCallId.get(tc.toolUseId);
+              if (result) toolResults.set(tc.toolUseId, result);
+            }
+
+            messages.push({
+              sessionId: sid,
+              ordinal: ordinal++,
+              role: "assistant",
+              content: "",
+              timestampMs: tsMs,
+              hasThinking: false,
+              hasToolUse: pendingToolCalls.length > 0,
+              isSystem: false,
+              contentLength: 0,
+              model: currentModel,
+              tokenUsage: JSON.stringify(lastUsage),
+              contextTokens: hasCtx ? ctxTokens : undefined,
+              outputTokens: outTokens > 0 ? outTokens : undefined,
+              hasContextTokens: hasCtx,
+              hasOutputTokens: outTokens > 0,
+              toolCalls: pendingToolCalls,
+              toolResults,
+            });
+            pendingToolCalls = [];
           }
 
           if (eventType === "agent_message") {
@@ -390,29 +453,47 @@ const codex: TargetAdapter = {
           const itemType = p?.type as string | undefined;
 
           if (itemType === "function_call") {
+            const toolName = (p?.name as string) ?? "";
+            const callId = (p?.call_id as string) ?? "";
+            const inputJson =
+              typeof p?.arguments === "string"
+                ? p.arguments
+                : JSON.stringify(p?.arguments);
+
+            pendingToolCalls.push({
+              toolUseId: callId,
+              toolName,
+              category: normalizeToolCategory(toolName),
+              inputJson,
+            });
+
             events.push({
               sessionId: sid,
               eventType: "tool_call",
               timestampMs: tsMs,
-              toolName: p?.name as string | undefined,
-              toolInput:
-                typeof p?.arguments === "string"
-                  ? p.arguments.slice(0, 1000)
-                  : JSON.stringify(p?.arguments)?.slice(0, 1000),
-              metadata: { call_id: p?.call_id },
+              toolName,
+              toolInput: inputJson?.slice(0, 1000),
+              metadata: { call_id: callId },
             });
           }
 
           if (itemType === "function_call_output") {
+            const callId = (p?.call_id as string) ?? "";
+            const output = typeof p?.output === "string" ? p.output : undefined;
+
+            if (output) {
+              toolResultsByCallId.set(callId, {
+                contentLength: output.length,
+                contentRaw: JSON.stringify(output),
+              });
+            }
+
             events.push({
               sessionId: sid,
               eventType: "tool_result",
               timestampMs: tsMs,
-              toolOutput:
-                typeof p?.output === "string"
-                  ? p.output.slice(0, 1000)
-                  : undefined,
-              metadata: { call_id: p?.call_id },
+              toolOutput: output?.slice(0, 1000),
+              metadata: { call_id: callId },
             });
           }
         }
@@ -420,7 +501,7 @@ const codex: TargetAdapter = {
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
-      return { meta, turns, events, newByteOffset };
+      return { meta, turns, events, messages, newByteOffset };
     },
   },
 };

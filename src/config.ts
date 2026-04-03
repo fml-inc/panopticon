@@ -23,26 +23,7 @@ function defaultDataDir(): string {
 
 function resolveDataDir(): string {
   if (process.env.PANOPTICON_DATA_DIR) return process.env.PANOPTICON_DATA_DIR;
-
-  const dataDir = defaultDataDir();
-  const legacyDir = path.join(os.homedir(), ".local", "share", "panopticon");
-
-  // Migrate from legacy XDG path on non-Linux platforms
-  if (
-    dataDir !== legacyDir &&
-    fs.existsSync(path.join(legacyDir, "data.db")) &&
-    !fs.existsSync(path.join(dataDir, "data.db"))
-  ) {
-    fs.mkdirSync(dataDir, { recursive: true });
-    for (const file of fs.readdirSync(legacyDir)) {
-      fs.renameSync(path.join(legacyDir, file), path.join(dataDir, file));
-    }
-    try {
-      fs.rmdirSync(legacyDir);
-    } catch {}
-  }
-
-  return dataDir;
+  return defaultDataDir();
 }
 
 const DATA_DIR = resolveDataDir();
@@ -59,7 +40,7 @@ const DEFAULT_PORT = 4318;
 
 export const config = {
   dataDir: DATA_DIR,
-  dbPath: path.join(DATA_DIR, "data.db"),
+  dbPath: path.join(DATA_DIR, "panopticon.db"),
   // Unified server port — replaces separate OTLP and proxy ports
   port: parseInt(
     process.env.PANOPTICON_PORT ??

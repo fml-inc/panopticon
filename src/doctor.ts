@@ -10,11 +10,7 @@ import os from "node:os";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
-import {
-  closeWatermarkDb,
-  readWatermark,
-  watermarkKey,
-} from "./sync/watermark.js";
+import { readWatermark, watermarkKey } from "./sync/watermark.js";
 import { allTargets } from "./targets/index.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
@@ -254,8 +250,6 @@ export async function doctor(): Promise<DoctorResult> {
         const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
         targetDetails.push(`${t.name} → ${t.url} (${wmLabel})`);
       }
-      closeWatermarkDb();
-
       checks.push({
         label: "Sync",
         status: "ok",

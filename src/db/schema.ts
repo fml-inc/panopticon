@@ -3,6 +3,9 @@ import Database from "better-sqlite3";
 import { config, ensureDataDir } from "../config.js";
 
 const SCHEMA_SQL = `
+
+-- ── OTLP tables ─────────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS otel_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp_ns INTEGER NOT NULL,
@@ -30,6 +33,25 @@ CREATE TABLE IF NOT EXISTS otel_metrics (
   session_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS otel_spans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trace_id TEXT NOT NULL,
+  span_id TEXT NOT NULL,
+  parent_span_id TEXT,
+  name TEXT NOT NULL,
+  kind INTEGER,
+  start_time_ns INTEGER NOT NULL,
+  end_time_ns INTEGER NOT NULL,
+  status_code INTEGER,
+  status_message TEXT,
+  attributes JSON,
+  resource_attributes JSON,
+  session_id TEXT,
+  UNIQUE(trace_id, span_id)
+);
+
+-- ── Hook events ─────────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS hook_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
@@ -38,7 +60,14 @@ CREATE TABLE IF NOT EXISTS hook_events (
   cwd TEXT,
   repository TEXT,
   tool_name TEXT,
-  payload BLOB NOT NULL
+  payload BLOB NOT NULL,
+  user_prompt TEXT,
+  file_path TEXT,
+  command TEXT,
+  plan TEXT,
+  allowed_prompts TEXT,
+  tool_result TEXT,
+  target TEXT
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS hook_events_fts USING fts5(
@@ -48,17 +77,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hook_events_fts USING fts5(
   tokenize='trigram'
 );
 
-CREATE INDEX IF NOT EXISTS idx_logs_session ON otel_logs(session_id);
-CREATE INDEX IF NOT EXISTS idx_logs_body ON otel_logs(body);
-CREATE INDEX IF NOT EXISTS idx_logs_ts ON otel_logs(timestamp_ns);
-CREATE INDEX IF NOT EXISTS idx_logs_prompt ON otel_logs(prompt_id);
-CREATE INDEX IF NOT EXISTS idx_metrics_session ON otel_metrics(session_id);
-CREATE INDEX IF NOT EXISTS idx_metrics_name ON otel_metrics(name);
-CREATE INDEX IF NOT EXISTS idx_metrics_ts ON otel_metrics(timestamp_ns);
-CREATE INDEX IF NOT EXISTS idx_hooks_session ON hook_events(session_id);
-CREATE INDEX IF NOT EXISTS idx_hooks_type ON hook_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_hooks_tool ON hook_events(tool_name);
-CREATE INDEX IF NOT EXISTS idx_hooks_ts ON hook_events(timestamp_ms);
+-- ── Sessions ────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
@@ -68,10 +87,39 @@ CREATE TABLE IF NOT EXISTS sessions (
   cwd TEXT,
   first_prompt TEXT,
   permission_mode TEXT,
-  agent_version TEXT
+  agent_version TEXT,
+  model TEXT,
+  cli_version TEXT,
+  scanner_file_path TEXT,
+  total_input_tokens INTEGER DEFAULT 0,
+  total_output_tokens INTEGER DEFAULT 0,
+  total_cache_read_tokens INTEGER DEFAULT 0,
+  total_cache_creation_tokens INTEGER DEFAULT 0,
+  total_reasoning_tokens INTEGER DEFAULT 0,
+  turn_count INTEGER DEFAULT 0,
+  otel_input_tokens INTEGER DEFAULT 0,
+  otel_output_tokens INTEGER DEFAULT 0,
+  otel_cache_read_tokens INTEGER DEFAULT 0,
+  otel_cache_creation_tokens INTEGER DEFAULT 0,
+  models TEXT,
+  has_hooks INTEGER DEFAULT 0,
+  has_otel INTEGER DEFAULT 0,
+  has_scanner INTEGER DEFAULT 0,
+  summary TEXT,
+  summary_version INTEGER DEFAULT 0,
+  sync_dirty INTEGER DEFAULT 0,
+  sync_seq INTEGER DEFAULT 0,
+  tool_counts JSON DEFAULT '{}',
+  event_type_counts JSON DEFAULT '{}',
+  project TEXT,
+  machine TEXT NOT NULL DEFAULT 'local',
+  message_count INTEGER DEFAULT 0,
+  user_message_count INTEGER DEFAULT 0,
+  parent_session_id TEXT,
+  relationship_type TEXT DEFAULT '',
+  is_automated INTEGER DEFAULT 0,
+  created_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target);
-CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms);
 
 CREATE TABLE IF NOT EXISTS session_repositories (
   session_id TEXT NOT NULL,
@@ -79,10 +127,9 @@ CREATE TABLE IF NOT EXISTS session_repositories (
   first_seen_ms INTEGER NOT NULL,
   git_user_name TEXT,
   git_user_email TEXT,
+  branch TEXT,
   UNIQUE(session_id, repository)
 );
-CREATE INDEX IF NOT EXISTS idx_session_repos_session ON session_repositories(session_id);
-CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(repository);
 
 CREATE TABLE IF NOT EXISTS session_cwds (
   session_id TEXT NOT NULL,
@@ -90,10 +137,123 @@ CREATE TABLE IF NOT EXISTS session_cwds (
   first_seen_ms INTEGER NOT NULL,
   UNIQUE(session_id, cwd)
 );
-CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
+
+-- ── Messages ────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS messages (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      TEXT NOT NULL,
+  ordinal         INTEGER NOT NULL,
+  role            TEXT NOT NULL,
+  content         TEXT NOT NULL,
+  timestamp_ms    INTEGER,
+  has_thinking    INTEGER NOT NULL DEFAULT 0,
+  has_tool_use    INTEGER NOT NULL DEFAULT 0,
+  content_length  INTEGER NOT NULL DEFAULT 0,
+  is_system       INTEGER NOT NULL DEFAULT 0,
+  model           TEXT NOT NULL DEFAULT '',
+  token_usage     TEXT NOT NULL DEFAULT '',
+  context_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens   INTEGER NOT NULL DEFAULT 0,
+  has_context_tokens INTEGER NOT NULL DEFAULT 0,
+  has_output_tokens  INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(session_id, ordinal)
+);
+
+-- ── Tool calls ──────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id            INTEGER NOT NULL,
+  session_id            TEXT NOT NULL,
+  tool_name             TEXT NOT NULL,
+  category              TEXT NOT NULL,
+  tool_use_id           TEXT,
+  input_json            TEXT,
+  skill_name            TEXT,
+  result_content_length INTEGER,
+  result_content        TEXT,
+  subagent_session_id   TEXT
+);
+
+-- ── Tool result events ──────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS tool_result_events (
+  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id                TEXT NOT NULL,
+  tool_call_message_ordinal INTEGER NOT NULL,
+  call_index                INTEGER NOT NULL DEFAULT 0,
+  tool_use_id               TEXT,
+  agent_id                  TEXT,
+  subagent_session_id       TEXT,
+  source                    TEXT NOT NULL,
+  status                    TEXT NOT NULL,
+  content                   TEXT NOT NULL,
+  content_length            INTEGER NOT NULL DEFAULT 0,
+  timestamp_ms              INTEGER,
+  event_index               INTEGER NOT NULL DEFAULT 0
+);
+
+-- ── Scanner tables ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS scanner_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  turn_index INTEGER NOT NULL,
+  timestamp_ms INTEGER NOT NULL,
+  model TEXT,
+  role TEXT,
+  content_preview TEXT,
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  cache_read_tokens INTEGER DEFAULT 0,
+  cache_creation_tokens INTEGER DEFAULT 0,
+  reasoning_tokens INTEGER DEFAULT 0,
+  summary TEXT,
+  UNIQUE(session_id, source, turn_index)
+);
+
+CREATE TABLE IF NOT EXISTS scanner_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  timestamp_ms INTEGER NOT NULL,
+  tool_name TEXT,
+  tool_input TEXT,
+  tool_output TEXT,
+  content TEXT,
+  metadata JSON,
+  UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+);
+
+CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
+  file_path TEXT PRIMARY KEY,
+  byte_offset INTEGER NOT NULL DEFAULT 0,
+  last_scanned_ms INTEGER NOT NULL,
+  archived_size INTEGER DEFAULT 0
+);
+
+-- ── Session summaries ───────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS session_summary_deltas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  delta_index INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  from_turn INTEGER NOT NULL,
+  to_turn INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  method TEXT NOT NULL DEFAULT 'deterministic',
+  UNIQUE(session_id, delta_index)
+);
+
+-- ── Model pricing ───────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS model_pricing (
-  model_id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_id TEXT NOT NULL,
   input_per_m REAL NOT NULL,
   output_per_m REAL NOT NULL,
   cache_read_per_m REAL NOT NULL DEFAULT 0,
@@ -101,7 +261,129 @@ CREATE TABLE IF NOT EXISTS model_pricing (
   updated_ms INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
+-- ── Config snapshots ────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS user_config_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_name TEXT NOT NULL,
+  snapshot_at_ms INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  permissions JSON NOT NULL DEFAULT '{}',
+  enabled_plugins JSON NOT NULL DEFAULT '[]',
+  hooks JSON NOT NULL DEFAULT '[]',
+  commands JSON NOT NULL DEFAULT '[]',
+  rules JSON NOT NULL DEFAULT '[]',
+  skills JSON NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS repo_config_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  session_id TEXT,
+  snapshot_at_ms INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  hooks JSON NOT NULL DEFAULT '[]',
+  mcp_servers JSON NOT NULL DEFAULT '[]',
+  commands JSON NOT NULL DEFAULT '[]',
+  agents JSON NOT NULL DEFAULT '[]',
+  rules JSON NOT NULL DEFAULT '[]',
+  local_hooks JSON NOT NULL DEFAULT '[]',
+  local_mcp_servers JSON NOT NULL DEFAULT '[]',
+  local_permissions JSON NOT NULL DEFAULT '{}',
+  local_is_gitignored INTEGER NOT NULL DEFAULT 1,
+  instructions JSON NOT NULL DEFAULT '[]'
+);
+
+-- ── Sync watermarks ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS watermarks (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
+
+-- ── Indexes ─────────────────────────────────────────────────────────────────
+
+-- otel_logs
+CREATE INDEX IF NOT EXISTS idx_logs_session ON otel_logs(session_id);
+CREATE INDEX IF NOT EXISTS idx_logs_body ON otel_logs(body);
+CREATE INDEX IF NOT EXISTS idx_logs_ts ON otel_logs(timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_logs_prompt ON otel_logs(prompt_id);
+
+-- otel_metrics
+CREATE INDEX IF NOT EXISTS idx_metrics_session ON otel_metrics(session_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_name ON otel_metrics(name);
+CREATE INDEX IF NOT EXISTS idx_metrics_ts ON otel_metrics(timestamp_ns);
+
+-- otel_spans
+CREATE INDEX IF NOT EXISTS idx_spans_session ON otel_spans(session_id);
+CREATE INDEX IF NOT EXISTS idx_spans_trace ON otel_spans(trace_id);
+CREATE INDEX IF NOT EXISTS idx_spans_start ON otel_spans(start_time_ns);
+
+-- hook_events
+CREATE INDEX IF NOT EXISTS idx_hooks_session ON hook_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_hooks_type ON hook_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_hooks_tool ON hook_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_hooks_ts ON hook_events(timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_hooks_file_path ON hook_events(file_path);
+CREATE INDEX IF NOT EXISTS idx_hooks_target ON hook_events(target);
+
+-- sessions
+CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_sessions_sync_seq ON sessions(sync_seq);
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+CREATE INDEX IF NOT EXISTS idx_sessions_machine ON sessions(machine);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)
+  WHERE parent_session_id IS NOT NULL;
+
+-- session_repositories
+CREATE INDEX IF NOT EXISTS idx_session_repos_session ON session_repositories(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(repository);
+
+-- session_cwds
+CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
+
+-- messages
+CREATE INDEX IF NOT EXISTS idx_messages_session_ordinal ON messages(session_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role);
+
+-- tool_calls
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_category ON tool_calls(category);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_skill ON tool_calls(skill_name)
+  WHERE skill_name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_calls_subagent ON tool_calls(subagent_session_id)
+  WHERE subagent_session_id IS NOT NULL;
+
+-- tool_result_events
+CREATE INDEX IF NOT EXISTS idx_tool_result_events_session ON tool_result_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_result_events_call ON tool_result_events(
+  session_id, tool_call_message_ordinal, call_index, event_index
+);
+
+-- scanner_turns
+CREATE INDEX IF NOT EXISTS idx_scanner_turns_session ON scanner_turns(session_id);
+CREATE INDEX IF NOT EXISTS idx_scanner_turns_ts ON scanner_turns(timestamp_ms);
+
+-- scanner_events
+CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type);
+
+-- session_summary_deltas
+CREATE INDEX IF NOT EXISTS idx_summary_deltas_session ON session_summary_deltas(session_id);
+
+-- model_pricing
+CREATE INDEX IF NOT EXISTS idx_model_pricing_model ON model_pricing(model_id, updated_ms);
+
+-- user_config_snapshots
+CREATE INDEX IF NOT EXISTS idx_user_config_ts ON user_config_snapshots(snapshot_at_ms);
+CREATE INDEX IF NOT EXISTS idx_user_config_device_hash ON user_config_snapshots(device_name, content_hash);
+
+-- repo_config_snapshots
+CREATE INDEX IF NOT EXISTS idx_repo_config_repo_ts ON repo_config_snapshots(repository, snapshot_at_ms);
+CREATE INDEX IF NOT EXISTS idx_repo_config_session ON repo_config_snapshots(session_id);
+CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(repository, content_hash);
 
 `;
 
@@ -111,359 +393,6 @@ function registerCompressionFunctions(db: Database.Database): void {
   db.function("decompress", (blob: Buffer | null) =>
     blob ? gunzipSync(blob).toString() : null,
   );
-}
-
-interface Migration {
-  version: number;
-  up: (db: Database.Database) => void;
-}
-
-const migrations: Migration[] = [
-  {
-    version: 1,
-    up: (db) => {
-      // Extract frequently-queried fields from compressed payloads into columns
-      db.exec("ALTER TABLE hook_events ADD COLUMN user_prompt TEXT");
-      db.exec("ALTER TABLE hook_events ADD COLUMN file_path TEXT");
-      db.exec("ALTER TABLE hook_events ADD COLUMN command TEXT");
-      db.exec("ALTER TABLE hook_events ADD COLUMN plan TEXT");
-      db.exec("ALTER TABLE hook_events ADD COLUMN allowed_prompts TEXT");
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_hooks_file_path ON hook_events(file_path)",
-      );
-
-      // Backfill existing rows from compressed payloads
-      db.exec(`
-        UPDATE hook_events
-        SET user_prompt = json_extract(decompress(payload), '$.prompt')
-        WHERE event_type = 'UserPromptSubmit' AND user_prompt IS NULL
-      `);
-      db.exec(`
-        UPDATE hook_events
-        SET file_path = json_extract(decompress(payload), '$.tool_input.file_path')
-        WHERE tool_name IN ('Write', 'Edit', 'Read') AND file_path IS NULL
-      `);
-      db.exec(`
-        UPDATE hook_events
-        SET command = json_extract(decompress(payload), '$.tool_input.command')
-        WHERE tool_name = 'Bash' AND command IS NULL
-      `);
-      db.exec(`
-        UPDATE hook_events
-        SET plan = json_extract(decompress(payload), '$.tool_input.plan'),
-            allowed_prompts = json_extract(decompress(payload), '$.tool_input.allowedPrompts')
-        WHERE tool_name = 'ExitPlanMode' AND event_type = 'PreToolUse' AND plan IS NULL
-      `);
-    },
-  },
-  {
-    version: 3,
-    up(db: Database.Database) {
-      db.exec("ALTER TABLE hook_events ADD COLUMN tool_result TEXT");
-    },
-  },
-  {
-    version: 4,
-    up: (db) => {
-      db.exec("ALTER TABLE hook_events ADD COLUMN target TEXT");
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_hooks_target ON hook_events(target)",
-      );
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS sessions (
-          session_id TEXT PRIMARY KEY,
-          target TEXT,
-          started_at_ms INTEGER,
-          ended_at_ms INTEGER,
-          cwd TEXT,
-          first_prompt TEXT,
-          permission_mode TEXT,
-          agent_version TEXT
-        )
-      `);
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms)",
-      );
-    },
-  },
-  {
-    version: 5,
-    up: (db) => {
-      const cols = db
-        .prepare("PRAGMA table_info(session_repositories)")
-        .all() as { name: string }[];
-      if (!cols.some((c) => c.name === "git_user_name")) {
-        db.exec(
-          "ALTER TABLE session_repositories ADD COLUMN git_user_name TEXT",
-        );
-        db.exec(
-          "ALTER TABLE session_repositories ADD COLUMN git_user_email TEXT",
-        );
-      }
-    },
-  },
-  {
-    version: 6,
-    up: (db) => {
-      // Add scanner columns to sessions table — both hooks and scanner
-      // upsert by session_id with COALESCE, so either source can fill
-      // in any field independently.
-      db.exec(`
-        ALTER TABLE sessions ADD COLUMN model TEXT;
-        ALTER TABLE sessions ADD COLUMN cli_version TEXT;
-        ALTER TABLE sessions ADD COLUMN scanner_file_path TEXT;
-        ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN total_reasoning_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN turn_count INTEGER DEFAULT 0;
-      `);
-
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS scanner_turns (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          source TEXT NOT NULL,
-          turn_index INTEGER NOT NULL,
-          timestamp_ms INTEGER NOT NULL,
-          model TEXT,
-          role TEXT,
-          content_preview TEXT,
-          input_tokens INTEGER DEFAULT 0,
-          output_tokens INTEGER DEFAULT 0,
-          cache_read_tokens INTEGER DEFAULT 0,
-          cache_creation_tokens INTEGER DEFAULT 0,
-          reasoning_tokens INTEGER DEFAULT 0,
-          UNIQUE(session_id, source, turn_index)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scanner_turns_session ON scanner_turns(session_id);
-        CREATE INDEX IF NOT EXISTS idx_scanner_turns_ts ON scanner_turns(timestamp_ms);
-
-        CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
-          file_path TEXT PRIMARY KEY,
-          byte_offset INTEGER NOT NULL DEFAULT 0,
-          last_scanned_ms INTEGER NOT NULL
-        );
-      `);
-    },
-  },
-  {
-    version: 7,
-    up: (db) => {
-      db.exec(`
-        -- OTLP-sourced token columns (separate from scanner totals)
-        ALTER TABLE sessions ADD COLUMN otel_input_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN otel_output_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN otel_cache_read_tokens INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN otel_cache_creation_tokens INTEGER DEFAULT 0;
-
-        -- Model set (comma-separated, sessions can switch models)
-        ALTER TABLE sessions ADD COLUMN models TEXT;
-
-        -- Completeness indicators
-        ALTER TABLE sessions ADD COLUMN has_hooks INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN has_otel INTEGER DEFAULT 0;
-        ALTER TABLE sessions ADD COLUMN has_scanner INTEGER DEFAULT 0;
-      `);
-
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS scanner_events (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          source TEXT NOT NULL,
-          event_type TEXT NOT NULL,
-          timestamp_ms INTEGER NOT NULL,
-          tool_name TEXT,
-          tool_input TEXT,
-          tool_output TEXT,
-          content TEXT,
-          metadata JSON,
-          UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id);
-        CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type);
-      `);
-    },
-  },
-  {
-    version: 8,
-    up: (db) => {
-      // Replace single-row-per-model pricing with append-only time series.
-      // Drop old OpenRouter data and recreate with autoincrement id.
-      db.exec(`
-        DROP TABLE IF EXISTS model_pricing;
-        CREATE TABLE model_pricing (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          model_id TEXT NOT NULL,
-          input_per_m REAL NOT NULL,
-          output_per_m REAL NOT NULL,
-          cache_read_per_m REAL NOT NULL DEFAULT 0,
-          cache_write_per_m REAL NOT NULL DEFAULT 0,
-          updated_ms INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_model_pricing_model ON model_pricing(model_id, updated_ms);
-      `);
-    },
-  },
-  {
-    version: 9,
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS otel_spans (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          trace_id TEXT NOT NULL,
-          span_id TEXT NOT NULL,
-          parent_span_id TEXT,
-          name TEXT NOT NULL,
-          kind INTEGER,
-          start_time_ns INTEGER NOT NULL,
-          end_time_ns INTEGER NOT NULL,
-          status_code INTEGER,
-          status_message TEXT,
-          attributes JSON,
-          resource_attributes JSON,
-          session_id TEXT,
-          UNIQUE(trace_id, span_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_spans_session ON otel_spans(session_id);
-        CREATE INDEX IF NOT EXISTS idx_spans_trace ON otel_spans(trace_id);
-        CREATE INDEX IF NOT EXISTS idx_spans_start ON otel_spans(start_time_ns);
-
-        CREATE TABLE IF NOT EXISTS session_summary_deltas (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          delta_index INTEGER NOT NULL,
-          created_at_ms INTEGER NOT NULL,
-          from_turn INTEGER NOT NULL,
-          to_turn INTEGER NOT NULL,
-          content TEXT NOT NULL,
-          method TEXT NOT NULL DEFAULT 'deterministic',
-          UNIQUE(session_id, delta_index)
-        );
-        CREATE INDEX IF NOT EXISTS idx_summary_deltas_session ON session_summary_deltas(session_id);
-      `);
-
-      // ALTER TABLE columns added conditionally to handle DBs from
-      // earlier development where these were part of migration v8.
-      const addColumnIfMissing = (
-        table: string,
-        column: string,
-        type: string,
-      ) => {
-        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as {
-          name: string;
-        }[];
-        if (!cols.some((c) => c.name === column)) {
-          db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-        }
-      };
-
-      addColumnIfMissing(
-        "scanner_file_watermarks",
-        "archived_size",
-        "INTEGER DEFAULT 0",
-      );
-      addColumnIfMissing("scanner_turns", "summary", "TEXT");
-      addColumnIfMissing("sessions", "summary", "TEXT");
-      addColumnIfMissing("sessions", "summary_version", "INTEGER DEFAULT 0");
-      addColumnIfMissing("sessions", "sync_dirty", "INTEGER DEFAULT 0");
-    },
-  },
-  {
-    version: 10,
-    up: (db) => {
-      // Drop the single-table version if it exists from an earlier dev build
-      db.exec("DROP TABLE IF EXISTS config_snapshots");
-
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS user_config_snapshots (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          device_name TEXT NOT NULL,
-          snapshot_at_ms INTEGER NOT NULL,
-          content_hash TEXT NOT NULL,
-          permissions JSON NOT NULL DEFAULT '{}',
-          enabled_plugins JSON NOT NULL DEFAULT '[]',
-          hooks JSON NOT NULL DEFAULT '[]',
-          commands JSON NOT NULL DEFAULT '[]',
-          rules JSON NOT NULL DEFAULT '[]',
-          skills JSON NOT NULL DEFAULT '[]'
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_config_ts ON user_config_snapshots(snapshot_at_ms);
-        CREATE INDEX IF NOT EXISTS idx_user_config_device_hash ON user_config_snapshots(device_name, content_hash);
-
-        CREATE TABLE IF NOT EXISTS repo_config_snapshots (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          repository TEXT NOT NULL,
-          cwd TEXT NOT NULL,
-          session_id TEXT,
-          snapshot_at_ms INTEGER NOT NULL,
-          content_hash TEXT NOT NULL,
-          -- project layer (.claude/settings.json)
-          hooks JSON NOT NULL DEFAULT '[]',
-          mcp_servers JSON NOT NULL DEFAULT '[]',
-          commands JSON NOT NULL DEFAULT '[]',
-          agents JSON NOT NULL DEFAULT '[]',
-          rules JSON NOT NULL DEFAULT '[]',
-          -- project local layer (.claude/settings.local.json)
-          local_hooks JSON NOT NULL DEFAULT '[]',
-          local_mcp_servers JSON NOT NULL DEFAULT '[]',
-          local_permissions JSON NOT NULL DEFAULT '{}',
-          local_is_gitignored INTEGER NOT NULL DEFAULT 1,
-          -- instructions (CLAUDE.md files at all depths)
-          instructions JSON NOT NULL DEFAULT '[]'
-        );
-        CREATE INDEX IF NOT EXISTS idx_repo_config_repo_ts ON repo_config_snapshots(repository, snapshot_at_ms);
-        CREATE INDEX IF NOT EXISTS idx_repo_config_session ON repo_config_snapshots(session_id);
-        CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(repository, content_hash);
-      `);
-    },
-  },
-  {
-    version: 11,
-    up: (db) => {
-      db.exec("ALTER TABLE session_repositories ADD COLUMN branch TEXT");
-    },
-  },
-  {
-    version: 12,
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE sessions ADD COLUMN sync_seq INTEGER DEFAULT 0;
-        CREATE INDEX IF NOT EXISTS idx_sessions_sync_seq ON sessions(sync_seq);
-      `);
-      // Seed sync_seq from rowid so existing sessions are picked up
-      db.exec("UPDATE sessions SET sync_seq = rowid WHERE sync_seq = 0");
-    },
-  },
-  {
-    version: 13,
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE sessions ADD COLUMN tool_counts JSON DEFAULT '{}';
-        ALTER TABLE sessions ADD COLUMN event_type_counts JSON DEFAULT '{}';
-      `);
-    },
-  },
-];
-
-function runMigrations(db: Database.Database): void {
-  const row = db
-    .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
-    .get() as { value: string } | undefined;
-  const currentVersion = row ? parseInt(row.value, 10) : 0;
-
-  for (const m of migrations) {
-    if (m.version > currentVersion) {
-      m.up(db);
-      db.prepare(
-        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
-      ).run(String(m.version));
-    }
-  }
 }
 
 export function getDb(): Database.Database {
@@ -477,7 +406,6 @@ export function getDb(): Database.Database {
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
-  runMigrations(_db);
 
   return _db;
 }
