@@ -32,7 +32,10 @@ const CLAUDE_TOOL_CATEGORIES: Record<string, string> = {
 };
 
 function claudeToolCategory(toolName: string): string {
-  return CLAUDE_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
+  const mapped = CLAUDE_TOOL_CATEGORIES[toolName];
+  if (mapped) return mapped;
+  if (toolName.toLowerCase().includes("subagent")) return "Task";
+  return defaultToolCategory(toolName);
 }
 
 /** Extract total text length from a tool_result content field. */
