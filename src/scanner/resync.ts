@@ -38,18 +38,15 @@ const PRESERVED_TABLES = [
  * and should be merged back after the scanner rebuilds sessions.
  */
 const SESSION_MERGE_COLUMNS = [
-  "has_hooks",
-  "has_otel",
   "otel_input_tokens",
   "otel_output_tokens",
   "otel_cache_read_tokens",
   "otel_cache_creation_tokens",
   "summary",
   "summary_version",
-  "sync_dirty",
-  "sync_seq",
   "permission_mode",
   "is_automated",
+  "created_at",
 ];
 
 export interface ResyncResult {
@@ -186,7 +183,11 @@ export function resyncAll(log: (msg: string) => void = () => {}): ResyncResult {
   try {
     tempDb = new Database(tempPath);
     tempDb.pragma("journal_mode = WAL");
-    tempDb.exec(`ATTACH DATABASE '${origPath}' AS old_db`);
+    tempDb.function("decompress", (blob: Buffer | null) =>
+      blob ? gunzipSync(blob).toString() : null,
+    );
+    const escapedPath = origPath.replace(/'/g, "''");
+    tempDb.exec(`ATTACH DATABASE '${escapedPath}' AS old_db`);
 
     const tx = tempDb.transaction(() => {
       for (const table of PRESERVED_TABLES) {
@@ -194,8 +195,8 @@ export function resyncAll(log: (msg: string) => void = () => {}): ResyncResult {
           tempDb.exec(
             `INSERT OR IGNORE INTO main.${table} SELECT * FROM old_db.${table}`,
           );
-        } catch {
-          // Table may not exist in old DB
+        } catch (e) {
+          log(`  Skipping ${table}: ${e instanceof Error ? e.message : e}`);
         }
       }
 
@@ -204,7 +205,9 @@ export function resyncAll(log: (msg: string) => void = () => {}): ResyncResult {
         tempDb.exec(
           "INSERT INTO main.hook_events_fts(rowid, payload) SELECT id, decompress(payload) FROM main.hook_events",
         );
-      } catch {}
+      } catch (e) {
+        log(`  hook_events_fts rebuild: ${e instanceof Error ? e.message : e}`);
+      }
 
       // Merge session metadata from hooks/OTLP into scanner-created sessions
       const setClauses = SESSION_MERGE_COLUMNS.map(
@@ -216,19 +219,25 @@ export function resyncAll(log: (msg: string) => void = () => {}): ResyncResult {
           FROM old_db.sessions
           WHERE main.sessions.session_id = old_db.sessions.session_id
         `);
-      } catch {}
+      } catch (e) {
+        log(`  Session merge: ${e instanceof Error ? e.message : e}`);
+      }
 
       // Copy session_repositories and session_cwds
       try {
         tempDb.exec(
           "INSERT OR IGNORE INTO main.session_repositories SELECT * FROM old_db.session_repositories",
         );
-      } catch {}
+      } catch (e) {
+        log(`  session_repositories: ${e instanceof Error ? e.message : e}`);
+      }
       try {
         tempDb.exec(
           "INSERT OR IGNORE INTO main.session_cwds SELECT * FROM old_db.session_cwds",
         );
-      } catch {}
+      } catch (e) {
+        log(`  session_cwds: ${e instanceof Error ? e.message : e}`);
+      }
     });
     tx();
 

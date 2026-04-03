@@ -1,9 +1,5 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const _tmpBase = path.join(os.tmpdir(), "pano-resync-test");
 
 vi.mock("../config.js", () => {
   const _os = require("node:os");
