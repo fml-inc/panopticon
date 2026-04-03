@@ -53,7 +53,7 @@ vi.mock("./config.js", () => {
 import path from "node:path";
 import { LocalArchiveBackend } from "./archive/local.js";
 import { config } from "./config.js";
-import { costBreakdown, searchEvents, sessionTimeline } from "./db/query.js";
+import { costBreakdown, search, sessionTimeline } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
 import {
   insertOtelMetrics,
@@ -1325,8 +1325,8 @@ describe("server integration", () => {
       expect(parsedTs).toBeGreaterThan(0);
     });
 
-    it("searchEvents finds Codex OTel events by attribute content", () => {
-      const result = searchEvents({
+    it("search finds Codex OTel events by attribute content", () => {
+      const result = search({
         query: "exec_apply",
         limit: 10,
       });

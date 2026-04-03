@@ -8,11 +8,11 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
-  getEvent,
   listPlans,
   listSessions,
+  print,
   rawQuery,
-  searchEvents,
+  search,
   sessionTimeline,
   toolStats,
 } from "../db/query.js";
@@ -213,7 +213,7 @@ server.tool(
       .describe("Return full payloads instead of truncated (default false)"),
   },
   async ({ query, eventTypes, since, limit, offset, fullPayloads }) => {
-    const result = searchEvents({
+    const result = search({
       query,
       eventTypes,
       since,
@@ -242,7 +242,7 @@ server.tool(
     id: z.number().describe("Event ID from search/timeline results"),
   },
   async ({ source, id }) => {
-    const result = getEvent({ source, id });
+    const result = print({ source, id });
     if (!result) {
       return {
         content: [

@@ -19,11 +19,11 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
-  getEvent,
   listPlans,
   listSessions,
+  print,
   rawQuery,
-  searchEvents,
+  search,
   sessionTimeline,
   toolStats,
 } from "./db/query.js";
@@ -864,9 +864,14 @@ program
         const stats = dbStats();
         console.log();
         console.log("Row counts:");
-        console.log(`  otel_logs:    ${stats.otel_logs}`);
-        console.log(`  otel_metrics: ${stats.otel_metrics}`);
-        console.log(`  hook_events:  ${stats.hook_events}`);
+        console.log(`  sessions:       ${stats.sessions}`);
+        console.log(`  messages:       ${stats.messages}`);
+        console.log(`  tool_calls:     ${stats.tool_calls}`);
+        console.log(`  scanner_turns:  ${stats.scanner_turns}`);
+        console.log(`  scanner_events: ${stats.scanner_events}`);
+        console.log(`  hook_events:    ${stats.hook_events}`);
+        console.log(`  otel_logs:      ${stats.otel_logs}`);
+        console.log(`  otel_metrics:   ${stats.otel_metrics}`);
       } catch {
         console.log("  (could not read database)");
       }
@@ -960,14 +965,13 @@ program
     console.log();
 
     const estimate = pruneEstimate(cutoffMs);
-    const total =
-      estimate.otel_logs + estimate.otel_metrics + estimate.hook_events;
+    const total = Object.values(estimate).reduce((a, b) => a + b, 0);
 
     console.log("Rows to delete:");
-    console.log(`  otel_logs:    ${estimate.otel_logs}`);
-    console.log(`  otel_metrics: ${estimate.otel_metrics}`);
-    console.log(`  hook_events:  ${estimate.hook_events}`);
-    console.log(`  total:        ${total}`);
+    for (const [key, count] of Object.entries(estimate)) {
+      if (count > 0) console.log(`  ${key}: ${count}`);
+    }
+    console.log(`  total: ${total}`);
     console.log();
 
     if (total === 0) {
@@ -990,9 +994,9 @@ program
 
     const result = pruneExecute(cutoffMs);
     console.log("Deleted:");
-    console.log(`  otel_logs:    ${result.otel_logs}`);
-    console.log(`  otel_metrics: ${result.otel_metrics}`);
-    console.log(`  hook_events:  ${result.hook_events}`);
+    for (const [key, count] of Object.entries(result)) {
+      if (count > 0) console.log(`  ${key}: ${count}`);
+    }
 
     if (opts.vacuum) {
       console.log("\nReclaiming disk space...");
@@ -1164,7 +1168,7 @@ program
 
 program
   .command("search")
-  .description("Full-text search across all events")
+  .description("Full-text search across events and messages")
   .argument("<query>", "Text to search for")
   .option("--types <types...>", "Filter to specific event types")
   .option(
@@ -1175,7 +1179,7 @@ program
   .option("--offset <n>", "Number of results to skip", parseInt)
   .option("--full", "Return full payloads instead of truncated")
   .action((query: string, opts: Opts) => {
-    const result = searchEvents({
+    const result = search({
       query,
       eventTypes: opts.types,
       since: opts.since,
@@ -1187,18 +1191,21 @@ program
   });
 
 program
-  .command("event")
-  .description("Get full details for a specific event by source and ID")
-  .argument("<source>", "Event source: hook or otel")
-  .argument("<id>", "Event ID from search/timeline results")
+  .command("print")
+  .alias("event")
+  .description("Get full details for a record by source and ID")
+  .argument("<source>", "Source: hook, otel, or message")
+  .argument("<id>", "Record ID from search/timeline results")
   .action((source: string, id: string) => {
-    if (source !== "hook" && source !== "otel") {
-      console.error(`Invalid source: ${source} (must be "hook" or "otel")`);
+    if (source !== "hook" && source !== "otel" && source !== "message") {
+      console.error(
+        `Invalid source: ${source} (must be "hook", "otel", or "message")`,
+      );
       process.exit(1);
     }
-    const result = getEvent({ source, id: parseInt(id, 10) });
+    const result = print({ source, id: parseInt(id, 10) });
     if (!result) {
-      console.error(`No ${source} event found with id ${id}`);
+      console.error(`No ${source} record found with id ${id}`);
       process.exit(1);
     }
     output(result);

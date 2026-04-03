@@ -563,7 +563,7 @@ interface RawSearchRow {
   payload: string | null;
 }
 
-export function searchEvents(opts: {
+export function search(opts: {
   query: string;
   eventTypes?: string[];
   since?: string;
@@ -891,7 +891,10 @@ export function listPlans(
 
 // ── Get Event (panopticon-specific) ───────────────────────────────────────────
 
-export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
+export function print(opts: {
+  source: "hook" | "otel" | "message";
+  id: number;
+}) {
   const db = getDb();
 
   if (opts.source === "hook") {
@@ -903,6 +906,27 @@ export function getEvent(opts: { source: "hook" | "otel"; id: number }) {
       WHERE id = ?
     `;
     return db.prepare(sql).get(opts.id) ?? null;
+  }
+
+  if (opts.source === "message") {
+    const msg = db
+      .prepare(
+        `SELECT m.id, m.session_id, m.ordinal, m.role, m.content, m.timestamp_ms,
+              m.has_thinking, m.has_tool_use, m.content_length, m.is_system,
+              m.model, m.token_usage, m.context_tokens, m.output_tokens,
+              m.uuid, m.parent_uuid
+       FROM messages m WHERE m.id = ?`,
+      )
+      .get(opts.id) as Record<string, unknown> | undefined;
+    if (!msg) return null;
+    const toolCalls = db
+      .prepare(
+        `SELECT tool_name, category, tool_use_id, input_json, skill_name,
+              result_content_length, duration_ms, subagent_session_id
+       FROM tool_calls WHERE message_id = ?`,
+      )
+      .all(opts.id);
+    return { source: "message", ...msg, tool_calls: toolCalls };
   }
 
   const sql = `
@@ -963,13 +987,22 @@ export function dbStats() {
     .prepare("SELECT COUNT(*) as count FROM scanner_events")
     .get() as { count: number };
 
+  const messages = db
+    .prepare("SELECT COUNT(*) as count FROM messages")
+    .get() as { count: number };
+  const toolCalls = db
+    .prepare("SELECT COUNT(*) as count FROM tool_calls")
+    .get() as { count: number };
+
   return {
+    sessions: sessions.count,
+    messages: messages.count,
+    tool_calls: toolCalls.count,
+    scanner_turns: scannerTurns.count,
+    scanner_events: scannerEvents.count,
+    hook_events: hooks.count,
     otel_logs: logs.count,
     otel_metrics: metrics.count,
     otel_spans: spans.count,
-    hook_events: hooks.count,
-    sessions: sessions.count,
-    scanner_turns: scannerTurns.count,
-    scanner_events: scannerEvents.count,
   };
 }
