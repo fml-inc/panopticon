@@ -136,6 +136,7 @@ function ensureSessionsFromOtel(
       otel_output_tokens: sess.otelOutput || undefined,
       otel_cache_read_tokens: sess.otelCacheRead || undefined,
       otel_cache_creation_tokens: sess.otelCacheCreation || undefined,
+      has_otel: 1,
     });
   }
 }

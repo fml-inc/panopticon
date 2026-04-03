@@ -38,6 +38,8 @@ const PRESERVED_TABLES = [
  * and should be merged back after the scanner rebuilds sessions.
  */
 const SESSION_MERGE_COLUMNS = [
+  "has_hooks",
+  "has_otel",
   "otel_input_tokens",
   "otel_output_tokens",
   "otel_cache_read_tokens",
