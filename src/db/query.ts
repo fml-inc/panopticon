@@ -639,29 +639,58 @@ export function searchEvents(opts: {
     WHERE ${otelConditions.join(" AND ")}
   `;
 
-  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql})`;
+  // Messages FTS search
+  const msgContentCol = truncate ? "SUBSTR(m.content, 1, 500)" : "m.content";
+  const msgConditions: string[] = [
+    "m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)",
+  ];
+  const msgParams: unknown[] = [opts.query];
+  if (sinceMs) {
+    msgConditions.push("m.timestamp_ms >= ?");
+    msgParams.push(sinceMs);
+  }
+
+  const msgSql = `
+    SELECT 'message' as source, m.id, m.session_id,
+           m.role as event_type, m.timestamp_ms,
+           NULL as tool_name, NULL as cwd, ${msgContentCol} as payload
+    FROM messages m
+    WHERE ${msgConditions.join(" AND ")}
+  `;
+
+  const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql})`;
   const total = (
-    db.prepare(countSql).get(...hookParams, ...otelParams) as { total: number }
+    db.prepare(countSql).get(...hookParams, ...otelParams, ...msgParams) as {
+      total: number;
+    }
   ).total;
 
   const sql = `
-    SELECT * FROM (${hookSql} UNION ALL ${otelSql})
+    SELECT * FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql})
     ORDER BY timestamp_ms DESC
     LIMIT ? OFFSET ?
   `;
 
   const rows = db
     .prepare(sql)
-    .all(...hookParams, ...otelParams, limit, offset) as RawSearchRow[];
+    .all(
+      ...hookParams,
+      ...otelParams,
+      ...msgParams,
+      limit,
+      offset,
+    ) as RawSearchRow[];
 
   const results: SearchMatch[] = rows.map((row) => {
     const snippet = row.payload ?? row.event_type ?? "";
     const matchType =
-      row.event_type === "UserPromptSubmit"
-        ? "prompt"
-        : row.tool_name
-          ? "tool_use"
-          : "event";
+      row.source === "message"
+        ? "message"
+        : row.event_type === "UserPromptSubmit"
+          ? "prompt"
+          : row.tool_name
+            ? "tool_use"
+            : "event";
 
     return {
       sessionId: row.session_id,

@@ -227,19 +227,27 @@ export function resetFileForReparse(
       sessionId,
     );
     db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
+    db.prepare(
+      "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id = ?)",
+    ).run(sessionId);
     db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
     // Also clean up any previously-detected fork sessions from this file
+    const forkSessionFilter =
+      "SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'";
     db.prepare(
-      "DELETE FROM scanner_turns WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM scanner_turns WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
-      "DELETE FROM scanner_events WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM scanner_events WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
-      "DELETE FROM tool_calls WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM tool_calls WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
-      "DELETE FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork')",
+      `DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id IN (${forkSessionFilter}))`,
+    ).run(sessionId);
+    db.prepare(
+      `DELETE FROM messages WHERE session_id IN (${forkSessionFilter})`,
     ).run(sessionId);
     db.prepare(
       "DELETE FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
@@ -254,6 +262,7 @@ export function resetScanner(): void {
     DELETE FROM scanner_turns;
     DELETE FROM scanner_events;
     DELETE FROM tool_calls;
+    DELETE FROM messages_fts;
     DELETE FROM messages;
     UPDATE sessions SET
       model = NULL, cli_version = NULL, scanner_file_path = NULL,
@@ -272,6 +281,9 @@ export function resetScannerSource(source: string): void {
   db.prepare("DELETE FROM scanner_turns WHERE source = ?").run(source);
   db.prepare(
     "DELETE FROM tool_calls WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?)",
+  ).run(source);
+  db.prepare(
+    "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?))",
   ).run(source);
   db.prepare(
     "DELETE FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?)",
@@ -405,6 +417,9 @@ export function insertMessages(
 
   const msgStmt = db.prepare(INSERT_MESSAGE_SQL);
   const tcStmt = db.prepare(INSERT_TOOL_CALL_SQL);
+  const ftsStmt = db.prepare(
+    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+  );
 
   const tx = db.transaction(() => {
     for (const msg of messages) {
@@ -430,6 +445,7 @@ export function insertMessages(
       if (result.changes === 0) continue;
 
       const messageId = result.lastInsertRowid;
+      ftsStmt.run(messageId, msg.content);
 
       for (const tc of msg.toolCalls) {
         // Look up result from the tool_result blocks
