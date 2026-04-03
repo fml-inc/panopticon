@@ -251,22 +251,6 @@ export interface ToolCallSyncRecord {
   subagentSessionId: string | null;
 }
 
-export interface ToolResultEventSyncRecord {
-  id: number;
-  sessionId: string;
-  toolCallMessageOrdinal: number;
-  callIndex: number;
-  toolUseId: string | null;
-  agentId: string | null;
-  subagentSessionId: string | null;
-  source: string;
-  status: string;
-  content: string;
-  contentLength: number;
-  timestampMs: number | null;
-  eventIndex: number;
-}
-
 // ── Sync registry ───────────────────────────────────────────────────────────
 
 /** Context passed to reader functions that need values from SyncOptions. */

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
 
 describe("TABLE_SYNC_REGISTRY", () => {
-  it("has exactly 12 table descriptors", () => {
-    expect(TABLE_SYNC_REGISTRY).toHaveLength(12);
+  it("has exactly 11 table descriptors", () => {
+    expect(TABLE_SYNC_REGISTRY).toHaveLength(11);
   });
 
   it("has unique table names", () => {
@@ -24,7 +24,6 @@ describe("TABLE_SYNC_REGISTRY", () => {
       "repo_config_snapshots",
       "messages",
       "tool_calls",
-      "tool_result_events",
       "sessions",
     ]);
   });
@@ -65,7 +64,6 @@ describe("TABLE_SYNC_REGISTRY", () => {
       "repo_config_snapshots",
       "messages",
       "tool_calls",
-      "tool_result_events",
       "sessions",
     ]);
   });

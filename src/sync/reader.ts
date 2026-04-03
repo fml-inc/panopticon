@@ -10,7 +10,6 @@ import type {
   ScannerTurnRecord,
   SessionSyncRecord,
   ToolCallSyncRecord,
-  ToolResultEventSyncRecord,
   UserConfigSnapshotRecord,
 } from "./types.js";
 
@@ -624,61 +623,6 @@ export function readToolCalls(
     resultContentLength: r.result_content_length,
     resultContent: r.result_content,
     subagentSessionId: r.subagent_session_id,
-  }));
-
-  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
-  return { rows, maxId };
-}
-
-// ── Tool result events ──────────────────────────────────────────────────────
-
-const TOOL_RESULT_EVENTS_SQL = `
-  SELECT id, session_id, tool_call_message_ordinal, call_index,
-         tool_use_id, agent_id, subagent_session_id,
-         source, status, content, content_length, timestamp_ms, event_index
-  FROM tool_result_events
-  WHERE id > ?
-  ORDER BY id
-  LIMIT ?
-`;
-
-export function readToolResultEvents(
-  afterId: number,
-  limit: number,
-): { rows: ToolResultEventSyncRecord[]; maxId: number } {
-  const db = getDb();
-  const rawRows = db
-    .prepare(TOOL_RESULT_EVENTS_SQL)
-    .all(afterId, limit) as Array<{
-    id: number;
-    session_id: string;
-    tool_call_message_ordinal: number;
-    call_index: number;
-    tool_use_id: string | null;
-    agent_id: string | null;
-    subagent_session_id: string | null;
-    source: string;
-    status: string;
-    content: string;
-    content_length: number;
-    timestamp_ms: number | null;
-    event_index: number;
-  }>;
-
-  const rows: ToolResultEventSyncRecord[] = rawRows.map((r) => ({
-    id: r.id,
-    sessionId: r.session_id,
-    toolCallMessageOrdinal: r.tool_call_message_ordinal,
-    callIndex: r.call_index,
-    toolUseId: r.tool_use_id,
-    agentId: r.agent_id,
-    subagentSessionId: r.subagent_session_id,
-    source: r.source,
-    status: r.status,
-    content: r.content,
-    contentLength: r.content_length,
-    timestampMs: r.timestamp_ms,
-    eventIndex: r.event_index,
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;

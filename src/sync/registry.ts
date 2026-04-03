@@ -9,7 +9,6 @@ import {
   readScannerTurns,
   readSessions,
   readToolCalls,
-  readToolResultEvents,
   readUserConfigSnapshots,
 } from "./reader.js";
 import {
@@ -32,7 +31,6 @@ import type {
   SessionSyncRecord,
   TableSyncDescriptor,
   ToolCallSyncRecord,
-  ToolResultEventSyncRecord,
   UserConfigSnapshotRecord,
 } from "./types.js";
 
@@ -142,15 +140,6 @@ export const TABLE_SYNC_REGISTRY: TableSyncDescriptor<any>[] = [
     serialize: (rows) => rows,
     endpoint: "/v1/tool-calls",
   } satisfies TableSyncDescriptor<ToolCallSyncRecord>,
-
-  {
-    table: "tool_result_events",
-    logNoun: "tool result events",
-    capability: "api",
-    read: (afterId, limit, _ctx) => readToolResultEvents(afterId, limit),
-    serialize: (rows) => rows,
-    endpoint: "/v1/tool-result-events",
-  } satisfies TableSyncDescriptor<ToolResultEventSyncRecord>,
 
   {
     table: "sessions",
