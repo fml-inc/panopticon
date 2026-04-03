@@ -34,6 +34,7 @@ const CLAUDE_TOOL_CATEGORIES: Record<string, string> = {
 function claudeToolCategory(toolName: string): string {
   const mapped = CLAUDE_TOOL_CATEGORIES[toolName];
   if (mapped) return mapped;
+  if (toolName.startsWith("mcp__")) return "MCP";
   if (toolName.toLowerCase().includes("subagent")) return "Task";
   return defaultToolCategory(toolName);
 }
