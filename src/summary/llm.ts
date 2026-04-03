@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { log } from "../log.js";
 
-const LLM_TIMEOUT_MS = 30_000;
+const LLM_TIMEOUT_MS = 180_000;
 
 let _claudePath: string | null | undefined;
 
@@ -116,14 +117,12 @@ export function invokeLlm(
   const text = result.stdout?.toString().trim();
   const stderr = result.stderr?.toString().trim();
 
-  if (stderr) console.error(`[llm] stderr: ${stderr.slice(0, 500)}`);
+  if (stderr) log.llm.warn(`stderr: ${stderr.slice(0, 500)}`);
   if (result.signal) {
-    console.error(`[llm] killed by signal: ${result.signal}`);
+    log.llm.error(`killed by signal: ${result.signal}`);
     return null;
   }
-  console.error(
-    `[llm] exit=${result.status} stdout=${text?.length ?? 0} chars`,
-  );
+  log.llm.info(`exit=${result.status} stdout=${text?.length ?? 0} chars`);
 
   // Accept output even with non-zero exit (hooks may cause exit code 1
   // after successful response)

@@ -2,11 +2,11 @@ const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 2000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-export async function postOtlp(
+export async function postSync(
   url: string,
-  body: unknown,
+  body: { table: string; rows: unknown[] },
   headers: Record<string, string>,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -24,7 +24,14 @@ export async function postOtlp(
       });
       clearTimeout(timeoutId);
 
-      if (response.ok) return;
+      if (response.ok) {
+        const text = await response.text().catch(() => "");
+        try {
+          return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        } catch {
+          return {};
+        }
+      }
 
       const status = response.status;
 
@@ -52,13 +59,5 @@ export async function postOtlp(
     }
   }
 
-  throw lastError ?? new Error("postOtlp failed");
-}
-
-export function chunk<T>(arr: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    result.push(arr.slice(i, i + size));
-  }
-  return result;
+  throw lastError ?? new Error("postSync failed");
 }

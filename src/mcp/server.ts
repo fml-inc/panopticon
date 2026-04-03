@@ -15,7 +15,7 @@ import {
   search,
   sessionTimeline,
 } from "../db/query.js";
-import { logPaths } from "../log.js";
+import { log, logPaths } from "../log.js";
 
 const server = new McpServer({
   name: "panopticon",
@@ -282,6 +282,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("MCP server error:", err);
+  log.mcp.error("MCP server error:", err);
   process.exit(1);
 });

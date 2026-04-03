@@ -6,7 +6,7 @@ const MIN_MESSAGES = 3;
 /** Re-summarize when message count has grown by this much. */
 const SUMMARY_THRESHOLD = 20;
 /** Max sessions to summarize per idle cycle. */
-const MAX_PER_CYCLE = 5;
+const MAX_PER_CYCLE = 50;
 /** Timeout for agent-based summary (longer than simple LLM call). */
 const AGENT_TIMEOUT_MS = 120_000;
 
@@ -25,7 +25,7 @@ Instructions:
  * Generate a summary for a single session.
  * Uses Claude CLI with panopticon MCP if available, falls back to deterministic.
  */
-function summarizeSession(
+function _summarizeSession(
   sessionId: string,
   log: (msg: string) => void,
 ): string | null {
@@ -137,15 +137,12 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
 
   for (const sess of sessions) {
     try {
-      // Use AI summaries for sessions with repo attribution,
-      // deterministic for everything else
-      const summary = sess.has_repo
-        ? summarizeSession(sess.session_id, log)
-        : buildDeterministicSummary(sess.session_id);
+      // TODO: re-enable LLM summaries once backfill is complete
+      const summary = buildDeterministicSummary(sess.session_id);
       if (!summary) continue;
 
       db.prepare(
-        "UPDATE sessions SET summary = ?, summary_version = ?, sync_dirty = 1 WHERE session_id = ?",
+        "UPDATE sessions SET summary = ?, summary_version = ?, sync_dirty = 1, sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?",
       ).run(summary, sess.message_count, sess.session_id);
 
       updated++;

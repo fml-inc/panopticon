@@ -7,6 +7,7 @@ import {
   insertOtelSpans,
   upsertSession,
 } from "../db/store.js";
+import { log } from "../log.js";
 import { captureException } from "../sentry.js";
 import { allTargets } from "../targets/index.js";
 import { decodeLogs } from "./decode-logs.js";
@@ -306,7 +307,7 @@ export async function handleOtlpRequest(
       res.end();
     }
   } catch (err) {
-    console.error("OTLP handler error:", err);
+    log.otlp.error("OTLP handler error:", err);
     captureException(err, { component: "otlp", url });
     if (!res.headersSent) {
       res.writeHead(500);
@@ -526,9 +527,7 @@ if (
 ) {
   const server = createOtlpServer();
   server.listen(config.otlpPort, config.otlpHost, () => {
-    console.log(
-      `Panopticon OTLP receiver listening on ${config.otlpHost}:${config.otlpPort}`,
-    );
+    log.otlp.info(`Listening on ${config.otlpHost}:${config.otlpPort}`);
   });
 
   const shutdown = () => {

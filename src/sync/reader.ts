@@ -636,7 +636,7 @@ const SESSIONS_SQL = `
          permission_mode, agent_version,
          total_input_tokens, total_output_tokens, total_cache_read_tokens,
          total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-         models, summary, tool_counts, event_type_counts, sync_seq,
+         models, summary, tool_counts, hook_tool_counts, event_type_counts, hook_event_type_counts, sync_seq,
          project, machine, message_count, user_message_count,
          parent_session_id, relationship_type, is_automated, created_at
   FROM sessions
@@ -668,7 +668,9 @@ export function readSessions(
     models: string | null;
     summary: string | null;
     tool_counts: string | null;
+    hook_tool_counts: string | null;
     event_type_counts: string | null;
+    hook_event_type_counts: string | null;
     sync_seq: number;
     project: string | null;
     machine: string;
@@ -750,7 +752,15 @@ export function readSessions(
     models: r.models,
     summary: r.summary,
     toolCounts: parseJsonObject(r.tool_counts) as Record<string, number>,
+    hookToolCounts: parseJsonObject(r.hook_tool_counts) as Record<
+      string,
+      number
+    >,
     eventTypeCounts: parseJsonObject(r.event_type_counts) as Record<
+      string,
+      number
+    >,
+    hookEventTypeCounts: parseJsonObject(r.hook_event_type_counts) as Record<
       string,
       number
     >,
@@ -769,3 +779,404 @@ export function readSessions(
   const maxId = rawRows[rawRows.length - 1].sync_seq;
   return { rows, maxId };
 }
+
+// ── Per-session readers (for gated sync) ──────────────────────────────────
+
+export function readSessionMessages(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: MessageSyncRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT id, session_id, ordinal, role, content, timestamp_ms,
+              has_thinking, has_tool_use, content_length, is_system,
+              model, token_usage, context_tokens, output_tokens,
+              has_context_tokens, has_output_tokens
+       FROM messages
+       WHERE session_id = ? AND id > ?
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    ordinal: number;
+    role: string;
+    content: string;
+    timestamp_ms: number | null;
+    has_thinking: number;
+    has_tool_use: number;
+    content_length: number;
+    is_system: number;
+    model: string;
+    token_usage: string;
+    context_tokens: number;
+    output_tokens: number;
+    has_context_tokens: number;
+    has_output_tokens: number;
+  }>;
+
+  const rows: MessageSyncRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    ordinal: r.ordinal,
+    role: r.role,
+    content: r.content,
+    timestampMs: r.timestamp_ms,
+    hasThinking: r.has_thinking === 1,
+    hasToolUse: r.has_tool_use === 1,
+    contentLength: r.content_length,
+    isSystem: r.is_system === 1,
+    model: r.model,
+    tokenUsage: r.token_usage,
+    contextTokens: r.context_tokens,
+    outputTokens: r.output_tokens,
+    hasContextTokens: r.has_context_tokens === 1,
+    hasOutputTokens: r.has_output_tokens === 1,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionToolCalls(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: ToolCallSyncRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT id, message_id, session_id, tool_name, category, tool_use_id,
+              input_json, skill_name, result_content_length, result_content,
+              subagent_session_id
+       FROM tool_calls
+       WHERE session_id = ? AND id > ?
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    message_id: number;
+    session_id: string;
+    tool_name: string;
+    category: string;
+    tool_use_id: string | null;
+    input_json: string | null;
+    skill_name: string | null;
+    result_content_length: number | null;
+    result_content: string | null;
+    subagent_session_id: string | null;
+  }>;
+
+  const rows: ToolCallSyncRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    messageId: r.message_id,
+    sessionId: r.session_id,
+    toolName: r.tool_name,
+    category: r.category,
+    toolUseId: r.tool_use_id,
+    inputJson: r.input_json,
+    skillName: r.skill_name,
+    resultContentLength: r.result_content_length,
+    resultContent: r.result_content,
+    subagentSessionId: r.subagent_session_id,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionScannerTurns(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: ScannerTurnRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT t.id, t.session_id, t.source, t.turn_index, t.timestamp_ms,
+              t.model, t.role, t.content_preview,
+              t.input_tokens, t.output_tokens, t.cache_read_tokens,
+              t.cache_creation_tokens, t.reasoning_tokens,
+              s.cli_version
+       FROM scanner_turns t
+       LEFT JOIN sessions s ON s.session_id = t.session_id
+       WHERE t.session_id = ? AND t.id > ?
+       ORDER BY t.id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    turn_index: number;
+    timestamp_ms: number;
+    model: string | null;
+    role: string | null;
+    content_preview: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+    reasoning_tokens: number;
+    cli_version: string | null;
+  }>;
+
+  const rows: ScannerTurnRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    source: r.source,
+    turnIndex: r.turn_index,
+    timestampMs: r.timestamp_ms,
+    model: r.model,
+    role: r.role,
+    contentPreview: r.content_preview,
+    inputTokens: r.input_tokens,
+    outputTokens: r.output_tokens,
+    cacheReadTokens: r.cache_read_tokens,
+    cacheCreationTokens: r.cache_creation_tokens,
+    reasoningTokens: r.reasoning_tokens,
+    cliVersion: r.cli_version,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionScannerEvents(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: ScannerEventRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT id, session_id, source, event_type, timestamp_ms,
+              tool_name, tool_input, tool_output, content, metadata
+       FROM scanner_events
+       WHERE session_id = ? AND id > ?
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    event_type: string;
+    timestamp_ms: number;
+    tool_name: string | null;
+    tool_input: string | null;
+    tool_output: string | null;
+    content: string | null;
+    metadata: string | null;
+  }>;
+
+  const rows: ScannerEventRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    source: r.source,
+    eventType: r.event_type,
+    timestampMs: r.timestamp_ms,
+    toolName: r.tool_name,
+    toolInput: r.tool_input,
+    toolOutput: r.tool_output,
+    content: r.content,
+    metadata: parseJson(r.metadata),
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionHookEvents(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: HookEventRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT h.id, h.session_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
+              h.tool_name, decompress(h.payload) as payload,
+              h.user_prompt, h.file_path, h.command, h.tool_result,
+              s.target
+       FROM hook_events h
+       LEFT JOIN sessions s ON s.session_id = h.session_id
+       WHERE h.session_id = ? AND h.id > ?
+       ORDER BY h.id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    session_id: string;
+    event_type: string;
+    timestamp_ms: number;
+    cwd: string | null;
+    repository: string | null;
+    tool_name: string | null;
+    payload: string | null;
+    user_prompt: string | null;
+    file_path: string | null;
+    command: string | null;
+    tool_result: string | null;
+    target: string | null;
+  }>;
+
+  const rows: HookEventRecord[] = rawRows.map((r) => ({
+    hookId: r.id,
+    sessionId: r.session_id,
+    eventType: r.event_type,
+    timestampMs: r.timestamp_ms,
+    cwd: r.cwd,
+    repository: r.repository,
+    toolName: r.tool_name,
+    payload: parseJson(r.payload),
+    userPrompt: r.user_prompt,
+    filePath: r.file_path,
+    command: r.command,
+    toolResult: r.tool_result,
+    target: r.target,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionOtelLogs(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: OtelLogRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT id, timestamp_ns, body, attributes, resource_attributes,
+              severity_text, session_id, prompt_id, trace_id, span_id
+       FROM otel_logs
+       WHERE session_id = ? AND id > ?
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as RawOtelLogRow[];
+
+  const rows = mapOtelRows(rawRows);
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionOtelMetrics(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: MetricRow[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT id, timestamp_ns, name, value, metric_type, unit,
+              attributes, resource_attributes, session_id
+       FROM otel_metrics
+       WHERE session_id = ? AND id > ?
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    timestamp_ns: number;
+    name: string;
+    value: number;
+    metric_type: string | null;
+    unit: string | null;
+    attributes: string | null;
+    resource_attributes: string | null;
+    session_id: string | null;
+  }>;
+
+  const rows: MetricRow[] = rawRows.map((r) => ({
+    id: r.id,
+    timestampNs: r.timestamp_ns,
+    name: r.name,
+    value: r.value,
+    metricType: r.metric_type,
+    unit: r.unit,
+    attributes: parseJson(r.attributes),
+    resourceAttributes: parseJson(r.resource_attributes),
+    sessionId: r.session_id,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+export function readSessionOtelSpans(
+  sessionId: string,
+  afterId: number,
+  limit: number,
+): { rows: OtelSpanRecord[]; maxId: number } {
+  const db = getDb();
+  const rawRows = db
+    .prepare(
+      `SELECT id, trace_id, span_id, parent_span_id, name, kind,
+              start_time_ns, end_time_ns, status_code, status_message,
+              attributes, resource_attributes, session_id
+       FROM otel_spans
+       WHERE session_id = ? AND id > ?
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(sessionId, afterId, limit) as Array<{
+    id: number;
+    trace_id: string;
+    span_id: string;
+    parent_span_id: string | null;
+    name: string;
+    kind: number | null;
+    start_time_ns: number;
+    end_time_ns: number;
+    status_code: number | null;
+    status_message: string | null;
+    attributes: string | null;
+    resource_attributes: string | null;
+    session_id: string | null;
+  }>;
+
+  const rows: OtelSpanRecord[] = rawRows.map((r) => ({
+    id: r.id,
+    traceId: r.trace_id,
+    spanId: r.span_id,
+    parentSpanId: r.parent_span_id,
+    name: r.name,
+    kind: r.kind,
+    startTimeNs: r.start_time_ns,
+    endTimeNs: r.end_time_ns,
+    statusCode: r.status_code,
+    statusMessage: r.status_message,
+    attributes: parseJson(r.attributes),
+    resourceAttributes: parseJson(r.resource_attributes),
+    sessionId: r.session_id,
+  }));
+
+  const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;
+  return { rows, maxId };
+}
+
+/** Map of table name → per-session reader for gated sync. */
+export const SESSION_READERS: Record<
+  string,
+  (
+    sessionId: string,
+    afterId: number,
+    limit: number,
+  ) => { rows: unknown[]; maxId: number }
+> = {
+  messages: readSessionMessages,
+  tool_calls: readSessionToolCalls,
+  scanner_turns: readSessionScannerTurns,
+  scanner_events: readSessionScannerEvents,
+  hook_events: readSessionHookEvents,
+  otel_logs: readSessionOtelLogs,
+  otel_metrics: readSessionOtelMetrics,
+  otel_spans: readSessionOtelSpans,
+};

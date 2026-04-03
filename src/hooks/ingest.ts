@@ -14,6 +14,7 @@ import {
   upsertSessionRepository,
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
+import { log } from "../log.js";
 import { type RepoInfo, resolveRepoFromCwd } from "../repo.js";
 import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
@@ -302,8 +303,8 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
     for (const v of targets) {
       if (rawEvent in v.events.eventMap) {
         if (matched) {
-          console.warn(
-            `[panopticon] Event "${rawEvent}" claimed by both "${matched.id}" and "${v.id}" — using "${matched.id}"`,
+          log.hooks.warn(
+            `Event "${rawEvent}" claimed by both "${matched.id}" and "${v.id}" — using "${matched.id}"`,
           );
           break;
         }
@@ -328,8 +329,8 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
       }
     }
     if (matched) {
-      console.warn(
-        `[panopticon] Target resolved via model-name heuristic: model="${model}" → "${matched.id}". ` +
+      log.hooks.warn(
+        `Target resolved via model-name heuristic: model="${model}" → "${matched.id}". ` +
           `Set an explicit source/target field to avoid ambiguous detection.`,
       );
       if (sessionId) sessionTargetCache.set(sessionId, matched.id);

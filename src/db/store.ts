@@ -166,6 +166,12 @@ export function upsertSessionRepository(
   branch?: string | null,
 ): void {
   const db = getDb();
+  const existing = db
+    .prepare(
+      `SELECT 1 FROM session_repositories WHERE session_id = ? AND repository = ?`,
+    )
+    .get(sessionId, repository);
+
   db.prepare(
     `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -181,6 +187,14 @@ export function upsertSessionRepository(
     gitIdentity?.email ?? null,
     branch ?? null,
   );
+
+  // When a NEW repo is associated, bump sync_seq so the session re-syncs
+  // with updated repository info (avoids backend repo-filter rejections)
+  if (!existing) {
+    db.prepare(
+      `UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?`,
+    ).run(sessionId);
+  }
 }
 
 export function upsertSessionCwd(
@@ -520,25 +534,27 @@ export function updateSessionMessageCounts(sessionId: string): void {
 }
 
 /**
- * Increment a tool count for a session. Uses JSON_SET to atomically
- * update the tool_counts JSON object, bumping sync_seq.
+ * Increment a hook tool count for a session. Uses JSON_SET to atomically
+ * update the hook_tool_counts JSON object.
+ * Does NOT bump sync_seq — the scanner drives sync_seq via updateSessionTotals.
+ * Hook data syncs via Phase 2 (hook_events table), not the session row.
  */
 export function incrementToolCount(sessionId: string, toolName: string): void {
   const db = getDb();
   db.prepare(
     `UPDATE sessions
-     SET tool_counts = JSON_SET(
-           COALESCE(tool_counts, '{}'),
+     SET hook_tool_counts = JSON_SET(
+           COALESCE(hook_tool_counts, '{}'),
            '$.' || @tool,
-           COALESCE(JSON_EXTRACT(tool_counts, '$.' || @tool), 0) + 1
-         ),
-         sync_seq = COALESCE(sync_seq, 0) + 1
+           COALESCE(JSON_EXTRACT(hook_tool_counts, '$.' || @tool), 0) + 1
+         )
      WHERE session_id = @session_id`,
   ).run({ session_id: sessionId, tool: toolName });
 }
 
 /**
- * Increment an event type count for a session.
+ * Increment a hook event type count for a session.
+ * Does NOT bump sync_seq — same rationale as incrementToolCount.
  */
 export function incrementEventTypeCount(
   sessionId: string,
@@ -547,12 +563,11 @@ export function incrementEventTypeCount(
   const db = getDb();
   db.prepare(
     `UPDATE sessions
-     SET event_type_counts = JSON_SET(
-           COALESCE(event_type_counts, '{}'),
+     SET hook_event_type_counts = JSON_SET(
+           COALESCE(hook_event_type_counts, '{}'),
            '$.' || @event_type,
-           COALESCE(JSON_EXTRACT(event_type_counts, '$.' || @event_type), 0) + 1
-         ),
-         sync_seq = COALESCE(sync_seq, 0) + 1
+           COALESCE(JSON_EXTRACT(hook_event_type_counts, '$.' || @event_type), 0) + 1
+         )
      WHERE session_id = @session_id`,
   ).run({ session_id: sessionId, event_type: eventType });
 }

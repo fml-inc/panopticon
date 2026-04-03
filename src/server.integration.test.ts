@@ -64,6 +64,7 @@ import {
   _resetSessionRepoCache,
   _resetSessionTargetCache,
 } from "./hooks/ingest.js";
+import { log } from "./log.js";
 import {
   emitHookEventAsync,
   emitOtelLogs,
@@ -1200,7 +1201,9 @@ describe("server integration", () => {
   describe("model-based target detection warning (#73)", () => {
     it("logs a warning when target is resolved via model-name heuristic", async () => {
       _resetSessionTargetCache();
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi
+        .spyOn(log.hooks, "warn")
+        .mockImplementation(() => log.hooks as never);
 
       await post("/hooks", {
         session_id: "target-test-warn-model",
@@ -1222,7 +1225,9 @@ describe("server integration", () => {
 
     it("does not warn when target is resolved via explicit source", async () => {
       _resetSessionTargetCache();
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi
+        .spyOn(log.hooks, "warn")
+        .mockImplementation(() => log.hooks as never);
 
       await post("/hooks", {
         session_id: "target-test-no-warn",

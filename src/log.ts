@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Logger } from "tslog";
 
 function getLogDir(): string {
   switch (process.platform) {
@@ -23,7 +24,7 @@ function getLogDir(): string {
   }
 }
 
-const LOG_DIR = getLogDir();
+export const LOG_DIR = getLogDir();
 
 export const logPaths = {
   server: path.join(LOG_DIR, "server.log"),
@@ -46,3 +47,22 @@ export function openLogFd(daemon: DaemonName): number {
   fs.mkdirSync(LOG_DIR, { recursive: true });
   return fs.openSync(logPaths[daemon], "a");
 }
+
+const root = new Logger({
+  name: "panopticon",
+  type: "pretty",
+  prettyLogTimeZone: "UTC",
+  stylePrettyLogs: false,
+  prettyLogTemplate: "{{dateIsoStr}} [{{name}}] {{logLevelName}}\t",
+});
+
+export const log = {
+  server: root.getSubLogger({ name: "server" }),
+  scanner: root.getSubLogger({ name: "scanner" }),
+  sync: root.getSubLogger({ name: "sync" }),
+  proxy: root.getSubLogger({ name: "proxy" }),
+  llm: root.getSubLogger({ name: "llm" }),
+  mcp: root.getSubLogger({ name: "mcp" }),
+  otlp: root.getSubLogger({ name: "otlp" }),
+  hooks: root.getSubLogger({ name: "hooks" }),
+};
