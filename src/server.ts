@@ -1,8 +1,10 @@
+import fs from "node:fs";
 import http from "node:http";
 import { config } from "./config.js";
 import { autoPrune } from "./db/prune.js";
 import { syncAwarePrune } from "./db/sync-prune.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
+import { log } from "./log.js";
 import { handleOtlpRequest } from "./otlp/server.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
 import { createScannerLoop } from "./scanner/index.js";
@@ -53,7 +55,7 @@ export function createUnifiedServer(): http.Server {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       } catch (err) {
-        console.error("Hook ingest error:", err);
+        log.hooks.error("Hook ingest error:", err);
         captureException(err, { component: "hooks" });
         if (!res.headersSent) {
           res.writeHead(500, { "Content-Type": "application/json" });
@@ -119,48 +121,70 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
         syncAwarePrune(cfg.sync.targets, cfg.retention);
       }
     } catch (err) {
-      console.error("Prune error:", err);
+      log.server.error("Prune error:", err);
       captureException(err, { component: "prune" });
     }
   }
 
   const sentryActive = initSentry();
-  if (sentryActive) console.log("Sentry: enabled");
+  if (sentryActive) log.server.info("Sentry: enabled");
 
   const server = createUnifiedServer();
   let syncHandle: SyncHandle | null = null;
   let scannerHandle: ScannerHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
 
+  let takeoverAttempted = false;
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
-      console.log(
-        `Panopticon already running on ${config.host}:${config.port}`,
-      );
-      process.exit(0);
+      if (takeoverAttempted) {
+        log.server.warn(`Already running on ${config.host}:${config.port}`);
+        process.exit(0);
+      }
+      takeoverAttempted = true;
+      log.server.warn(`Port ${config.port} in use, attempting takeover...`);
+      try {
+        // Only kill the old panopticon server via PID file, not all
+        // processes on the port (which could include Claude Code CLI)
+        const pidFile = config.serverPidFile;
+        const pidStr = fs.readFileSync(pidFile, "utf-8").trim();
+        const oldPid = parseInt(pidStr, 10);
+        if (oldPid && oldPid !== process.pid) {
+          try {
+            process.kill(oldPid, "SIGTERM");
+          } catch {}
+        }
+        setTimeout(() => server.listen(config.port, config.host), 1500);
+      } catch {
+        log.server.warn(`Already running on ${config.host}:${config.port}`);
+        process.exit(0);
+      }
+      return;
     }
     captureException(err, { component: "server" });
     throw err;
   });
   server.listen(config.port, config.host, () => {
-    console.log(`Panopticon server listening on ${config.host}:${config.port}`);
+    log.server.info(`Listening on ${config.host}:${config.port}`);
 
     const cfg = loadUnifiedConfig();
 
-    // Start sync if targets are configured
-    if (cfg.sync.targets.length > 0) {
-      console.log(`Sync: ${cfg.sync.targets.map((t) => t.name).join(", ")}`);
-      setTag("sync_targets", cfg.sync.targets.length);
-      syncHandle = createSyncLoop({
-        targets: cfg.sync.targets,
-        filter: cfg.sync.filter,
-      });
-      syncHandle.start();
-    }
-
-    // Start session file scanner
+    // Start session file scanner first — sync is deferred until scanner
+    // finishes any initial resync so we don't sync stale/partial data.
     scannerHandle = createScannerLoop({
-      log: (msg) => console.error(`[panopticon-scanner] ${msg}`),
+      onReady: () => {
+        if (cfg.sync.targets.length > 0) {
+          log.sync.info(
+            `Targets: ${cfg.sync.targets.map((t) => t.name).join(", ")}`,
+          );
+          setTag("sync_targets", cfg.sync.targets.length);
+          syncHandle = createSyncLoop({
+            targets: cfg.sync.targets,
+            filter: cfg.sync.filter,
+          });
+          syncHandle.start();
+        }
+      },
     });
     scannerHandle.start();
 

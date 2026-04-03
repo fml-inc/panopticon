@@ -184,6 +184,41 @@ export function updateSessionTotals(sessionId: string): void {
     sessionId,
     sessionId,
   );
+
+  // Compute tool_counts from scanner tool_calls table
+  const toolRows = db
+    .prepare(
+      `SELECT tool_name, COUNT(*) as cnt FROM tool_calls WHERE session_id = ? GROUP BY tool_name`,
+    )
+    .all(sessionId) as Array<{ tool_name: string; cnt: number }>;
+
+  // Compute event_type_counts from scanner_events (strip "progress:" prefix)
+  const eventRows = db
+    .prepare(
+      `SELECT event_type, COUNT(*) as cnt FROM scanner_events WHERE session_id = ? GROUP BY event_type`,
+    )
+    .all(sessionId) as Array<{ event_type: string; cnt: number }>;
+
+  const toolCounts: Record<string, number> = {};
+  for (const r of toolRows) toolCounts[r.tool_name] = r.cnt;
+
+  const eventCounts: Record<string, number> = {};
+  for (const r of eventRows) {
+    const key = r.event_type.startsWith("progress:")
+      ? r.event_type.slice("progress:".length)
+      : r.event_type;
+    eventCounts[key] = (eventCounts[key] ?? 0) + r.cnt;
+  }
+
+  if (toolRows.length > 0 || eventRows.length > 0) {
+    db.prepare(
+      `UPDATE sessions
+       SET tool_counts = ?,
+           event_type_counts = ?,
+           sync_seq = COALESCE(sync_seq, 0) + 1
+       WHERE session_id = ?`,
+    ).run(JSON.stringify(toolCounts), JSON.stringify(eventCounts), sessionId);
+  }
   // Scanner produces token data that needs pricing for cost queries
   refreshIfStale().catch(() => {});
 }

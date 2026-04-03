@@ -7,6 +7,7 @@ import "../targets/claude.js";
 import "../targets/codex.js";
 import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
+import { log } from "../log.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
 import type { ParseResult } from "../targets/types.js";
@@ -30,7 +31,7 @@ import type { ScannerHandle, ScannerOptions } from "./types.js";
 const DEFAULT_IDLE_MS = 60_000;
 const DEFAULT_CATCHUP_MS = 5_000;
 
-export function scanOnce(log: (msg: string) => void = () => {}): {
+export function scanOnce(): {
   filesScanned: number;
   newTurns: number;
 } {
@@ -55,7 +56,7 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         offset = 0;
         result = target.scanner.parseFile(filePath, 0);
         if (!result) continue;
-        log(`Reparsing ${filePath} from start (fork detected)`);
+        log.scanner.info(`Reparsing ${filePath} from start (fork detected)`);
       }
 
       filesScanned++;
@@ -157,7 +158,7 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
         }
       } catch (archiveErr) {
         // Archive failure is non-fatal
-        log(
+        log.scanner.warn(
           `Archive error for ${filePath}: ${archiveErr instanceof Error ? archiveErr.message : archiveErr}`,
         );
       }
@@ -168,9 +169,11 @@ export function scanOnce(log: (msg: string) => void = () => {}): {
   if (filesScanned > 0) {
     const linked = linkSubagentSessions();
     if (linked > 0) {
-      log(`Linked ${linked} subagent session${linked > 1 ? "s" : ""}`);
+      log.scanner.info(
+        `Linked ${linked} subagent session${linked > 1 ? "s" : ""}`,
+      );
     }
-    log(`Scanned ${filesScanned} files, ${newTurns} new turns`);
+    log.scanner.info(`Scanned ${filesScanned} files, ${newTurns} new turns`);
   }
 
   return { filesScanned, newTurns };
@@ -191,12 +194,11 @@ function reindexMessages(result: ParseResult, startOrdinal: number): void {
 export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
-  const log =
-    opts.log ?? ((msg: string) => console.error(`[panopticon-scanner] ${msg}`));
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
   let resyncChecked = false;
+  let ready = false;
 
   function scheduleNext(hadWork: boolean): void {
     if (stopping) return;
@@ -214,23 +216,27 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     if (!resyncChecked) {
       resyncChecked = true;
       if (needsResync()) {
-        log("Data version outdated — running atomic resync...");
+        log.scanner.info("Data version outdated — running atomic resync...");
         import("./resync.js")
           .then(({ resyncAll }) => {
             try {
-              const result = resyncAll(log);
+              const result = resyncAll((msg) => log.scanner.info(msg));
               if (result.success) {
                 markResyncComplete();
               } else {
-                log(`Resync failed: ${result.error ?? "unknown"}`);
+                log.scanner.error(
+                  `Resync failed: ${result.error ?? "unknown"}`,
+                );
               }
             } catch (err) {
-              log(`Resync error: ${err instanceof Error ? err.message : err}`);
+              log.scanner.error(
+                `Resync error: ${err instanceof Error ? err.message : err}`,
+              );
             }
             scheduleNext(true);
           })
           .catch((err) => {
-            log(
+            log.scanner.error(
               `Resync import error: ${err instanceof Error ? err.message : err}`,
             );
             scheduleNext(false);
@@ -243,23 +249,28 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
     let hadWork = false;
     try {
-      const { newTurns } = scanOnce(log);
+      const { newTurns } = scanOnce();
       hadWork = newTurns > 0;
 
-      // Only generate summaries when idle (no new turns found).
-      // This prevents a cold-start stampede where thousands of
-      // sessions would each spawn a claude -p summarization call.
-      if (!hadWork) {
+      if (!ready) {
+        ready = true;
+        opts.onReady?.();
+      }
+
+      // Only generate summaries when idle and scanner is ready.
+      if (!hadWork && ready) {
         try {
-          generateSummariesOnce(log);
+          generateSummariesOnce((msg) => log.scanner.info(msg));
         } catch (err) {
-          log(
+          log.scanner.error(
             `Session summary error: ${err instanceof Error ? err.message : err}`,
           );
         }
       }
     } catch (err) {
-      log(`Scan error: ${err instanceof Error ? err.message : err}`);
+      log.scanner.error(
+        `Scan error: ${err instanceof Error ? err.message : err}`,
+      );
     }
     if (!stopping) {
       scheduleNext(hadWork);
@@ -270,7 +281,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     start() {
       if (timer) return;
       stopping = false;
-      log("Starting scanner");
+      log.scanner.info("Starting scanner");
       tick();
     },
     stop() {
@@ -278,7 +289,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       if (timer) {
         clearTimeout(timer);
         timer = null;
-        log("Stopped scanner");
+        log.scanner.info("Stopped scanner");
       }
     },
   };

@@ -110,7 +110,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   sync_dirty INTEGER DEFAULT 0,
   sync_seq INTEGER DEFAULT 0,
   tool_counts JSON DEFAULT '{}',
+  hook_tool_counts JSON DEFAULT '{}',
   event_type_counts JSON DEFAULT '{}',
+  hook_event_type_counts JSON DEFAULT '{}',
   project TEXT,
   machine TEXT NOT NULL DEFAULT 'local',
   message_count INTEGER DEFAULT 0,
@@ -291,6 +293,17 @@ CREATE TABLE IF NOT EXISTS repo_config_snapshots (
 CREATE TABLE IF NOT EXISTS watermarks (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL
+);
+
+-- ── Per-session sync state ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS pending_session_sync (
+  session_id TEXT NOT NULL,
+  target TEXT NOT NULL,
+  confirmed INTEGER DEFAULT 0,
+  table_watermarks JSON DEFAULT '{}',
+  synced_seq INTEGER DEFAULT 0,
+  PRIMARY KEY (session_id, target)
 );
 
 -- ── Indexes ─────────────────────────────────────────────────────────────────

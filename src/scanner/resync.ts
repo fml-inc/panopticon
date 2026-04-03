@@ -28,6 +28,7 @@ const PRESERVED_TABLES = [
   "otel_metrics",
   "otel_spans",
   "watermarks",
+  "pending_session_sync",
   "model_pricing",
   "user_config_snapshots",
   "repo_config_snapshots",
@@ -139,7 +140,7 @@ export function resyncAll(log: (msg: string) => void = () => {}): ResyncResult {
   let filesScanned = 0;
   let newTurns = 0;
   try {
-    const result = scanOnce(log);
+    const result = scanOnce();
     filesScanned = result.filesScanned;
     newTurns = result.newTurns;
   } catch (err) {

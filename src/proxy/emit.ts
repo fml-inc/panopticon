@@ -1,6 +1,7 @@
 import type { OtelLogRow, OtelMetricRow } from "../db/store.js";
 import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
 import { processHookEvent } from "../hooks/ingest.js";
+import { log } from "../log.js";
 
 export interface HookInput {
   session_id: string;
@@ -25,7 +26,7 @@ export function emitHookEventAsync(event: HookInput): void {
     processHookEvent(event);
   } catch (err) {
     if (process.env.PANOPTICON_DEBUG) {
-      console.error("proxy hook emit error:", err);
+      log.proxy.error("hook emit error:", err);
     }
   }
 }
@@ -60,7 +61,7 @@ export function emitOtelMetrics(metrics: OtelMetricPayload[]): void {
     insertOtelMetrics(rows);
   } catch (err) {
     if (process.env.PANOPTICON_DEBUG) {
-      console.error("proxy OTel metric emit error:", err);
+      log.proxy.error("OTel metric emit error:", err);
     }
   }
 }
@@ -92,7 +93,7 @@ export function emitOtelLogs(
     insertOtelLogs(rows);
   } catch (err) {
     if (process.env.PANOPTICON_DEBUG) {
-      console.error("proxy OTel log emit error:", err);
+      log.proxy.error("OTel log emit error:", err);
     }
   }
 }

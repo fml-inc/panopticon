@@ -2,7 +2,7 @@
 
 declare const __PANOPTICON_VERSION__: string;
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,7 +27,13 @@ import {
   sessionTimeline,
 } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
-import { DAEMON_NAMES, type DaemonName, logPaths, openLogFd } from "./log.js";
+import {
+  DAEMON_NAMES,
+  type DaemonName,
+  LOG_DIR,
+  logPaths,
+  openLogFd,
+} from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
 import { addTarget, listTargets, removeTarget } from "./sync/config.js";
 import { readWatermark, watermarkKey } from "./sync/watermark.js";
@@ -50,13 +56,56 @@ function getPluginRoot(): string {
 }
 
 function stopExistingDaemons(): void {
-  const pidFiles = [config.serverPidFile, config.pidFile];
-  for (const pidFile of pidFiles) {
+  const pidsKilled = new Set<number>();
+
+  // 1. Try PID files first
+  for (const pidFile of [config.serverPidFile, config.pidFile]) {
     try {
       const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
       process.kill(pid, "SIGTERM");
+      pidsKilled.add(pid);
+    } catch {}
+    try {
       fs.unlinkSync(pidFile);
     } catch {}
+  }
+
+  // 2. Fallback: kill whatever is listening on our port (covers purged PID files)
+  try {
+    const out = execFileSync("lsof", ["-ti", `tcp:${config.port}`], {
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    for (const line of out.split("\n")) {
+      const pid = parseInt(line, 10);
+      if (pid && !pidsKilled.has(pid)) {
+        try {
+          process.kill(pid, "SIGTERM");
+          pidsKilled.add(pid);
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // 3. Wait for port to be free (up to 3s)
+  if (pidsKilled.size > 0) {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try {
+        execFileSync("lsof", ["-ti", `tcp:${config.port}`], {
+          encoding: "utf-8",
+          timeout: 1000,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        // lsof succeeded = port still in use, wait and retry
+      } catch {
+        break; // lsof failed = port is free
+      }
+      const waitMs = Math.min(200, deadline - Date.now());
+      if (waitMs > 0)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
   }
 }
 
@@ -438,6 +487,10 @@ program
       try {
         fs.rmSync(config.dataDir, { recursive: true, force: true });
         console.log(`      Removed ${config.dataDir}`);
+      } catch {}
+      try {
+        fs.rmSync(LOG_DIR, { recursive: true, force: true });
+        console.log(`      Removed ${LOG_DIR}`);
       } catch {}
       console.log();
     }
@@ -885,14 +938,33 @@ program
       if (targets.length > 0) {
         console.log();
         console.log("Sync targets:");
-        const tables = ["hook_events", "otel_logs", "otel_metrics"];
         for (const t of targets) {
-          const watermarks = tables.map((table) =>
-            readWatermark(watermarkKey(table, t.name)),
-          );
-          const minWm = Math.min(...watermarks);
-          const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
-          console.log(`  ${t.name} → ${t.url} (${wmLabel})`);
+          const sessWm = readWatermark(watermarkKey("sessions", t.name));
+          console.log(`  ${t.name} → ${t.url}`);
+          console.log(`    sessions watermark: ${sessWm}`);
+
+          try {
+            const db = getDb();
+            const row = db
+              .prepare(
+                `SELECT
+                 COUNT(*) as total,
+                 SUM(CASE WHEN confirmed = 1 THEN 1 ELSE 0 END) as confirmed,
+                 SUM(CASE WHEN confirmed = 1 AND s.sync_seq > p.synced_seq THEN 1 ELSE 0 END) as pending_data
+               FROM pending_session_sync p
+               JOIN sessions s ON s.session_id = p.session_id
+               WHERE p.target = ?`,
+              )
+              .get(t.name) as {
+              total: number;
+              confirmed: number;
+              pending_data: number;
+            };
+            console.log(
+              `    confirmed sessions: ${row.confirmed} / ${row.total}`,
+            );
+            console.log(`    pending data sync:  ${row.pending_data}`);
+          } catch {}
         }
       }
     } catch {
@@ -1293,9 +1365,7 @@ scanCmd
     const { getDb } = await import("./db/schema.js");
     getDb();
 
-    const { filesScanned, newTurns } = scanOnce((msg) =>
-      console.log(`[scan] ${msg}`),
-    );
+    const { filesScanned, newTurns } = scanOnce();
     console.log(`Done: ${filesScanned} files scanned, ${newTurns} new turns`);
     await printScanSummary();
   });
@@ -1323,9 +1393,7 @@ scanCmd
       console.log("Reset all scanner data");
     }
 
-    const { filesScanned, newTurns } = scanOnce((msg) =>
-      console.log(`[scan] ${msg}`),
-    );
+    const { filesScanned, newTurns } = scanOnce();
     console.log(`Done: ${filesScanned} files scanned, ${newTurns} new turns`);
     await printScanSummary();
   });
@@ -1428,7 +1496,7 @@ Instructions:
           .get(sessionId) as { c: number }
       ).c;
       db.prepare(
-        "UPDATE sessions SET summary = ?, summary_version = ? WHERE session_id = ?",
+        "UPDATE sessions SET summary = ?, summary_version = ?, sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?",
       ).run(result, msgCount, sessionId);
       console.log(`\nSaved to database.`);
     } else {
@@ -1445,7 +1513,7 @@ scanCmd
     const { getDb } = await import("./db/schema.js");
     getDb();
 
-    scanOnce(() => {});
+    scanOnce();
     const { reconcile, formatReconcileReport } = await import(
       "./scanner/reconcile.js"
     );

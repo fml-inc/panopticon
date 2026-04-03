@@ -33,8 +33,6 @@ export interface SyncOptions {
   idleIntervalMs?: number;
   /** Catch-up poll interval in ms (default 1000) */
   catchUpIntervalMs?: number;
-  /** Log function (default console.error) */
-  log?: (msg: string) => void;
 }
 
 export interface SyncHandle {
@@ -189,7 +187,9 @@ export interface SessionSyncRecord {
   models: string | null;
   summary: string | null;
   toolCounts: Record<string, number>;
+  hookToolCounts: Record<string, number>;
   eventTypeCounts: Record<string, number>;
+  hookEventTypeCounts: Record<string, number>;
   project: string | null;
   machine: string;
   messageCount: number;

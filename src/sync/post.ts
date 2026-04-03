@@ -6,7 +6,7 @@ export async function postSync(
   url: string,
   body: { table: string; rows: unknown[] },
   headers: Record<string, string>,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -24,7 +24,14 @@ export async function postSync(
       });
       clearTimeout(timeoutId);
 
-      if (response.ok) return;
+      if (response.ok) {
+        const text = await response.text().catch(() => "");
+        try {
+          return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        } catch {
+          return {};
+        }
+      }
 
       const status = response.status;
 

@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { config } from "../config.js";
+import { log } from "../log.js";
 import { addBreadcrumb, captureException } from "../sentry.js";
 import { allTargets, getTarget } from "../targets/index.js";
 import { emitHookEventAsync, emitOtelLogs, emitOtelMetrics } from "./emit.js";
@@ -214,7 +215,7 @@ function forwardNonStreaming(
   );
 
   upstreamReq.on("error", (err) => {
-    console.error(`Upstream error (${route.target}):`, err.message);
+    log.proxy.error(`Upstream error (${route.target}):`, err.message);
     addBreadcrumb(
       "proxy",
       `Upstream error: ${route.target}`,
@@ -314,7 +315,7 @@ function forwardStreaming(
   );
 
   upstreamReq.on("error", (err) => {
-    console.error(`Upstream error (${route.target}):`, err.message);
+    log.proxy.error(`Upstream error (${route.target}):`, err.message);
     addBreadcrumb(
       "proxy",
       `Upstream error: ${route.target}`,
@@ -371,7 +372,7 @@ function tunnelWebSocket(
 
   // Catch client socket errors early (before upstream upgrade completes)
   clientSocket.on("error", (err) => {
-    console.error(`WebSocket client error (${route.target}):`, err.message);
+    log.proxy.error(`WebSocket client error (${route.target}):`, err.message);
   });
 
   // Forward headers, replacing host with upstream.
@@ -424,7 +425,7 @@ function tunnelWebSocket(
         pendingRequest = JSON.parse(msg);
         requestTimestamp = Date.now();
       } catch (err) {
-        console.error("[proxy] Failed to parse client WebSocket message:", err);
+        log.proxy.error("Failed to parse client WebSocket message:", err);
         captureException(err, { component: "proxy", phase: "ws-client-parse" });
       }
     };
@@ -452,7 +453,7 @@ function tunnelWebSocket(
           pendingRequest = undefined;
         }
       } catch (err) {
-        console.error("[proxy] Failed to parse server WebSocket message:", err);
+        log.proxy.error("Failed to parse server WebSocket message:", err);
         captureException(err, { component: "proxy", phase: "ws-server-parse" });
       }
     };
@@ -472,7 +473,7 @@ function tunnelWebSocket(
   });
 
   proxyReq.on("error", (err) => {
-    console.error(`WebSocket upstream error (${route.target}):`, err.message);
+    log.proxy.error(`WebSocket upstream error (${route.target}):`, err.message);
     clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
   });
 
@@ -528,7 +529,7 @@ export async function handleProxyRequest(
       forwardNonStreaming(route, req, res, requestBody, parsedReqBody);
     }
   } catch (err) {
-    console.error("Proxy error:", err);
+    log.proxy.error("Proxy error:", err);
     captureException(err, { component: "proxy", path: url });
     if (!res.headersSent) {
       res.writeHead(500);
@@ -576,20 +577,18 @@ if (
   const server = createProxyServer();
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
-      console.log(
-        `Proxy already running on ${config.proxyHost}:${config.proxyPort}`,
+      log.proxy.warn(
+        `Already running on ${config.proxyHost}:${config.proxyPort}`,
       );
       process.exit(0);
     }
     throw err;
   });
   server.listen(config.proxyPort, config.proxyHost, () => {
-    console.log(
-      `Panopticon proxy listening on ${config.proxyHost}:${config.proxyPort}`,
-    );
-    console.log("Routes:");
+    log.proxy.info(`Listening on ${config.proxyHost}:${config.proxyPort}`);
+    log.proxy.info("Routes:");
     for (const [prefix, host] of Object.entries(UPSTREAM_ROUTES)) {
-      console.log(`  /${prefix}/* → https://${host}/*`);
+      log.proxy.info(`  /${prefix}/* → https://${host}/*`);
     }
     // Show dynamic-routed targets not in the static table
     for (const v of allTargets()) {
@@ -598,7 +597,7 @@ if (
         typeof v.proxy.upstreamHost === "function" &&
         !UPSTREAM_ROUTES[v.id]
       ) {
-        console.log(`  /${v.id}/* → (dynamic)`);
+        log.proxy.info(`  /${v.id}/* → (dynamic)`);
       }
     }
   });
