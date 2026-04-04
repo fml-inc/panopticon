@@ -28,7 +28,7 @@ const PRESERVED_TABLES = [
   "otel_metrics",
   "otel_spans",
   "watermarks",
-  "pending_session_sync",
+  "target_session_sync",
   "model_pricing",
   "user_config_snapshots",
   "repo_config_snapshots",

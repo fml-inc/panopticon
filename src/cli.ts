@@ -972,10 +972,9 @@ program
                 `SELECT
                  COUNT(*) as total,
                  SUM(CASE WHEN confirmed = 1 THEN 1 ELSE 0 END) as confirmed,
-                 SUM(CASE WHEN confirmed = 1 AND s.sync_seq > p.synced_seq THEN 1 ELSE 0 END) as pending_data
-               FROM pending_session_sync p
-               JOIN sessions s ON s.session_id = p.session_id
-               WHERE p.target = ?`,
+                 SUM(CASE WHEN confirmed = 1 AND sync_seq > synced_seq THEN 1 ELSE 0 END) as pending_data
+               FROM target_session_sync
+               WHERE target = ?`,
               )
               .get(t.name) as {
               total: number;

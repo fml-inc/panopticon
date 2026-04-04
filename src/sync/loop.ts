@@ -18,7 +18,18 @@ const DEFAULT_POST_BATCH_SIZE = 100;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 100;
 const MAX_SESSIONS_PER_TICK = 10;
-const STALE_PENDING_DAYS = 30;
+
+/** Maps SESSION_READERS table name → target_session_sync column name. */
+const WM_COLUMNS = {
+  messages: "wm_messages",
+  tool_calls: "wm_tool_calls",
+  scanner_turns: "wm_scanner_turns",
+  scanner_events: "wm_scanner_events",
+  hook_events: "wm_hook_events",
+  otel_logs: "wm_otel_logs",
+  otel_metrics: "wm_otel_metrics",
+  otel_spans: "wm_otel_spans",
+} as const;
 
 function matchesGlob(value: string, pattern: string): boolean {
   if (pattern === "*/*") return true;
@@ -180,32 +191,36 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   async function syncSessionData(target: SyncTarget): Promise<boolean> {
     const db = getDb();
 
-    // Clean up stale pending entries
-    const staleCutoff = Date.now() - STALE_PENDING_DAYS * 24 * 60 * 60 * 1000;
+    // Clean up orphaned entries (session deleted from local DB)
     db.prepare(
-      `DELETE FROM pending_session_sync
-       WHERE (confirmed = 0 AND rowid IN (
-         SELECT p.rowid FROM pending_session_sync p
-         WHERE p.target = ? AND json_extract(p.table_watermarks, '$.created_at_ms') < ?
-       ))
-       OR session_id NOT IN (SELECT session_id FROM sessions)`,
-    ).run(target.name, staleCutoff);
+      `DELETE FROM target_session_sync
+       WHERE session_id NOT IN (SELECT session_id FROM sessions)`,
+    ).run();
 
     // Get confirmed sessions that have new data (sync_seq > synced_seq)
     const pending = db
       .prepare(
-        `SELECT p.session_id, p.table_watermarks, s.sync_seq
-         FROM pending_session_sync p
-         JOIN sessions s ON s.session_id = p.session_id
-         WHERE p.target = ? AND p.confirmed = 1
-           AND s.sync_seq > p.synced_seq
-         ORDER BY p.rowid
+        `SELECT session_id, sync_seq,
+                wm_messages, wm_tool_calls, wm_scanner_turns,
+                wm_scanner_events, wm_hook_events, wm_otel_logs,
+                wm_otel_metrics, wm_otel_spans
+         FROM target_session_sync
+         WHERE target = ? AND confirmed = 1
+           AND sync_seq > synced_seq
+         ORDER BY rowid
          LIMIT ?`,
       )
       .all(target.name, MAX_SESSIONS_PER_TICK) as Array<{
       session_id: string;
-      table_watermarks: string;
       sync_seq: number;
+      wm_messages: number;
+      wm_tool_calls: number;
+      wm_scanner_turns: number;
+      wm_scanner_events: number;
+      wm_hook_events: number;
+      wm_otel_logs: number;
+      wm_otel_metrics: number;
+      wm_otel_spans: number;
     }>;
 
     if (pending.length === 0) return false;
@@ -214,7 +229,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     const url = `${target.url}/v1/sync`;
 
     for (const entry of pending) {
-      const watermarks = parseTableWatermarks(entry.table_watermarks);
+      // Build watermarks from explicit columns
+      const wmRow = entry as unknown as Record<string, number>;
+      const watermarks: Record<string, number> = {};
+      for (const [table, col] of Object.entries(WM_COLUMNS)) {
+        watermarks[table] = wmRow[col] ?? 0;
+      }
       let anyData = false;
 
       for (const [table, reader] of Object.entries(SESSION_READERS)) {
@@ -238,13 +258,22 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         }
       }
 
-      // Update watermarks and mark as synced up to current sync_seq
+      // Update watermarks and mark as synced up to cached sync_seq
       db.prepare(
-        `UPDATE pending_session_sync
-         SET table_watermarks = ?, synced_seq = ?
+        `UPDATE target_session_sync
+         SET wm_messages = ?, wm_tool_calls = ?, wm_scanner_turns = ?,
+             wm_scanner_events = ?, wm_hook_events = ?, wm_otel_logs = ?,
+             wm_otel_metrics = ?, wm_otel_spans = ?, synced_seq = ?
          WHERE session_id = ? AND target = ?`,
       ).run(
-        JSON.stringify(watermarks),
+        watermarks.messages,
+        watermarks.tool_calls,
+        watermarks.scanner_turns,
+        watermarks.scanner_events,
+        watermarks.hook_events,
+        watermarks.otel_logs,
+        watermarks.otel_metrics,
+        watermarks.otel_spans,
         entry.sync_seq,
         entry.session_id,
         target.name,
@@ -260,10 +289,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     // Check if more confirmed sessions with new data remain
     const remaining = db
       .prepare(
-        `SELECT COUNT(*) as cnt FROM pending_session_sync p
-         JOIN sessions s ON s.session_id = p.session_id
-         WHERE p.target = ? AND p.confirmed = 1
-           AND s.sync_seq > p.synced_seq`,
+        `SELECT COUNT(*) as cnt FROM target_session_sync
+         WHERE target = ? AND confirmed = 1
+           AND sync_seq > synced_seq`,
       )
       .get(target.name) as { cnt: number };
 
@@ -322,21 +350,15 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   ): void {
     const db = getDb();
     const upsert = db.prepare(
-      `INSERT INTO pending_session_sync (session_id, target, confirmed, table_watermarks)
-       VALUES (?, ?, 1, '{}')
-       ON CONFLICT(session_id, target) DO UPDATE SET confirmed = 1`,
+      `INSERT INTO target_session_sync (session_id, target, confirmed, sync_seq)
+       VALUES (?, ?, 1, (SELECT sync_seq FROM sessions WHERE session_id = ?))
+       ON CONFLICT(session_id, target) DO UPDATE SET
+         confirmed = 1,
+         sync_seq = MAX(target_session_sync.sync_seq,
+                        (SELECT sync_seq FROM sessions WHERE session_id = excluded.session_id))`,
     );
     for (const sessionId of sessionIds) {
-      upsert.run(sessionId, targetName);
-    }
-  }
-
-  function parseTableWatermarks(json: string): Record<string, number> {
-    try {
-      const parsed = JSON.parse(json);
-      return typeof parsed === "object" && parsed !== null ? parsed : {};
-    } catch {
-      return {};
+      upsert.run(sessionId, targetName, sessionId);
     }
   }
 
