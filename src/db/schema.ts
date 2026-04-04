@@ -298,12 +298,22 @@ CREATE TABLE IF NOT EXISTS watermarks (
 
 -- ── Per-session sync state ─────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS pending_session_sync (
+DROP TABLE IF EXISTS pending_session_sync;
+
+CREATE TABLE IF NOT EXISTS target_session_sync (
   session_id TEXT NOT NULL,
   target TEXT NOT NULL,
   confirmed INTEGER DEFAULT 0,
-  table_watermarks JSON DEFAULT '{}',
+  sync_seq INTEGER DEFAULT 0,
   synced_seq INTEGER DEFAULT 0,
+  wm_messages INTEGER DEFAULT 0,
+  wm_tool_calls INTEGER DEFAULT 0,
+  wm_scanner_turns INTEGER DEFAULT 0,
+  wm_scanner_events INTEGER DEFAULT 0,
+  wm_hook_events INTEGER DEFAULT 0,
+  wm_otel_logs INTEGER DEFAULT 0,
+  wm_otel_metrics INTEGER DEFAULT 0,
+  wm_otel_spans INTEGER DEFAULT 0,
   PRIMARY KEY (session_id, target)
 );
 
