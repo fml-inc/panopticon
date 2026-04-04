@@ -26,6 +26,9 @@ function getAgentVersion(): string | undefined {
     : undefined;
 }
 
+// NOTE: ensureDataDir() here can recreate the data dir. This is safe because
+// logHook is only called inside runHandler(), which has an early-exit guard
+// when the data dir is missing (preventing resurrection after --purge).
 function logHook(message: string, meta?: Record<string, unknown>): void {
   try {
     ensureDataDir();
