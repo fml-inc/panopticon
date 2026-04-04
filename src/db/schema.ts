@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS otel_logs (
   session_id TEXT,
   prompt_id TEXT,
   trace_id TEXT,
-  span_id TEXT
+  span_id TEXT,
+  sync_id TEXT DEFAULT (hex(randomblob(8)))
 );
 
 CREATE TABLE IF NOT EXISTS otel_metrics (
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS otel_metrics (
   unit TEXT,
   attributes JSON,
   resource_attributes JSON,
-  session_id TEXT
+  session_id TEXT,
+  sync_id TEXT DEFAULT (hex(randomblob(8)))
 );
 
 CREATE TABLE IF NOT EXISTS otel_spans (
@@ -68,7 +70,8 @@ CREATE TABLE IF NOT EXISTS hook_events (
   plan TEXT,
   allowed_prompts TEXT,
   tool_result TEXT,
-  target TEXT
+  target TEXT,
+  sync_id TEXT DEFAULT (hex(randomblob(8)))
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS hook_events_fts USING fts5(
@@ -186,7 +189,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   result_content_length INTEGER,
   result_content        TEXT,
   duration_ms           INTEGER,
-  subagent_session_id   TEXT
+  subagent_session_id   TEXT,
+  sync_id               TEXT DEFAULT (hex(randomblob(8)))
 );
 
 -- ── Scanner tables ──────────────────────────────────────────────────────────
@@ -205,6 +209,7 @@ CREATE TABLE IF NOT EXISTS scanner_turns (
   cache_read_tokens INTEGER DEFAULT 0,
   cache_creation_tokens INTEGER DEFAULT 0,
   reasoning_tokens INTEGER DEFAULT 0,
+  sync_id TEXT DEFAULT (hex(randomblob(8))),
   UNIQUE(session_id, source, turn_index)
 );
 
@@ -219,6 +224,7 @@ CREATE TABLE IF NOT EXISTS scanner_events (
   tool_output TEXT,
   content TEXT,
   metadata JSON,
+  sync_id TEXT DEFAULT (hex(randomblob(8))),
   UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
 );
 

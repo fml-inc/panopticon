@@ -26,7 +26,7 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
 // ── Hook events ──────────────────────────────────────────────────────────────
 
 const HOOK_EVENTS_SQL = `
-  SELECT h.id, h.session_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
+  SELECT h.id, h.session_id, h.sync_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
          h.tool_name, decompress(h.payload) as payload,
          h.user_prompt, h.file_path, h.command, h.tool_result,
          s.target
@@ -45,6 +45,7 @@ export function readHookEvents(
   const rawRows = db.prepare(HOOK_EVENTS_SQL).all(afterId, limit) as Array<{
     id: number;
     session_id: string;
+    sync_id: string | null;
     event_type: string;
     timestamp_ms: number;
     cwd: string | null;
@@ -61,6 +62,7 @@ export function readHookEvents(
   const rows: HookEventRecord[] = rawRows.map((r) => ({
     hookId: r.id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
     cwd: r.cwd,
@@ -93,7 +95,7 @@ const HOOK_COVERED_BODIES = [
 ];
 
 const ALL_LOGS_SQL = `
-  SELECT id, timestamp_ns, body, attributes, resource_attributes,
+  SELECT id, sync_id, timestamp_ns, body, attributes, resource_attributes,
          severity_text, session_id, prompt_id, trace_id, span_id
   FROM otel_logs
   WHERE id > ?
@@ -103,6 +105,7 @@ const ALL_LOGS_SQL = `
 
 interface RawOtelLogRow {
   id: number;
+  sync_id: string | null;
   timestamp_ns: number;
   body: string | null;
   attributes: string | null;
@@ -117,6 +120,7 @@ interface RawOtelLogRow {
 function mapOtelRows(rawRows: RawOtelLogRow[]): OtelLogRecord[] {
   return rawRows.map((r) => ({
     id: r.id,
+    syncId: r.sync_id,
     timestampNs: r.timestamp_ns,
     body: r.body,
     attributes: parseJson(r.attributes),
@@ -174,7 +178,7 @@ export function readOtelLogs(
   // not beyond it — otherwise we'd skip ahead of the scan window.
   const rawRows = db
     .prepare(
-      `SELECT id, timestamp_ns, body, attributes, resource_attributes,
+      `SELECT id, sync_id, timestamp_ns, body, attributes, resource_attributes,
               severity_text, session_id, prompt_id, trace_id, span_id
        FROM otel_logs
        WHERE id > ? AND id <= ?
@@ -190,7 +194,7 @@ export function readOtelLogs(
 // ── Metrics ──────────────────────────────────────────────────────────────────
 
 const METRICS_SQL = `
-  SELECT id, timestamp_ns, name, value, metric_type, unit,
+  SELECT id, sync_id, timestamp_ns, name, value, metric_type, unit,
          attributes, resource_attributes, session_id
   FROM otel_metrics
   WHERE id > ?
@@ -205,6 +209,7 @@ export function readMetrics(
   const db = getDb();
   const rawRows = db.prepare(METRICS_SQL).all(afterId, limit) as Array<{
     id: number;
+    sync_id: string | null;
     timestamp_ns: number;
     name: string;
     value: number;
@@ -217,6 +222,7 @@ export function readMetrics(
 
   const rows: MetricRow[] = rawRows.map((r) => ({
     id: r.id,
+    syncId: r.sync_id,
     timestampNs: r.timestamp_ns,
     name: r.name,
     value: r.value,
@@ -234,7 +240,7 @@ export function readMetrics(
 // ── Scanner turns ───────────────────────────────────────────────────────────
 
 const SCANNER_TURNS_SQL = `
-  SELECT t.id, t.session_id, t.source, t.turn_index, t.timestamp_ms,
+  SELECT t.id, t.session_id, t.sync_id, t.source, t.turn_index, t.timestamp_ms,
          t.model, t.role, t.content_preview,
          t.input_tokens, t.output_tokens, t.cache_read_tokens,
          t.cache_creation_tokens, t.reasoning_tokens,
@@ -254,6 +260,7 @@ export function readScannerTurns(
   const rawRows = db.prepare(SCANNER_TURNS_SQL).all(afterId, limit) as Array<{
     id: number;
     session_id: string;
+    sync_id: string | null;
     source: string;
     turn_index: number;
     timestamp_ms: number;
@@ -271,6 +278,7 @@ export function readScannerTurns(
   const rows: ScannerTurnRecord[] = rawRows.map((r) => ({
     id: r.id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     source: r.source,
     turnIndex: r.turn_index,
     timestampMs: r.timestamp_ms,
@@ -292,7 +300,7 @@ export function readScannerTurns(
 // ── Scanner events ──────────────────────────────────────────────────────────
 
 const SCANNER_EVENTS_SQL = `
-  SELECT id, session_id, source, event_type, timestamp_ms,
+  SELECT id, session_id, sync_id, source, event_type, timestamp_ms,
          tool_name, tool_input, tool_output, content, metadata
   FROM scanner_events
   WHERE id > ?
@@ -308,6 +316,7 @@ export function readScannerEvents(
   const rawRows = db.prepare(SCANNER_EVENTS_SQL).all(afterId, limit) as Array<{
     id: number;
     session_id: string;
+    sync_id: string | null;
     source: string;
     event_type: string;
     timestamp_ms: number;
@@ -321,6 +330,7 @@ export function readScannerEvents(
   const rows: ScannerEventRecord[] = rawRows.map((r) => ({
     id: r.id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     source: r.source,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
@@ -583,7 +593,7 @@ export function readMessages(
 // ── Tool calls ──────────────────────────────────────────────────────────────
 
 const TOOL_CALLS_SQL = `
-  SELECT id, message_id, session_id, tool_name, category, tool_use_id,
+  SELECT id, message_id, session_id, sync_id, tool_name, category, tool_use_id,
          input_json, skill_name, result_content_length, result_content,
          subagent_session_id
   FROM tool_calls
@@ -601,6 +611,7 @@ export function readToolCalls(
     id: number;
     message_id: number;
     session_id: string;
+    sync_id: string | null;
     tool_name: string;
     category: string;
     tool_use_id: string | null;
@@ -615,6 +626,7 @@ export function readToolCalls(
     id: r.id,
     messageId: r.message_id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     toolName: r.tool_name,
     category: r.category,
     toolUseId: r.tool_use_id,
@@ -849,7 +861,7 @@ export function readSessionToolCalls(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, message_id, session_id, tool_name, category, tool_use_id,
+      `SELECT id, message_id, session_id, sync_id, tool_name, category, tool_use_id,
               input_json, skill_name, result_content_length, result_content,
               subagent_session_id
        FROM tool_calls
@@ -861,6 +873,7 @@ export function readSessionToolCalls(
     id: number;
     message_id: number;
     session_id: string;
+    sync_id: string | null;
     tool_name: string;
     category: string;
     tool_use_id: string | null;
@@ -875,6 +888,7 @@ export function readSessionToolCalls(
     id: r.id,
     messageId: r.message_id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     toolName: r.tool_name,
     category: r.category,
     toolUseId: r.tool_use_id,
@@ -897,7 +911,7 @@ export function readSessionScannerTurns(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT t.id, t.session_id, t.source, t.turn_index, t.timestamp_ms,
+      `SELECT t.id, t.session_id, t.sync_id, t.source, t.turn_index, t.timestamp_ms,
               t.model, t.role, t.content_preview,
               t.input_tokens, t.output_tokens, t.cache_read_tokens,
               t.cache_creation_tokens, t.reasoning_tokens,
@@ -911,6 +925,7 @@ export function readSessionScannerTurns(
     .all(sessionId, afterId, limit) as Array<{
     id: number;
     session_id: string;
+    sync_id: string | null;
     source: string;
     turn_index: number;
     timestamp_ms: number;
@@ -928,6 +943,7 @@ export function readSessionScannerTurns(
   const rows: ScannerTurnRecord[] = rawRows.map((r) => ({
     id: r.id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     source: r.source,
     turnIndex: r.turn_index,
     timestampMs: r.timestamp_ms,
@@ -954,7 +970,7 @@ export function readSessionScannerEvents(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, session_id, source, event_type, timestamp_ms,
+      `SELECT id, session_id, sync_id, source, event_type, timestamp_ms,
               tool_name, tool_input, tool_output, content, metadata
        FROM scanner_events
        WHERE session_id = ? AND id > ?
@@ -964,6 +980,7 @@ export function readSessionScannerEvents(
     .all(sessionId, afterId, limit) as Array<{
     id: number;
     session_id: string;
+    sync_id: string | null;
     source: string;
     event_type: string;
     timestamp_ms: number;
@@ -977,6 +994,7 @@ export function readSessionScannerEvents(
   const rows: ScannerEventRecord[] = rawRows.map((r) => ({
     id: r.id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     source: r.source,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
@@ -999,7 +1017,7 @@ export function readSessionHookEvents(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT h.id, h.session_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
+      `SELECT h.id, h.session_id, h.sync_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
               h.tool_name, decompress(h.payload) as payload,
               h.user_prompt, h.file_path, h.command, h.tool_result,
               s.target
@@ -1012,6 +1030,7 @@ export function readSessionHookEvents(
     .all(sessionId, afterId, limit) as Array<{
     id: number;
     session_id: string;
+    sync_id: string | null;
     event_type: string;
     timestamp_ms: number;
     cwd: string | null;
@@ -1028,6 +1047,7 @@ export function readSessionHookEvents(
   const rows: HookEventRecord[] = rawRows.map((r) => ({
     hookId: r.id,
     sessionId: r.session_id,
+    syncId: r.sync_id,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
     cwd: r.cwd,
@@ -1053,7 +1073,7 @@ export function readSessionOtelLogs(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, timestamp_ns, body, attributes, resource_attributes,
+      `SELECT id, sync_id, timestamp_ns, body, attributes, resource_attributes,
               severity_text, session_id, prompt_id, trace_id, span_id
        FROM otel_logs
        WHERE session_id = ? AND id > ?
@@ -1075,7 +1095,7 @@ export function readSessionOtelMetrics(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, timestamp_ns, name, value, metric_type, unit,
+      `SELECT id, sync_id, timestamp_ns, name, value, metric_type, unit,
               attributes, resource_attributes, session_id
        FROM otel_metrics
        WHERE session_id = ? AND id > ?
@@ -1084,6 +1104,7 @@ export function readSessionOtelMetrics(
     )
     .all(sessionId, afterId, limit) as Array<{
     id: number;
+    sync_id: string | null;
     timestamp_ns: number;
     name: string;
     value: number;
@@ -1096,6 +1117,7 @@ export function readSessionOtelMetrics(
 
   const rows: MetricRow[] = rawRows.map((r) => ({
     id: r.id,
+    syncId: r.sync_id,
     timestampNs: r.timestamp_ns,
     name: r.name,
     value: r.value,

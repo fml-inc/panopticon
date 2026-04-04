@@ -44,6 +44,7 @@ export interface SyncHandle {
 export interface HookEventRecord {
   hookId: number;
   sessionId: string;
+  syncId: string | null;
   eventType: string;
   timestampMs: number;
   cwd: string | null;
@@ -60,6 +61,7 @@ export interface HookEventRecord {
 /** OTLP log record for sync. */
 export interface OtelLogRecord {
   id: number;
+  syncId: string | null;
   timestampNs: number;
   body: string | null;
   attributes: Record<string, unknown> | null;
@@ -74,6 +76,7 @@ export interface OtelLogRecord {
 /** Metric row for serialization. */
 export interface MetricRow {
   id: number;
+  syncId: string | null;
   timestampNs: number;
   name: string;
   value: number;
@@ -88,6 +91,7 @@ export interface MetricRow {
 export interface ScannerTurnRecord {
   id: number;
   sessionId: string;
+  syncId: string | null;
   source: string; // "claude" | "codex" | "gemini"
   turnIndex: number;
   timestampMs: number;
@@ -106,6 +110,7 @@ export interface ScannerTurnRecord {
 export interface ScannerEventRecord {
   id: number;
   sessionId: string;
+  syncId: string | null;
   source: string;
   eventType: string;
   timestampMs: number;
@@ -236,6 +241,7 @@ export interface ToolCallSyncRecord {
   id: number;
   messageId: number;
   sessionId: string;
+  syncId: string | null;
   toolName: string;
   category: string;
   toolUseId: string | null;
