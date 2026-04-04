@@ -421,6 +421,28 @@ program
     stopExistingDaemons();
     console.log();
 
+    // Ask Claude Code to uninstall the plugin so the MCP server process is
+    // killed and in-memory state (including the cached DB) is evicted.
+    console.log("[2/6] Uninstalling MCP plugin...");
+    if (targetId === "all" || targetId === "claude") {
+      try {
+        execFileSync(
+          "claude",
+          ["plugin", "uninstall", "panopticon@local-plugins"],
+          {
+            stdio: "ignore",
+            timeout: 10_000,
+          },
+        );
+        console.log("      Uninstalled plugin via Claude Code CLI");
+      } catch {
+        // Best-effort — claude CLI may not be on PATH or plugin already gone
+      }
+    } else {
+      console.log("      Skipped (target-specific uninstall)");
+    }
+    console.log();
+
     // Remove target configs
     const selectedTargets =
       targetId === "all"
@@ -428,7 +450,7 @@ program
         : allTargets().filter((t) => t.id === targetId);
 
     for (const t of selectedTargets) {
-      console.log(`[2/6] Removing panopticon from ${t.detect.displayName}...`);
+      console.log(`[3/6] Removing panopticon from ${t.detect.displayName}...`);
       let existing: Record<string, unknown>;
       if (t.config.configFormat === "toml") {
         existing = readTomlFile(t.config.configPath);
@@ -445,12 +467,12 @@ program
     }
 
     // Remove shell env
-    console.log("[3/6] Cleaning shell environment...");
+    console.log("[4/6] Cleaning shell environment...");
     removeShellEnv();
 
     if (targetId === "all") {
       // Remove marketplace and plugin cache
-      console.log("[4/5] Removing marketplace and plugin cache...");
+      console.log("[5/6] Removing marketplace and plugin cache...");
       try {
         fs.rmSync(config.marketplaceDir, { recursive: true, force: true });
         console.log(`      Removed ${config.marketplaceDir}`);
@@ -462,7 +484,7 @@ program
       console.log();
 
       // Remove skills
-      console.log("[5/5] Removing skills...");
+      console.log("[6/6] Removing skills...");
       const pluginRoot = getPluginRoot();
       const skillsSource = path.join(pluginRoot, "skills");
       const skillsTarget = path.join(os.homedir(), ".claude", "skills");
@@ -477,8 +499,8 @@ program
       }
       console.log();
     } else {
-      console.log("[4/5] Skipping marketplace (target-specific uninstall)");
-      console.log("[5/5] Skipping skills (target-specific uninstall)\n");
+      console.log("[5/6] Skipping marketplace (target-specific uninstall)");
+      console.log("[6/6] Skipping skills (target-specific uninstall)\n");
     }
 
     if (purge) {
