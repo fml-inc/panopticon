@@ -421,6 +421,24 @@ program
     stopExistingDaemons();
     console.log();
 
+    // Ask Claude Code to uninstall the plugin so the MCP server process is
+    // killed and in-memory state (including the cached DB) is evicted.
+    if (targetId === "all" || targetId === "claude") {
+      try {
+        execFileSync(
+          "claude",
+          ["plugin", "uninstall", "panopticon@local-plugins"],
+          {
+            stdio: "ignore",
+            timeout: 10_000,
+          },
+        );
+        console.log("      Uninstalled plugin via Claude Code CLI");
+      } catch {
+        // Best-effort — claude CLI may not be on PATH or plugin already gone
+      }
+    }
+
     // Remove target configs
     const selectedTargets =
       targetId === "all"

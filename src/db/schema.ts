@@ -1,6 +1,7 @@
+import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
-import { config, ensureDataDir } from "../config.js";
+import { config } from "../config.js";
 
 export const SCHEMA_SQL = `
 
@@ -403,9 +404,24 @@ function registerCompressionFunctions(db: Database.Database): void {
 }
 
 export function getDb(): Database.Database {
+  // If the db file was deleted (e.g. uninstall --purge) while this process
+  // still holds a stale connection, drop it so we don't serve old data.
+  if (_db && !fs.existsSync(config.dbPath)) {
+    try {
+      _db.close();
+    } catch {}
+    _db = null;
+  }
   if (_db) return _db;
 
-  ensureDataDir();
+  // Don't auto-create the data directory — callers that need to bootstrap
+  // the DB (install, initDb, hook handler) call ensureDataDir() first.
+  if (!fs.existsSync(config.dataDir)) {
+    throw new Error(
+      `Panopticon data directory not found: ${config.dataDir}. Run "panopticon install" to set up.`,
+    );
+  }
+
   _db = new Database(config.dbPath);
   _db.pragma("auto_vacuum = INCREMENTAL");
   _db.pragma("journal_mode = WAL");

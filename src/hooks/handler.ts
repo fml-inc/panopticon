@@ -233,6 +233,13 @@ export async function runHandler(opts: {
   port: number;
   proxy: boolean;
 }): Promise<void> {
+  // After uninstall --purge the data dir is gone. Exit silently to avoid
+  // resurrecting it — hooks must never block the calling CLI.
+  if (!fs.existsSync(config.dataDir)) {
+    process.stdout.write(JSON.stringify({}));
+    return;
+  }
+
   const { targetId, port, proxy } = opts;
 
   try {
