@@ -1,3 +1,5 @@
+declare const __PANOPTICON_VERSION__: string;
+
 import { execSync } from "node:child_process";
 import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
@@ -109,8 +111,14 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
 
+  const panopticonVersion =
+    typeof __PANOPTICON_VERSION__ !== "undefined"
+      ? __PANOPTICON_VERSION__
+      : "dev";
+
   function resolveHeaders(target: SyncTarget): Record<string, string> {
     const headers: Record<string, string> = { ...target.headers };
+    headers["X-Panopticon-Version"] = panopticonVersion;
     const token = resolveToken(target);
     if (token) {
       headers.Authorization = `Bearer ${token}`;
