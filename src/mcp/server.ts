@@ -14,7 +14,7 @@ import {
   rawQuery,
   search,
   sessionTimeline,
-} from "../db/query.js";
+} from "../api/client.js";
 import { log, logPaths } from "../log.js";
 
 const server = new McpServer({
@@ -36,7 +36,7 @@ server.tool(
       .describe('Time filter: ISO date or relative like "24h", "7d", "30m"'),
   },
   async ({ limit, since }) => {
-    const results = listSessions({ limit, since });
+    const results = await listSessions({ limit, since });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(results, null, 2) },
@@ -64,7 +64,12 @@ server.tool(
       .describe("Return full content instead of truncated (default false)"),
   },
   async ({ sessionId, limit, offset, fullPayloads }) => {
-    const result = sessionTimeline({ sessionId, limit, offset, fullPayloads });
+    const result = await sessionTimeline({
+      sessionId,
+      limit,
+      offset,
+      fullPayloads,
+    });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(result, null, 2) },
@@ -87,7 +92,7 @@ server.tool(
       .describe("Group results by session, model, or day (default: session)"),
   },
   async ({ since, groupBy }) => {
-    const results = costBreakdown({ since, groupBy });
+    const results = await costBreakdown({ since, groupBy });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(results, null, 2) },
@@ -108,7 +113,7 @@ server.tool(
       ),
   },
   async ({ since }) => {
-    const summary = activitySummary({ since });
+    const summary = await activitySummary({ since });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(summary, null, 2) },
@@ -129,7 +134,7 @@ server.tool(
     limit: z.number().optional().describe("Max plans to return (default 20)"),
   },
   async ({ session_id, since, limit }) => {
-    const plans = listPlans({ session_id, since, limit });
+    const plans = await listPlans({ session_id, since, limit });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(plans, null, 2) },
@@ -162,7 +167,7 @@ server.tool(
       .describe("Return full payloads instead of truncated (default false)"),
   },
   async ({ query, eventTypes, since, limit, offset, fullPayloads }) => {
-    const result = search({
+    const result = await search({
       query,
       eventTypes,
       since,
@@ -190,7 +195,7 @@ server.tool(
     id: z.number().describe("Record ID from search/timeline results"),
   },
   async ({ source, id }) => {
-    const result = print({ source, id });
+    const result = await print({ source, id });
     if (!result) {
       return {
         content: [
@@ -235,7 +240,7 @@ Join on session_id across tables. hook_events payload is gzipped — use decompr
   },
   async ({ sql }) => {
     try {
-      const results = rawQuery(sql);
+      const results = await rawQuery(sql);
       return {
         content: [
           { type: "text" as const, text: JSON.stringify(results, null, 2) },
@@ -260,7 +265,7 @@ server.tool(
   "Show panopticon database stats: row counts for each table",
   {},
   async () => {
-    const stats = dbStats();
+    const stats = await dbStats();
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(stats, null, 2) },

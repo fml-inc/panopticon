@@ -13,6 +13,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isServerRunning, waitForServer } from "../api/util.js";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { logPaths, openLogFd } from "../log.js";
@@ -38,29 +39,6 @@ function logHook(message: string, meta?: Record<string, unknown>): void {
       `${new Date().toISOString()} ${message}${suffix}\n`,
     );
   } catch {}
-}
-
-function isServerRunning(): boolean {
-  if (!fs.existsSync(config.serverPidFile)) return false;
-  const pid = parseInt(
-    fs.readFileSync(config.serverPidFile, "utf-8").trim(),
-    10,
-  );
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    try {
-      fs.unlinkSync(config.serverPidFile);
-    } catch (err) {
-      console.error("[hook-handler] Failed to remove stale PID file:", err);
-      captureException(err, {
-        component: "hook-handler",
-        phase: "pid-cleanup",
-      });
-    }
-    return false;
-  }
 }
 
 /**
@@ -114,41 +92,6 @@ function startServer(): void {
   }
   child.unref();
   fs.closeSync(logFd);
-}
-
-/** Poll the server until it responds or timeout (default 3s). */
-async function waitForServer(port: number, timeoutMs = 3000): Promise<boolean> {
-  const start = Date.now();
-  const interval = 50;
-  while (Date.now() - start < timeoutMs) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const req = http.request(
-          {
-            hostname: "127.0.0.1",
-            port,
-            path: "/health",
-            method: "GET",
-            timeout: 500,
-          },
-          (res) => {
-            res.resume();
-            resolve();
-          },
-        );
-        req.on("error", reject);
-        req.on("timeout", () => {
-          req.destroy();
-          reject(new Error("timeout"));
-        });
-        req.end();
-      });
-      return true;
-    } catch {
-      await new Promise((r) => setTimeout(r, interval));
-    }
-  }
-  return false;
 }
 
 async function readStdin(): Promise<string> {
