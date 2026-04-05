@@ -292,50 +292,6 @@ export function resetFileForReparse(
   }
 }
 
-export function resetScanner(): void {
-  const db = getDb();
-  db.exec(`
-    DELETE FROM scanner_file_watermarks;
-    DELETE FROM scanner_turns;
-    DELETE FROM scanner_events;
-    DELETE FROM tool_calls;
-    DELETE FROM messages_fts;
-    DELETE FROM messages;
-    UPDATE sessions SET
-      model = NULL, cli_version = NULL, scanner_file_path = NULL,
-      total_input_tokens = 0, total_output_tokens = 0,
-      total_cache_read_tokens = 0, total_cache_creation_tokens = 0,
-      total_reasoning_tokens = 0, turn_count = 0,
-      message_count = 0, user_message_count = 0;
-  `);
-}
-
-export function resetScannerSource(source: string): void {
-  const db = getDb();
-  db.prepare(
-    "DELETE FROM scanner_file_watermarks WHERE file_path IN (SELECT scanner_file_path FROM sessions WHERE target = ?)",
-  ).run(source);
-  db.prepare("DELETE FROM scanner_turns WHERE source = ?").run(source);
-  db.prepare(
-    "DELETE FROM tool_calls WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?)",
-  ).run(source);
-  db.prepare(
-    "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?))",
-  ).run(source);
-  db.prepare(
-    "DELETE FROM messages WHERE session_id IN (SELECT session_id FROM sessions WHERE target = ?)",
-  ).run(source);
-  db.prepare(`
-    UPDATE sessions SET
-      model = NULL, cli_version = NULL, scanner_file_path = NULL,
-      total_input_tokens = 0, total_output_tokens = 0,
-      total_cache_read_tokens = 0, total_cache_creation_tokens = 0,
-      total_reasoning_tokens = 0, turn_count = 0,
-      message_count = 0, user_message_count = 0
-    WHERE target = ?
-  `).run(source);
-}
-
 // ── Turn count for incremental parsing ──────────────────────────────────────
 
 export function getTurnCount(sessionId: string, source: string): number {

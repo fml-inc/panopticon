@@ -12,9 +12,6 @@ import { Command, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
-import { config, ensureDataDir } from "./config.js";
-import { refreshPricing } from "./db/pricing.js";
-import { pruneEstimate, pruneExecute } from "./db/prune.js";
 import {
   activitySummary,
   costBreakdown,
@@ -22,10 +19,21 @@ import {
   listPlans,
   listSessions,
   print,
+  pruneEstimate,
+  pruneExecute,
   rawQuery,
+  refreshPricing,
   search,
   sessionTimeline,
-} from "./db/query.js";
+  syncReset,
+  syncTargetAdd,
+  syncTargetList,
+  syncTargetRemove,
+  syncWatermarkGet,
+  syncWatermarkSet,
+} from "./api/client.js";
+import { config, ensureDataDir } from "./config.js";
+import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
 import {
   DAEMON_NAMES,
@@ -35,8 +43,6 @@ import {
   openLogFd,
 } from "./log.js";
 import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
-import { addTarget, listTargets, removeTarget } from "./sync/config.js";
-import { readWatermark, watermarkKey } from "./sync/watermark.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -362,10 +368,6 @@ program
       : "dev",
   );
 
-program.hook("postAction", () => {
-  closeDb();
-});
-
 // ---------------------------------------------------------------------------
 // Daemon management commands
 // ---------------------------------------------------------------------------
@@ -569,7 +571,7 @@ async function install(
   console.log(`      ${logDir}`);
 
   // Fetch model pricing from LiteLLM (non-blocking if it fails)
-  const pricing = await refreshPricing();
+  const pricing = await refreshPricingDirect();
   console.log(
     pricing
       ? `      Cached pricing for ${Object.keys(pricing.models).length} models\n`
@@ -904,7 +906,7 @@ program
 program
   .command("status")
   .description("Show server status and database stats")
-  .action(() => {
+  .action(async () => {
     const server = isProcessRunning(config.serverPidFile);
 
     console.log("Panopticon Status");
@@ -934,20 +936,22 @@ program
       const stat = fs.statSync(config.dbPath);
       console.log(`Database size: ${(stat.size / 1024).toFixed(1)} KB`);
 
-      try {
-        const stats = dbStats();
-        console.log();
-        console.log("Row counts:");
-        console.log(`  sessions:       ${stats.sessions}`);
-        console.log(`  messages:       ${stats.messages}`);
-        console.log(`  tool_calls:     ${stats.tool_calls}`);
-        console.log(`  scanner_turns:  ${stats.scanner_turns}`);
-        console.log(`  scanner_events: ${stats.scanner_events}`);
-        console.log(`  hook_events:    ${stats.hook_events}`);
-        console.log(`  otel_logs:      ${stats.otel_logs}`);
-        console.log(`  otel_metrics:   ${stats.otel_metrics}`);
-      } catch {
-        console.log("  (could not read database)");
+      if (server.running) {
+        try {
+          const stats = (await dbStats()) as Record<string, number>;
+          console.log();
+          console.log("Row counts:");
+          console.log(`  sessions:       ${stats.sessions}`);
+          console.log(`  messages:       ${stats.messages}`);
+          console.log(`  tool_calls:     ${stats.tool_calls}`);
+          console.log(`  scanner_turns:  ${stats.scanner_turns}`);
+          console.log(`  scanner_events: ${stats.scanner_events}`);
+          console.log(`  hook_events:    ${stats.hook_events}`);
+          console.log(`  otel_logs:      ${stats.otel_logs}`);
+          console.log(`  otel_metrics:   ${stats.otel_metrics}`);
+        } catch {
+          console.log("  (could not read database)");
+        }
       }
     } else {
       console.log("Database: not initialized (run 'panopticon install')");
@@ -961,31 +965,43 @@ program
         console.log();
         console.log("Sync targets:");
         for (const t of targets) {
-          const sessWm = readWatermark(watermarkKey("sessions", t.name));
           console.log(`  ${t.name} → ${t.url}`);
-          console.log(`    sessions watermark: ${sessWm}`);
 
-          try {
-            const db = getDb();
-            const row = db
-              .prepare(
+          if (server.running) {
+            try {
+              const wmResult = (await syncWatermarkGet(t.name)) as {
+                target: string;
+                watermarks: Record<string, number>;
+              };
+              console.log(
+                `    sessions watermark: ${wmResult.watermarks.sessions ?? 0}`,
+              );
+            } catch {}
+          }
+
+          if (server.running) {
+            try {
+              const rows = (await rawQuery(
                 `SELECT
-                 COUNT(*) as total,
-                 SUM(CASE WHEN confirmed = 1 THEN 1 ELSE 0 END) as confirmed,
-                 SUM(CASE WHEN confirmed = 1 AND sync_seq > synced_seq THEN 1 ELSE 0 END) as pending_data
-               FROM target_session_sync
-               WHERE target = ?`,
-              )
-              .get(t.name) as {
-              total: number;
-              confirmed: number;
-              pending_data: number;
-            };
-            console.log(
-              `    confirmed sessions: ${row.confirmed} / ${row.total}`,
-            );
-            console.log(`    pending data sync:  ${row.pending_data}`);
-          } catch {}
+                   COUNT(*) as total,
+                   SUM(CASE WHEN confirmed = 1 THEN 1 ELSE 0 END) as confirmed,
+                   SUM(CASE WHEN confirmed = 1 AND sync_seq > synced_seq THEN 1 ELSE 0 END) as pending_data
+                 FROM target_session_sync
+                 WHERE target = '${t.name.replace(/'/g, "''")}'`,
+              )) as Array<{
+                total: number;
+                confirmed: number;
+                pending_data: number;
+              }>;
+              if (rows.length > 0) {
+                const row = rows[0];
+                console.log(
+                  `    confirmed sessions: ${row.confirmed} / ${row.total}`,
+                );
+                console.log(`    pending data sync:  ${row.pending_data}`);
+              }
+            } catch {}
+          }
         }
       }
     } catch {
@@ -1056,7 +1072,7 @@ program
     );
     console.log();
 
-    const estimate = pruneEstimate(cutoffMs);
+    const estimate = (await pruneEstimate(cutoffMs)) as Record<string, number>;
     const total = Object.values(estimate).reduce((a, b) => a + b, 0);
 
     console.log("Rows to delete:");
@@ -1084,18 +1100,16 @@ program
       }
     }
 
-    const result = pruneExecute(cutoffMs);
+    const result = (await pruneExecute(cutoffMs, {
+      vacuum: opts.vacuum,
+    })) as Record<string, number>;
     console.log("Deleted:");
     for (const [key, count] of Object.entries(result)) {
       if (count > 0) console.log(`  ${key}: ${count}`);
     }
 
     if (opts.vacuum) {
-      console.log("\nReclaiming disk space...");
-      const db = getDb();
-      db.pragma("wal_checkpoint(TRUNCATE)");
-      db.exec("VACUUM");
-      console.log("Done.");
+      console.log("\nDisk space reclaimed.");
     }
   });
 
@@ -1112,8 +1126,8 @@ program
         "--token-command <command>",
         "Shell command that returns a token (e.g. 'gh auth token')",
       )
-      .action((name: string, url: string, opts: Opts) => {
-        addTarget({
+      .action(async (name: string, url: string, opts: Opts) => {
+        await syncTargetAdd({
           name,
           url,
           token: opts.token ?? undefined,
@@ -1127,8 +1141,9 @@ program
     new Command("remove")
       .description("Remove a sync target")
       .argument("<name>", "Target name")
-      .action((name: string) => {
-        if (removeTarget(name)) {
+      .action(async (name: string) => {
+        const result = (await syncTargetRemove(name)) as { ok: boolean };
+        if (result.ok) {
           console.log(`Removed sync target "${name}"`);
           console.log("Restart panopticon to apply.");
         } else {
@@ -1137,13 +1152,20 @@ program
       }),
   )
   .addCommand(
-    new Command("list").description("List sync targets").action(() => {
-      const targets = listTargets();
-      if (targets.length === 0) {
+    new Command("list").description("List sync targets").action(async () => {
+      const result = (await syncTargetList()) as {
+        targets: Array<{
+          name: string;
+          url: string;
+          token?: string;
+          tokenCommand?: string;
+        }>;
+      };
+      if (result.targets.length === 0) {
         console.log("No sync targets configured.");
         return;
       }
-      for (const t of targets) {
+      for (const t of result.targets) {
         const auth = t.token
           ? " (token)"
           : t.tokenCommand
@@ -1158,14 +1180,48 @@ program
       .description("Reset sync watermarks (re-syncs all data)")
       .argument("[target]", "Reset only this sync target (default: all)")
       .action(async (targetName?: string) => {
-        const { resetWatermarks } = await import("./sync/watermark.js");
-        resetWatermarks(targetName);
+        await syncReset(targetName);
         console.log(
           targetName
             ? `Reset sync watermarks for "${targetName}"`
             : "Reset all sync watermarks",
         );
         console.log("Restart panopticon to re-sync.");
+      }),
+  )
+  .addCommand(
+    new Command("watermark")
+      .description("Get or set sync watermarks")
+      .argument("<target>", "Sync target name")
+      .argument("[table]", "Table name (omit to show all)")
+      .option("--set <value>", "Set watermark to this value", parseInt)
+      .action(async (target: string, table?: string, opts?: Opts) => {
+        if (opts?.set !== undefined) {
+          if (!table) {
+            console.error("Table name is required when setting a watermark");
+            process.exit(1);
+          }
+          const result = (await syncWatermarkSet(target, table, opts.set)) as {
+            key: string;
+            value: number;
+          };
+          console.log(`${result.key} = ${result.value}`);
+        } else {
+          const result = await syncWatermarkGet(target, table);
+          if (table) {
+            const r = result as { key: string; value: number };
+            console.log(`${r.key} = ${r.value}`);
+          } else {
+            const r = result as {
+              target: string;
+              watermarks: Record<string, number>;
+            };
+            console.log(`Watermarks for "${r.target}":`);
+            for (const [tbl, value] of Object.entries(r.watermarks)) {
+              console.log(`  ${tbl}: ${value}`);
+            }
+          }
+        }
       }),
   );
 
@@ -1181,8 +1237,8 @@ program
     "--since <duration>",
     'Time filter: ISO date or relative like "24h", "7d", "30m"',
   )
-  .action((opts: Opts) => {
-    output(listSessions({ limit: opts.limit, since: opts.since }));
+  .action(async (opts: Opts) => {
+    output(await listSessions({ limit: opts.limit, since: opts.since }));
   });
 
 program
@@ -1192,8 +1248,8 @@ program
   .option("--limit <n>", "Max messages to return (default 50)", parseInt)
   .option("--offset <n>", "Number of messages to skip", parseInt)
   .option("--full", "Return full content instead of truncated")
-  .action((sessionId: string, opts: Opts) => {
-    const result = sessionTimeline({
+  .action(async (sessionId: string, opts: Opts) => {
+    const result = await sessionTimeline({
       sessionId,
       limit: opts.limit,
       offset: opts.offset,
@@ -1210,8 +1266,8 @@ program
     'Time filter: ISO date or relative like "24h", "7d"',
   )
   .option("--group-by <key>", "Group by: session, model, or day")
-  .action((opts: Opts) => {
-    output(costBreakdown({ since: opts.since, groupBy: opts.groupBy }));
+  .action(async (opts: Opts) => {
+    output(await costBreakdown({ since: opts.since, groupBy: opts.groupBy }));
   });
 
 program
@@ -1221,8 +1277,8 @@ program
     "--since <duration>",
     'Time window (default "24h"). ISO date or relative like "24h", "7d"',
   )
-  .action((opts: Opts) => {
-    output(activitySummary({ since: opts.since }));
+  .action(async (opts: Opts) => {
+    output(await activitySummary({ since: opts.since }));
   });
 
 program
@@ -1234,9 +1290,9 @@ program
     'Time filter: ISO date or relative like "24h", "7d"',
   )
   .option("--limit <n>", "Max plans to return (default 20)", parseInt)
-  .action((opts: Opts) => {
+  .action(async (opts: Opts) => {
     output(
-      listPlans({
+      await listPlans({
         session_id: opts.session,
         since: opts.since,
         limit: opts.limit,
@@ -1256,8 +1312,8 @@ program
   .option("--limit <n>", "Max results (default 20)", parseInt)
   .option("--offset <n>", "Number of results to skip", parseInt)
   .option("--full", "Return full payloads instead of truncated")
-  .action((query: string, opts: Opts) => {
-    const result = search({
+  .action(async (query: string, opts: Opts) => {
+    const result = await search({
       query,
       eventTypes: opts.types,
       since: opts.since,
@@ -1274,14 +1330,14 @@ program
   .description("Get full details for a record by source and ID")
   .argument("<source>", "Source: hook, otel, or message")
   .argument("<id>", "Record ID from search/timeline results")
-  .action((source: string, id: string) => {
+  .action(async (source: string, id: string) => {
     if (source !== "hook" && source !== "otel" && source !== "message") {
       console.error(
         `Invalid source: ${source} (must be "hook", "otel", or "message")`,
       );
       process.exit(1);
     }
-    const result = print({ source, id: parseInt(id, 10) });
+    const result = await print({ source, id: parseInt(id, 10) });
     if (!result) {
       console.error(`No ${source} record found with id ${id}`);
       process.exit(1);
@@ -1293,9 +1349,9 @@ program
   .command("query")
   .description("Execute a read-only SQL query against the database")
   .argument("<sql>", "SQL query (SELECT/WITH/PRAGMA only)")
-  .action((sql: string) => {
+  .action(async (sql: string) => {
     try {
-      output(rawQuery(sql));
+      output(await rawQuery(sql));
     } catch (err: unknown) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -1305,8 +1361,8 @@ program
 program
   .command("db-stats")
   .description("Show database row counts for each table")
-  .action(() => {
-    output(dbStats());
+  .action(async () => {
+    output(await dbStats());
   });
 
 program
@@ -1315,10 +1371,11 @@ program
   .action(async () => {
     console.log("Fetching pricing from LiteLLM...");
     const result = await refreshPricing();
-    if (result) {
-      console.log(
-        `Cached pricing for ${Object.keys(result.models).length} models`,
-      );
+    if (result && typeof result === "object" && "models" in result) {
+      const models = (result as { models: Record<string, unknown> }).models;
+      console.log(`Cached pricing for ${Object.keys(models).length} models`);
+    } else if (result && typeof result === "object" && "ok" in result) {
+      console.log("Pricing refreshed.");
     } else {
       console.error("Failed to fetch pricing");
       process.exit(1);
@@ -1342,203 +1399,6 @@ permissions
   .action(async () => {
     const input = JSON.parse(await readStdin());
     output(permissionsApply(input));
-  });
-
-const scanCmd = program
-  .command("scan")
-  .description("Scan local session files (Claude Code, Codex, Gemini)");
-
-async function printScanSummary(): Promise<void> {
-  const { getDb } = await import("./db/schema.js");
-  const db = getDb();
-  const bySource = db
-    .prepare(
-      "SELECT target as source, COUNT(*) as sessions, SUM(turn_count) as turns, SUM(total_input_tokens + total_output_tokens) as tokens FROM sessions WHERE scanner_file_path IS NOT NULL GROUP BY target",
-    )
-    .all() as {
-    source: string;
-    sessions: number;
-    turns: number;
-    tokens: number;
-  }[];
-  const total = db
-    .prepare(
-      "SELECT COUNT(*) as c FROM sessions WHERE scanner_file_path IS NOT NULL",
-    )
-    .get() as { c: number };
-  const totalTurns = db
-    .prepare("SELECT COUNT(*) as c FROM scanner_turns")
-    .get() as { c: number };
-
-  console.log(`\nTotal: ${total.c} sessions, ${totalTurns.c} turns`);
-  for (const row of bySource) {
-    console.log(
-      `  ${row.source}: ${row.sessions} sessions, ${row.turns ?? 0} turns, ${row.tokens ?? 0} tokens`,
-    );
-  }
-}
-
-scanCmd
-  .command("run", { isDefault: true })
-  .description("Scan for new session data (incremental)")
-  .action(async () => {
-    const { scanOnce } = await import("./scanner/index.js");
-    const { getDb } = await import("./db/schema.js");
-    getDb();
-
-    const { filesScanned, newTurns } = scanOnce();
-    console.log(`Done: ${filesScanned} files scanned, ${newTurns} new turns`);
-    await printScanSummary();
-  });
-
-scanCmd
-  .command("reset")
-  .description("Reset scanner data and re-scan from scratch")
-  .argument(
-    "[source]",
-    "Reset only this source: claude, codex, gemini (default: all)",
-  )
-  .action(async (source?: string) => {
-    const { scanOnce } = await import("./scanner/index.js");
-    const { resetScanner, resetScannerSource } = await import(
-      "./scanner/store.js"
-    );
-    const { getDb } = await import("./db/schema.js");
-    getDb();
-
-    if (source) {
-      resetScannerSource(source);
-      console.log(`Reset scanner data for "${source}"`);
-    } else {
-      resetScanner();
-      console.log("Reset all scanner data");
-    }
-
-    const { filesScanned, newTurns } = scanOnce();
-    console.log(`Done: ${filesScanned} files scanned, ${newTurns} new turns`);
-    await printScanSummary();
-  });
-
-scanCmd
-  .command("resync")
-  .description("Atomic full resync: rebuild scanner data in a temp DB and swap")
-  .action(async () => {
-    const { resyncAll } = await import("./scanner/index.js");
-    const { getDb } = await import("./db/schema.js");
-    getDb();
-
-    const result = resyncAll((msg) => console.log(`[resync] ${msg}`));
-    if (result.success) {
-      console.log(
-        `Done: ${result.filesScanned} files, ${result.newTurns} turns`,
-      );
-      await printScanSummary();
-    } else {
-      console.error(`Resync failed: ${result.error}`);
-      process.exit(1);
-    }
-  });
-
-scanCmd
-  .command("summarize")
-  .description("Generate or regenerate a summary for a session")
-  .argument("<session-id>", "The session ID to summarize")
-  .option("--deterministic", "Skip LLM, use deterministic fallback only")
-  .action(async (sessionId: string, opts: Opts) => {
-    const { getDb } = await import("./db/schema.js");
-    getDb();
-
-    if (opts.deterministic) {
-      // Import the loop module to access buildDeterministicSummary
-      // Since it's not exported, we'll inline a simple version
-      const db = getDb();
-      const firstUser = db
-        .prepare(
-          "SELECT SUBSTR(content, 1, 200) as content FROM messages WHERE session_id = ? AND role = 'user' AND is_system = 0 ORDER BY ordinal ASC LIMIT 1",
-        )
-        .get(sessionId) as { content: string } | undefined;
-      const counts = db
-        .prepare(
-          "SELECT COUNT(*) as msg_count, SUM(CASE WHEN role = 'user' AND is_system = 0 THEN 1 ELSE 0 END) as user_count FROM messages WHERE session_id = ?",
-        )
-        .get(sessionId) as { msg_count: number; user_count: number };
-      const tools = db
-        .prepare(
-          "SELECT tool_name, COUNT(*) as cnt FROM tool_calls WHERE session_id = ? GROUP BY tool_name ORDER BY cnt DESC LIMIT 5",
-        )
-        .all(sessionId) as Array<{ tool_name: string; cnt: number }>;
-
-      const parts: string[] = [];
-      if (firstUser) parts.push(`Prompt: "${firstUser.content}"`);
-      parts.push(`${counts.msg_count} messages (${counts.user_count} user)`);
-      if (tools.length > 0)
-        parts.push(
-          `Tools: ${tools.map((t) => `${t.tool_name}(${t.cnt})`).join(", ")}`,
-        );
-      const summary = parts.join(". ");
-      console.log(summary);
-      return;
-    }
-
-    const { invokeLlm, detectAgent } = await import("./summary/llm.js");
-    if (!detectAgent()) {
-      console.error("Claude CLI not found");
-      process.exit(1);
-    }
-
-    const SYSTEM_PROMPT = `You are summarizing a coding session for search and retrieval. You have access to panopticon MCP tools to explore the session data.
-
-Instructions:
-1. Use the "timeline" tool to read the session's messages and tool calls
-2. If needed, use "get" to read full message content or "query" for specific data
-3. Produce a summary optimized for AI consumption and full-text search
-4. Include: what was accomplished, key decisions made, specific file/function/package names, problems encountered and how they were resolved
-5. Use concrete names rather than generic descriptions (e.g. "added FTS5 index on messages table" not "improved search")
-6. Format as 2-4 concise sentences
-7. Output ONLY the summary text, nothing else`;
-
-    const prompt = `Summarize session ${sessionId}. Start by calling the timeline tool with sessionId "${sessionId}" and limit 50.`;
-
-    console.log(`Summarizing ${sessionId}...`);
-    const result = invokeLlm(prompt, {
-      timeoutMs: 120_000,
-      withMcp: true,
-      systemPrompt: SYSTEM_PROMPT,
-      model: "sonnet",
-    });
-
-    if (result) {
-      console.log(`\nSummary:\n${result}`);
-      // Optionally save to DB
-      const db = getDb();
-      const msgCount = (
-        db
-          .prepare("SELECT COUNT(*) as c FROM messages WHERE session_id = ?")
-          .get(sessionId) as { c: number }
-      ).c;
-      db.prepare(
-        "UPDATE sessions SET summary = ?, summary_version = ?, sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?",
-      ).run(result, msgCount, sessionId);
-      console.log(`\nSaved to database.`);
-    } else {
-      console.error("LLM summary failed");
-      process.exit(1);
-    }
-  });
-
-scanCmd
-  .command("compare")
-  .description("Compare scanner data against hooks/OTLP data")
-  .action(async () => {
-    const { scanOnce } = await import("./scanner/index.js");
-    const { getDb } = await import("./db/schema.js");
-    getDb();
-
-    scanOnce();
-    const { reconcile, formatReconcileReport } = await import(
-      "./scanner/reconcile.js"
-    );
-    console.log(formatReconcileReport(reconcile()));
   });
 
 // ---------------------------------------------------------------------------

@@ -197,7 +197,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
-  let resyncChecked = false;
+  let reparseChecked = false;
   let ready = false;
 
   function scheduleNext(hadWork: boolean): void {
@@ -212,38 +212,38 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   function tick(): void {
     if (stopping) return;
 
-    // On first tick, check if data version requires a full resync
-    if (!resyncChecked) {
-      resyncChecked = true;
+    // On first tick, check if data version requires a full reparse
+    if (!reparseChecked) {
+      reparseChecked = true;
       if (needsResync()) {
-        log.scanner.info("Data version outdated — running atomic resync...");
-        import("./resync.js")
-          .then(({ resyncAll }) => {
+        log.scanner.info("Data version outdated — running atomic reparse...");
+        import("./reparse.js")
+          .then(({ reparseAll }) => {
             try {
-              const result = resyncAll((msg) => log.scanner.info(msg));
+              const result = reparseAll((msg) => log.scanner.info(msg));
               if (result.success) {
                 markResyncComplete();
               } else {
                 log.scanner.error(
-                  `Resync failed: ${result.error ?? "unknown"}`,
+                  `Reparse failed: ${result.error ?? "unknown"}`,
                 );
               }
             } catch (err) {
               log.scanner.error(
-                `Resync error: ${err instanceof Error ? err.message : err}`,
+                `Reparse error: ${err instanceof Error ? err.message : err}`,
               );
             }
             scheduleNext(true);
           })
           .catch((err) => {
             log.scanner.error(
-              `Resync import error: ${err instanceof Error ? err.message : err}`,
+              `Reparse import error: ${err instanceof Error ? err.message : err}`,
             );
             scheduleNext(false);
           });
         return;
       }
-      // No resync needed — stamp version if not already set
+      // No reparse needed — stamp version if not already set
       markResyncComplete();
     }
 

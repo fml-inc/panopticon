@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import http from "node:http";
+import { handleApiRequest } from "./api/routes.js";
 import { config } from "./config.js";
 import { autoPrune } from "./db/prune.js";
 import { syncAwarePrune } from "./db/sync-prune.js";
@@ -85,6 +86,12 @@ export function createUnifiedServer(): http.Server {
       // Strip /proxy prefix so the proxy handler sees /anthropic/*, /openai/*, etc.
       req.url = url.slice(6);
       await handleProxyRequest(req, res);
+      return;
+    }
+
+    // API routes — /api/tool, /api/exec
+    if (url.startsWith("/api/") && method === "POST") {
+      await handleApiRequest(req, res);
       return;
     }
 
