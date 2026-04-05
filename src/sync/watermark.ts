@@ -27,7 +27,11 @@ export function resetWatermarks(targetName?: string): void {
     for (const desc of TABLE_SYNC_REGISTRY) {
       stmt.run(watermarkKey(desc.table, targetName));
     }
+    db.prepare("DELETE FROM target_session_sync WHERE target = ?").run(
+      targetName,
+    );
   } else {
     db.prepare("DELETE FROM watermarks").run();
+    db.prepare("DELETE FROM target_session_sync").run();
   }
 }
