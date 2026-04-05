@@ -11,6 +11,7 @@ import type {
   ParsedEvent,
   ParsedMessage,
   ParsedSession,
+  ParsedToolCall,
   ParsedTurn,
 } from "../targets/types.js";
 
@@ -370,6 +371,30 @@ export function writeArchivedSize(filePath: string, size: number): void {
 
 // ── Messages & tool calls insert ───────────────────────────────────────────
 
+/** Build a short summary for tool-only assistant messages (no text content). */
+function toolUseSummary(toolCalls: ParsedToolCall[]): string {
+  return toolCalls
+    .map((tc) => {
+      let label = "";
+      if (tc.inputJson) {
+        try {
+          const input = JSON.parse(tc.inputJson);
+          label =
+            input.description ??
+            input.command ??
+            input.pattern ??
+            input.file_path ??
+            input.query ??
+            input.prompt ??
+            input.skill ??
+            "";
+        } catch {}
+      }
+      return label ? `[${tc.toolName}: ${label}]` : `[${tc.toolName}]`;
+    })
+    .join("\n");
+}
+
 const INSERT_MESSAGE_SQL = `
   INSERT OR IGNORE INTO messages
     (session_id, ordinal, role, content, timestamp_ms,
@@ -430,11 +455,17 @@ export function insertMessages(
 
   const tx = db.transaction(() => {
     for (const msg of messages) {
+      // Synthesize content for empty assistant messages with tool calls
+      let content = msg.content;
+      if (!content && msg.role === "assistant" && msg.toolCalls.length > 0) {
+        content = toolUseSummary(msg.toolCalls);
+      }
+
       const result = msgStmt.run(
         msg.sessionId,
         msg.ordinal,
         msg.role,
-        msg.content,
+        content,
         msg.timestampMs ?? null,
         msg.hasThinking ? 1 : 0,
         msg.hasToolUse ? 1 : 0,
@@ -454,7 +485,7 @@ export function insertMessages(
       if (result.changes === 0) continue;
 
       const messageId = result.lastInsertRowid;
-      ftsStmt.run(messageId, msg.content);
+      ftsStmt.run(messageId, content);
 
       for (const tc of msg.toolCalls) {
         // Look up result from the tool_result blocks
