@@ -103,6 +103,35 @@ const EXEC: Record<string, ExecFn> = {
     writeWatermark(key, value);
     return { key, value };
   },
+  "sync-pending": (p) => {
+    const target = p.target as string;
+    if (!target) throw new Error("target is required");
+    const db = getDb();
+    const pending: Record<
+      string,
+      { maxId: number; watermark: number; pending: number }
+    > = {};
+    for (const desc of TABLE_SYNC_REGISTRY) {
+      const key = watermarkKey(desc.table, target);
+      const wm = readWatermark(key);
+      const col = desc.table === "sessions" ? "sync_seq" : "id";
+      const maxId =
+        (
+          db.prepare(`SELECT MAX(${col}) as m FROM ${desc.table}`).get() as {
+            m: number | null;
+          }
+        )?.m ?? 0;
+      const count = Math.max(0, maxId - wm);
+      if (count > 0) {
+        pending[desc.table] = { maxId, watermark: wm, pending: count };
+      }
+    }
+    const totalPending = Object.values(pending).reduce(
+      (s, v) => s + v.pending,
+      0,
+    );
+    return { target, totalPending, tables: pending };
+  },
   "sync-target-list": () => {
     return { targets: listTargets() };
   },
