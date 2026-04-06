@@ -223,15 +223,12 @@ export function syncWatermarkSet(
 export function syncPending(target: string): Promise<{
   target: string;
   totalPending: number;
-  tables: Record<string, { maxId: number; watermark: number; pending: number }>;
+  tables: Record<string, { total: number; synced: number; pending: number }>;
 }> {
   return callExec("sync-pending", { target }) as Promise<{
     target: string;
     totalPending: number;
-    tables: Record<
-      string,
-      { maxId: number; watermark: number; pending: number }
-    >;
+    tables: Record<string, { total: number; synced: number; pending: number }>;
   }>;
 }
 
