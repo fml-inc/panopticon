@@ -16,6 +16,7 @@ import { config } from "../config.js";
 import {
   closeDb,
   getDb,
+  runMigrations,
   SCANNER_DATA_VERSION,
   SCHEMA_SQL,
 } from "../db/schema.js";
@@ -86,6 +87,7 @@ function initTempDb(tempPath: string): Database.Database {
     blob ? gunzipSync(blob).toString() : null,
   );
   db.exec(SCHEMA_SQL);
+  runMigrations(db);
   return db;
 }
 
