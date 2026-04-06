@@ -121,18 +121,15 @@ Once installed, these tools are available to the AI coding tool via MCP:
 
 | Tool | Description |
 |------|-------------|
-| `panopticon_sessions` | List recent sessions with stats (event count, tools used, cost) |
-| `panopticon_session_timeline` | Chronological events for a session (hooks + OTel merged) |
-| `panopticon_tool_stats` | Per-tool aggregates: call count, success/failure |
-| `panopticon_costs` | Token/cost breakdowns by session, model, or day |
-| `panopticon_summary` | Activity summary for a time window (sessions, prompts, tools, files, costs) |
-| `panopticon_plans` | Plans created via ExitPlanMode with full markdown content |
-| `panopticon_search` | Full-text search across hook payloads (FTS5) and OTel log bodies |
-| `panopticon_get_event` | Fetch full untruncated details for a specific event by source and ID |
-| `panopticon_query` | Raw read-only SQL against the database |
-| `panopticon_status` | Database row counts |
-| `panopticon_permissions_show` | Show current permission approvals and allowed tools/commands |
-| `panopticon_permissions_apply` | Apply permission rules (allowed tools/commands via PreToolUse hook) |
+| `sessions` | List recent sessions with stats (tokens, cost, model, project) |
+| `timeline` | Messages and tool calls for a session, including child sessions (forks, subagents) |
+| `costs` | Token usage and cost breakdowns by session, model, or day |
+| `summary` | Activity summary — sessions, prompts, tools, files, costs. Ideal for standup updates |
+| `plans` | Plans created via ExitPlanMode with full markdown content |
+| `search` | Full-text search across events and messages (FTS5) |
+| `get` | Fetch full untruncated details for a record by source and ID |
+| `query` | Raw read-only SQL against the database |
+| `status` | Database row counts |
 
 ## CLI
 
@@ -153,28 +150,30 @@ panopticon stop             Stop the server
 panopticon status           Show server status and database stats
 panopticon doctor           Check system health, server, database, and configuration
 
-panopticon logs [daemon]    View daemon logs (server, otlp, mcp, proxy)
+panopticon logs [daemon]    View daemon logs (otlp, mcp)
   -f, --follow              Follow log output (like tail -f)
   -n <lines>                Number of lines to show (default 50)
 
 panopticon sessions         List recent sessions with stats
   --limit <n>               Max sessions to return (default 20)
   --since <duration>        Time filter (e.g. "24h", "7d")
-panopticon timeline <id>    Chronological events for a session
-panopticon tools            Per-tool usage aggregates
+panopticon timeline <id>    Get messages and tool calls for a session
+  --limit <n>               Max messages to return (default 50)
+  --offset <n>              Number of messages to skip
+  --full                    Return full content instead of truncated
 panopticon costs            Token usage and cost breakdowns
   --group-by <g>            Group by session, model, or day
 panopticon summary          Activity summary
 panopticon plans            List plans from ExitPlanMode events
-panopticon search <query>   Full-text search across all events
-panopticon event <src> <id> Get full details for a specific event
+panopticon search <query>   Full-text search across events and messages
+panopticon print <src> <id> Get full details for a record by source and ID
 panopticon query <sql>      Raw read-only SQL query
 panopticon db-stats         Show database row counts
 
-panopticon scan             Scan local session files (incremental)
-panopticon scan reset       Reset scanner and re-scan from scratch
-  [source]                  Optionally reset only: claude, codex, gemini
-panopticon scan compare     Compare scanner data against hooks/OTLP data
+panopticon sync add <name> <url>  Add or update a sync target
+panopticon sync remove <name>     Remove a sync target
+panopticon sync list              List sync targets
+panopticon sync reset [target]    Reset sync watermarks (re-syncs all data)
 
 panopticon prune            Delete old data from the database
   --older-than 30d          Max age (default: 30d)
@@ -182,7 +181,7 @@ panopticon prune            Delete old data from the database
   --vacuum                  Reclaim disk space after pruning
   --yes                     Skip confirmation prompt
 
-panopticon refresh-pricing  Fetch latest model pricing from OpenRouter
+panopticon refresh-pricing  Fetch latest model pricing from LiteLLM
 panopticon permissions show Show current approval rules
 panopticon permissions apply Apply permission rules (JSON from stdin)
 ```
@@ -199,7 +198,7 @@ Daemon stdout/stderr is written to platform-specific log directories:
 | Linux | `~/.local/state/panopticon/logs/` |
 | Windows | `%LOCALAPPDATA%/panopticon/logs/` |
 
-Log files: `server.log`, `mcp-server.log`, `hook-handler.log`, `proxy.log`.
+Log files: `server.log`, `otlp-receiver.log`, `mcp-server.log`, `proxy.log`, `hook-handler.log`.
 
 ## Configuration
 
@@ -250,17 +249,21 @@ SQLite with WAL mode. Location depends on platform (see data directory above).
 | Table | Description |
 |-------|-------------|
 | `sessions` | Unified session metadata — aggregated from hooks, OTel, and scanner |
+| `messages` | Parsed messages (user, assistant, system) with token usage and DAG metadata |
+| `tool_calls` | Tool invocations extracted from messages, with inputs, results, and durations |
 | `otel_logs` | OTel log records (api_request, tool_result, user_prompt, etc.) |
 | `otel_metrics` | OTel metric data points (token usage, cost, active time, etc.) |
+| `otel_spans` | OTel trace spans |
 | `hook_events` | Plugin hook events with full payloads (tool inputs/outputs, tool results) |
-| `hook_events_fts` | FTS5 full-text search index on hook payloads |
 | `scanner_turns` | Per-turn token usage from session files (input, output, cache, reasoning) |
 | `scanner_events` | Tool calls, errors, reasoning, file snapshots from session files |
 | `scanner_file_watermarks` | Byte offsets for incremental session file parsing |
 | `session_repositories` | Maps sessions to GitHub repositories |
 | `session_cwds` | Maps sessions to working directories |
-| `model_pricing` | Cached model pricing from OpenRouter |
-| `schema_meta` | Internal schema version tracking |
+| `session_summary_deltas` | Incremental session summaries |
+| `model_pricing` | Cached model pricing from LiteLLM |
+| `watermarks` | Sync watermarks for OTLP export targets |
+| `target_session_sync` | Per-target session sync state |
 
 Query directly with `panopticon query` or via the `panopticon_query` MCP tool.
 
@@ -290,9 +293,18 @@ src/
 ├── server.ts           Unified HTTP server (hooks, OTLP, proxy — single port)
 ├── sdk.ts              SDK shim (observe() wrapper)
 ├── config.ts           Panopticon paths, ports, defaults
+├── setup.ts            Install/uninstall logic
 ├── log.ts              Log file paths (macOS/Linux/Windows)
 ├── repo.ts             Git repository detection
 ├── toml.ts             TOML read/write (for Codex config)
+├── doctor.ts           System health checks
+├── sentry.ts           Error reporting
+├── eventConfig.ts      Event type configuration
+├── unified-config.ts   Unified config management
+├── api/
+│   ├── client.ts       API client for CLI/MCP queries via server
+│   ├── routes.ts       Server-side API route handlers
+│   └── util.ts         API utilities
 ├── targets/
 │   ├── types.ts        TargetAdapter interface (config, hooks, events, detect, proxy)
 │   ├── registry.ts     Map-based target registry (register, get, all)
@@ -306,13 +318,16 @@ src/
 │   ├── query.ts        Query helpers for MCP tools and CLI
 │   ├── store.ts        Data storage (insert hooks, OTel, upsert sessions)
 │   ├── prune.ts        Data retention / pruning
-│   └── pricing.ts      Model pricing cache (OpenRouter)
+│   ├── sync-prune.ts   Sync-aware pruning
+│   └── pricing.ts      Model pricing cache (LiteLLM)
 ├── scanner/
 │   ├── index.ts        Public API (createScannerLoop, scanOnce)
 │   ├── loop.ts         Poll loop — discovers files via target adapters, incremental parse
 │   ├── reader.ts       Byte-offset file reader (only reads new lines)
 │   ├── store.ts        Scanner DB operations (turns, events, watermarks, session upsert)
 │   ├── reconcile.ts    Compare scanner vs hooks/OTLP token data per session
+│   ├── reparse.ts      Re-parse session files from scratch
+│   ├── categories.ts   Tool call categorization
 │   └── types.ts        ScannerHandle, ScannerOptions
 ├── hooks/
 │   ├── handler.ts      Hook event handler (stdin JSON → server)
@@ -325,19 +340,34 @@ src/
 │   ├── server.ts       HTTP OTLP receiver (protobuf + JSON)
 │   ├── decode-logs.ts  OTel log record decoding
 │   ├── decode-metrics.ts OTel metric decoding
+│   ├── decode-traces.ts OTel trace/span decoding
 │   └── proto.ts        Protocol buffer definitions
 ├── sync/
 │   ├── index.ts        Public API (createSyncLoop, resetWatermarks)
 │   ├── types.ts        Interfaces (SyncTarget, SyncOptions, MergedEvent, OTLP types)
+│   ├── config.ts       Sync target configuration
+│   ├── registry.ts     Sync target registry
 │   ├── loop.ts         Poll loop with debounced scheduling
 │   ├── reader.ts       Batch reads from SQLite + hook/OTLP dedup
-│   ├── serialize.ts    Convert rows → OTLP JSON (resourceLogs, resourceMetrics)
-│   ├── watermark.ts    Watermark persistence (sync-watermarks.db)
+│   ├── watermark.ts    Watermark persistence
 │   └── post.ts         HTTP POST with retry + exponential backoff
+├── summary/
+│   ├── index.ts        Session summary public API
+│   ├── llm.ts          LLM-powered summary generation
+│   └── loop.ts         Background summary generation loop
+├── archive/
+│   ├── index.ts        Archive public API
+│   ├── backend.ts      Archive backend interface
+│   └── local.ts        Local filesystem archive
+├── workspaces/
+│   ├── index.ts        Workspace detection
+│   ├── superset.ts     Workspace superset logic
+│   └── types.ts        Workspace types
 └── proxy/
     ├── server.ts       API proxy — routes built from target registry
     ├── emit.ts         Event emission from proxy captures
     ├── streaming.ts    SSE stream accumulation (Anthropic + OpenAI)
+    ├── ws-capture.ts   WebSocket traffic capture
     ├── sessions.ts     Proxy session tracking
     └── formats/
         ├── types.ts      Format parser interface
