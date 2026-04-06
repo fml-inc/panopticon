@@ -35,6 +35,7 @@ export default defineConfig({
     "mcp/server": "src/mcp/server.ts",
     "otlp/server": "src/otlp/server.ts",
     "proxy/server": "src/proxy/server.ts",
+    "api/client": "src/api/client.ts",
     "sync/index": "src/sync/index.ts",
     targets: "src/targets/index.ts",
   },
