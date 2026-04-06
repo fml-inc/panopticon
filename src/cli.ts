@@ -977,7 +977,7 @@ program
                 console.log(`    pending: ${result.totalPending} total`);
                 for (const [table, info] of Object.entries(result.tables)) {
                   console.log(
-                    `      ${table}: ${info.pending} (${info.watermark} / ${info.maxId})`,
+                    `      ${table}: ${info.pending} (${info.synced} / ${info.total})`,
                   );
                 }
               }

@@ -107,26 +107,68 @@ const EXEC: Record<string, ExecFn> = {
     const target = p.target as string;
     if (!target) throw new Error("target is required");
     const db = getDb();
+
+    /** Maps table name → wm column in target_session_sync. */
+    const WM_COLUMNS: Record<string, string> = {
+      messages: "wm_messages",
+      tool_calls: "wm_tool_calls",
+      scanner_turns: "wm_scanner_turns",
+      scanner_events: "wm_scanner_events",
+      hook_events: "wm_hook_events",
+      otel_logs: "wm_otel_logs",
+      otel_metrics: "wm_otel_metrics",
+      otel_spans: "wm_otel_spans",
+    };
+
     const pending: Record<
       string,
-      { maxId: number; watermark: number; pending: number }
+      { total: number; synced: number; pending: number }
     > = {};
     for (const desc of TABLE_SYNC_REGISTRY) {
-      const key = watermarkKey(desc.table, target);
-      const wm = readWatermark(key);
-      const maxId =
-        (
-          db
-            .prepare(
-              `SELECT MAX(${desc.table === "sessions" ? "sync_seq" : "id"}) as m FROM ${desc.table}`,
-            )
-            .get() as {
-            m: number | null;
-          }
-        )?.m ?? 0;
-      const count = Math.max(0, maxId - wm);
-      if (count > 0) {
-        pending[desc.table] = { maxId, watermark: wm, pending: count };
+      const wmCol = WM_COLUMNS[desc.table];
+      if (desc.sessionLinked && wmCol) {
+        // Session-linked tables: count rows beyond each session's per-session watermark,
+        // plus rows belonging to sessions not yet tracked in target_session_sync.
+        const total =
+          (
+            db.prepare(`SELECT COUNT(*) as c FROM ${desc.table}`).get() as {
+              c: number;
+            }
+          )?.c ?? 0;
+        const pendingCount =
+          (
+            db
+              .prepare(
+                `SELECT COUNT(*) as c FROM ${desc.table} t
+               LEFT JOIN target_session_sync tss
+                 ON tss.session_id = t.session_id AND tss.target = ?
+               WHERE tss.${wmCol} IS NULL OR t.id > tss.${wmCol}`,
+              )
+              .get(target) as { c: number }
+          )?.c ?? 0;
+        if (pendingCount > 0) {
+          pending[desc.table] = {
+            total,
+            synced: total - pendingCount,
+            pending: pendingCount,
+          };
+        }
+      } else {
+        // Sessions table and non-session-linked tables: use global watermark.
+        const key = watermarkKey(desc.table, target);
+        const wm = readWatermark(key);
+        const maxId =
+          (
+            db
+              .prepare(
+                `SELECT MAX(${desc.table === "sessions" ? "sync_seq" : "id"}) as m FROM ${desc.table}`,
+              )
+              .get() as { m: number | null }
+          )?.m ?? 0;
+        const count = Math.max(0, maxId - wm);
+        if (count > 0) {
+          pending[desc.table] = { total: maxId, synced: wm, pending: count };
+        }
       }
     }
     const totalPending = Object.values(pending).reduce(
