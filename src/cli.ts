@@ -25,6 +25,7 @@ import {
   refreshPricing,
   search,
   sessionTimeline,
+  syncPending,
   syncReset,
   syncTargetAdd,
   syncTargetList,
@@ -969,36 +970,16 @@ program
 
           if (server.running) {
             try {
-              const wmResult = (await syncWatermarkGet(t.name)) as {
-                target: string;
-                watermarks: Record<string, number>;
-              };
-              console.log(
-                `    sessions watermark: ${wmResult.watermarks.sessions ?? 0}`,
-              );
-            } catch {}
-          }
-
-          if (server.running) {
-            try {
-              const rows = (await rawQuery(
-                `SELECT
-                   COUNT(*) as total,
-                   SUM(CASE WHEN confirmed = 1 THEN 1 ELSE 0 END) as confirmed,
-                   SUM(CASE WHEN confirmed = 1 AND sync_seq > synced_seq THEN 1 ELSE 0 END) as pending_data
-                 FROM target_session_sync
-                 WHERE target = '${t.name.replace(/'/g, "''")}'`,
-              )) as Array<{
-                total: number;
-                confirmed: number;
-                pending_data: number;
-              }>;
-              if (rows.length > 0) {
-                const row = rows[0];
-                console.log(
-                  `    confirmed sessions: ${row.confirmed} / ${row.total}`,
-                );
-                console.log(`    pending data sync:  ${row.pending_data}`);
+              const result = await syncPending(t.name);
+              if (result.totalPending === 0) {
+                console.log("    status: up to date");
+              } else {
+                console.log(`    pending: ${result.totalPending} total`);
+                for (const [table, info] of Object.entries(result.tables)) {
+                  console.log(
+                    `      ${table}: ${info.pending} (${info.watermark} / ${info.maxId})`,
+                  );
+                }
               }
             } catch {}
           }
