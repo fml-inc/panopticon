@@ -67,7 +67,10 @@ export const MIGRATIONS: Migration[] = [
  * On an existing database, unapplied migrations run sequentially inside
  * transactions.
  */
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(
+  db: Database.Database,
+  migrations: Migration[] = MIGRATIONS,
+): void {
   const trackingExists = db
     .prepare(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'",
@@ -88,7 +91,7 @@ export function runMigrations(db: Database.Database): void {
     const stamp = db.prepare(
       "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
     );
-    for (const m of MIGRATIONS) {
+    for (const m of migrations) {
       stamp.run(m.id, m.name);
     }
     return;
@@ -103,7 +106,7 @@ export function runMigrations(db: Database.Database): void {
     ).map((r) => r.id),
   );
 
-  for (const migration of MIGRATIONS) {
+  for (const migration of migrations) {
     if (applied.has(migration.id)) continue;
     const run = db.transaction(() => {
       if (migration.sql) {

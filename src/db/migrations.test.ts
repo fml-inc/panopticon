@@ -2,9 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
-import { MIGRATIONS, runMigrations } from "./migrations.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function makeTempDb(): { db: Database.Database; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-migrations-"));
@@ -32,16 +36,38 @@ function createDb(): Database.Database {
   return db;
 }
 
-describe("runMigrations", () => {
-  it("stamps all migrations on a fresh DB without executing them", () => {
+/** Create a DB with schema_migrations already present (simulates existing DB). */
+function createExistingDb(): Database.Database {
+  const db = createDb();
+  db.exec(`
+    CREATE TABLE schema_migrations (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  return db;
+}
+
+function getApplied(
+  db: Database.Database,
+): Array<{ id: number; name: string }> {
+  return db
+    .prepare("SELECT id, name FROM schema_migrations ORDER BY id")
+    .all() as Array<{ id: number; name: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Tests: fresh DB behavior
+// ---------------------------------------------------------------------------
+
+describe("runMigrations — fresh DB", () => {
+  it("stamps all migrations without executing them", () => {
     const db = createDb();
     db.exec(SCHEMA_SQL);
     runMigrations(db);
 
-    const rows = db
-      .prepare("SELECT id, name FROM schema_migrations ORDER BY id")
-      .all() as Array<{ id: number; name: string }>;
-
+    const rows = getApplied(db);
     expect(rows.length).toBe(MIGRATIONS.length);
     for (let i = 0; i < MIGRATIONS.length; i++) {
       expect(rows[i].id).toBe(MIGRATIONS[i].id);
@@ -49,10 +75,55 @@ describe("runMigrations", () => {
     }
   });
 
-  it("runs migrations on an existing DB missing a column", () => {
+  it("does not execute sql on fresh DB", () => {
     const db = createDb();
+    // Create the table with the column already (as SCHEMA_SQL would)
+    db.exec("CREATE TABLE test_table (id INTEGER PRIMARY KEY, col_a TEXT)");
 
-    // Create a user_config_snapshots table WITHOUT plugin_hooks
+    const migrations: Migration[] = [
+      {
+        id: 1,
+        name: "should_not_run",
+        // This would fail if executed — column already exists
+        sql: "ALTER TABLE test_table ADD COLUMN col_a TEXT",
+      },
+    ];
+
+    // No schema_migrations → fresh DB → stamps without executing
+    runMigrations(db, migrations);
+    expect(getApplied(db)).toHaveLength(1);
+  });
+
+  it("does not call up() on fresh DB", () => {
+    const db = createDb();
+    const spy = vi.fn();
+
+    const migrations: Migration[] = [{ id: 1, name: "noop", up: spy }];
+
+    runMigrations(db, migrations);
+    expect(spy).not.toHaveBeenCalled();
+    expect(getApplied(db)).toHaveLength(1);
+  });
+
+  it("records applied_at timestamp", () => {
+    const db = createDb();
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const row = db
+      .prepare("SELECT applied_at FROM schema_migrations WHERE id = 1")
+      .get() as { applied_at: string };
+    expect(row.applied_at).toMatch(/^\d{4}-\d{2}-\d{2}/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: existing DB behavior
+// ---------------------------------------------------------------------------
+
+describe("runMigrations — existing DB", () => {
+  it("runs sql migration on existing DB missing a column", () => {
+    const db = createExistingDb();
     db.exec(`
       CREATE TABLE user_config_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,96 +139,188 @@ describe("runMigrations", () => {
       )
     `);
 
-    // Pre-create schema_migrations to simulate an existing DB
-    db.exec(`
-      CREATE TABLE schema_migrations (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-
     runMigrations(db);
 
-    // Verify migration ran: plugin_hooks column should exist
     const cols = db
       .prepare("PRAGMA table_info(user_config_snapshots)")
-      .all() as Array<{
-      name: string;
-    }>;
-    const colNames = cols.map((c) => c.name);
-    expect(colNames).toContain("plugin_hooks");
-
-    // Verify migration was recorded
-    const applied = db
-      .prepare("SELECT id FROM schema_migrations")
-      .all() as Array<{ id: number }>;
-    expect(applied.map((r) => r.id)).toContain(1);
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("plugin_hooks");
+    expect(getApplied(db).map((r) => r.id)).toContain(1);
   });
 
-  it("is idempotent — calling twice is safe", () => {
+  it("runs up() function migration", () => {
+    const db = createExistingDb();
+    db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)");
+
+    const migrations: Migration[] = [
+      {
+        id: 1,
+        name: "backfill_items",
+        up: (d) => {
+          d.exec("INSERT INTO items (val) VALUES ('hello')");
+          d.exec("INSERT INTO items (val) VALUES ('world')");
+        },
+      },
+    ];
+
+    runMigrations(db, migrations);
+
+    const rows = db
+      .prepare("SELECT val FROM items ORDER BY id")
+      .all() as Array<{
+      val: string;
+    }>;
+    expect(rows).toEqual([{ val: "hello" }, { val: "world" }]);
+    expect(getApplied(db)).toHaveLength(1);
+  });
+
+  it("runs multiple migrations in order", () => {
+    const db = createExistingDb();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+
+    const migrations: Migration[] = [
+      { id: 1, name: "add_col_a", sql: "ALTER TABLE t ADD COLUMN a TEXT" },
+      { id: 2, name: "add_col_b", sql: "ALTER TABLE t ADD COLUMN b TEXT" },
+      {
+        id: 3,
+        name: "backfill",
+        up: (d) => {
+          // Depends on columns from migrations 1 and 2
+          d.exec("INSERT INTO t (a, b) VALUES ('x', 'y')");
+        },
+      },
+    ];
+
+    runMigrations(db, migrations);
+
+    const row = db.prepare("SELECT a, b FROM t").get() as {
+      a: string;
+      b: string;
+    };
+    expect(row).toEqual({ a: "x", b: "y" });
+    expect(getApplied(db)).toHaveLength(3);
+  });
+
+  it("skips already-applied migrations", () => {
+    const db = createExistingDb();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT)");
+    db.prepare("INSERT INTO schema_migrations (id, name) VALUES (?, ?)").run(
+      1,
+      "add_col_a",
+    );
+
+    const spy = vi.fn();
+    const migrations: Migration[] = [
+      { id: 1, name: "add_col_a", sql: "THIS WOULD FAIL IF RUN" },
+      { id: 2, name: "second", up: spy },
+    ];
+
+    runMigrations(db, migrations);
+
+    // Migration 1 was skipped, migration 2 ran
+    expect(spy).toHaveBeenCalledOnce();
+    const applied = getApplied(db);
+    expect(applied).toHaveLength(2);
+    expect(applied.map((r) => r.id)).toEqual([1, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: error handling
+// ---------------------------------------------------------------------------
+
+describe("runMigrations — error handling", () => {
+  it("rolls back failed sql migration without recording it", () => {
+    const db = createExistingDb();
+    // Don't create the target table — ALTER TABLE will fail
+
+    expect(() => runMigrations(db)).toThrow();
+    expect(getApplied(db)).toHaveLength(0);
+  });
+
+  it("rolls back failed up() migration without recording it", () => {
+    const db = createExistingDb();
+
+    const migrations: Migration[] = [
+      {
+        id: 1,
+        name: "will_fail",
+        up: (d) => {
+          d.exec("CREATE TABLE new_table (id INTEGER PRIMARY KEY)");
+          d.exec("INVALID SQL THAT WILL FAIL");
+        },
+      },
+    ];
+
+    expect(() => runMigrations(db, migrations)).toThrow();
+
+    // Transaction rolled back — table should not exist
+    const tables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='new_table'",
+      )
+      .get();
+    expect(tables).toBeUndefined();
+    expect(getApplied(db)).toHaveLength(0);
+  });
+
+  it("applies earlier migrations even if a later one fails", () => {
+    const db = createExistingDb();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+
+    const migrations: Migration[] = [
+      { id: 1, name: "good", sql: "ALTER TABLE t ADD COLUMN a TEXT" },
+      { id: 2, name: "bad", sql: "ALTER TABLE nonexistent ADD COLUMN x TEXT" },
+    ];
+
+    expect(() => runMigrations(db, migrations)).toThrow();
+
+    // Migration 1 committed, migration 2 rolled back
+    const applied = getApplied(db);
+    expect(applied).toHaveLength(1);
+    expect(applied[0].id).toBe(1);
+
+    // Column from migration 1 exists
+    const cols = db.prepare("PRAGMA table_info(t)").all() as Array<{
+      name: string;
+    }>;
+    expect(cols.map((c) => c.name)).toContain("a");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: idempotency
+// ---------------------------------------------------------------------------
+
+describe("runMigrations — idempotency", () => {
+  it("calling twice on a fresh DB is safe", () => {
     const db = createDb();
     db.exec(SCHEMA_SQL);
     runMigrations(db);
     runMigrations(db);
 
-    const rows = db
-      .prepare("SELECT id FROM schema_migrations ORDER BY id")
-      .all() as Array<{ id: number }>;
-    expect(rows.length).toBe(MIGRATIONS.length);
+    expect(getApplied(db)).toHaveLength(MIGRATIONS.length);
   });
 
-  it("skips already-applied migrations on existing DBs", () => {
-    const db = createDb();
+  it("calling twice on an existing DB is safe", () => {
+    const db = createExistingDb();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
 
-    // Simulate an existing DB that already has migration #1 applied
-    db.exec(`
-      CREATE TABLE user_config_snapshots (
-        id INTEGER PRIMARY KEY,
-        plugin_hooks JSON NOT NULL DEFAULT '[]'
-      )
-    `);
-    db.exec(`
-      CREATE TABLE schema_migrations (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-    db.prepare("INSERT INTO schema_migrations (id, name) VALUES (?, ?)").run(
-      1,
-      "add_plugin_hooks_to_user_config",
-    );
+    const spy = vi.fn((d: Database.Database) => {
+      d.exec("ALTER TABLE t ADD COLUMN a TEXT");
+    });
+    const migrations: Migration[] = [{ id: 1, name: "once", up: spy }];
 
-    // Should not throw — migration #1 is skipped
-    runMigrations(db);
+    runMigrations(db, migrations);
+    runMigrations(db, migrations);
 
-    const rows = db
-      .prepare("SELECT id FROM schema_migrations ORDER BY id")
-      .all() as Array<{ id: number }>;
-    expect(rows.length).toBe(1);
+    expect(spy).toHaveBeenCalledOnce();
+    expect(getApplied(db)).toHaveLength(1);
   });
 
-  it("rolls back failed migrations without recording them", () => {
+  it("handles empty migrations array", () => {
     const db = createDb();
-
-    // Create schema_migrations to indicate an existing DB
-    db.exec(`
-      CREATE TABLE schema_migrations (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-    // Don't create user_config_snapshots — migration #1 will fail
-    // because the table doesn't exist
-
-    expect(() => runMigrations(db)).toThrow();
-
-    // Verify the failed migration was NOT recorded
-    const rows = db.prepare("SELECT id FROM schema_migrations").all() as Array<{
-      id: number;
-    }>;
-    expect(rows.length).toBe(0);
+    runMigrations(db, []);
+    expect(getApplied(db)).toHaveLength(0);
   });
 });
