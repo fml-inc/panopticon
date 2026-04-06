@@ -116,7 +116,11 @@ const EXEC: Record<string, ExecFn> = {
       const wm = readWatermark(key);
       const maxId =
         (
-          db.prepare(`SELECT MAX(id) as m FROM ${desc.table}`).get() as {
+          db
+            .prepare(
+              `SELECT MAX(${desc.table === "sessions" ? "sync_seq" : "id"}) as m FROM ${desc.table}`,
+            )
+            .get() as {
             m: number | null;
           }
         )?.m ?? 0;
