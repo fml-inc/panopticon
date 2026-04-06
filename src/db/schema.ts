@@ -273,7 +273,8 @@ CREATE TABLE IF NOT EXISTS user_config_snapshots (
   hooks JSON NOT NULL DEFAULT '[]',
   commands JSON NOT NULL DEFAULT '[]',
   rules JSON NOT NULL DEFAULT '[]',
-  skills JSON NOT NULL DEFAULT '[]'
+  skills JSON NOT NULL DEFAULT '[]',
+  plugin_hooks JSON NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS repo_config_snapshots (
@@ -445,6 +446,15 @@ export function getDb(): Database.Database {
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
+
+  // Migrations — add columns that may be missing on existing databases
+  try {
+    _db.exec(
+      "ALTER TABLE user_config_snapshots ADD COLUMN plugin_hooks JSON NOT NULL DEFAULT '[]'",
+    );
+  } catch {
+    // Column already exists
+  }
 
   // Check data version for resync
   const currentVersion = (_db.pragma("user_version", { simple: true }) ??
