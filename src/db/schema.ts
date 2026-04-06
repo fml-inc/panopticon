@@ -411,6 +411,69 @@ CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(re
  */
 export const SCANNER_DATA_VERSION = 1;
 
+// ---------------------------------------------------------------------------
+// Sequential schema migrations
+// ---------------------------------------------------------------------------
+//
+// Each migration runs exactly once, tracked in the `schema_migrations` table.
+// Add new migrations to the end of this array — never reorder or remove.
+// Migrations run inside a transaction so they either fully apply or roll back.
+
+const MIGRATIONS: Array<{ id: number; name: string; sql: string }> = [
+  {
+    id: 1,
+    name: "add_plugin_hooks_to_user_config",
+    sql: "ALTER TABLE user_config_snapshots ADD COLUMN plugin_hooks JSON NOT NULL DEFAULT '[]'",
+  },
+];
+
+function runMigrations(db: Database.Database): void {
+  // Ensure the tracking table exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  const applied = new Set(
+    (
+      db.prepare("SELECT id FROM schema_migrations").all() as Array<{
+        id: number;
+      }>
+    ).map((r) => r.id),
+  );
+
+  for (const migration of MIGRATIONS) {
+    if (applied.has(migration.id)) continue;
+    const run = db.transaction(() => {
+      db.exec(migration.sql);
+      db.prepare("INSERT INTO schema_migrations (id, name) VALUES (?, ?)").run(
+        migration.id,
+        migration.name,
+      );
+    });
+    try {
+      run();
+    } catch (err) {
+      // Column/table already exists — mark as applied anyway so we don't retry
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") || msg.includes("already exists")) {
+        db.prepare(
+          "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+        ).run(migration.id, migration.name);
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Database initialization
+// ---------------------------------------------------------------------------
+
 let _db: Database.Database | null = null;
 let _needsResync = false;
 
@@ -446,15 +509,7 @@ export function getDb(): Database.Database {
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
-
-  // Migrations — add columns that may be missing on existing databases
-  try {
-    _db.exec(
-      "ALTER TABLE user_config_snapshots ADD COLUMN plugin_hooks JSON NOT NULL DEFAULT '[]'",
-    );
-  } catch {
-    // Column already exists
-  }
+  runMigrations(_db);
 
   // Check data version for resync
   const currentVersion = (_db.pragma("user_version", { simple: true }) ??
