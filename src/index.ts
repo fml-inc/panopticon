@@ -41,6 +41,7 @@ export { type RepoInfo, resolveRepoFromCwd } from "./repo.js";
 export {
   type ClaudeCodeConfig,
   type ConfigLayer,
+  type PluginHooksSummary,
   readConfig,
   writeFile,
   writeSettings,

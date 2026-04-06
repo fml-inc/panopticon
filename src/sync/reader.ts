@@ -428,7 +428,7 @@ function parseJsonObject(raw: string | null): Record<string, unknown> {
 
 const USER_CONFIG_SQL = `
   SELECT id, device_name, snapshot_at_ms, content_hash,
-         permissions, enabled_plugins, hooks, commands, rules, skills
+         permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks
   FROM user_config_snapshots
   WHERE id > ?
   ORDER BY id
@@ -451,6 +451,7 @@ export function readUserConfigSnapshots(
     commands: string | null;
     rules: string | null;
     skills: string | null;
+    plugin_hooks: string | null;
   }>;
 
   const rows: UserConfigSnapshotRecord[] = rawRows.map((r) => ({
@@ -464,6 +465,7 @@ export function readUserConfigSnapshots(
     commands: parseJsonArray(r.commands),
     rules: parseJsonArray(r.rules),
     skills: parseJsonArray(r.skills),
+    pluginHooks: parseJsonArray(r.plugin_hooks),
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;

@@ -18,6 +18,12 @@ export interface ConfigLayer {
   permissions: { allow: string[]; ask: string[]; deny: string[] };
 }
 
+export interface PluginHooksSummary {
+  pluginName: string;
+  marketplace: string;
+  hooks: ConfigLayer["hooks"];
+}
+
 export interface ClaudeCodeConfig {
   managed: ConfigLayer | null;
   user: ConfigLayer;
@@ -25,6 +31,7 @@ export interface ClaudeCodeConfig {
   projectLocal: ConfigLayer | null;
   instructions: Array<{ path: string; content: string; lineCount: number }>;
   enabledPlugins: Array<{ pluginName: string; marketplace: string }>;
+  pluginHooks: PluginHooksSummary[];
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +199,89 @@ function parseEnabledPlugins(
     }
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin hook discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the active version directory for a plugin in the cache.
+ * Picks the highest semver directory, falling back to lexicographic sort.
+ */
+function resolvePluginVersionDir(pluginCacheDir: string): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(pluginCacheDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .filter((n) => n !== "unknown")
+    .sort((a, b) => {
+      // Simple semver comparison: split on dots, compare numerically
+      const pa = a.split(".").map(Number);
+      const pb = b.split(".").map(Number);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const na = pa[i] ?? 0;
+        const nb = pb[i] ?? 0;
+        if (Number.isNaN(na) || Number.isNaN(nb)) return a.localeCompare(b);
+        if (na !== nb) return na - nb;
+      }
+      return 0;
+    });
+  return dirs.length > 0
+    ? path.join(pluginCacheDir, dirs[dirs.length - 1])
+    : null;
+}
+
+/**
+ * Read hooks from all enabled plugins' cache directories.
+ */
+function readPluginHooks(
+  enabledPlugins: Array<{ pluginName: string; marketplace: string }>,
+): PluginHooksSummary[] {
+  const claudeHome = path.join(os.homedir(), ".claude");
+  const results: PluginHooksSummary[] = [];
+
+  for (const plugin of enabledPlugins) {
+    if (!plugin.marketplace) continue;
+    const pluginCacheDir = path.join(
+      claudeHome,
+      "plugins",
+      "cache",
+      plugin.marketplace,
+      plugin.pluginName,
+    );
+    const versionDir = resolvePluginVersionDir(pluginCacheDir);
+    if (!versionDir) continue;
+
+    const hooksJsonPath = path.join(versionDir, "hooks", "hooks.json");
+    const raw = readFileOrNull(hooksJsonPath);
+    if (!raw) continue;
+
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const hooksObj = parsed.hooks;
+      if (!hooksObj || typeof hooksObj !== "object" || Array.isArray(hooksObj))
+        continue;
+      // Reuse parseHooks by wrapping in the shape it expects
+      const hooks = parseHooks({ hooks: hooksObj });
+      if (hooks.length > 0) {
+        results.push({
+          pluginName: plugin.pluginName,
+          marketplace: plugin.marketplace,
+          hooks,
+        });
+      }
+    } catch {
+      // Malformed hooks.json — skip
+    }
+  }
+
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -482,7 +572,18 @@ export function readConfig(cwd?: string): ClaudeCodeConfig {
     }
   }
 
-  return { managed, user, project, projectLocal, instructions, enabledPlugins };
+  // Plugin hooks — scan enabled plugins' cache dirs for hooks.json
+  const pluginHooks = readPluginHooks(enabledPlugins);
+
+  return {
+    managed,
+    user,
+    project,
+    projectLocal,
+    instructions,
+    enabledPlugins,
+    pluginHooks,
+  };
 }
 
 /**

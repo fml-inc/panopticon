@@ -537,6 +537,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         commands: config.user.commands,
         rules: config.user.rules,
         skills: config.user.skills,
+        pluginHooks: config.pluginHooks,
       });
     } catch {
       // Non-fatal

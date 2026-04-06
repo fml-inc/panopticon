@@ -226,6 +226,7 @@ export interface UserConfigSnapshot {
   commands: unknown;
   rules: unknown;
   skills: unknown;
+  pluginHooks: unknown;
 }
 
 /**
@@ -241,6 +242,7 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
     commands: snap.commands,
     rules: snap.rules,
     skills: snap.skills,
+    pluginHooks: snap.pluginHooks,
   });
 
   // Check if latest snapshot for this device has the same hash
@@ -254,8 +256,8 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
 
   db.prepare(
     `INSERT INTO user_config_snapshots
-       (device_name, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (device_name, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     snap.deviceName,
     Date.now(),
@@ -266,6 +268,7 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
     JSON.stringify(snap.commands),
     JSON.stringify(snap.rules),
     JSON.stringify(snap.skills),
+    JSON.stringify(snap.pluginHooks),
   );
   return true;
 }

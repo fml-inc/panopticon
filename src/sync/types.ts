@@ -151,6 +151,7 @@ export interface UserConfigSnapshotRecord {
   commands: unknown[];
   rules: unknown[];
   skills: unknown[];
+  pluginHooks: unknown[];
 }
 
 export interface RepoConfigSnapshotRecord {

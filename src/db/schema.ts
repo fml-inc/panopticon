@@ -2,6 +2,9 @@ import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import { config } from "../config.js";
+import { runMigrations } from "./migrations.js";
+
+export { runMigrations } from "./migrations.js";
 
 export const SCHEMA_SQL = `
 
@@ -273,7 +276,8 @@ CREATE TABLE IF NOT EXISTS user_config_snapshots (
   hooks JSON NOT NULL DEFAULT '[]',
   commands JSON NOT NULL DEFAULT '[]',
   rules JSON NOT NULL DEFAULT '[]',
-  skills JSON NOT NULL DEFAULT '[]'
+  skills JSON NOT NULL DEFAULT '[]',
+  plugin_hooks JSON NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS repo_config_snapshots (
@@ -410,6 +414,10 @@ CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(re
  */
 export const SCANNER_DATA_VERSION = 1;
 
+// ---------------------------------------------------------------------------
+// Database initialization
+// ---------------------------------------------------------------------------
+
 let _db: Database.Database | null = null;
 let _needsResync = false;
 
@@ -445,6 +453,7 @@ export function getDb(): Database.Database {
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
+  runMigrations(_db);
 
   // Check data version for resync
   const currentVersion = (_db.pragma("user_version", { simple: true }) ??
