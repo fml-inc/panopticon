@@ -15,6 +15,32 @@ import type {
   ParsedTurn,
 } from "../targets/types.js";
 
+// ── Sync ID preservation across single-file reparses ──────────────────────
+
+export interface SavedSyncIds {
+  turns: Array<{
+    sessionId: string;
+    source: string;
+    turnIndex: number;
+    syncId: string;
+  }>;
+  events: Array<{
+    sessionId: string;
+    source: string;
+    eventType: string;
+    timestampMs: number;
+    toolName: string;
+    syncId: string;
+  }>;
+  toolCalls: Array<{
+    sessionId: string;
+    ordinal: number;
+    toolUseId: string;
+    toolName: string;
+    syncId: string;
+  }>;
+}
+
 // ── Session upsert (writes to unified sessions table) ───────────────────────
 
 export function upsertSession(
@@ -246,15 +272,109 @@ export function writeFileWatermark(filePath: string, byteOffset: number): void {
 }
 
 /**
+ * Snapshot sync_id values for a session and its fork children so they
+ * can be restored after re-insertion (preserving upstream sync identity).
+ */
+function snapshotSyncIds(sessionId: string): SavedSyncIds {
+  const db = getDb();
+  const saved: SavedSyncIds = { turns: [], events: [], toolCalls: [] };
+
+  const forkRows = db
+    .prepare(
+      "SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
+    )
+    .all(sessionId) as Array<{ session_id: string }>;
+  const allIds = [sessionId, ...forkRows.map((r) => r.session_id)];
+
+  for (const sid of allIds) {
+    const turns = db
+      .prepare(
+        "SELECT session_id, source, turn_index, sync_id FROM scanner_turns WHERE session_id = ?",
+      )
+      .all(sid) as Array<{
+      session_id: string;
+      source: string;
+      turn_index: number;
+      sync_id: string;
+    }>;
+    for (const t of turns) {
+      saved.turns.push({
+        sessionId: t.session_id,
+        source: t.source,
+        turnIndex: t.turn_index,
+        syncId: t.sync_id,
+      });
+    }
+
+    const events = db
+      .prepare(
+        "SELECT session_id, source, event_type, timestamp_ms, COALESCE(tool_name, '') as tool_name, sync_id FROM scanner_events WHERE session_id = ?",
+      )
+      .all(sid) as Array<{
+      session_id: string;
+      source: string;
+      event_type: string;
+      timestamp_ms: number;
+      tool_name: string;
+      sync_id: string;
+    }>;
+    for (const e of events) {
+      saved.events.push({
+        sessionId: e.session_id,
+        source: e.source,
+        eventType: e.event_type,
+        timestampMs: e.timestamp_ms,
+        toolName: e.tool_name,
+        syncId: e.sync_id,
+      });
+    }
+
+    const tcs = db
+      .prepare(
+        `SELECT tc.session_id, m.ordinal, COALESCE(tc.tool_use_id, '') as tool_use_id,
+                tc.tool_name, tc.sync_id
+         FROM tool_calls tc
+         INNER JOIN messages m ON tc.message_id = m.id
+         WHERE tc.session_id = ?`,
+      )
+      .all(sid) as Array<{
+      session_id: string;
+      ordinal: number;
+      tool_use_id: string;
+      tool_name: string;
+      sync_id: string;
+    }>;
+    for (const tc of tcs) {
+      saved.toolCalls.push({
+        sessionId: tc.session_id,
+        ordinal: tc.ordinal,
+        toolUseId: tc.tool_use_id,
+        toolName: tc.tool_name,
+        syncId: tc.sync_id,
+      });
+    }
+  }
+
+  return saved;
+}
+
+/**
  * Reset a single file for full reparse: clear its watermark and delete
  * all turns, messages, tool_calls, and events for the session so the
  * full-file parse can re-insert cleanly (including fork detection).
+ *
+ * Returns previously-assigned sync_id values keyed by natural keys so
+ * the caller can restore them after re-insertion.
  */
 export function resetFileForReparse(
   filePath: string,
   sessionId?: string,
-): void {
+): SavedSyncIds {
   const db = getDb();
+  const saved: SavedSyncIds = sessionId
+    ? snapshotSyncIds(sessionId)
+    : { turns: [], events: [], toolCalls: [] };
+
   db.prepare("DELETE FROM scanner_file_watermarks WHERE file_path = ?").run(
     filePath,
   );
@@ -290,6 +410,66 @@ export function resetFileForReparse(
       "DELETE FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
     ).run(sessionId);
   }
+
+  return saved;
+}
+
+/**
+ * Restore previously-saved sync_id values after data has been re-inserted.
+ * Matches rows by the same natural keys used in reparseAll().
+ */
+export function restoreSyncIds(saved: SavedSyncIds): void {
+  if (!saved.turns.length && !saved.events.length && !saved.toolCalls.length)
+    return;
+
+  const db = getDb();
+  const tx = db.transaction(() => {
+    if (saved.turns.length > 0) {
+      const stmt = db.prepare(
+        "UPDATE scanner_turns SET sync_id = ? WHERE session_id = ? AND source = ? AND turn_index = ?",
+      );
+      for (const t of saved.turns) {
+        stmt.run(t.syncId, t.sessionId, t.source, t.turnIndex);
+      }
+    }
+
+    if (saved.events.length > 0) {
+      const stmt = db.prepare(
+        `UPDATE scanner_events SET sync_id = ?
+         WHERE session_id = ? AND source = ? AND event_type = ? AND timestamp_ms = ?
+           AND COALESCE(tool_name, '') = ?`,
+      );
+      for (const e of saved.events) {
+        stmt.run(
+          e.syncId,
+          e.sessionId,
+          e.source,
+          e.eventType,
+          e.timestampMs,
+          e.toolName,
+        );
+      }
+    }
+
+    if (saved.toolCalls.length > 0) {
+      const stmt = db.prepare(
+        `UPDATE tool_calls SET sync_id = ?
+         WHERE message_id IN (SELECT id FROM messages WHERE session_id = ? AND ordinal = ?)
+           AND COALESCE(tool_use_id, '') = ?
+           AND tool_name = ?`,
+      );
+      for (const tc of saved.toolCalls) {
+        stmt.run(
+          tc.syncId,
+          tc.sessionId,
+          tc.ordinal,
+          tc.toolUseId,
+          tc.toolName,
+        );
+      }
+    }
+  });
+  tx();
 }
 
 // ── Turn count for incremental parsing ──────────────────────────────────────

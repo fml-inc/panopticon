@@ -220,6 +220,21 @@ export function syncWatermarkSet(
   return callExec("sync-watermark-set", { target, table, value });
 }
 
+export function syncPending(target: string): Promise<{
+  target: string;
+  totalPending: number;
+  tables: Record<string, { maxId: number; watermark: number; pending: number }>;
+}> {
+  return callExec("sync-pending", { target }) as Promise<{
+    target: string;
+    totalPending: number;
+    tables: Record<
+      string,
+      { maxId: number; watermark: number; pending: number }
+    >;
+  }>;
+}
+
 export function syncTargetList(): Promise<unknown> {
   return callExec("sync-target-list");
 }

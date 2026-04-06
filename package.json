@@ -77,6 +77,10 @@
       "types": "./dist/scanner.d.ts",
       "import": "./dist/scanner.js"
     },
+    "./api": {
+      "types": "./dist/api/client.d.ts",
+      "import": "./dist/api/client.js"
+    },
     "./sync": {
       "types": "./dist/sync/index.d.ts",
       "import": "./dist/sync/index.js"

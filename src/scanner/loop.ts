@@ -11,6 +11,7 @@ import { log } from "../log.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
 import type { ParseResult } from "../targets/types.js";
+import type { SavedSyncIds } from "./store.js";
 import {
   getMaxOrdinal,
   getTurnCount,
@@ -21,6 +22,7 @@ import {
   readArchivedSize,
   readFileWatermark,
   resetFileForReparse,
+  restoreSyncIds,
   updateSessionTotals,
   upsertSession,
   writeArchivedSize,
@@ -51,8 +53,9 @@ export function scanOnce(): {
 
       // If incremental parse detected a DAG fork, reset watermark
       // and reparse from byte 0 so fork detection runs on the full file.
+      let savedSyncIds: SavedSyncIds | undefined;
       if (result.needsFullReparse && offset > 0) {
-        resetFileForReparse(filePath, result.meta?.sessionId);
+        savedSyncIds = resetFileForReparse(filePath, result.meta?.sessionId);
         offset = 0;
         result = target.scanner.parseFile(filePath, 0);
         if (!result) continue;
@@ -141,6 +144,11 @@ export function scanOnce(): {
           )();
           newTurns += fork.turns.length;
         }
+      }
+
+      // Restore sync_ids after all data for this file has been re-inserted
+      if (savedSyncIds) {
+        restoreSyncIds(savedSyncIds);
       }
 
       // Archive raw file for 100% recall
