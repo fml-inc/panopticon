@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,49 +14,15 @@ import {
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
 import { log } from "../log.js";
-import { type RepoInfo, resolveRepoFromCwd } from "../repo.js";
+import {
+  type RepoInfo,
+  resolveGitIdentity,
+  resolveRepoFromCwd,
+} from "../repo.js";
 import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
-
-// Cache: cwd → { name, email }
-const gitIdentityCache = new Map<
-  string,
-  { name: string | null; email: string | null }
->();
-
-function resolveGitIdentity(cwd: string): {
-  name: string | null;
-  email: string | null;
-} {
-  const cached = gitIdentityCache.get(cwd);
-  if (cached) return cached;
-
-  const result = { name: null as string | null, email: null as string | null };
-  try {
-    result.name =
-      execFileSync("git", ["-C", cwd, "config", "user.name"], {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim() || null;
-  } catch {
-    // no user.name configured
-  }
-  try {
-    result.email =
-      execFileSync("git", ["-C", cwd, "config", "user.email"], {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim() || null;
-  } catch {
-    // no user.email configured
-  }
-  gitIdentityCache.set(cwd, result);
-  return result;
-}
 
 // Last resolved repo per session — used as fallback for events without paths
 // (e.g. Stop, UserPromptSubmit). Long-lived in the server process.
