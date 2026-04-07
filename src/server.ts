@@ -133,7 +133,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     }
   }
 
-  const sentryActive = initSentry();
+  const sentryActive = await initSentry();
   if (sentryActive) log.server.info("Sentry: enabled");
 
   const server = createUnifiedServer();

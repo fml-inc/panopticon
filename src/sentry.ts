@@ -3,29 +3,29 @@
  *
  * Provides breadcrumbs, structured context, and PII scrubbing so that
  * error reports carry rich debugging context without leaking user data.
+ *
+ * @sentry/core is bundled into dist but loaded dynamically — if it fails
+ * to load, all exports gracefully no-op.
  */
 
 import os from "node:os";
-import type { Breadcrumb, ErrorEvent } from "@sentry/core";
-import {
-  createStackParser,
-  createTransport,
-  isInitialized,
-  nodeStackLineParser,
-  ServerRuntimeClient,
-  addBreadcrumb as sentryAddBreadcrumb,
-  captureException as sentryCaptureException,
-  flush as sentryFlush,
-  setTag as sentrySetTag,
-  setCurrentClient,
-  withScope,
-} from "@sentry/core";
 import { config } from "./config.js";
 
 declare const __PANOPTICON_VERSION__: string;
 declare const __SENTRY_DSN__: string;
 
 let initialized = false;
+let sentry: typeof import("@sentry/core") | null = null;
+
+async function loadSentry(): Promise<typeof import("@sentry/core") | null> {
+  if (sentry) return sentry;
+  try {
+    sentry = await import("@sentry/core");
+    return sentry;
+  } catch {
+    return null;
+  }
+}
 
 function getVersion(): string {
   return typeof __PANOPTICON_VERSION__ !== "undefined"
@@ -57,7 +57,9 @@ const SENSITIVE_VAR_PATTERNS = [
 ];
 
 /** Strip sensitive data from a Sentry event before it leaves the machine. */
-export function scrubEvent(event: ErrorEvent): ErrorEvent | null {
+export function scrubEvent(
+  event: import("@sentry/core").ErrorEvent,
+): import("@sentry/core").ErrorEvent | null {
   // Scrub breadcrumb data that might contain user prompts or file contents
   if (event.breadcrumbs) {
     for (const bc of event.breadcrumbs) {
@@ -105,7 +107,9 @@ export function scrubEvent(event: ErrorEvent): ErrorEvent | null {
 }
 
 /** Filter out noisy breadcrumbs that would drown signal. */
-export function filterBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
+export function filterBreadcrumb(
+  breadcrumb: import("@sentry/core").Breadcrumb,
+): import("@sentry/core").Breadcrumb | null {
   // Drop debug-level console breadcrumbs (sync log lines, etc.)
   if (breadcrumb.category === "console" && breadcrumb.level === "debug") {
     return null;
@@ -123,17 +127,20 @@ export function filterBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
  * Initialize Sentry if a DSN is available. Safe to call multiple times —
  * subsequent calls are no-ops. Returns true if Sentry is active.
  */
-export function initSentry(): boolean {
-  if (initialized) return isInitialized();
+export async function initSentry(): Promise<boolean> {
+  if (initialized) return sentry?.isInitialized() ?? false;
 
   initialized = true;
+
+  const mod = await loadSentry();
+  if (!mod) return false;
 
   const dsn = process.env.PANOPTICON_SENTRY_DSN ?? __SENTRY_DSN__;
   if (!dsn) return false;
 
   const version = getVersion();
 
-  const client = new ServerRuntimeClient({
+  const client = new mod.ServerRuntimeClient({
     dsn,
     release: `panopticon@${version}`,
     environment: process.env.NODE_ENV ?? "production",
@@ -142,9 +149,9 @@ export function initSentry(): boolean {
     tracesSampleRate: 0,
     sendDefaultPii: false,
     integrations: [],
-    stackParser: createStackParser(nodeStackLineParser()),
+    stackParser: mod.createStackParser(mod.nodeStackLineParser()),
     transport: (options) =>
-      createTransport(options, async (request) => {
+      mod.createTransport(options, async (request) => {
         const res = await fetch(options.url, {
           method: "POST",
           headers: { "Content-Type": "application/x-sentry-envelope" },
@@ -173,7 +180,7 @@ export function initSentry(): boolean {
     beforeBreadcrumb: filterBreadcrumb,
   });
 
-  setCurrentClient(client);
+  mod.setCurrentClient(client);
   client.init();
 
   return true;
@@ -192,9 +199,9 @@ export function captureException(
     [key: string]: string | number | undefined;
   },
 ): void {
-  if (!isInitialized()) return;
+  if (!sentry?.isInitialized()) return;
 
-  withScope((scope) => {
+  sentry.withScope((scope) => {
     if (context) {
       if (context.component) {
         scope.setTag("component", context.component);
@@ -205,7 +212,7 @@ export function captureException(
         scope.setContext("panopticon_error", extra);
       }
     }
-    sentryCaptureException(err);
+    sentry!.captureException(err);
   });
 }
 
@@ -219,22 +226,22 @@ export function addBreadcrumb(
   data?: Record<string, unknown>,
   level: "info" | "warning" | "error" | "debug" = "info",
 ): void {
-  if (!isInitialized()) return;
-  sentryAddBreadcrumb({ category, message, data, level });
+  if (!sentry?.isInitialized()) return;
+  sentry.addBreadcrumb({ category, message, data, level });
 }
 
 /**
  * Set a global tag on all future Sentry events.
  */
 export function setTag(key: string, value: string | number): void {
-  if (!isInitialized()) return;
-  sentrySetTag(key, value);
+  if (!sentry?.isInitialized()) return;
+  sentry.setTag(key, value);
 }
 
 /**
  * Flush pending Sentry events before process exit.
  */
 export async function flushSentry(timeoutMs = 2000): Promise<void> {
-  if (!isInitialized()) return;
-  await sentryFlush(timeoutMs);
+  if (!sentry?.isInitialized()) return;
+  await sentry.flush(timeoutMs);
 }

@@ -298,7 +298,7 @@ export async function runHandler(opts: {
   }
 }
 
-initSentry();
+await initSentry();
 // CLI args are set at install time: `node hook-handler <target> <port> [--proxy]`
 // When invoked without args (e.g. by Claude Code's plugin system), falls back
 // to config defaults and server-side target detection.
