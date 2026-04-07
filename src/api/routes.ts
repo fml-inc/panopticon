@@ -127,22 +127,27 @@ const EXEC: Record<string, ExecFn> = {
     for (const desc of TABLE_SYNC_REGISTRY) {
       const wmCol = WM_COLUMNS[desc.table];
       if (desc.sessionLinked && wmCol) {
-        // Session-linked tables: count rows beyond each session's per-session watermark,
-        // plus rows belonging to sessions not yet tracked in target_session_sync.
+        // Session-linked tables: count rows belonging to confirmed sessions
+        // that are beyond each session's per-session watermark.
         const total =
           (
-            db.prepare(`SELECT COUNT(*) as c FROM ${desc.table}`).get() as {
-              c: number;
-            }
+            db
+              .prepare(
+                `SELECT COUNT(*) as c FROM ${desc.table} t
+               INNER JOIN target_session_sync tss
+                 ON tss.session_id = t.session_id AND tss.target = ?
+               WHERE tss.confirmed = 1`,
+              )
+              .get(target) as { c: number }
           )?.c ?? 0;
         const pendingCount =
           (
             db
               .prepare(
                 `SELECT COUNT(*) as c FROM ${desc.table} t
-               LEFT JOIN target_session_sync tss
+               INNER JOIN target_session_sync tss
                  ON tss.session_id = t.session_id AND tss.target = ?
-               WHERE tss.${wmCol} IS NULL OR t.id > tss.${wmCol}`,
+               WHERE tss.confirmed = 1 AND t.id > tss.${wmCol}`,
               )
               .get(target) as { c: number }
           )?.c ?? 0;
