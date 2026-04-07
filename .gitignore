@@ -6,4 +6,5 @@ dist/
 *.db-shm
 .DS_Store
 .claude/
+.claude-plugin/
 *.tgz
