@@ -86,15 +86,31 @@ export function runMigrations(
   `);
 
   if (!trackingExists) {
-    // Fresh database: SCHEMA_SQL already created everything.
-    // Stamp all migrations as applied without executing them.
-    const stamp = db.prepare(
-      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
-    );
-    for (const m of migrations) {
-      stamp.run(m.id, m.name);
+    // No tracking table could mean:
+    //   a) Truly fresh DB — SCHEMA_SQL just created all tables with all columns
+    //   b) Pre-migration-system DB — tables existed before migrations were added,
+    //      and CREATE TABLE IF NOT EXISTS didn't add new columns
+    //
+    // Distinguish by checking for existing data. A fresh DB has no rows yet.
+    let hasData = false;
+    try {
+      hasData = !!db.prepare("SELECT 1 FROM sessions LIMIT 1").get();
+    } catch {
+      // sessions table doesn't exist — definitely a fresh/test DB
     }
-    return;
+
+    if (!hasData) {
+      // Fresh database: SCHEMA_SQL already created everything.
+      // Stamp all migrations as applied without executing them.
+      const stamp = db.prepare(
+        "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+      );
+      for (const m of migrations) {
+        stamp.run(m.id, m.name);
+      }
+      return;
+    }
+    // Pre-migration-system DB: fall through to run migrations normally
   }
 
   // Existing database: run unapplied migrations sequentially

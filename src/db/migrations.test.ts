@@ -118,6 +118,62 @@ describe("runMigrations — fresh DB", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: pre-migration-system DB (no schema_migrations table but has data)
+// ---------------------------------------------------------------------------
+
+describe("runMigrations — pre-migration-system DB", () => {
+  it("runs migrations instead of stamping when sessions table has data", () => {
+    const db = createDb();
+    // Simulate a pre-migration-system DB: tables exist with data but no schema_migrations
+    db.exec(`
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        start_ms INTEGER NOT NULL
+      )
+    `);
+    db.exec("INSERT INTO sessions (session_id, start_ms) VALUES ('s1', 1000)");
+    db.exec(`
+      CREATE TABLE user_config_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_name TEXT NOT NULL,
+        snapshot_at_ms INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        permissions JSON NOT NULL DEFAULT '{}',
+        enabled_plugins JSON NOT NULL DEFAULT '[]',
+        hooks JSON NOT NULL DEFAULT '[]',
+        commands JSON NOT NULL DEFAULT '[]',
+        rules JSON NOT NULL DEFAULT '[]',
+        skills JSON NOT NULL DEFAULT '[]'
+      )
+    `);
+
+    runMigrations(db);
+
+    // Migration should have EXECUTED (not just stamped)
+    const cols = db
+      .prepare("PRAGMA table_info(user_config_snapshots)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("plugin_hooks");
+    expect(getApplied(db).map((r) => r.id)).toContain(1);
+  });
+
+  it("stamps without executing when sessions table has no data", () => {
+    const db = createDb();
+    db.exec(
+      "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, start_ms INTEGER NOT NULL)",
+    );
+    // No data inserted — treat as fresh
+    const spy = vi.fn();
+    const migrations: Migration[] = [{ id: 1, name: "noop", up: spy }];
+
+    runMigrations(db, migrations);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(getApplied(db)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: existing DB behavior
 // ---------------------------------------------------------------------------
 
