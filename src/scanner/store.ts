@@ -6,7 +6,7 @@ import {
   upsertSessionRepository,
   upsertSession as upsertSessionRow,
 } from "../db/store.js";
-import { resolveRepoFromCwd } from "../repo.js";
+import { resolveGitIdentity, resolveRepoFromCwd } from "../repo.js";
 import type {
   ParsedEvent,
   ParsedMessage,
@@ -82,11 +82,12 @@ export function upsertSession(
   if (meta.cwd) {
     const info = resolveRepoFromCwd(meta.cwd);
     if (info) {
+      const gitId = resolveGitIdentity(meta.cwd);
       upsertSessionRepository(
         meta.sessionId,
         info.repo,
         meta.startedAtMs ?? Date.now(),
-        undefined,
+        gitId,
         info.branch,
       );
     }
@@ -173,11 +174,12 @@ export function insertScannerEvents(
       seen.add(dir);
       const info = resolveRepoFromCwd(dir);
       if (info) {
+        const gitId = resolveGitIdentity(dir);
         upsertSessionRepository(
           e.sessionId,
           info.repo,
           e.timestampMs,
-          undefined,
+          gitId,
           info.branch,
         );
       }

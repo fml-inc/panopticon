@@ -98,8 +98,48 @@ export function resolveRepoFromCwd(cwd: string): RepoInfo | null {
   return result;
 }
 
+// Cache: cwd → git identity
+const gitIdentityCache = new Map<
+  string,
+  { name: string | null; email: string | null }
+>();
+
+/** Resolve git user.name / user.email for a directory. Cached per-process. */
+export function resolveGitIdentity(cwd: string): {
+  name: string | null;
+  email: string | null;
+} {
+  const cached = gitIdentityCache.get(cwd);
+  if (cached) return cached;
+
+  const result = { name: null as string | null, email: null as string | null };
+  try {
+    result.name =
+      execFileSync("git", ["-C", cwd, "config", "user.name"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null;
+  } catch {
+    // no user.name configured
+  }
+  try {
+    result.email =
+      execFileSync("git", ["-C", cwd, "config", "user.email"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null;
+  } catch {
+    // no user.email configured
+  }
+  gitIdentityCache.set(cwd, result);
+  return result;
+}
+
 /** Reset caches (for testing). */
 export function _resetRepoCache(): void {
   repoCache.clear();
+  gitIdentityCache.clear();
   for (const p of providers) p.close?.();
 }
