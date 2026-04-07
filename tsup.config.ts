@@ -48,6 +48,7 @@ export default defineConfig({
       "https://dcf9fb5ae8ac18803d98c3ee577faf39@o4510167429873664.ingest.us.sentry.io/4511107500343296",
     ),
   },
+  noExternal: ["@sentry/core"],
   splitting: true,
   clean: true,
   sourcemap: true,
