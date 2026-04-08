@@ -643,28 +643,32 @@ export function readToolCalls(
   return { rows, maxId };
 }
 
-// ── Sessions (watermark on sync_seq) ────────────────────────────────────────
+// ── Sessions (by ID, no global watermark) ───────────────────────────────────
 
-const SESSIONS_SQL = `
-  SELECT session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
-         permission_mode, agent_version,
-         total_input_tokens, total_output_tokens, total_cache_read_tokens,
-         total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-         models, summary, tool_counts, hook_tool_counts, event_type_counts, hook_event_type_counts, sync_seq,
-         project, machine, message_count, user_message_count,
-         parent_session_id, relationship_type, is_automated, created_at
-  FROM sessions
-  WHERE sync_seq > ?
-  ORDER BY sync_seq
-  LIMIT ?
-`;
+/**
+ * Read specific sessions by ID for syncing.
+ * Sessions don't use a global watermark — the sync loop finds which sessions
+ * need syncing by comparing sessions.sync_seq against target_session_sync.
+ */
+export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
+  if (sessionIds.length === 0) return [];
 
-export function readSessions(
-  afterSeq: number,
-  limit: number,
-): { rows: SessionSyncRecord[]; maxId: number } {
   const db = getDb();
-  const rawRows = db.prepare(SESSIONS_SQL).all(afterSeq, limit) as Array<{
+  const placeholders = sessionIds.map(() => "?").join(", ");
+
+  const rawRows = db
+    .prepare(
+      `SELECT session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+              permission_mode, agent_version,
+              total_input_tokens, total_output_tokens, total_cache_read_tokens,
+              total_cache_creation_tokens, total_reasoning_tokens, turn_count,
+              models, summary, tool_counts, hook_tool_counts, event_type_counts, hook_event_type_counts, sync_seq,
+              project, machine, message_count, user_message_count,
+              parent_session_id, relationship_type, is_automated, created_at
+       FROM sessions
+       WHERE session_id IN (${placeholders})`,
+    )
+    .all(...sessionIds) as Array<{
     session_id: string;
     target: string | null;
     started_at_ms: number | null;
@@ -696,10 +700,7 @@ export function readSessions(
     created_at: number | null;
   }>;
 
-  if (rawRows.length === 0) return { rows: [], maxId: afterSeq };
-
-  const sessionIds = rawRows.map((r) => r.session_id);
-  const placeholders = sessionIds.map(() => "?").join(", ");
+  if (rawRows.length === 0) return [];
 
   const repoRows = db
     .prepare(
@@ -748,7 +749,7 @@ export function readSessions(
     cwdsBySession.set(r.session_id, list);
   }
 
-  const rows: SessionSyncRecord[] = rawRows.map((r) => ({
+  return rawRows.map((r) => ({
     sessionId: r.session_id,
     target: r.target,
     startedAtMs: r.started_at_ms,
@@ -789,9 +790,6 @@ export function readSessions(
     repositories: reposBySession.get(r.session_id) ?? [],
     cwds: cwdsBySession.get(r.session_id) ?? [],
   }));
-
-  const maxId = rawRows[rawRows.length - 1].sync_seq;
-  return { rows, maxId };
 }
 
 // ── Per-session readers (for gated sync) ──────────────────────────────────

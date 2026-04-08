@@ -7,7 +7,6 @@ import {
   readRepoConfigSnapshots,
   readScannerEvents,
   readScannerTurns,
-  readSessions,
   readToolCalls,
   readUserConfigSnapshots,
 } from "./reader.js";
@@ -19,17 +18,14 @@ import type { TableSyncDescriptor } from "./types.js";
  *
  * All tables sync via POST /v1/sync with {table, rows} payload.
  * Session-linked tables are filtered by repo attribution in the sync loop.
+ *
+ * NOTE: Sessions are NOT in this registry — they use direct comparison
+ * against target_session_sync instead of a global watermark (sync_seq is
+ * per-session, not globally monotonic).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const TABLE_SYNC_REGISTRY: TableSyncDescriptor<any>[] = [
   // ── Session-linked tables (filtered by repo attribution) ─────────────────
-
-  {
-    table: "sessions",
-    logNoun: "sessions",
-    read: (afterId, limit) => readSessions(afterId, limit),
-    sessionLinked: true,
-  },
 
   {
     table: "messages",

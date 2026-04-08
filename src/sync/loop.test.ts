@@ -23,7 +23,7 @@ vi.mock("../config.js", () => {
 });
 
 import { closeDb, getDb } from "../db/schema.js";
-import { readSessionMessages } from "./reader.js";
+import { readSessionMessages, readSessionsByIds } from "./reader.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -88,6 +88,25 @@ function getPendingSessions(targetName: string) {
        ORDER BY rowid`,
     )
     .all(targetName) as Array<Record<string, number> & { session_id: string }>;
+}
+
+/** Mirrors the Phase 1 query in syncSessions: finds new + updated sessions. */
+function getSessionsNeedingSync(targetName: string, limit = 100) {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT s.session_id FROM sessions s
+       LEFT JOIN target_session_sync tss
+         ON s.session_id = tss.session_id AND tss.target = ?
+       WHERE tss.session_id IS NULL
+       UNION ALL
+       SELECT s.session_id FROM sessions s
+       JOIN target_session_sync tss
+         ON s.session_id = tss.session_id AND tss.target = ?
+       WHERE tss.confirmed = 1 AND s.sync_seq > tss.sync_seq
+       LIMIT ?`,
+    )
+    .all(targetName, targetName, limit) as Array<{ session_id: string }>;
 }
 
 function markSynced(
@@ -358,6 +377,60 @@ describe("target_session_sync", () => {
       expect(colNames).toContain("wm_otel_logs");
       expect(colNames).toContain("wm_otel_metrics");
       expect(colNames).toContain("wm_otel_spans");
+    });
+  });
+
+  describe("session discovery without watermark", () => {
+    it("finds new sessions regardless of sync_seq value", () => {
+      // Regression: a session with sync_seq=5000 should not prevent
+      // discovering a session with sync_seq=1 (the old watermark bug)
+      insertSession("long-running", 5000);
+      insertSession("brand-new", 1);
+
+      const needing = getSessionsNeedingSync("target-a");
+      const ids = needing.map((r) => r.session_id);
+      expect(ids).toContain("long-running");
+      expect(ids).toContain("brand-new");
+    });
+
+    it("does not return confirmed sessions with unchanged sync_seq", () => {
+      insertSession("sess-1", 5);
+      recordConfirmed(["sess-1"], "target-a");
+
+      // sess-1 is confirmed and tss.sync_seq matches sessions.sync_seq
+      const needing = getSessionsNeedingSync("target-a");
+      expect(needing).toHaveLength(0);
+    });
+
+    it("returns confirmed sessions when sync_seq advances", () => {
+      insertSession("sess-1", 5);
+      recordConfirmed(["sess-1"], "target-a");
+
+      // Session gets updated
+      const db = getDb();
+      db.prepare("UPDATE sessions SET sync_seq = 10 WHERE session_id = ?").run(
+        "sess-1",
+      );
+
+      const needing = getSessionsNeedingSync("target-a");
+      expect(needing).toHaveLength(1);
+      expect(needing[0].session_id).toBe("sess-1");
+    });
+
+    it("readSessionsByIds returns correct records", () => {
+      insertSession("sess-1", 3);
+      insertSession("sess-2", 7);
+
+      const rows = readSessionsByIds(["sess-1", "sess-2"]);
+      expect(rows).toHaveLength(2);
+
+      const ids = rows.map((r) => r.sessionId);
+      expect(ids).toContain("sess-1");
+      expect(ids).toContain("sess-2");
+    });
+
+    it("readSessionsByIds returns empty for empty input", () => {
+      expect(readSessionsByIds([])).toHaveLength(0);
     });
   });
 });

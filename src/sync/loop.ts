@@ -5,7 +5,7 @@ import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
 import { postSync } from "./post.js";
-import { SESSION_READERS } from "./reader.js";
+import { readSessionsByIds, SESSION_READERS } from "./reader.js";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
 import type {
   SyncFilter,
@@ -141,48 +141,55 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     }
   }
 
-  // ── Phase 1: Sync sessions (watermark on sync_seq, repo-filtered) ────────
+  // ── Phase 1: Sync sessions (compared against target_session_sync) ────────
 
   async function syncSessions(
     target: SyncTarget,
     syncableSessionIds: Set<string> | null,
   ): Promise<boolean> {
-    const sessionsDesc = TABLE_SYNC_REGISTRY.find(
-      (d) => d.table === "sessions",
-    );
-    if (!sessionsDesc) return false;
+    const db = getDb();
 
-    const wmKey = watermarkKey(sessionsDesc.table, target.name);
-    const wm = readWatermark(wmKey);
-    const { rows, maxId } = sessionsDesc.read(wm, batchSize);
-    if (rows.length === 0) return false;
+    // Find sessions that need syncing: new (no tss entry) or updated
+    // (sessions.sync_seq advanced past tss.sync_seq).
+    const candidates = db
+      .prepare(
+        `SELECT s.session_id FROM sessions s
+         LEFT JOIN target_session_sync tss
+           ON s.session_id = tss.session_id AND tss.target = ?
+         WHERE tss.session_id IS NULL
+         UNION ALL
+         SELECT s.session_id FROM sessions s
+         JOIN target_session_sync tss
+           ON s.session_id = tss.session_id AND tss.target = ?
+         WHERE tss.confirmed = 1 AND s.sync_seq > tss.sync_seq
+         LIMIT ?`,
+      )
+      .all(target.name, target.name, batchSize) as Array<{
+      session_id: string;
+    }>;
+
+    if (candidates.length === 0) return false;
 
     // Filter by repo attribution
-    let filtered = rows;
+    let sessionIds = candidates.map((r) => r.session_id);
     if (syncableSessionIds) {
-      filtered = rows.filter((r: unknown) => {
-        const row = r as Record<string, unknown>;
-        const sessionId =
-          (row.sessionId as string) ?? (row.session_id as string);
-        return sessionId && syncableSessionIds.has(sessionId);
-      });
+      sessionIds = sessionIds.filter((id) => syncableSessionIds.has(id));
     }
 
-    if (filtered.length > 0) {
-      log.sync.info(
-        `sessions: ${filtered.length} sessions (watermark ${wm} → ${maxId})`,
-      );
+    if (sessionIds.length === 0) return candidates.length >= batchSize;
 
-      // POST in batches and collect accepted session IDs
-      for (let j = 0; j < filtered.length; j += postBatchSize) {
-        const batch = filtered.slice(j, j + postBatchSize);
+    const rows = readSessionsByIds(sessionIds);
+    if (rows.length > 0) {
+      log.sync.info(`sessions: ${rows.length} sessions to sync`);
+
+      for (let j = 0; j < rows.length; j += postBatchSize) {
+        const batch = rows.slice(j, j + postBatchSize);
         const response = await postSync(
           `${target.url}/v1/sync`,
           { table: "sessions", rows: batch },
           resolveHeaders(target),
         );
 
-        // Record confirmed sessions from backend response
         const accepted = response.accepted;
         if (Array.isArray(accepted)) {
           recordConfirmedSessions(accepted as string[], target.name);
@@ -190,8 +197,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       }
     }
 
-    writeWatermark(wmKey, maxId);
-    return rows.length === batchSize;
+    return candidates.length >= batchSize;
   }
 
   // ── Phase 2: Sync dependent data (per-session, gated by confirmed) ───────
