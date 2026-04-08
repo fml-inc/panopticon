@@ -50,6 +50,23 @@ export const MIGRATIONS: Migration[] = [
     name: "add_plugin_hooks_to_user_config",
     sql: "ALTER TABLE user_config_snapshots ADD COLUMN plugin_hooks JSON NOT NULL DEFAULT '[]'",
   },
+  {
+    id: 2,
+    name: "remove_sessions_sync_watermark",
+    up: (db) => {
+      // sync_seq is per-session, not globally monotonic — the old watermark
+      // was poisoned by a long-running session. Sessions now sync by
+      // comparing against target_session_sync instead of a global cursor.
+      const exists = db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='watermarks'",
+        )
+        .get();
+      if (exists) {
+        db.exec("DELETE FROM watermarks WHERE key LIKE 'sessions:%'");
+      }
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { TABLE_SYNC_REGISTRY } from "./registry.js";
 
 describe("TABLE_SYNC_REGISTRY", () => {
-  it("has exactly 11 table descriptors", () => {
-    expect(TABLE_SYNC_REGISTRY).toHaveLength(11);
+  it("has exactly 10 table descriptors", () => {
+    // sessions is NOT in the registry — it syncs via direct comparison
+    // against target_session_sync instead of a global watermark
+    expect(TABLE_SYNC_REGISTRY).toHaveLength(10);
   });
 
   it("has unique table names", () => {
@@ -13,7 +15,7 @@ describe("TABLE_SYNC_REGISTRY", () => {
 
   it("contains the expected tables", () => {
     const names = TABLE_SYNC_REGISTRY.map((d) => d.table);
-    expect(names).toContain("sessions");
+    expect(names).not.toContain("sessions"); // synced separately
     expect(names).toContain("messages");
     expect(names).toContain("tool_calls");
     expect(names).toContain("scanner_turns");
@@ -39,7 +41,7 @@ describe("TABLE_SYNC_REGISTRY", () => {
     const linked = TABLE_SYNC_REGISTRY.filter((d) => d.sessionLinked).map(
       (d) => d.table,
     );
-    expect(linked).toContain("sessions");
+    expect(linked).not.toContain("sessions"); // synced separately
     expect(linked).toContain("messages");
     expect(linked).toContain("hook_events");
     expect(linked).not.toContain("user_config_snapshots");
