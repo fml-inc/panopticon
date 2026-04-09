@@ -21,6 +21,8 @@ import {
 } from "../db/query.js";
 import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
+import { scanOnce } from "../scanner/index.js";
+import { generateSummariesOnce } from "../summary/index.js";
 import { addTarget, listTargets, removeTarget } from "../sync/config.js";
 import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
 import type { SyncTarget } from "../sync/types.js";
@@ -69,6 +71,30 @@ const EXEC: Record<string, ExecFn> = {
     return result;
   },
   "refresh-pricing": () => refreshPricing(),
+  scan: (p) => {
+    // Run a synchronous scan pass — picks up any new session JSONL files,
+    // then runs summary generation on idle sessions. Used by the e2e test
+    // and by anyone who needs deterministic "scan now" semantics instead
+    // of waiting for the background loop's next tick.
+    const result = scanOnce();
+    let summariesUpdated = 0;
+    if (p.summaries !== false) {
+      try {
+        summariesUpdated = generateSummariesOnce((msg) =>
+          log.scanner.info(msg),
+        ).updated;
+      } catch (err) {
+        log.scanner.error(
+          `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+    return {
+      filesScanned: result.filesScanned,
+      newTurns: result.newTurns,
+      summariesUpdated,
+    };
+  },
   "sync-reset": (p) => {
     const target = p.target as string | undefined;
     resetWatermarks(target);

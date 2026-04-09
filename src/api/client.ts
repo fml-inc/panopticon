@@ -201,6 +201,16 @@ export function refreshPricing(): Promise<unknown> {
   return callExec("refresh-pricing");
 }
 
+export interface ScanResult {
+  filesScanned: number;
+  newTurns: number;
+  summariesUpdated: number;
+}
+
+export function scan(opts?: { summaries?: boolean }): Promise<ScanResult> {
+  return callExec("scan", opts ?? {}) as Promise<ScanResult>;
+}
+
 export function syncReset(target?: string): Promise<unknown> {
   return callExec("sync-reset", target ? { target } : {});
 }

@@ -24,8 +24,8 @@ get_db_path() {
   local os
   os="$(uname -s)"
   case "$os" in
-    Darwin) echo "$HOME/Library/Application Support/panopticon/data.db" ;;
-    *)      echo "$HOME/.local/share/panopticon/data.db" ;;
+    Darwin) echo "$HOME/Library/Application Support/panopticon/panopticon.db" ;;
+    *)      echo "$HOME/.local/share/panopticon/panopticon.db" ;;
   esac
 }
 
