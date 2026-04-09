@@ -16,10 +16,11 @@ COPY pnpm-lock.yaml package.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY . .
+# Build the main dist/, then bundle the e2e mock sync server via a
+# separate tsup config (its source lives outside src/ so the main
+# config's DTS pass can't include it).
 RUN pnpm build \
-  && pnpm exec esbuild scripts/test-sync-server.ts \
-       --bundle --platform=node --format=esm \
-       --outfile=dist/test-sync-server.js '--external:node:*'
+  && pnpm exec tsup --config scripts/test-sync-server.tsup.config.ts
 
 # Make panopticon CLI available globally
 RUN ln -sf /opt/panopticon/bin/panopticon /usr/local/bin/panopticon \
