@@ -26,11 +26,16 @@ RUN pnpm build \
 RUN ln -sf /opt/panopticon/bin/panopticon /usr/local/bin/panopticon \
   && chmod +x /opt/panopticon/bin/panopticon
 
-# Set up a git workspace (CLI tools expect a repo with at least one commit)
+# Set up a git workspace (CLI tools expect a repo with at least one commit).
+# The `origin` remote is load-bearing — panopticon's sync loop filters
+# sessions without repo attribution (`requireRepo: true` default since #142),
+# and repo resolution walks git remotes rather than the repo name on disk.
+# A fake URL that never gets pushed to is enough for resolveGitRemote().
 RUN git init /workspace \
   && cd /workspace \
   && git config user.email "test@panopticon.dev" \
   && git config user.name "Panopticon Test" \
+  && git remote add origin https://github.com/panopticon-test/e2e-workspace.git \
   && echo "# Panopticon E2E Test Workspace" > README.md \
   && git add README.md \
   && git commit -m "Initial commit"

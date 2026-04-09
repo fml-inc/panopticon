@@ -732,12 +732,36 @@ done
 
 log_info "Mock receiver /stats: $(echo "$STATS_JSON" | jq -c '.' 2>/dev/null || echo "$STATS_JSON")"
 
+# On any sync failure, dump enough state to diagnose whether the issue is:
+#   a) sync isn't running at all (no target_session_sync rows)
+#   b) sessions aren't being attributed to repos (sync filters them out)
+#   c) sync is running but POSTs are failing (check panopticon server log)
+dump_sync_debug() {
+  log_info "── sync debug ──"
+  log_info "session_repositories count: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM session_repositories;' 2>/dev/null || echo 'N/A')"
+  log_info "target_session_sync count: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM target_session_sync;' 2>/dev/null || echo 'N/A')"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT target, confirmed, COUNT(*) AS n FROM target_session_sync GROUP BY target, confirmed;" 2>/dev/null || true
+  log_info "── mock sync server log (last 40 lines) ──"
+  tail -n 40 /tmp/test-sync-server.log 2>/dev/null || true
+  log_info "── panopticon server log (last 60 lines) ──"
+  local server_log
+  server_log=$(find "$HOME/.local/state/panopticon/logs" "$HOME/.local/share/panopticon/logs" \
+    -type f -name "server*.log" 2>/dev/null | head -1)
+  if [ -n "$server_log" ]; then
+    tail -n 60 "$server_log" 2>/dev/null || true
+  else
+    log_info "  (no server log found)"
+  fi
+}
+
 # Session count — the most load-bearing metric. Sync is gated on session
 # confirmation, so every other table depends on sessions arriving first.
 if [ "$REMOTE_SESSIONS" -ge "$LOCAL_SESSIONS" ] && [ "$LOCAL_SESSIONS" -gt 0 ]; then
   log_pass "sessions synced: ${REMOTE_SESSIONS}/${LOCAL_SESSIONS}"
 else
   log_fail "sessions NOT synced: ${REMOTE_SESSIONS}/${LOCAL_SESSIONS}"
+  dump_sync_debug
 fi
 
 # Hook events
@@ -767,19 +791,26 @@ else
   log_fail "Sync target 'e2e-sync-val' not found"
 fi
 
-# Post-#119, per-session sync state lives in target_session_sync (synced_seq
-# >= sync_seq means every row for that session has been shipped).
+# Post-#119, per-session sync state lives in target_session_sync.
+# A confirmed session is one the receiver acknowledged (Phase 1 of sync).
+# synced_seq >= sync_seq means every row for that session has been shipped.
+CONFIRMED_SESSIONS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM target_session_sync WHERE target='e2e-sync-val' AND confirmed=1;" \
+  2>/dev/null || echo "-1")
 UNSYNCED_SESSIONS=$(sqlite3 "$DB_PATH" \
   "SELECT COUNT(*) FROM target_session_sync
    WHERE target='e2e-sync-val' AND confirmed=1 AND synced_seq < sync_seq;" \
   2>/dev/null || echo "-1")
 
-if [ "$UNSYNCED_SESSIONS" = "0" ]; then
-  log_pass "all confirmed sessions fully synced (synced_seq >= sync_seq)"
-elif [ "$UNSYNCED_SESSIONS" = "-1" ]; then
+if [ "$CONFIRMED_SESSIONS" = "-1" ] || [ "$UNSYNCED_SESSIONS" = "-1" ]; then
   log_fail "target_session_sync query failed"
+elif [ "$CONFIRMED_SESSIONS" = "0" ]; then
+  # Vacuous pass would hide the case where sync never ran at all.
+  log_fail "no confirmed sessions for target 'e2e-sync-val' — sync didn't complete Phase 1"
+elif [ "$UNSYNCED_SESSIONS" = "0" ]; then
+  log_pass "all ${CONFIRMED_SESSIONS} confirmed sessions fully synced (synced_seq >= sync_seq)"
 else
-  log_fail "${UNSYNCED_SESSIONS} confirmed sessions have pending data (synced_seq < sync_seq)"
+  log_fail "${UNSYNCED_SESSIONS}/${CONFIRMED_SESSIONS} confirmed sessions have pending data (synced_seq < sync_seq)"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
