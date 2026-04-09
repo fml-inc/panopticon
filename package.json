@@ -4,7 +4,7 @@
   "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
   "type": "module",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=24.0.0"
   },
   "packageManager": "pnpm@10.17.1",
   "publishConfig": {
@@ -114,7 +114,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "lefthook": "^2.1.1",
     "@sentry/core": "^10.46.0",
     "tsup": "^8.0.0",

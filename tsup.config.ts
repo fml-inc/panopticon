@@ -40,7 +40,7 @@ export default defineConfig({
     targets: "src/targets/index.ts",
   },
   format: ["esm"],
-  target: "node22",
+  target: "node24",
   platform: "node",
   define: {
     __PANOPTICON_VERSION__: JSON.stringify(getPanopticonVersion()),

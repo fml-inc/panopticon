@@ -1,9 +1,9 @@
 # ─── Base stage: shared by all tool tests ───────────────────────────────────
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
-# Build deps for better-sqlite3 + test utilities
+# Test utilities (sqlite3 CLI for in-test queries; bash/curl/jq for shell asserts)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git openssl sqlite3 python3 make g++ curl jq bash \
+    git openssl sqlite3 curl jq bash \
   && rm -rf /var/lib/apt/lists/*
 
 # Enable corepack for pnpm
