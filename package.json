@@ -1,6 +1,6 @@
 {
   "name": "@fml-inc/panopticon",
-  "version": "0.0.0-dev",
+  "version": "0.2.0",
   "description": "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
   "type": "module",
   "engines": {
