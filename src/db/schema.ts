@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
-import Database from "better-sqlite3";
 import { config } from "../config.js";
+import { Database } from "./driver.js";
 import { runMigrations } from "./migrations.js";
 
 export { runMigrations } from "./migrations.js";
@@ -238,20 +238,6 @@ CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
   archived_size INTEGER DEFAULT 0
 );
 
--- ── Session summaries ───────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS session_summary_deltas (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT NOT NULL,
-  delta_index INTEGER NOT NULL,
-  created_at_ms INTEGER NOT NULL,
-  from_turn INTEGER NOT NULL,
-  to_turn INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  method TEXT NOT NULL DEFAULT 'deterministic',
-  UNIQUE(session_id, delta_index)
-);
-
 -- ── Model pricing ───────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS model_pricing (
@@ -389,9 +375,6 @@ CREATE INDEX IF NOT EXISTS idx_scanner_turns_ts ON scanner_turns(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type);
 
--- session_summary_deltas
-CREATE INDEX IF NOT EXISTS idx_summary_deltas_session ON session_summary_deltas(session_id);
-
 -- model_pricing
 CREATE INDEX IF NOT EXISTS idx_model_pricing_model ON model_pricing(model_id, updated_ms);
 
@@ -418,16 +401,16 @@ export const SCANNER_DATA_VERSION = 1;
 // Database initialization
 // ---------------------------------------------------------------------------
 
-let _db: Database.Database | null = null;
+let _db: Database | null = null;
 let _needsResync = false;
 
-function registerCompressionFunctions(db: Database.Database): void {
-  db.function("decompress", (blob: Buffer | null) =>
-    blob ? gunzipSync(blob).toString() : null,
+function registerCompressionFunctions(db: Database): void {
+  db.function("decompress", (blob: unknown) =>
+    blob ? gunzipSync(blob as Uint8Array).toString() : null,
   );
 }
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   // If the db file was deleted (e.g. uninstall --purge) while this process
   // still holds a stale connection, drop it so we don't serve old data.
   if (_db && !fs.existsSync(config.dbPath)) {

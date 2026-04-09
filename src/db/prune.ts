@@ -186,10 +186,6 @@ export function pruneExecute(cutoffMs: number): PruneResult {
     db.prepare(
       "DELETE FROM scanner_file_watermarks WHERE file_path IN (SELECT scanner_file_path FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ? AND scanner_file_path IS NOT NULL)",
     ).run(cutoffMs);
-    // Summary deltas
-    db.prepare(
-      `DELETE FROM session_summary_deltas WHERE session_id IN (${oldSessions})`,
-    ).run(cutoffMs);
     const sessions = db
       .prepare(
         "DELETE FROM sessions WHERE started_at_ms IS NOT NULL AND started_at_ms < ?",

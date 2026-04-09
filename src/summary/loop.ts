@@ -107,7 +107,12 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
   // Find sessions needing summary:
   // 1. Never summarized + enough messages
   // 2. Stale by message count (grown by THRESHOLD since last summary)
-  // 3. Session ended after last summary
+  //
+  // A "session ended" trigger used to live here too, gated on
+  // MAX(session_summary_deltas.created_at_ms). The deltas table was removed
+  // in #115 and the growth/never-summarized conditions cover the interesting
+  // cases: a short session is summarized once it exceeds MIN_MESSAGES and
+  // stays that way; a long session is re-summarized as it grows.
   const sessions = db
     .prepare(
       `
@@ -118,10 +123,6 @@ export function generateSummariesOnce(log: (msg: string) => void = () => {}): {
       AND (
         s.summary IS NULL
         OR (s.message_count - COALESCE(s.summary_version, 0)) >= ?
-        OR (s.ended_at_ms IS NOT NULL AND s.ended_at_ms > COALESCE(
-          (SELECT MAX(created_at_ms) FROM session_summary_deltas WHERE session_id = s.session_id),
-          0
-        ))
       )
     ORDER BY s.started_at_ms DESC
     LIMIT ?

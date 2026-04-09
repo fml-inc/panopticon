@@ -23,6 +23,7 @@ import {
   pruneExecute,
   rawQuery,
   refreshPricing,
+  scan as scanApi,
   search,
   sessionTimeline,
   syncPending,
@@ -1344,6 +1345,19 @@ program
   .description("Show database row counts for each table")
   .action(async () => {
     output(await dbStats());
+  });
+
+program
+  .command("scan")
+  .description(
+    "Trigger a synchronous scan pass on the running server (picks up new session JSONL files and regenerates summaries)",
+  )
+  .option("--no-summaries", "Skip summary generation")
+  .action(async (opts: { summaries?: boolean }) => {
+    const result = await scanApi({ summaries: opts.summaries });
+    console.log(
+      `Scanned ${result.filesScanned} files, ${result.newTurns} new turns, ${result.summariesUpdated} summaries updated`,
+    );
   });
 
 program

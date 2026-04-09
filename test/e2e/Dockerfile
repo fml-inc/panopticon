@@ -1,9 +1,9 @@
 # ─── Base stage: shared by all tool tests ───────────────────────────────────
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
-# Build deps for better-sqlite3 + test utilities
+# Test utilities (sqlite3 CLI for in-test queries; bash/curl/jq for shell asserts)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git openssl sqlite3 python3 make g++ curl jq bash \
+    git openssl sqlite3 curl jq bash \
   && rm -rf /var/lib/apt/lists/*
 
 # Enable corepack for pnpm
@@ -16,17 +16,26 @@ COPY pnpm-lock.yaml package.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY . .
-RUN pnpm rebuild better-sqlite3 && pnpm build
+# Build the main dist/, then bundle the e2e mock sync server via a
+# separate tsup config (its source lives outside src/ so the main
+# config's DTS pass can't include it).
+RUN pnpm build \
+  && pnpm exec tsup --config scripts/test-sync-server.tsup.config.ts
 
 # Make panopticon CLI available globally
 RUN ln -sf /opt/panopticon/bin/panopticon /usr/local/bin/panopticon \
   && chmod +x /opt/panopticon/bin/panopticon
 
-# Set up a git workspace (CLI tools expect a repo with at least one commit)
+# Set up a git workspace (CLI tools expect a repo with at least one commit).
+# The `origin` remote is load-bearing — panopticon's sync loop filters
+# sessions without repo attribution (`requireRepo: true` default since #142),
+# and repo resolution walks git remotes rather than the repo name on disk.
+# A fake URL that never gets pushed to is enough for resolveGitRemote().
 RUN git init /workspace \
   && cd /workspace \
   && git config user.email "test@panopticon.dev" \
   && git config user.name "Panopticon Test" \
+  && git remote add origin https://github.com/panopticon-test/e2e-workspace.git \
   && echo "# Panopticon E2E Test Workspace" > README.md \
   && git add README.md \
   && git commit -m "Initial commit"

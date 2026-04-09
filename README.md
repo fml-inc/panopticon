@@ -260,7 +260,6 @@ SQLite with WAL mode. Location depends on platform (see data directory above).
 | `scanner_file_watermarks` | Byte offsets for incremental session file parsing |
 | `session_repositories` | Maps sessions to GitHub repositories |
 | `session_cwds` | Maps sessions to working directories |
-| `session_summary_deltas` | Incremental session summaries |
 | `model_pricing` | Cached model pricing from LiteLLM |
 | `watermarks` | Sync watermarks for OTLP export targets |
 | `target_session_sync` | Per-target session sync state |

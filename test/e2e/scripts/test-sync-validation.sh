@@ -8,7 +8,7 @@
 #   3. Column correctness across all tables (schema, types, nullability)
 #   4. Cross-table session_id correlation
 #   5. Proxy capture (api_request with model/duration/status)
-#   6. Sync to Grafana LGTM with zero data loss
+#   6. Sync to a panopticon-protocol receiver with zero data loss
 #   7. Watermarks advance to completion
 #
 # Requires at least one API key. Best results with all three for cross-CLI coverage.
@@ -18,14 +18,9 @@ source /opt/e2e/scripts/lib.sh
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 PANO_URL="http://localhost:4318"
-LGTM_OTLP_URL="http://otel-lgtm:4318"
-LOKI_URL="http://otel-lgtm:3100"
-GRAFANA_URL="http://otel-lgtm:3000"
-PROM_URL="http://otel-lgtm:9090"
+# Mock panopticon-protocol sync receiver spawned in Phase 2 (test-sync-server.ts)
+MOCK_SYNC_URL="http://localhost:9801"
 TOOL="sync-validation"
-
-# Bodies filtered by hook dedup (must match HOOK_COVERED_BODIES in reader.ts)
-HOOK_COVERED_BODIES="'claude_code.user_prompt','claude_code.tool_decision','claude_code.tool_result','gemini_cli.user_prompt','gemini_cli.tool_call','gemini_cli.hook_call'"
 
 # Self-contained coding tasks — each exercises Read/Write/Bash tool use
 TASKS=(
@@ -35,62 +30,6 @@ TASKS=(
   "Write calc.py with add subtract multiply divide functions. Write test_calc.py testing each including divide-by-zero raising ValueError. Run python3 test_calc.py."
   "Read all .py files in the current directory. Add a one-line docstring to any function that lacks one. Show the final version of each file you changed."
 )
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-wait_for_grafana() {
-  local timeout="${1:-60}" elapsed=0
-  log_info "Waiting for Grafana LGTM (timeout: ${timeout}s)..."
-  while [ "$elapsed" -lt "$timeout" ]; do
-    if curl -sf "${GRAFANA_URL}/api/health" >/dev/null 2>&1; then
-      log_info "Grafana LGTM is up after ${elapsed}s"
-      return 0
-    fi
-    sleep 1; elapsed=$((elapsed + 1))
-  done
-  log_fail "Grafana LGTM did not start within ${timeout}s"; return 1
-}
-
-wait_for_lgtm_otlp() {
-  local timeout="${1:-60}" elapsed=0
-  log_info "Waiting for LGTM OTLP receiver (timeout: ${timeout}s)..."
-  while [ "$elapsed" -lt "$timeout" ]; do
-    if curl -sf -o /dev/null -w "%{http_code}" \
-        -X POST "${LGTM_OTLP_URL}/v1/logs" \
-        -H "Content-Type: application/json" \
-        -d '{"resourceLogs":[]}' 2>/dev/null | grep -q "200"; then
-      log_info "LGTM OTLP receiver is up after ${elapsed}s"
-      return 0
-    fi
-    sleep 1; elapsed=$((elapsed + 1))
-  done
-  log_fail "LGTM OTLP receiver did not start within ${timeout}s"; return 1
-}
-
-# Poll Loki via count_over_time (no limit issues at any volume).
-# Sets LOKI_RESULT as a global variable (avoids $() stdout capture issues).
-poll_loki_count() {
-  local expected="$1" timeout="${2:-180}" elapsed=0
-  LOKI_RESULT=0
-  log_info "Waiting for >= ${expected} entries in Loki (timeout: ${timeout}s)..."
-
-  while [ "$elapsed" -lt "$timeout" ]; do
-    LOKI_RESULT=$(curl -sf -G "${LOKI_URL}/loki/api/v1/query" \
-      --data-urlencode 'query=sum(count_over_time({service_name="panopticon"}[30m]))' \
-      --data-urlencode "time=$(date +%s)" 2>/dev/null \
-      | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0")
-    LOKI_RESULT="${LOKI_RESULT%%.*}"
-
-    if [ "$LOKI_RESULT" -ge "$expected" ] 2>/dev/null; then
-      log_info "Loki reached ${LOKI_RESULT} entries after ${elapsed}s"
-      return 0
-    fi
-    sleep 3; elapsed=$((elapsed + 3))
-  done
-
-  log_info "Loki timed out at ${LOKI_RESULT}/${expected} after ${timeout}s"
-  return 1
-}
 
 # ─── Phase 1: Prerequisites ──────────────────────────────────────────────────
 log_phase 1 "Prerequisites"
@@ -111,10 +50,6 @@ AVAILABLE=""
 [ -n "$HAS_GEMINI" ] && AVAILABLE="${AVAILABLE} gemini"
 log_info "Available CLIs:${AVAILABLE}"
 
-wait_for_grafana 60
-wait_for_lgtm_otlp 60
-log_pass "Grafana LGTM stack is ready"
-
 # ─── Phase 2: Clean Install ──────────────────────────────────────────────────
 log_phase 2 "Clean Install"
 
@@ -132,9 +67,40 @@ for target in $AVAILABLE; do
   log_pass "panopticon install --target $target --proxy"
 done
 
-# Add Grafana LGTM as sync target
-panopticon sync add e2e-sync-val "$LGTM_OTLP_URL"
-log_pass "Sync target 'e2e-sync-val' added -> $LGTM_OTLP_URL"
+# Spawn the mock panopticon-protocol sync receiver in the background. This
+# replaces the old setup that pointed sync at LGTM — #116 unified the sync
+# protocol to /v1/sync and removed OTLP serialization, so LGTM can no longer
+# receive panopticon sync data. The mock writes incoming rows into its own
+# sqlite DBs and exposes GET /stats for the test to query.
+log_info "Starting mock sync receiver on localhost:9801..."
+node /opt/panopticon/dist/test-sync-server.js \
+  > /tmp/test-sync-server.log 2>&1 &
+MOCK_SYNC_PID=$!
+# shellcheck disable=SC2064
+trap "kill ${MOCK_SYNC_PID} 2>/dev/null || true" EXIT
+
+# Wait for the mock server to accept connections
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -sf "${MOCK_SYNC_URL}/stats" >/dev/null 2>&1; then
+    log_pass "Mock sync receiver is up at ${MOCK_SYNC_URL}"
+    break
+  fi
+  sleep 1
+  if [ "$i" = "10" ]; then
+    log_fail "Mock sync receiver did not start within 10s"
+    cat /tmp/test-sync-server.log 2>/dev/null || true
+    print_summary
+  fi
+done
+
+# Configure panopticon to sync into the mock receiver. `panopticon sync add`
+# is an API call into the running server that writes the target to the
+# config file — but the server loads cfg.sync.targets ONCE at startup and
+# never reloads, so we must stop + start to pick up the new target.
+# (`panopticon install` happened to start a server at the end of Phase 3;
+# that server's in-memory config has zero sync targets.)
+panopticon sync add e2e-sync-val "$MOCK_SYNC_URL"
+log_pass "Sync target 'e2e-sync-val' added -> $MOCK_SYNC_URL"
 
 SYNC_TARGETS=$(panopticon sync list 2>/dev/null || echo "")
 if echo "$SYNC_TARGETS" | grep -q "e2e-sync-val"; then
@@ -142,6 +108,14 @@ if echo "$SYNC_TARGETS" | grep -q "e2e-sync-val"; then
 else
   log_fail "Sync target not found in 'sync list'"
 fi
+
+log_info "Restarting panopticon so the new sync target takes effect..."
+panopticon stop 2>/dev/null || true
+# Give the daemon a moment to actually release its port
+sleep 1
+panopticon start
+wait_for_server 30
+log_pass "Panopticon restarted with sync target loaded"
 
 # ─── Phase 3: Verify Install Artifacts ───────────────────────────────────────
 log_phase 3 "Verify Install Artifacts"
@@ -605,9 +579,8 @@ sqlite3 -header -column "$DB_PATH" \
      SUM(total_input_tokens) as input_tok, SUM(total_output_tokens) as output_tok
    FROM sessions WHERE scanner_file_path IS NOT NULL GROUP BY target;" 2>/dev/null || true
 
-# Run reconciliation report
-log_info "Running scan compare..."
-panopticon scan compare 2>&1 || true
+# `panopticon scan compare` was a debug-only reconciliation report removed
+# in #124 along with direct DB access from the CLI. Skip it.
 
 # ── 7b: OTLP traces (otel_spans) ───────────────────────────────────────────
 
@@ -706,231 +679,140 @@ else
 fi
 
 # ── 7d: Session summaries ──────────────────────────────────────────────────
+#
+# Summaries live on the `sessions` table (summary, summary_version). The
+# session_summary_deltas table was removed in #115 — the current code path
+# writes a single denormalized summary per session instead of an append-only
+# delta log. LLM-sourced summaries are currently TODO'd out in favor of a
+# deterministic builder, so this section only asserts the deterministic path.
 
 log_info "── Session summaries ──"
 
-SUMMARY_DELTA_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas;" 2>/dev/null || echo "0")
 SESSIONS_WITH_SUMMARY=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND summary != '';" 2>/dev/null || echo "0")
-
-log_info "Summary deltas: ${SUMMARY_DELTA_COUNT}, sessions with summary: ${SESSIONS_WITH_SUMMARY}"
+log_info "Sessions with summary: ${SESSIONS_WITH_SUMMARY}"
 
 if [ "$SCANNER_TURNS" -ge 10 ]; then
-  # With >= 10 turns, at least one summary delta should have been generated
-  assert_db_count "SELECT COUNT(*) FROM session_summary_deltas;" 1 \
-    "session_summary_deltas: >= 1 delta generated"
+  assert_db_count "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND summary != '';" 1 \
+    "sessions: >= 1 session has a populated summary"
 
   assert_db_zero \
-    "SELECT COUNT(*) FROM session_summary_deltas WHERE content IS NULL OR content = '';" \
-    "session_summary_deltas: all deltas have content"
-
-  assert_db_zero \
-    "SELECT COUNT(*) FROM session_summary_deltas WHERE method IS NULL OR method = '';" \
-    "session_summary_deltas: all deltas have method set"
-
-  assert_db_not_empty \
-    "SELECT 1 FROM session_summary_deltas WHERE method IN ('llm', 'deterministic') LIMIT 1;" \
-    "session_summary_deltas: method is 'llm' or 'deterministic'"
-
-  # Check if LLM summaries were generated (claude is installed in the container)
-  LLM_DELTAS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'llm';" 2>/dev/null || echo "0")
-  DETERMINISTIC_DELTAS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'deterministic';" 2>/dev/null || echo "0")
-  log_info "Summary methods: ${LLM_DELTAS} LLM, ${DETERMINISTIC_DELTAS} deterministic"
-
-  if [ "$LLM_DELTAS" -gt 0 ]; then
-    log_pass "session_summary_deltas: LLM summaries generated (${LLM_DELTAS} deltas)"
-  else
-    log_info "session_summary_deltas: no LLM summaries (claude --bare may not be available in container)"
-  fi
-
-  # sessions.summary should be populated
-  if [ "$SESSIONS_WITH_SUMMARY" -gt 0 ]; then
-    log_pass "sessions: ${SESSIONS_WITH_SUMMARY} sessions have summary text"
-  else
-    log_info "sessions: no summaries populated yet"
-  fi
-
-  # summary_version should track deltas
-  assert_db_not_empty \
-    "SELECT 1 FROM sessions WHERE summary_version > 0 LIMIT 1;" \
-    "sessions: at least one session has summary_version > 0"
+    "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND (summary_version IS NULL OR summary_version <= 0);" \
+    "sessions: every populated summary has summary_version > 0"
 
   # Show sample summaries
   sqlite3 -header -column "$DB_PATH" \
-    "SELECT session_id, delta_index, method, from_turn, to_turn,
-            substr(content, 1, 80) AS content_preview
-     FROM session_summary_deltas ORDER BY session_id, delta_index LIMIT 5;" 2>/dev/null || true
+    "SELECT session_id, summary_version, substr(summary, 1, 80) AS summary_preview
+     FROM sessions WHERE summary IS NOT NULL ORDER BY started_at_ms DESC LIMIT 5;" 2>/dev/null || true
 else
   log_info "session summaries: skipped (only ${SCANNER_TURNS} turns, need >= 10)"
 fi
 
-# ── 7e: LLM summary smoke test ──────────────────────────────────────────────
+# ─── Phase 8: Sync → Mock Receiver (Zero Data Loss) ─────────────────────────
+#
+# #116 unified sync to a custom /v1/sync JSON protocol that LGTM cannot
+# receive. We validate sync end-to-end against a panopticon-protocol mock
+# receiver (scripts/test-sync-server.ts) running on localhost:9801. The
+# mock writes incoming rows into its own sqlite tables and exposes a /stats
+# endpoint we can query to assert zero data loss.
+log_phase 8 "Validate Sync Receiver (Zero Data Loss)"
 
-log_info "── LLM summary smoke test ──"
+# Sync has a `requireRepo: true` filter (since #142) that excludes sessions
+# without a session_repositories entry — this is how e.g. subagent sessions
+# (created inline from hook events with no cwd-based repo derivation) get
+# skipped. Compare the mock receiver's counts against the set of LOCAL rows
+# that actually WOULD be synced, not the raw table counts.
+LOCAL_SESSIONS_RAW=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions;" 2>/dev/null || echo "0")
+LOCAL_SESSIONS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM sessions s
+   WHERE EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = s.session_id);" \
+  2>/dev/null || echo "0")
+LOCAL_HOOKS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM hook_events he
+   WHERE EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = he.session_id);" \
+  2>/dev/null || echo "0")
+LOCAL_SCANNER_TURNS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM scanner_turns st
+   WHERE EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = st.session_id);" \
+  2>/dev/null || echo "0")
 
-if [ -n "$HAS_CLAUDE" ] && command -v claude &>/dev/null; then
-  # Strip env vars that cause nested-subprocess issues (same as src/summary/llm.ts)
-  LLM_ENV=$(env -i \
-    HOME="$HOME" \
-    PATH="$PATH" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    SHELL="$SHELL" \
-    bash -c \
-    'claude -p "Respond with only the word: working" --output-format text --model haiku --bare --tools "" 2>&1' \
-  ) || true
+log_info "Local syncable counts: ${LOCAL_SESSIONS}/${LOCAL_SESSIONS_RAW} sessions (subagents skipped), ${LOCAL_HOOKS} hooks, ${LOCAL_SCANNER_TURNS} scanner turns"
 
-  if echo "$LLM_ENV" | grep -qi "working"; then
-    log_pass "LLM smoke test: claude --bare returned expected output"
+# Poll the mock receiver until row counts match. The sync loop ticks every
+# 1-30s; late hooks can arrive after the last cycle, so we wait instead of
+# snapshotting.
+SYNC_TIMEOUT=90
+elapsed=0
+log_info "Waiting up to ${SYNC_TIMEOUT}s for sync to catch up..."
+while [ "$elapsed" -lt "$SYNC_TIMEOUT" ]; do
+  STATS_JSON=$(curl -sf "${MOCK_SYNC_URL}/stats" 2>/dev/null || echo "{}")
+  REMOTE_SESSIONS=$(echo "$STATS_JSON" | jq -r '.sessions // 0' 2>/dev/null || echo "0")
+  REMOTE_HOOKS=$(echo "$STATS_JSON" | jq -r '[.tables[] | select(.tbl=="hook_events") | .cnt] | add // 0' 2>/dev/null || echo "0")
+  REMOTE_TURNS=$(echo "$STATS_JSON" | jq -r '[.tables[] | select(.tbl=="scanner_turns") | .cnt] | add // 0' 2>/dev/null || echo "0")
 
-    # If the LLM works, re-run scanner to regenerate summaries with LLM
-    # First, clear existing deterministic deltas so they get regenerated
-    sqlite3 "$DB_PATH" "DELETE FROM session_summary_deltas; UPDATE sessions SET summary = NULL, summary_version = 0;" 2>/dev/null || true
-    log_info "Cleared deterministic summaries, re-running scan..."
-
-    panopticon scan 2>&1 || true
-    sleep 2
-
-    LLM_DELTAS_NOW=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'llm';" 2>/dev/null || echo "0")
-    DET_DELTAS_NOW=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summary_deltas WHERE method = 'deterministic';" 2>/dev/null || echo "0")
-
-    if [ "$LLM_DELTAS_NOW" -gt 0 ]; then
-      log_pass "LLM summaries generated after re-scan (${LLM_DELTAS_NOW} LLM, ${DET_DELTAS_NOW} deterministic)"
-
-      # Show the LLM-generated content
-      log_info "LLM summary content:"
-      sqlite3 "$DB_PATH" \
-        "SELECT session_id, method, substr(content, 1, 200) AS preview
-         FROM session_summary_deltas WHERE method = 'llm' LIMIT 3;" 2>/dev/null || true
-    else
-      log_fail "LLM summaries not generated despite claude --bare working"
-      # Debug: check what invokeLlm sees
-      log_info "Checking claude availability from node context..."
-      node -e "
-        const { execFileSync } = require('child_process');
-        try {
-          const p = execFileSync('which', ['claude'], { encoding: 'utf-8' }).trim();
-          console.log('which claude:', p);
-        } catch (e) {
-          console.log('which claude failed:', e.message);
-        }
-      " 2>&1 || true
-    fi
-  else
-    log_info "LLM smoke test: claude --bare did not return expected output"
-    log_info "Output: ${LLM_ENV:0:200}"
+  if [ "$REMOTE_SESSIONS" -ge "$LOCAL_SESSIONS" ] \
+    && [ "$REMOTE_HOOKS" -ge "$LOCAL_HOOKS" ] \
+    && [ "$REMOTE_TURNS" -ge "$LOCAL_SCANNER_TURNS" ]; then
+    break
   fi
-else
-  log_info "LLM smoke test: skipped (no ANTHROPIC_API_KEY or claude not installed)"
-fi
-
-# ─── Phase 8: Snapshot + Sync → Loki (Zero Data Loss) ───────────────────────
-log_phase 8 "Validate Loki (Zero Data Loss)"
-
-LOCAL_HOOKS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM hook_events;" 2>/dev/null || echo "0")
-LOCAL_LOGS_TOTAL=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_logs;" 2>/dev/null || echo "0")
-LOCAL_METRICS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_metrics;" 2>/dev/null || echo "0")
-LOCAL_SCANNER_TURNS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_turns;" 2>/dev/null || echo "0")
-LOCAL_SCANNER_EVENTS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_events;" 2>/dev/null || echo "0")
-
-log_info "Local counts: ${LOCAL_HOOKS} hooks, ${LOCAL_LOGS_TOTAL} logs, ${LOCAL_METRICS} metrics, ${LOCAL_SCANNER_TURNS} scanner turns, ${LOCAL_SCANNER_EVENTS} scanner events"
-
-# Determine expected Loki count.
-# The sync loop sends these tables to /v1/logs (which Loki ingests):
-#   hook_events, otel_logs (filtered by hook dedup), scanner_turns, scanner_events
-CONFIG_PATH="$HOME/.local/share/panopticon/config.json"
-HOOKS_INSTALLED=$(jq -r '.hooksInstalled // false' "$CONFIG_PATH" 2>/dev/null || echo "false")
-LOCAL_LOGS_FILTERED=0
-
-if [ "$HOOKS_INSTALLED" = "true" ]; then
-  LOCAL_LOGS_SYNCED=$(sqlite3 "$DB_PATH" \
-    "SELECT COUNT(*) FROM otel_logs WHERE body NOT IN (${HOOK_COVERED_BODIES});" 2>/dev/null || echo "0")
-  LOCAL_LOGS_FILTERED=$((LOCAL_LOGS_TOTAL - LOCAL_LOGS_SYNCED))
-  log_info "Hook dedup active: ${LOCAL_LOGS_SYNCED} logs synced, ${LOCAL_LOGS_FILTERED} filtered"
-else
-  LOCAL_LOGS_SYNCED="$LOCAL_LOGS_TOTAL"
-fi
-
-EXPECTED_LOKI=$((LOCAL_HOOKS + LOCAL_LOGS_SYNCED + LOCAL_SCANNER_TURNS + LOCAL_SCANNER_EVENTS))
-log_info "Expected Loki entries: ${EXPECTED_LOKI} (${LOCAL_HOOKS} hooks + ${LOCAL_LOGS_SYNCED} logs + ${LOCAL_SCANNER_TURNS} scanner turns + ${LOCAL_SCANNER_EVENTS} scanner events)"
-
-if [ "$EXPECTED_LOKI" -eq 0 ]; then
-  log_fail "Expected Loki count is 0 — no data was generated"
-  print_summary
-fi
-
-poll_loki_count "$EXPECTED_LOKI" 180 || true
-LOKI_COUNT="$LOKI_RESULT"
-
-if [ "$LOKI_COUNT" -eq "$EXPECTED_LOKI" ] 2>/dev/null; then
-  log_pass "ZERO DATA LOSS: Loki has exactly ${LOKI_COUNT}/${EXPECTED_LOKI} entries"
-elif [ "$LOKI_COUNT" -gt "$EXPECTED_LOKI" ]; then
-  EXTRA=$((LOKI_COUNT - EXPECTED_LOKI))
-  if [ "$LOCAL_LOGS_FILTERED" -gt 0 ] && [ "$EXTRA" -le "$LOCAL_LOGS_FILTERED" ]; then
-    log_pass "Loki has ${LOKI_COUNT}/${EXPECTED_LOKI} entries (${EXTRA} extra — within dedup margin)"
-  else
-    log_fail "DUPLICATE DATA: Loki has ${LOKI_COUNT}/${EXPECTED_LOKI} entries (${EXTRA} extra)"
-  fi
-else
-  LOST=$((EXPECTED_LOKI - LOKI_COUNT))
-  LOSS_PCT=$(( (LOST * 100) / EXPECTED_LOKI ))
-  log_fail "DATA LOSS: Loki has ${LOKI_COUNT}/${EXPECTED_LOKI} entries (${LOST} missing, ${LOSS_PCT}% loss)"
-fi
-
-# Verify hook event types made it to Loki
-for EVENT_TYPE in SessionStart UserPromptSubmit PreToolUse; do
-  QUERY="{service_name=\"panopticon\"} | json | event_type=\"${EVENT_TYPE}\""
-  COUNT=$(curl -sf -G "${LOKI_URL}/loki/api/v1/query_range" \
-    --data-urlencode "query=${QUERY}" \
-    --data-urlencode "start=$(($(date +%s) - 1800))" \
-    --data-urlencode "end=$(date +%s)" \
-    --data-urlencode "limit=100" 2>/dev/null \
-    | jq -r '[.data.result[].values | length] | add // 0' 2>/dev/null || echo "0")
-
-  if [ "$COUNT" -gt 0 ]; then
-    log_pass "Loki event_type=${EVENT_TYPE}: ${COUNT} entries"
-  else
-    log_info "Loki event_type=${EVENT_TYPE}: not yet indexed (best-effort)"
-  fi
+  sleep 2
+  elapsed=$((elapsed + 2))
 done
 
-# Verify OTLP passthrough logs (api_request from proxy)
-OTEL_LOG_COUNT=$(curl -sf -G "${LOKI_URL}/loki/api/v1/query_range" \
-  --data-urlencode 'query={service_name="panopticon"} |= "api_request"' \
-  --data-urlencode "start=$(($(date +%s) - 1800))" \
-  --data-urlencode "end=$(date +%s)" \
-  --data-urlencode "limit=100" 2>/dev/null \
-  | jq -r '[.data.result[].values | length] | add // 0' 2>/dev/null || echo "0")
-if [ "$OTEL_LOG_COUNT" -gt 0 ]; then
-  log_pass "Loki: OTLP api_request logs found (${OTEL_LOG_COUNT} entries)"
+log_info "Mock receiver /stats: $(echo "$STATS_JSON" | jq -c '.' 2>/dev/null || echo "$STATS_JSON")"
+
+# On any sync failure, dump enough state to diagnose whether the issue is:
+#   a) sync isn't running at all (no target_session_sync rows)
+#   b) sessions aren't being attributed to repos (sync filters them out)
+#   c) sync is running but POSTs are failing (check panopticon server log)
+dump_sync_debug() {
+  log_info "── sync debug ──"
+  log_info "session_repositories count: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM session_repositories;' 2>/dev/null || echo 'N/A')"
+  log_info "target_session_sync count: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM target_session_sync;' 2>/dev/null || echo 'N/A')"
+  sqlite3 -header -column "$DB_PATH" \
+    "SELECT target, confirmed, COUNT(*) AS n FROM target_session_sync GROUP BY target, confirmed;" 2>/dev/null || true
+  log_info "── panopticon sync config ──"
+  panopticon sync list 2>&1 || true
+  log_info "── panopticon doctor ──"
+  panopticon doctor --json 2>&1 | jq '.checks[] | select(.label == "Sync" or .label == "Data Flow")' 2>/dev/null || panopticon doctor 2>&1
+  log_info "── can panopticon server reach mock? ──"
+  curl -sv "${MOCK_SYNC_URL}/stats" 2>&1 | head -20 || true
+  log_info "── mock sync server log (last 40 lines) ──"
+  tail -n 40 /tmp/test-sync-server.log 2>/dev/null || echo "  (no mock log)"
+  log_info "── panopticon log files ──"
+  ls -la "$HOME/.local/state/panopticon/logs/" 2>&1 || echo "  (no logs dir)"
+  log_info "── panopticon server log (last 80 lines) ──"
+  tail -n 80 "$HOME/.local/state/panopticon/logs/server.log" 2>&1 || echo "  (no server log)"
+  log_info "── panopticon hook-handler log (last 20 lines) ──"
+  tail -n 20 "$HOME/.local/state/panopticon/logs/hook-handler.log" 2>&1 || echo "  (no hook log)"
+}
+
+# Session count — the most load-bearing metric. Sync is gated on session
+# confirmation, so every other table depends on sessions arriving first.
+if [ "$REMOTE_SESSIONS" -ge "$LOCAL_SESSIONS" ] && [ "$LOCAL_SESSIONS" -gt 0 ]; then
+  log_pass "sessions synced: ${REMOTE_SESSIONS}/${LOCAL_SESSIONS}"
 else
-  log_info "Loki: OTLP api_request logs not yet indexed (best-effort)"
+  log_fail "sessions NOT synced: ${REMOTE_SESSIONS}/${LOCAL_SESSIONS}"
+  dump_sync_debug
 fi
 
-# ─── Phase 8: Validate Prometheus Metrics ────────────────────────────────────
-log_phase 9 "Validate Prometheus Metrics"
-
-PROM_NAMES=$(curl -sf -G "${PROM_URL}/api/v1/label/__name__/values" 2>/dev/null \
-  | jq -r '.data[]' 2>/dev/null || echo "")
-
-TOKEN_METRICS=$(echo "$PROM_NAMES" | grep -i "token" || true)
-if [ -n "$TOKEN_METRICS" ]; then
-  FIRST_METRIC=$(echo "$TOKEN_METRICS" | head -1)
-  SERIES_COUNT=$(curl -sf -G "${PROM_URL}/api/v1/query" \
-    --data-urlencode "query=${FIRST_METRIC}" 2>/dev/null \
-    | jq -r '.data.result | length' 2>/dev/null || echo "0")
-  log_pass "Prometheus: ${FIRST_METRIC} has ${SERIES_COUNT} series"
-  log_info "All token-related metrics: $(echo "$TOKEN_METRICS" | tr '\n' ', ')"
+# Hook events
+if [ "$REMOTE_HOOKS" -ge "$LOCAL_HOOKS" ]; then
+  log_pass "hook_events synced: ${REMOTE_HOOKS}/${LOCAL_HOOKS}"
 else
-  CLI_METRICS=$(echo "$PROM_NAMES" | grep -i "claude\|panopticon\|codex\|gemini" || true)
-  if [ -n "$CLI_METRICS" ]; then
-    log_pass "Prometheus: found related metrics: $(echo "$CLI_METRICS" | head -3 | tr '\n' ', ')"
+  log_fail "hook_events NOT fully synced: ${REMOTE_HOOKS}/${LOCAL_HOOKS}"
+fi
+
+# Scanner turns (the table that most depends on the scan loop running)
+if [ "$LOCAL_SCANNER_TURNS" -gt 0 ]; then
+  if [ "$REMOTE_TURNS" -ge "$LOCAL_SCANNER_TURNS" ]; then
+    log_pass "scanner_turns synced: ${REMOTE_TURNS}/${LOCAL_SCANNER_TURNS}"
   else
-    log_fail "Prometheus: no token/CLI metrics found"
-    log_info "Available: $(echo "$PROM_NAMES" | head -5 | tr '\n' ', ')"
+    log_fail "scanner_turns NOT fully synced: ${REMOTE_TURNS}/${LOCAL_SCANNER_TURNS}"
   fi
 fi
 
-# ─── Phase 9: Verify Sync Watermarks ────────────────────────────────────────
-log_phase 10 "Verify Sync Watermarks"
+# ─── Phase 9: Verify Per-Session Sync Watermarks ────────────────────────────
+log_phase 9 "Verify Sync Watermarks"
 
 SYNC_LIST=$(panopticon sync list 2>/dev/null || echo "")
 if echo "$SYNC_LIST" | grep -q "e2e-sync-val"; then
@@ -939,46 +821,26 @@ else
   log_fail "Sync target 'e2e-sync-val' not found"
 fi
 
-MAX_HOOK_ID=$(sqlite3 "$DB_PATH" "SELECT COALESCE(MAX(id), 0) FROM hook_events;" 2>/dev/null || echo "0")
-MAX_LOG_ID=$(sqlite3 "$DB_PATH" "SELECT COALESCE(MAX(id), 0) FROM otel_logs;" 2>/dev/null || echo "0")
-MAX_METRIC_ID=$(sqlite3 "$DB_PATH" "SELECT COALESCE(MAX(id), 0) FROM otel_metrics;" 2>/dev/null || echo "0")
+# Post-#119, per-session sync state lives in target_session_sync.
+# A confirmed session is one the receiver acknowledged (Phase 1 of sync).
+# synced_seq >= sync_seq means every row for that session has been shipped.
+CONFIRMED_SESSIONS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM target_session_sync WHERE target='e2e-sync-val' AND confirmed=1;" \
+  2>/dev/null || echo "-1")
+UNSYNCED_SESSIONS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM target_session_sync
+   WHERE target='e2e-sync-val' AND confirmed=1 AND synced_seq < sync_seq;" \
+  2>/dev/null || echo "-1")
 
-WM_DB_PATH="$(echo "$DB_PATH" | sed 's/data\.db/sync-watermarks.db/')"
-if [ -f "$WM_DB_PATH" ]; then
-  # Poll watermarks until they catch up to max IDs.
-  # The sync loop runs every 1-30s in the background; late telemetry can
-  # arrive after the last sync cycle, so we wait instead of snapshotting.
-  WM_TIMEOUT=60
-  log_info "Waiting up to ${WM_TIMEOUT}s for watermarks to reach max IDs..."
-
-  if [ "$MAX_HOOK_ID" -gt 0 ]; then
-    if wait_for_watermark "$WM_DB_PATH" "hook_events:e2e-sync-val" "$MAX_HOOK_ID" "$WM_TIMEOUT"; then
-      log_pass "hook_events fully synced (watermark >= max id ${MAX_HOOK_ID})"
-    else
-      HOOK_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='hook_events:e2e-sync-val';" 2>/dev/null || echo "0")
-      log_fail "hook_events partially synced (watermark ${HOOK_WM} < max id ${MAX_HOOK_ID} after ${WM_TIMEOUT}s)"
-    fi
-  fi
-
-  if [ "$MAX_LOG_ID" -gt 0 ]; then
-    if wait_for_watermark "$WM_DB_PATH" "otel_logs:e2e-sync-val" "$MAX_LOG_ID" "$WM_TIMEOUT"; then
-      log_pass "otel_logs fully synced (watermark >= max id ${MAX_LOG_ID})"
-    else
-      LOG_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='otel_logs:e2e-sync-val';" 2>/dev/null || echo "0")
-      log_fail "otel_logs partially synced (watermark ${LOG_WM} < max id ${MAX_LOG_ID} after ${WM_TIMEOUT}s)"
-    fi
-  fi
-
-  if [ "$MAX_METRIC_ID" -gt 0 ]; then
-    if wait_for_watermark "$WM_DB_PATH" "otel_metrics:e2e-sync-val" "$MAX_METRIC_ID" "$WM_TIMEOUT"; then
-      log_pass "otel_metrics fully synced (watermark >= max id ${MAX_METRIC_ID})"
-    else
-      METRIC_WM=$(sqlite3 "$WM_DB_PATH" "SELECT value FROM watermarks WHERE key='otel_metrics:e2e-sync-val';" 2>/dev/null || echo "0")
-      log_fail "otel_metrics partially synced (watermark ${METRIC_WM} < max id ${MAX_METRIC_ID} after ${WM_TIMEOUT}s)"
-    fi
-  fi
+if [ "$CONFIRMED_SESSIONS" = "-1" ] || [ "$UNSYNCED_SESSIONS" = "-1" ]; then
+  log_fail "target_session_sync query failed"
+elif [ "$CONFIRMED_SESSIONS" = "0" ]; then
+  # Vacuous pass would hide the case where sync never ran at all.
+  log_fail "no confirmed sessions for target 'e2e-sync-val' — sync didn't complete Phase 1"
+elif [ "$UNSYNCED_SESSIONS" = "0" ]; then
+  log_pass "all ${CONFIRMED_SESSIONS} confirmed sessions fully synced (synced_seq >= sync_seq)"
 else
-  log_fail "Sync watermarks DB not found at ${WM_DB_PATH}"
+  log_fail "${UNSYNCED_SESSIONS}/${CONFIRMED_SESSIONS} confirmed sessions have pending data (synced_seq < sync_seq)"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────

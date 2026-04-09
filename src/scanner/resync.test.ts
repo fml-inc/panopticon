@@ -20,8 +20,8 @@ vi.mock("../config.js", () => {
   };
 });
 
-import Database from "better-sqlite3";
 import { config } from "../config.js";
+import { Database } from "../db/driver.js";
 import {
   closeDb,
   getDb,

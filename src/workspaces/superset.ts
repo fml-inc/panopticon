@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "../db/driver.js";
 import type { WorkspaceProvider } from "./types.js";
 
 const SUPERSET_MARKER = `${path.sep}.superset${path.sep}`;
@@ -16,7 +16,7 @@ interface WorktreeRow {
 export class SupersetProvider implements WorkspaceProvider {
   readonly id = "superset";
 
-  private db: Database.Database | null = null;
+  private db: Database | null = null;
   private dbFailed = false;
 
   canResolve(cwd: string): boolean {
@@ -87,7 +87,7 @@ export class SupersetProvider implements WorkspaceProvider {
     return { repoDir: row.main_repo_path, branch: row.branch };
   }
 
-  private getDb(): Database.Database | null {
+  private getDb(): Database | null {
     if (this.dbFailed) return null;
     if (this.db) return this.db;
     try {

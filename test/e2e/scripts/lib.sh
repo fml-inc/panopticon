@@ -24,8 +24,8 @@ get_db_path() {
   local os
   os="$(uname -s)"
   case "$os" in
-    Darwin) echo "$HOME/Library/Application Support/panopticon/data.db" ;;
-    *)      echo "$HOME/.local/share/panopticon/data.db" ;;
+    Darwin) echo "$HOME/Library/Application Support/panopticon/panopticon.db" ;;
+    *)      echo "$HOME/.local/share/panopticon/panopticon.db" ;;
   esac
 }
 
@@ -219,7 +219,7 @@ dump_db_debug() {
   echo "  otel_spans rows:  $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM otel_spans;' 2>/dev/null || echo 'N/A')"
   echo "  scanner_turns:    $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM scanner_turns;' 2>/dev/null || echo 'N/A')"
   echo "  scanner_events:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM scanner_events;' 2>/dev/null || echo 'N/A')"
-  echo "  summary_deltas:   $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM session_summary_deltas;' 2>/dev/null || echo 'N/A')"
+  echo "  sessions w/summary: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND LENGTH(summary) > 0;' 2>/dev/null || echo 'N/A')"
   echo "  Distinct sessions: $(sqlite3 "$DB_PATH" 'SELECT COUNT(DISTINCT session_id) FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  Event types: $(sqlite3 "$DB_PATH" 'SELECT DISTINCT event_type FROM hook_events;' 2>/dev/null || echo 'N/A')"
   echo "  Tool names: $(sqlite3 "$DB_PATH" "SELECT DISTINCT tool_name FROM hook_events WHERE tool_name IS NOT NULL AND tool_name != '';" 2>/dev/null || echo 'N/A')"

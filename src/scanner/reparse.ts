@@ -11,8 +11,8 @@
  */
 import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
-import Database from "better-sqlite3";
 import { config } from "../config.js";
+import { Database } from "../db/driver.js";
 import {
   closeDb,
   getDb,
@@ -79,12 +79,12 @@ function removeWAL(dbPath: string): void {
   }
 }
 
-function initTempDb(tempPath: string): Database.Database {
+function initTempDb(tempPath: string): Database {
   const db = new Database(tempPath);
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
-  db.function("decompress", (blob: Buffer | null) =>
-    blob ? gunzipSync(blob).toString() : null,
+  db.function("decompress", (blob: unknown) =>
+    blob ? gunzipSync(blob as Uint8Array).toString() : null,
   );
   db.exec(SCHEMA_SQL);
   runMigrations(db);
@@ -114,7 +114,7 @@ export function reparseAll(
   log("Starting atomic reparse...");
 
   // 1. Create fresh temp DB and verify schema
-  let tempDb: Database.Database;
+  let tempDb: Database;
   try {
     tempDb = initTempDb(tempPath);
     tempDb.close();
@@ -194,8 +194,8 @@ export function reparseAll(
   try {
     tempDb = new Database(tempPath);
     tempDb.pragma("journal_mode = WAL");
-    tempDb.function("decompress", (blob: Buffer | null) =>
-      blob ? gunzipSync(blob).toString() : null,
+    tempDb.function("decompress", (blob: unknown) =>
+      blob ? gunzipSync(blob as Uint8Array).toString() : null,
     );
     const escapedPath = origPath.replace(/'/g, "''");
     tempDb.exec(`ATTACH DATABASE '${escapedPath}' AS old_db`);
