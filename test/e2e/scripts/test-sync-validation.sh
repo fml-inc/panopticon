@@ -605,9 +605,8 @@ sqlite3 -header -column "$DB_PATH" \
      SUM(total_input_tokens) as input_tok, SUM(total_output_tokens) as output_tok
    FROM sessions WHERE scanner_file_path IS NOT NULL GROUP BY target;" 2>/dev/null || true
 
-# Run reconciliation report
-log_info "Running scan compare..."
-panopticon scan compare 2>&1 || true
+# `panopticon scan compare` was a debug-only reconciliation report removed
+# in #124 along with direct DB access from the CLI. Skip it.
 
 # ── 7b: OTLP traces (otel_spans) ───────────────────────────────────────────
 
