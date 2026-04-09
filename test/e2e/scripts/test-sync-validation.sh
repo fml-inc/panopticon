@@ -742,17 +742,20 @@ dump_sync_debug() {
   log_info "target_session_sync count: $(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM target_session_sync;' 2>/dev/null || echo 'N/A')"
   sqlite3 -header -column "$DB_PATH" \
     "SELECT target, confirmed, COUNT(*) AS n FROM target_session_sync GROUP BY target, confirmed;" 2>/dev/null || true
+  log_info "── panopticon sync config ──"
+  panopticon sync list 2>&1 || true
+  log_info "── panopticon doctor ──"
+  panopticon doctor --json 2>&1 | jq '.checks[] | select(.label == "Sync" or .label == "Data Flow")' 2>/dev/null || panopticon doctor 2>&1
+  log_info "── can panopticon server reach mock? ──"
+  curl -sv "${MOCK_SYNC_URL}/stats" 2>&1 | head -20 || true
   log_info "── mock sync server log (last 40 lines) ──"
-  tail -n 40 /tmp/test-sync-server.log 2>/dev/null || true
-  log_info "── panopticon server log (last 60 lines) ──"
-  local server_log
-  server_log=$(find "$HOME/.local/state/panopticon/logs" "$HOME/.local/share/panopticon/logs" \
-    -type f -name "server*.log" 2>/dev/null | head -1)
-  if [ -n "$server_log" ]; then
-    tail -n 60 "$server_log" 2>/dev/null || true
-  else
-    log_info "  (no server log found)"
-  fi
+  tail -n 40 /tmp/test-sync-server.log 2>/dev/null || echo "  (no mock log)"
+  log_info "── panopticon log files ──"
+  ls -la "$HOME/.local/state/panopticon/logs/" 2>&1 || echo "  (no logs dir)"
+  log_info "── panopticon server log (last 80 lines) ──"
+  tail -n 80 "$HOME/.local/state/panopticon/logs/server.log" 2>&1 || echo "  (no server log)"
+  log_info "── panopticon hook-handler log (last 20 lines) ──"
+  tail -n 20 "$HOME/.local/state/panopticon/logs/hook-handler.log" 2>&1 || echo "  (no hook log)"
 }
 
 # Session count — the most load-bearing metric. Sync is gated on session
