@@ -238,20 +238,6 @@ CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
   archived_size INTEGER DEFAULT 0
 );
 
--- ── Session summaries ───────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS session_summary_deltas (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT NOT NULL,
-  delta_index INTEGER NOT NULL,
-  created_at_ms INTEGER NOT NULL,
-  from_turn INTEGER NOT NULL,
-  to_turn INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  method TEXT NOT NULL DEFAULT 'deterministic',
-  UNIQUE(session_id, delta_index)
-);
-
 -- ── Model pricing ───────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS model_pricing (
@@ -388,9 +374,6 @@ CREATE INDEX IF NOT EXISTS idx_scanner_turns_ts ON scanner_turns(timestamp_ms);
 -- scanner_events
 CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type);
-
--- session_summary_deltas
-CREATE INDEX IF NOT EXISTS idx_summary_deltas_session ON session_summary_deltas(session_id);
 
 -- model_pricing
 CREATE INDEX IF NOT EXISTS idx_model_pricing_model ON model_pricing(model_id, updated_ms);

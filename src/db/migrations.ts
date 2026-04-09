@@ -67,6 +67,15 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: 3,
+    name: "drop_session_summary_deltas",
+    // #115 (Apr 2) replaced delta summaries with a single sessions.summary
+    // column but left the table in the schema and never wrote to it. The
+    // prune/MCP/e2e references have been cleaned up; this migration removes
+    // the dead table for DBs that were created before the rewrite.
+    sql: "DROP TABLE IF EXISTS session_summary_deltas",
+  },
 ];
 
 // ---------------------------------------------------------------------------

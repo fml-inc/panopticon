@@ -16,7 +16,10 @@ COPY pnpm-lock.yaml package.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY . .
-RUN pnpm rebuild better-sqlite3 && pnpm build
+RUN pnpm build \
+  && pnpm exec esbuild scripts/test-sync-server.ts \
+       --bundle --platform=node --format=esm \
+       --outfile=dist/test-sync-server.js '--external:node:*'
 
 # Make panopticon CLI available globally
 RUN ln -sf /opt/panopticon/bin/panopticon /usr/local/bin/panopticon \

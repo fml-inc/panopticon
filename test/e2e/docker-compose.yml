@@ -1,8 +1,4 @@
 services:
-  # Grafana OTEL LGTM stack (Loki + Grafana + Tempo + Mimir)
-  otel-lgtm:
-    image: grafana/otel-lgtm:latest
-
   test-sync-validation:
     build:
       context: ../..
@@ -14,5 +10,3 @@ services:
       - GEMINI_API_KEY
       - SHELL=/bin/bash
       - PANOPTICON_PORT=4318
-    depends_on:
-      - otel-lgtm
