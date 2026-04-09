@@ -747,8 +747,11 @@ while [ "$elapsed" -lt "$SYNC_TIMEOUT" ]; do
   STATS_JSON=$(curl -sf "${MOCK_SYNC_URL}/stats" 2>/dev/null || echo "{}")
   REMOTE_SESSIONS=$(echo "$STATS_JSON" | jq -r '.sessions // 0' 2>/dev/null || echo "0")
   REMOTE_HOOKS=$(echo "$STATS_JSON" | jq -r '[.tables[] | select(.tbl=="hook_events") | .cnt] | add // 0' 2>/dev/null || echo "0")
+  REMOTE_TURNS=$(echo "$STATS_JSON" | jq -r '[.tables[] | select(.tbl=="scanner_turns") | .cnt] | add // 0' 2>/dev/null || echo "0")
 
-  if [ "$REMOTE_SESSIONS" -ge "$LOCAL_SESSIONS" ] && [ "$REMOTE_HOOKS" -ge "$LOCAL_HOOKS" ]; then
+  if [ "$REMOTE_SESSIONS" -ge "$LOCAL_SESSIONS" ] \
+    && [ "$REMOTE_HOOKS" -ge "$LOCAL_HOOKS" ] \
+    && [ "$REMOTE_TURNS" -ge "$LOCAL_SCANNER_TURNS" ]; then
     break
   fi
   sleep 2
@@ -800,7 +803,6 @@ else
 fi
 
 # Scanner turns (the table that most depends on the scan loop running)
-REMOTE_TURNS=$(echo "$STATS_JSON" | jq -r '[.tables[] | select(.tbl=="scanner_turns") | .cnt] | add // 0' 2>/dev/null || echo "0")
 if [ "$LOCAL_SCANNER_TURNS" -gt 0 ]; then
   if [ "$REMOTE_TURNS" -ge "$LOCAL_SCANNER_TURNS" ]; then
     log_pass "scanner_turns synced: ${REMOTE_TURNS}/${LOCAL_SCANNER_TURNS}"
