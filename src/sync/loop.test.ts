@@ -35,6 +35,14 @@ function insertSession(sessionId: string, syncSeq: number): void {
   ).run(sessionId, syncSeq);
 }
 
+function insertSessionRepo(sessionId: string, repository = "org/repo"): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR IGNORE INTO session_repositories (session_id, repository, first_seen_ms)
+     VALUES (?, ?, 0)`,
+  ).run(sessionId, repository);
+}
+
 function insertMessage(
   sessionId: string,
   ordinal: number,
@@ -90,23 +98,39 @@ function getPendingSessions(targetName: string) {
     .all(targetName) as Array<Record<string, number> & { session_id: string }>;
 }
 
-/** Mirrors the Phase 1 query in syncSessions: finds new + updated sessions. */
-function getSessionsNeedingSync(targetName: string, limit = 100) {
+/**
+ * Mirrors the Phase 1 queries in syncSessions (loop.ts). Two independent
+ * LIMITs so neither branch can starve the other. **Keep in sync with the
+ * production queries in src/sync/loop.ts.**
+ */
+function getSessionsNeedingSync(
+  targetName: string,
+  limit = 100,
+  requireRepo = false,
+) {
   const db = getDb();
-  return db
+  const repoExists = requireRepo
+    ? "AND EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = s.session_id)"
+    : "";
+  const newRows = db
     .prepare(
       `SELECT s.session_id FROM sessions s
        LEFT JOIN target_session_sync tss
          ON s.session_id = tss.session_id AND tss.target = ?
-       WHERE tss.session_id IS NULL
-       UNION ALL
-       SELECT s.session_id FROM sessions s
-       JOIN target_session_sync tss
-         ON s.session_id = tss.session_id AND tss.target = ?
-       WHERE tss.confirmed = 1 AND s.sync_seq > tss.sync_seq
+       WHERE tss.session_id IS NULL ${repoExists}
        LIMIT ?`,
     )
-    .all(targetName, targetName, limit) as Array<{ session_id: string }>;
+    .all(targetName, limit) as Array<{ session_id: string }>;
+  const updatedRows = db
+    .prepare(
+      `SELECT s.session_id FROM sessions s
+       JOIN target_session_sync tss
+         ON s.session_id = tss.session_id AND tss.target = ?
+       WHERE tss.confirmed = 1 AND s.sync_seq > tss.sync_seq ${repoExists}
+       LIMIT ?`,
+    )
+    .all(targetName, limit) as Array<{ session_id: string }>;
+  return [...newRows, ...updatedRows];
 }
 
 function markSynced(
@@ -150,6 +174,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM target_session_sync").run();
   db.prepare("DELETE FROM sessions").run();
+  db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM watermarks").run();
 });
@@ -431,6 +456,191 @@ describe("target_session_sync", () => {
 
     it("readSessionsByIds returns empty for empty input", () => {
       expect(readSessionsByIds([])).toHaveLength(0);
+    });
+  });
+
+  describe("no-repo backlog handling", () => {
+    it("SQL filter excludes sessions without repo attribution", () => {
+      insertSession("with-repo", 1);
+      insertSession("no-repo", 1);
+      insertSessionRepo("with-repo");
+
+      const ids = getSessionsNeedingSync("target-a", 100, true).map(
+        (r) => r.session_id,
+      );
+      expect(ids).toContain("with-repo");
+      expect(ids).not.toContain("no-repo");
+    });
+
+    it("a backlog of no-repo sessions does not starve the updated branch", () => {
+      // Regression for pmandia's stuck sync: the previous query used
+      // UNION ALL with a single LIMIT, so a large prefix of no-repo sessions
+      // in the "new" branch would consume every slot and the "updated"
+      // branch was never reached. Independent LIMITs + the EXISTS filter
+      // fix this.
+      const limit = 50;
+
+      // 200 new sessions with no repo attribution (would be filtered out)
+      for (let i = 0; i < 200; i++) {
+        insertSession(`no-repo-${i}`, 1);
+      }
+
+      // One confirmed session with repo whose sync_seq has advanced
+      insertSession("stale-confirmed", 100);
+      insertSessionRepo("stale-confirmed");
+      recordConfirmed(["stale-confirmed"], "target-a");
+      const db = getDb();
+      db.prepare("UPDATE sessions SET sync_seq = 200 WHERE session_id = ?").run(
+        "stale-confirmed",
+      );
+
+      const ids = getSessionsNeedingSync("target-a", limit, true).map(
+        (r) => r.session_id,
+      );
+
+      // The updated branch must reach the stale session even with a huge
+      // backlog of no-repo new sessions ahead of it.
+      expect(ids).toContain("stale-confirmed");
+      // None of the no-repo sessions should appear with requireRepo=true.
+      expect(ids.filter((id) => id.startsWith("no-repo-"))).toHaveLength(0);
+    });
+
+    it("requireRepo=false leaves no-repo sessions in the candidate set", () => {
+      insertSession("with-repo", 1);
+      insertSession("no-repo", 1);
+      insertSessionRepo("with-repo");
+
+      const ids = getSessionsNeedingSync("target-a", 100, false).map(
+        (r) => r.session_id,
+      );
+      expect(ids).toContain("with-repo");
+      expect(ids).toContain("no-repo");
+    });
+
+    it("new and updated branches each get their own LIMIT slot", () => {
+      // With UNION ALL + one LIMIT, a full new branch would crowd out the
+      // updated branch. With independent LIMITs each can return up to N rows.
+      const limit = 3;
+
+      // 5 new sessions with repo (more than limit)
+      for (let i = 0; i < 5; i++) {
+        insertSession(`new-${i}`, 1);
+        insertSessionRepo(`new-${i}`);
+      }
+
+      // 5 updated sessions with repo (more than limit)
+      for (let i = 0; i < 5; i++) {
+        insertSession(`upd-${i}`, 10);
+        insertSessionRepo(`upd-${i}`);
+        recordConfirmed([`upd-${i}`], "target-a");
+        const db = getDb();
+        db.prepare(
+          "UPDATE sessions SET sync_seq = 20 WHERE session_id = ?",
+        ).run(`upd-${i}`);
+      }
+
+      const ids = getSessionsNeedingSync("target-a", limit, true).map(
+        (r) => r.session_id,
+      );
+
+      // Each branch contributes up to `limit` rows independently → total 6.
+      const newCount = ids.filter((id) => id.startsWith("new-")).length;
+      const updCount = ids.filter((id) => id.startsWith("upd-")).length;
+      expect(newCount).toBe(limit);
+      expect(updCount).toBe(limit);
+    });
+
+    it("updated session that lost its repo attribution is filtered out", () => {
+      // Defensive: if session_repositories was pruned (e.g., by retention)
+      // for a session that's already in tss, the EXISTS check should still
+      // apply and exclude it from sync.
+      insertSession("orphaned", 5);
+      recordConfirmed(["orphaned"], "target-a");
+      const db = getDb();
+      db.prepare("UPDATE sessions SET sync_seq = 99 WHERE session_id = ?").run(
+        "orphaned",
+      );
+      // Note: no insertSessionRepo() call → no repo row exists.
+
+      const requireRepo = getSessionsNeedingSync("target-a", 100, true).map(
+        (r) => r.session_id,
+      );
+      const noFilter = getSessionsNeedingSync("target-a", 100, false).map(
+        (r) => r.session_id,
+      );
+
+      expect(requireRepo).not.toContain("orphaned");
+      expect(noFilter).toContain("orphaned");
+    });
+
+    it("returns empty when nothing has repo attribution and requireRepo=true", () => {
+      // No infinite loop / no false-positive work: with a pile of no-repo
+      // sessions and requireRepo=true, the result is just empty.
+      for (let i = 0; i < 10; i++) {
+        insertSession(`no-repo-${i}`, 1);
+      }
+
+      const ids = getSessionsNeedingSync("target-a", 100, true);
+      expect(ids).toHaveLength(0);
+    });
+
+    it("does not include unconfirmed sessions in the updated branch", () => {
+      // Updated branch JOINs on confirmed=1. An unconfirmed tss row should
+      // not be picked even if sync_seq advanced.
+      insertSession("unconfirmed", 5);
+      insertSessionRepo("unconfirmed");
+      const db = getDb();
+      // Insert tss row with confirmed=0
+      db.prepare(
+        `INSERT INTO target_session_sync (session_id, target, confirmed, sync_seq, synced_seq)
+         VALUES (?, 'target-a', 0, 1, 0)`,
+      ).run("unconfirmed");
+
+      const ids = getSessionsNeedingSync("target-a", 100, true).map(
+        (r) => r.session_id,
+      );
+
+      // It's not in the updated branch (confirmed=0) and not in the new
+      // branch (tss row exists), so it must be absent entirely.
+      expect(ids).not.toContain("unconfirmed");
+    });
+
+    it("a session is reachable when it moves from new → updated", () => {
+      // End-to-end shape: a new session gets confirmed, then its sync_seq
+      // advances, and the updated branch picks it up — even with a
+      // backlog of no-repo new sessions in the way.
+      for (let i = 0; i < 100; i++) {
+        insertSession(`no-repo-${i}`, 1);
+      }
+      insertSession("real", 1);
+      insertSessionRepo("real");
+
+      // First tick: new branch returns it.
+      let ids = getSessionsNeedingSync("target-a", 10, true).map(
+        (r) => r.session_id,
+      );
+      expect(ids).toContain("real");
+
+      // Confirm it (simulates backend ack).
+      recordConfirmed(["real"], "target-a");
+
+      // Now nothing pending.
+      ids = getSessionsNeedingSync("target-a", 10, true).map(
+        (r) => r.session_id,
+      );
+      expect(ids).not.toContain("real");
+
+      // Bump sync_seq (simulates a new write).
+      const db = getDb();
+      db.prepare("UPDATE sessions SET sync_seq = 5 WHERE session_id = ?").run(
+        "real",
+      );
+
+      // Updated branch picks it up.
+      ids = getSessionsNeedingSync("target-a", 10, true).map(
+        (r) => r.session_id,
+      );
+      expect(ids).toContain("real");
     });
   });
 });
