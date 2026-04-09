@@ -148,35 +148,58 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     syncableSessionIds: Set<string> | null,
   ): Promise<boolean> {
     const db = getDb();
+    const requireRepo = opts.filter?.requireRepo ?? true;
+
+    // SQL-level filter to skip sessions with no repository attribution.
+    // Without this, a large backlog of no-repo sessions consumes every LIMIT
+    // slot in the "new sessions" branch and starves the "updated sessions"
+    // branch indefinitely (so per-session watermarks for confirmed sessions
+    // can never advance).
+    const repoExists = requireRepo
+      ? "AND EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = s.session_id)"
+      : "";
 
     // Find sessions that need syncing: new (no tss entry) or updated
     // (sessions.sync_seq advanced past tss.sync_seq).
-    const candidates = db
+    //
+    // These run as two independent queries with their own LIMITs (rather than
+    // UNION ALL with one shared LIMIT) so neither branch can starve the other.
+    const newRows = db
       .prepare(
         `SELECT s.session_id FROM sessions s
          LEFT JOIN target_session_sync tss
            ON s.session_id = tss.session_id AND tss.target = ?
-         WHERE tss.session_id IS NULL
-         UNION ALL
-         SELECT s.session_id FROM sessions s
-         JOIN target_session_sync tss
-           ON s.session_id = tss.session_id AND tss.target = ?
-         WHERE tss.confirmed = 1 AND s.sync_seq > tss.sync_seq
+         WHERE tss.session_id IS NULL ${repoExists}
          LIMIT ?`,
       )
-      .all(target.name, target.name, batchSize) as Array<{
-      session_id: string;
-    }>;
+      .all(target.name, batchSize) as Array<{ session_id: string }>;
 
-    if (candidates.length === 0) return false;
+    const updatedRows = db
+      .prepare(
+        `SELECT s.session_id FROM sessions s
+         JOIN target_session_sync tss
+           ON s.session_id = tss.session_id AND tss.target = ?
+         WHERE tss.confirmed = 1 AND s.sync_seq > tss.sync_seq ${repoExists}
+         LIMIT ?`,
+      )
+      .all(target.name, batchSize) as Array<{ session_id: string }>;
 
-    // Filter by repo attribution
-    let sessionIds = candidates.map((r) => r.session_id);
+    if (newRows.length === 0 && updatedRows.length === 0) return false;
+
+    // In-memory filter for includeRepos/excludeRepos globs (requireRepo is
+    // already enforced in SQL above).
+    let sessionIds = [
+      ...newRows.map((r) => r.session_id),
+      ...updatedRows.map((r) => r.session_id),
+    ];
     if (syncableSessionIds) {
       sessionIds = sessionIds.filter((id) => syncableSessionIds.has(id));
     }
 
-    if (sessionIds.length === 0) return candidates.length >= batchSize;
+    const hasMore =
+      newRows.length >= batchSize || updatedRows.length >= batchSize;
+
+    if (sessionIds.length === 0) return hasMore;
 
     const rows = readSessionsByIds(sessionIds);
     if (rows.length > 0) {
@@ -197,7 +220,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       }
     }
 
-    return candidates.length >= batchSize;
+    return hasMore;
   }
 
   // ── Phase 2: Sync dependent data (per-session, gated by confirmed) ───────
@@ -443,5 +466,6 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         log.sync.info("Stopped sync");
       }
     },
+    runOnce,
   };
 }

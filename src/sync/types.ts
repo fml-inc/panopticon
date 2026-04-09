@@ -38,6 +38,11 @@ export interface SyncOptions {
 export interface SyncHandle {
   start: () => void;
   stop: () => void;
+  /**
+   * Run a single sync cycle without scheduling further ticks. Resolves to
+   * `true` if more work is pending. Useful for tests and manual triggers.
+   */
+  runOnce: () => Promise<boolean>;
 }
 
 /** Hook event record for sync. */
