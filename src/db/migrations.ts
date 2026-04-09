@@ -29,7 +29,7 @@
  *    upgrade forward. Rolling back means reinstalling.
  */
 
-import type Database from "better-sqlite3";
+import type { Database } from "./driver.js";
 
 export interface Migration {
   id: number;
@@ -37,7 +37,7 @@ export interface Migration {
   /** Simple migrations: single SQL statement. */
   sql?: string;
   /** Complex migrations: function that receives the db handle. */
-  up?: (db: Database.Database) => void;
+  up?: (db: Database) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ export const MIGRATIONS: Migration[] = [
  * transactions.
  */
 export function runMigrations(
-  db: Database.Database,
+  db: Database,
   migrations: Migration[] = MIGRATIONS,
 ): void {
   const trackingExists = db

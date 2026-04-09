@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Database } from "./driver.js";
 import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
 
@@ -10,7 +10,7 @@ import { SCHEMA_SQL } from "./schema.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeTempDb(): { db: Database.Database; cleanup: () => void } {
+function makeTempDb(): { db: Database; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-migrations-"));
   const dbPath = path.join(dir, "test.db");
   const db = new Database(dbPath);
@@ -30,14 +30,14 @@ afterEach(() => {
   cleanups = [];
 });
 
-function createDb(): Database.Database {
+function createDb(): Database {
   const { db, cleanup } = makeTempDb();
   cleanups.push(cleanup);
   return db;
 }
 
 /** Create a DB with schema_migrations already present (simulates existing DB). */
-function createExistingDb(): Database.Database {
+function createExistingDb(): Database {
   const db = createDb();
   db.exec(`
     CREATE TABLE schema_migrations (
@@ -49,9 +49,7 @@ function createExistingDb(): Database.Database {
   return db;
 }
 
-function getApplied(
-  db: Database.Database,
-): Array<{ id: number; name: string }> {
+function getApplied(db: Database): Array<{ id: number; name: string }> {
   return db
     .prepare("SELECT id, name FROM schema_migrations ORDER BY id")
     .all() as Array<{ id: number; name: string }>;
@@ -362,7 +360,7 @@ describe("runMigrations — idempotency", () => {
     const db = createExistingDb();
     db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
 
-    const spy = vi.fn((d: Database.Database) => {
+    const spy = vi.fn((d: Database) => {
       d.exec("ALTER TABLE t ADD COLUMN a TEXT");
     });
     const migrations: Migration[] = [{ id: 1, name: "once", up: spy }];

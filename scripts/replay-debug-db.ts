@@ -17,7 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "../src/db/driver.js";
 
 // Override panopticon config BEFORE importing anything that uses it
 const sourceDbPath = process.argv[2];

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import type Database from "better-sqlite3";
 import { getDb, markResyncComplete, needsResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 // Import targets so they self-register before we iterate the registry
@@ -92,30 +91,28 @@ export function scanOnce(): {
       const fileMeta = result.meta;
       const fileResult = result;
       const db = getDb();
-      (
-        db.transaction(() => {
-          upsertSession(fileMeta, filePath, source);
+      db.transaction(() => {
+        upsertSession(fileMeta, filePath, source);
 
-          if (fileResult.turns.length > 0) {
-            insertTurns(fileResult.turns, source);
-            updateSessionTotals(sessionId);
-          }
+        if (fileResult.turns.length > 0) {
+          insertTurns(fileResult.turns, source);
+          updateSessionTotals(sessionId);
+        }
 
-          if (fileResult.events.length > 0) {
-            insertScannerEvents(fileResult.events, source);
-          }
+        if (fileResult.events.length > 0) {
+          insertScannerEvents(fileResult.events, source);
+        }
 
-          if (
-            fileResult.messages.length > 0 ||
-            fileResult.orphanedToolResults?.size
-          ) {
-            insertMessages(fileResult.messages, fileResult.orphanedToolResults);
-            updateSessionMessageCounts(sessionId);
-          }
+        if (
+          fileResult.messages.length > 0 ||
+          fileResult.orphanedToolResults?.size
+        ) {
+          insertMessages(fileResult.messages, fileResult.orphanedToolResults);
+          updateSessionMessageCounts(sessionId);
+        }
 
-          writeFileWatermark(filePath, fileResult.newByteOffset);
-        }) as Database.Transaction
-      )();
+        writeFileWatermark(filePath, fileResult.newByteOffset);
+      })();
 
       newTurns += result.turns.length;
 
@@ -125,23 +122,21 @@ export function scanOnce(): {
           if (!fork.meta?.sessionId) continue;
           const forkSessionId = fork.meta.sessionId;
           const forkMeta = fork.meta;
-          (
-            db.transaction(() => {
-              upsertSession(forkMeta, filePath, source);
-              if (fork.turns.length > 0) {
-                insertTurns(fork.turns, source);
-                updateSessionTotals(forkSessionId);
-              }
-              if (fork.events.length > 0) {
-                insertScannerEvents(fork.events, source);
-              }
-              if (fork.messages.length > 0 || fork.orphanedToolResults?.size) {
-                insertMessages(fork.messages, fork.orphanedToolResults);
-                updateSessionMessageCounts(forkSessionId);
-              }
-              // No watermark — shared file, one watermark for the whole file
-            }) as Database.Transaction
-          )();
+          db.transaction(() => {
+            upsertSession(forkMeta, filePath, source);
+            if (fork.turns.length > 0) {
+              insertTurns(fork.turns, source);
+              updateSessionTotals(forkSessionId);
+            }
+            if (fork.events.length > 0) {
+              insertScannerEvents(fork.events, source);
+            }
+            if (fork.messages.length > 0 || fork.orphanedToolResults?.size) {
+              insertMessages(fork.messages, fork.orphanedToolResults);
+              updateSessionMessageCounts(forkSessionId);
+            }
+            // No watermark — shared file, one watermark for the whole file
+          })();
           newTurns += fork.turns.length;
         }
       }

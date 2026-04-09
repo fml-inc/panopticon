@@ -20,7 +20,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "../src/db/driver.js";
 
 const PORT_A = 9801;
 const PORT_B = 9802;
@@ -132,10 +132,7 @@ interface UpsertHandler {
   upsert: (rows: Row[]) => number;
 }
 
-function makeSyncIdHandler(
-  db: Database.Database,
-  table: string,
-): UpsertHandler {
+function makeSyncIdHandler(db: Database, table: string): UpsertHandler {
   const upsertStmt = db.prepare(
     `INSERT INTO ${table} (sessionId, syncId, data) VALUES (?, ?, ?)
      ON CONFLICT(sessionId, syncId) DO UPDATE SET data = excluded.data, received_at = unixepoch('now','subsec')*1000`,
@@ -164,7 +161,7 @@ function makeSyncIdHandler(
 }
 
 function makeNaturalKeyHandler(
-  db: Database.Database,
+  db: Database,
   table: string,
   keyFields: string[],
 ): UpsertHandler {
@@ -199,7 +196,7 @@ const SYNC_ID_TABLES = [
   "scanner_turns",
 ];
 
-function createDb(name: string): Database.Database {
+function createDb(name: string): Database {
   const dir = path.join(os.homedir(), ".panopticon-test-sync");
   fs.mkdirSync(dir, { recursive: true });
   const dbPath = path.join(dir, `${name}.db`);
@@ -214,11 +211,7 @@ function createDb(name: string): Database.Database {
   return db;
 }
 
-function createServer(
-  name: string,
-  port: number,
-  db: Database.Database,
-): http.Server {
+function createServer(name: string, port: number, db: Database): http.Server {
   // Build handler map
   const upsertSession = db.prepare(
     `INSERT INTO sessions (sessionId, data) VALUES (?, ?)

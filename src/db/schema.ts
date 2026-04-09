@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
-import Database from "better-sqlite3";
 import { config } from "../config.js";
+import { Database } from "./driver.js";
 import { runMigrations } from "./migrations.js";
 
 export { runMigrations } from "./migrations.js";
@@ -418,16 +418,16 @@ export const SCANNER_DATA_VERSION = 1;
 // Database initialization
 // ---------------------------------------------------------------------------
 
-let _db: Database.Database | null = null;
+let _db: Database | null = null;
 let _needsResync = false;
 
-function registerCompressionFunctions(db: Database.Database): void {
-  db.function("decompress", (blob: Buffer | null) =>
-    blob ? gunzipSync(blob).toString() : null,
+function registerCompressionFunctions(db: Database): void {
+  db.function("decompress", (blob: unknown) =>
+    blob ? gunzipSync(blob as Uint8Array).toString() : null,
   );
 }
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   // If the db file was deleted (e.g. uninstall --purge) while this process
   // still holds a stale connection, drop it so we don't serve old data.
   if (_db && !fs.existsSync(config.dbPath)) {
