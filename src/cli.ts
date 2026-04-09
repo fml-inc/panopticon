@@ -572,6 +572,32 @@ async function install(
   console.log(`      ${config.dbPath}`);
   console.log(`      ${logDir}`);
 
+  // Ensure the Claude Code plugin manifest exists and has the current
+  // version. Claude Code's local-plugins loader reads `version` from
+  // .claude-plugin/plugin.json (not package.json) to pick the cache
+  // directory name — without it, every install reuses the same stale
+  // `unknown/` directory forever. The prepack hook generates this file
+  // for published tarballs; this block handles local dev where the
+  // source tree's `.claude-plugin/` is gitignored and may not exist or
+  // may be stale from a long-ago build.
+  const pluginManifestPath = path.join(
+    pluginRoot,
+    ".claude-plugin",
+    "plugin.json",
+  );
+  fs.mkdirSync(path.dirname(pluginManifestPath), { recursive: true });
+  writeJsonFile(pluginManifestPath, {
+    name: "panopticon",
+    version,
+    description: pkgJson?.description ?? "Observability for Claude Code",
+    mcpServers: {
+      panopticon: {
+        command: "node",
+        args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
+      },
+    },
+  });
+
   // Fetch model pricing from LiteLLM (non-blocking if it fails)
   const pricing = await refreshPricingDirect();
   console.log(
