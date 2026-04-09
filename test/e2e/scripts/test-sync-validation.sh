@@ -93,7 +93,12 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   fi
 done
 
-# Configure panopticon to sync into the mock receiver
+# Configure panopticon to sync into the mock receiver. `panopticon sync add`
+# is an API call into the running server that writes the target to the
+# config file — but the server loads cfg.sync.targets ONCE at startup and
+# never reloads, so we must stop + start to pick up the new target.
+# (`panopticon install` happened to start a server at the end of Phase 3;
+# that server's in-memory config has zero sync targets.)
 panopticon sync add e2e-sync-val "$MOCK_SYNC_URL"
 log_pass "Sync target 'e2e-sync-val' added -> $MOCK_SYNC_URL"
 
@@ -103,6 +108,14 @@ if echo "$SYNC_TARGETS" | grep -q "e2e-sync-val"; then
 else
   log_fail "Sync target not found in 'sync list'"
 fi
+
+log_info "Restarting panopticon so the new sync target takes effect..."
+panopticon stop 2>/dev/null || true
+# Give the daemon a moment to actually release its port
+sleep 1
+panopticon start
+wait_for_server 30
+log_pass "Panopticon restarted with sync target loaded"
 
 # ─── Phase 3: Verify Install Artifacts ───────────────────────────────────────
 log_phase 3 "Verify Install Artifacts"
