@@ -716,14 +716,26 @@ fi
 # endpoint we can query to assert zero data loss.
 log_phase 8 "Validate Sync Receiver (Zero Data Loss)"
 
-LOCAL_SESSIONS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions;" 2>/dev/null || echo "0")
-LOCAL_HOOKS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM hook_events;" 2>/dev/null || echo "0")
-LOCAL_LOGS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_logs;" 2>/dev/null || echo "0")
-LOCAL_METRICS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM otel_metrics;" 2>/dev/null || echo "0")
-LOCAL_SCANNER_TURNS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_turns;" 2>/dev/null || echo "0")
-LOCAL_SCANNER_EVENTS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM scanner_events;" 2>/dev/null || echo "0")
+# Sync has a `requireRepo: true` filter (since #142) that excludes sessions
+# without a session_repositories entry — this is how e.g. subagent sessions
+# (created inline from hook events with no cwd-based repo derivation) get
+# skipped. Compare the mock receiver's counts against the set of LOCAL rows
+# that actually WOULD be synced, not the raw table counts.
+LOCAL_SESSIONS_RAW=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions;" 2>/dev/null || echo "0")
+LOCAL_SESSIONS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM sessions s
+   WHERE EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = s.session_id);" \
+  2>/dev/null || echo "0")
+LOCAL_HOOKS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM hook_events he
+   WHERE EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = he.session_id);" \
+  2>/dev/null || echo "0")
+LOCAL_SCANNER_TURNS=$(sqlite3 "$DB_PATH" \
+  "SELECT COUNT(*) FROM scanner_turns st
+   WHERE EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = st.session_id);" \
+  2>/dev/null || echo "0")
 
-log_info "Local counts: ${LOCAL_SESSIONS} sessions, ${LOCAL_HOOKS} hooks, ${LOCAL_LOGS} logs, ${LOCAL_METRICS} metrics, ${LOCAL_SCANNER_TURNS} scanner turns, ${LOCAL_SCANNER_EVENTS} scanner events"
+log_info "Local syncable counts: ${LOCAL_SESSIONS}/${LOCAL_SESSIONS_RAW} sessions (subagents skipped), ${LOCAL_HOOKS} hooks, ${LOCAL_SCANNER_TURNS} scanner turns"
 
 # Poll the mock receiver until row counts match. The sync loop ticks every
 # 1-30s; late hooks can arrive after the last cycle, so we wait instead of
