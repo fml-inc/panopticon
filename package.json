@@ -92,7 +92,7 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node scripts/generate-plugin-manifest.js && tsup",
     "dev": "tsup --watch",
     "check": "biome check src/",
     "check:fix": "biome check --write src/",
