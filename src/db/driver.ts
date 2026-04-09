@@ -12,12 +12,24 @@
  */
 
 import fs from "node:fs";
-import {
-  DatabaseSync,
-  type SQLInputValue,
-  type SQLOutputValue,
-  type StatementSync,
+import type {
+  DatabaseSync as DatabaseSyncType,
+  SQLInputValue,
+  SQLOutputValue,
+  StatementSync,
 } from "node:sqlite";
+
+// `node:sqlite` is a "prefix-mandatory" builtin — Node accepts it ONLY as
+// `node:sqlite`, not bare `sqlite`. esbuild strips the `node:` prefix from
+// builtin imports when bundling, which produces a bundle that crashes at
+// runtime with `Cannot find package 'sqlite'`. Reaching for the module via
+// `process.getBuiltinModule()` (added in Node 22.3) bypasses esbuild's
+// static import analysis, so the runtime resolution is left untouched.
+const sqlite = process.getBuiltinModule(
+  "node:sqlite",
+) as typeof import("node:sqlite");
+const { DatabaseSync } = sqlite;
+type DatabaseSync = DatabaseSyncType;
 
 export interface OpenOptions {
   /** Open the file read-only. Maps to node:sqlite's `readOnly`. */
