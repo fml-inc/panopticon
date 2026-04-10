@@ -593,6 +593,7 @@ async function install(
     mcpServers: {
       panopticon: {
         command: "node",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
         args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
       },
     },
@@ -637,49 +638,28 @@ async function install(
   } catch {}
   fs.symlinkSync(pluginRoot, marketplaceLink, symlinkType);
 
-  const cacheDir = path.join(config.pluginCacheDir, version);
-  fs.mkdirSync(cacheDir, { recursive: true });
-  const filesToSync = [
-    ".claude-plugin",
-    "hooks",
-    "bin",
-    "dist",
-    "skills",
-    "node_modules",
-    "package.json",
-    "package-lock.json",
-  ];
-  for (const name of filesToSync) {
-    const src = path.join(pluginRoot, name);
-    const dest = path.join(cacheDir, name);
-    if (fs.existsSync(src)) {
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.cpSync(src, dest, { recursive: true, dereference: true });
-    }
-  }
-
-  // Ensure bin scripts are executable (cpSync doesn't always preserve mode)
-  const binDir = path.join(pluginRoot, "bin");
-  if (fs.existsSync(binDir)) {
-    for (const file of fs.readdirSync(binDir)) {
-      const binPath = path.join(binDir, file);
-      if (fs.statSync(binPath).isFile()) {
-        fs.chmodSync(binPath, 0o755);
-      }
-    }
-    const cachedBinDir = path.join(cacheDir, "bin");
-    if (fs.existsSync(cachedBinDir)) {
-      for (const file of fs.readdirSync(cachedBinDir)) {
-        const binPath = path.join(cachedBinDir, file);
-        if (fs.statSync(binPath).isFile()) {
-          fs.chmodSync(binPath, 0o755);
-        }
-      }
-    }
-  }
-
   console.log(`      Marketplace: ${config.marketplaceDir}`);
-  console.log(`      Cache: ${cacheDir}\n`);
+
+  // Register plugin with Claude Code (install if new, update if existing)
+  try {
+    try {
+      execFileSync(
+        "claude",
+        ["plugin", "install", "panopticon@local-plugins"],
+        { stdio: "pipe", timeout: 15_000 },
+      );
+    } catch {
+      execFileSync("claude", ["plugin", "update", "panopticon@local-plugins"], {
+        stdio: "pipe",
+        timeout: 15_000,
+      });
+    }
+    console.log("      Plugin cache updated via Claude Code CLI\n");
+  } catch {
+    console.log(
+      "      warn: claude CLI not found, run 'claude plugin install panopticon@local-plugins' manually\n",
+    );
+  }
 
   // Register hooks/config for each selected target
   const selectedTargets =
