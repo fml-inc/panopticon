@@ -3,11 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-GRAFANA_URL="http://localhost:3001"
 PANOPTICON_URL="http://localhost:4318"
 OPENCLAW_URL="http://localhost:18789"
 
-echo "=== OpenClaw + Panopticon + Grafana Setup ==="
+echo "=== OpenClaw + Panopticon Setup ==="
 echo ""
 
 # 1. Check prerequisites
@@ -31,7 +30,7 @@ if [ ! -d "$REPO_ROOT/dist" ]; then
 fi
 
 # 3. Start the stack
-echo "Starting OpenClaw + Panopticon + Grafana..."
+echo "Starting OpenClaw + Panopticon..."
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d --build
 echo ""
 
@@ -51,29 +50,14 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-# 5. Wait for Grafana
-echo -n "Waiting for Grafana"
-for i in $(seq 1 30); do
-  if curl -sf "$GRAFANA_URL/api/health" > /dev/null 2>&1; then
-    echo " ready!"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo " timeout!"
-  fi
-  echo -n "."
-  sleep 2
-done
-
-# 6. Configure OpenClaw's diagnostics-otel plugin
+# 5. Configure OpenClaw's diagnostics-otel plugin.
+# This logic mirrors src/targets/openclaw.ts applyInstallConfig — keep them in sync.
 echo "Configuring OpenClaw diagnostics..."
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T openclaw sh -c '
   mkdir -p /home/node/.openclaw
   CONFIG=/home/node/.openclaw/openclaw.json
 
-  # Create or update config with diagnostics-otel enabled
   if [ -f "$CONFIG" ]; then
-    # Config exists — use node to merge
     node -e "
       const fs = require(\"fs\");
       const cfg = JSON.parse(fs.readFileSync(\"$CONFIG\", \"utf-8\"));
@@ -121,73 +105,30 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T openclaw sh -c '
 }
 OCEOF
   fi
-' 2>/dev/null || echo "  (could not exec into openclaw container — configure manually)"
-
-# 7. Provision Grafana dashboard
-echo "Creating Grafana dashboard..."
-curl -sf -X POST "$GRAFANA_URL/api/dashboards/db" \
-  -H "Content-Type: application/json" \
-  -u admin:admin \
-  -d @- > /dev/null << 'DASHBOARD'
-{
-  "dashboard": {
-    "uid": "panopticon-openclaw",
-    "title": "Panopticon — OpenClaw Usage",
-    "tags": ["panopticon", "openclaw"],
-    "timezone": "browser",
-    "refresh": "30s",
-    "time": { "from": "now-2d", "to": "now" },
-    "panels": [
-      {
-        "id": 1, "title": "API Calls Over Time", "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-        "datasource": { "type": "loki", "uid": "loki" },
-        "targets": [{ "refId": "A", "expr": "sum by (model) (count_over_time({service_name=\"panopticon\"} | cost_usd != \"\" [30m]))", "legendFormat": "{{model}}" }],
-        "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "normal" } } } },
-        "options": { "tooltip": { "mode": "multi" } }
-      },
-      {
-        "id": 2, "title": "Token Usage by Type", "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [{ "refId": "A", "expr": "claude_code_token_usage_tokens", "legendFormat": "{{type}} — {{model}}" }],
-        "fieldConfig": { "defaults": { "custom": { "fillOpacity": 15, "lineWidth": 2 }, "unit": "short" } }
-      },
-      {
-        "id": 3, "title": "Tool Calls", "type": "barchart",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
-        "datasource": { "type": "loki", "uid": "loki" },
-        "targets": [{ "refId": "A", "expr": "sum by (tool_name) (count_over_time({service_name=\"panopticon\"} | event_type =~ \"PreToolUse|PostToolUse\" [2d]))", "legendFormat": "{{tool_name}}" }],
-        "options": { "orientation": "horizontal" }
-      },
-      {
-        "id": 4, "title": "Events by Type", "type": "piechart",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
-        "datasource": { "type": "loki", "uid": "loki" },
-        "targets": [{ "refId": "A", "expr": "sum by (event_type) (count_over_time({service_name=\"panopticon\"} | event_type != \"\" [2d]))", "legendFormat": "{{event_type}}" }],
-        "options": { "legend": { "placement": "right" } }
-      },
-      {
-        "id": 5, "title": "Recent Prompts", "type": "logs",
-        "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
-        "datasource": { "type": "loki", "uid": "loki" },
-        "targets": [{ "refId": "A", "expr": "{service_name=\"panopticon\"} | event_type = \"UserPromptSubmit\" | line_format \"{{.prompt}}\"", "maxLines": 50 }],
-        "options": { "showLabels": false, "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true }
-      }
-    ]
-  },
-  "overwrite": true
+' 2>/dev/null || {
+  echo "  Could not exec into openclaw container — configure manually"
+  exit 1
 }
-DASHBOARD
+
+# 6. Restart openclaw so it picks up the diagnostics-otel plugin we just enabled
+echo "Restarting OpenClaw to load diagnostics-otel..."
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" restart openclaw > /dev/null
 
 echo ""
 echo "=== Done ==="
 echo ""
-echo "  OpenClaw:  $OPENCLAW_URL"
-echo "  Grafana:   $GRAFANA_URL/d/panopticon-openclaw (admin / admin)"
+echo "  OpenClaw:   $OPENCLAW_URL"
 echo "  Panopticon: $PANOPTICON_URL/health"
 echo ""
-echo "Send a prompt in the OpenClaw web UI, then check Grafana for data."
+echo "Send a prompt in the OpenClaw web UI, then check what landed:"
+echo ""
+echo "  # Recent metrics (token usage, cost)"
+echo "  docker exec panopticon node /app/bin/panopticon query \\"
+echo "    'SELECT name, attributes FROM otel_metrics ORDER BY id DESC LIMIT 5'"
+echo ""
+echo "  # Recent traces (model calls, tool spans)"
+echo "  docker exec panopticon node /app/bin/panopticon query \\"
+echo "    'SELECT name, attributes FROM otel_spans ORDER BY id DESC LIMIT 5'"
 echo ""
 echo "Teardown:"
 echo "  docker compose -f $SCRIPT_DIR/docker-compose.yml down -v"

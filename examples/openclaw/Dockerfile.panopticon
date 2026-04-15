@@ -1,16 +1,19 @@
-FROM node:22-slim
+FROM node:24-slim
 
 WORKDIR /app
 
-# Install pnpm and production dependencies
+# Install runtime dependencies. node:24 ships node:sqlite as stable, so no
+# native build toolchain is needed. --ignore-scripts skips the postinstall
+# that tries to wire panopticon into Claude Code (irrelevant in this image).
 COPY package.json pnpm-lock.yaml ./
-RUN npm install -g pnpm && pnpm install --prod --frozen-lockfile
+RUN npm install -g pnpm && \
+    pnpm install --prod --frozen-lockfile --ignore-scripts
 
-# Copy built artifacts
+# Copy built artifacts produced by `npx tsup` on the host
 COPY dist/ dist/
 COPY bin/ bin/
 
-# The server reads config from PANOPTICON_DATA_DIR (set via env)
+# Server: OTLP, hooks, proxy. Reads PANOPTICON_DATA_DIR from env.
 EXPOSE 4318
 
 CMD ["node", "dist/server.js"]

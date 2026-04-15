@@ -1,31 +1,15 @@
-# OpenClaw + Panopticon + Grafana — end-to-end observability stack.
-# See README.md for full setup instructions.
+# OpenClaw + Panopticon — capture every API call, tool execution, and token
+# spent by an OpenClaw agent into Panopticon's local database.
 #
 # Quick:  cp .env.example .env && ./setup.sh
 # Manual: docker compose up -d
+#
+# For visualization, query panopticon directly:
+#   docker exec panopticon node /app/bin/panopticon query "SELECT ..."
+# Or wire Grafana separately via examples/grafana/.
 
 services:
-  # OpenClaw gateway — AI agent with Kimi (Moonshot AI)
-  openclaw:
-    image: ghcr.io/openclaw/openclaw:latest
-    container_name: openclaw
-    ports:
-      - "18789:18789"    # OpenClaw web UI
-    volumes:
-      - openclaw-config:/home/node/.openclaw
-      - openclaw-workspace:/home/node/.openclaw/workspace
-    environment:
-      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY}
-      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
-      # Point OpenClaw's OTel diagnostics at Panopticon
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://panopticon:4318
-      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-    depends_on:
-      panopticon:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # Panopticon — captures telemetry from OpenClaw
+  # Panopticon — receives OTLP from OpenClaw, stores in SQLite
   panopticon:
     build:
       context: ../..
@@ -45,13 +29,21 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Grafana OTEL LGTM — visualizes the data
-  grafana:
-    image: grafana/otel-lgtm:latest
-    container_name: grafana
+  # OpenClaw gateway — AI agent with Kimi (Moonshot AI).
+  # Configured by setup.sh to enable diagnostics-otel → panopticon:4318.
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw
     ports:
-      - "3001:3000"      # Grafana UI
-      - "14318:4318"     # OTLP receiver (for panopticon sync)
+      - "18789:18789"    # OpenClaw web UI
+    volumes:
+      - openclaw-config:/home/node/.openclaw
+      - openclaw-workspace:/home/node/.openclaw/workspace
+    environment:
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY}
+    depends_on:
+      panopticon:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
