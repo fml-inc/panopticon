@@ -1,6 +1,6 @@
 # OpenClaw + Panopticon
 
-Capture every API call, tool execution, and token spent by an [OpenClaw](https://openclaw.ai) agent (running [Kimi](https://platform.moonshot.ai)) into [Panopticon](../..)'s local database. Two Docker containers, OpenClaw's `diagnostics-otel` plugin emitting OTLP straight at panopticon.
+Capture every API call, tool execution, and token spent by an [OpenClaw](https://openclaw.ai) agent into [Panopticon](../..)'s local database. Multi-provider (Moonshot + Anthropic) — OpenClaw routes each provider through panopticon's proxy for full request/response capture AND emits OTel telemetry from its `diagnostics-otel` plugin.
 
 ## What you get
 
@@ -8,20 +8,21 @@ Capture every API call, tool execution, and token spent by an [OpenClaw](https:/
 ┌──────────────────────────────────────────────────────────────┐
 │                  OpenClaw Gateway (:18789)                    │
 │                                                              │
-│  Kimi K2.5 (Moonshot AI)    diagnostics-otel plugin          │
-│  ────────────────────────   ────────────────────────          │
-│  API calls to Kimi          OTel traces, metrics, logs       │
-└──────────────────────────────────────┬───────────────────────┘
-                                       │  OTLP http/protobuf
-                                       ▼
+│  Kimi + Claude            diagnostics-otel plugin            │
+│  ────────────────────     ────────────────────────           │
+│  baseUrls rewritten to    OTel traces, metrics, logs         │
+│  panopticon:4318/proxy/*                                     │
+└─────────┬────────────────────────────┬───────────────────────┘
+          │ HTTP (proxied upstream)    │ OTLP http/protobuf
+          ▼                            ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                  Panopticon Server (:4318)                    │
 │                                                              │
-│  SQLite: hook_events, otel_logs, otel_metrics, otel_spans    │
+│  /proxy/moonshot/*  →  api.moonshot.ai                       │
+│  /proxy/anthropic/* →  api.anthropic.com                     │
+│  /v1/{traces,metrics,logs} → OTLP receiver                   │
 │                                                              │
-│  Query via:                                                  │
-│    docker exec panopticon panopticon query '...'             │
-│    docker exec panopticon panopticon mcp                     │
+│  SQLite: hook_events, otel_logs, otel_metrics, otel_spans    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -30,20 +31,46 @@ For visualization, see [`examples/grafana/`](../grafana/) (separate setup).
 ## Prerequisites
 
 - Docker Desktop (or Docker Engine + Compose v2)
-- Moonshot AI API key — get one at [platform.moonshot.ai](https://platform.moonshot.ai)
+- At least one of:
+  - Moonshot AI API key — [platform.moonshot.ai](https://platform.moonshot.ai)
+  - Anthropic API key — [console.anthropic.com](https://console.anthropic.com)
 
 ## Quick start
 
 ```bash
-# 1. Configure your API key
+# 1. Configure API keys (set one or both)
 cp .env.example .env
-# Edit .env and set MOONSHOT_API_KEY
+# Edit .env and set MOONSHOT_API_KEY and/or ANTHROPIC_API_KEY
 
 # 2. Run the setup script
 ./examples/openclaw/setup.sh
 ```
 
-The script builds panopticon from source, starts both containers, configures OpenClaw's `diagnostics-otel` plugin, and restarts OpenClaw so it picks up the plugin.
+The script builds panopticon from source, starts both containers, and configures OpenClaw with:
+- the `diagnostics-otel` plugin pointed at `panopticon:4318`
+- each configured provider's `baseUrl` rewritten to `http://panopticon:4318/proxy/<id>` so every request/response is captured
+- a default agent pointed at whichever provider is configured (moonshot preferred when both are set)
+
+## End-to-end test
+
+After `setup.sh` completes:
+
+1. Open the OpenClaw UI at [http://localhost:18789](http://localhost:18789).
+2. Send a prompt. If you set both keys, send a second prompt after switching the model in the UI (Kimi ↔ Claude) to exercise both providers.
+3. Verify capture:
+
+   ```bash
+   ./examples/openclaw/verify-capture.sh
+   ```
+
+   By default this checks whichever providers have keys set in `.env`. Override with explicit ids when you want:
+
+   ```bash
+   ./examples/openclaw/verify-capture.sh anthropic        # just anthropic
+   ./examples/openclaw/verify-capture.sh moonshot anthropic
+   ```
+
+   Exits non-zero if any checked provider has no proxy rows or if OTel stopped flowing.
 
 ## Services
 
@@ -67,7 +94,13 @@ Panopticon stores everything in SQLite under `/data` (volume `panopticon-data`).
 ## Querying the data
 
 ```bash
-# Recent token-usage metrics
+# Proxy capture — which providers have we seen traffic for?
+docker exec panopticon panopticon query \
+  "SELECT target, COUNT(*) FROM hook_events
+   WHERE target IN ('moonshot', 'anthropic')
+   GROUP BY target"
+
+# Recent token-usage metrics (from OpenClaw's diagnostics-otel plugin)
 docker exec panopticon panopticon query \
   "SELECT name, json_extract(attributes, '$.\"openclaw.token\"') AS token_type,
           json_extract(attributes, '$.\"openclaw.model\"') AS model, value
@@ -102,17 +135,17 @@ docker compose -f examples/openclaw/docker-compose.yml restart openclaw
 curl http://localhost:4318/health
 ```
 
-## Using a different model
+## Adding more providers
 
-Kimi (Moonshot AI) is the default. To use a different provider, edit `~/.openclaw/openclaw.json` inside the container — change `agents.defaults.model.primary` and add the provider under `models.providers`. Set the corresponding API key in `.env`.
+`setup.sh` configures Moonshot + Anthropic because those are the two this example targets. Panopticon's provider registry (`src/providers/builtin.ts`) also knows openai, google, deepseek, groq, xai, and mistral — any of these can be added by editing `~/.openclaw/openclaw.json` inside the container to add another entry under `models.providers`, with `baseUrl: "http://panopticon:4318/proxy/<id>"`. Providers panopticon doesn't know will fail at proxy time; leave them unrewritten if you want to use them untouched.
 
-If you also want full request/response capture (not just OTel telemetry), install with `--proxy`:
+For a non-example install (your own OpenClaw), the panopticon CLI does the rewrite for you:
 
 ```bash
 panopticon install --target openclaw --proxy
 ```
 
-Panopticon's provider registry (`src/providers/builtin.ts`) currently knows openai, anthropic, google, moonshot, deepseek, groq, xai, and mistral. When `--proxy` is on, the OpenClaw adapter rewrites each known provider's `baseUrl` to route through panopticon's per-provider proxy. Providers panopticon doesn't know about are left alone.
+This iterates every configured provider and rewrites the known ones' `baseUrl` to the proxy. Unknown providers get a warning and are left alone.
 
 ## Teardown
 

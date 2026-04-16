@@ -14,6 +14,7 @@ import {
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
 import { log } from "../log.js";
+import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
   resolveGitIdentity,
@@ -340,7 +341,18 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
 
   const repo = resolveEventRepo(data);
 
-  const targetId = target?.id ?? "unknown";
+  // Fall back to provider id when we can't resolve a target adapter. Proxy
+  // captures on provider-prefixed routes (e.g. /proxy/anthropic/*) set
+  // `target: "anthropic"` on events, but "anthropic" isn't a tool in the
+  // target registry — it's an upstream API in the provider registry. Without
+  // this lookup, every provider-prefixed capture would be tagged "unknown".
+  const providerId =
+    typeof data.target === "string" && getProvider(data.target)
+      ? data.target
+      : typeof data.source === "string" && getProvider(data.source)
+        ? data.source
+        : undefined;
+  const targetId = target?.id ?? providerId ?? "unknown";
 
   // Check if this event type is enabled in the logging config.
   // Permission enforcement still runs even for disabled events so that

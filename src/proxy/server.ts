@@ -66,7 +66,7 @@ const FORMAT_PARSERS: ApiFormatParser[] = [
 
 const sessions = new SessionTracker();
 
-interface Route {
+export interface Route {
   /** URL prefix that matched — either a target id or a provider id. */
   target: string;
   upstream: string;
@@ -83,7 +83,7 @@ interface Route {
  * id collides with a provider id, but the rule is documented so future
  * adapters can rely on it.
  */
-function parseRoute(
+export function parseRoute(
   url: string,
   headers?: http.IncomingHttpHeaders,
 ): Route | null {

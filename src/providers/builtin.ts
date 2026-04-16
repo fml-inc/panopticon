@@ -9,7 +9,19 @@
 import { registerProvider } from "./registry.js";
 import type { ProviderSpec } from "./types.js";
 
-const v1 = (p: string) => `/v1${p}`;
+/**
+ * Prepend `/v1` only when the client didn't already send a `/v1` prefix.
+ * Some clients (Claude Code via ANTHROPIC_BASE_URL, the OpenAI SDK with a
+ * base URL set) send unprefixed paths like `/messages` and expect the proxy
+ * to add the version. Others (OpenClaw's anthropic gateway plugin) honor the
+ * configured baseUrl verbatim and send `/v1/messages` themselves. Unconditional
+ * prepending double-prefixes the second case to `/v1/v1/messages`, which every
+ * upstream 404s. Idempotent rewrite handles both client conventions.
+ */
+const v1 = (p: string) => (p === "/v1" || p.startsWith("/v1/") ? p : `/v1${p}`);
+
+const openaiV1 = (p: string) =>
+  p === "/openai/v1" || p.startsWith("/openai/v1/") ? p : `/openai/v1${p}`;
 
 const BUILTIN: ProviderSpec[] = [
   // OpenAI and OpenAI-compatible providers
@@ -46,7 +58,7 @@ const BUILTIN: ProviderSpec[] = [
   {
     id: "groq",
     upstreamHost: "api.groq.com",
-    rewritePath: (p) => `/openai/v1${p}`,
+    rewritePath: openaiV1,
     accumulatorType: "openai",
   },
 
