@@ -1005,6 +1005,30 @@ describe("server integration", () => {
         .get() as { target: string };
       expect(row.target).toBe("unknown");
     });
+
+    // Proxy captures on /proxy/anthropic/* set target: "anthropic" on events.
+    // "anthropic" is a provider id, not a target adapter id — without the
+    // provider-registry fallback in resolveTarget, every such capture lands
+    // as target="unknown" and vendor attribution is lost.
+    it("persists provider id as target for proxy-captured events", async () => {
+      _resetSessionTargetCache();
+      const { status } = await post("/hooks", {
+        session_id: "target-test-provider-anthropic",
+        hook_event_name: "UserPromptSubmit",
+        source: "proxy",
+        target: "anthropic",
+        prompt: "hi",
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target FROM hook_events WHERE session_id = 'target-test-provider-anthropic'",
+        )
+        .get() as { target: string };
+      expect(row.target).toBe("anthropic");
+    });
   });
 
   // ── Session lifecycle upsert ─────────────────────────────────────────────

@@ -260,10 +260,8 @@ describe("openclaw target adapter", () => {
     ).toEqual({ decision: "allow", reason: "allowed" });
   });
 
-  it("proxies to api.moonshot.ai with openai accumulator", () => {
-    expect(openclaw.proxy).toBeDefined();
-    expect(openclaw.proxy!.upstreamHost).toBe("api.moonshot.ai");
-    expect(openclaw.proxy!.accumulatorType).toBe("openai");
+  it("does not declare its own proxy spec — uses provider registry instead", () => {
+    expect(openclaw.proxy).toBeUndefined();
   });
 
   it("applyInstallConfig enables diagnostics-otel plugin", () => {
@@ -316,7 +314,58 @@ describe("openclaw target adapter", () => {
     expect(allow.filter((p) => p === "diagnostics-otel")).toHaveLength(1);
   });
 
-  it("applyInstallConfig with proxy rewrites moonshot baseUrl to /proxy/openclaw", () => {
+  it("applyInstallConfig with proxy rewrites every known provider's baseUrl", () => {
+    const existing = {
+      models: {
+        providers: {
+          moonshot: { baseUrl: "https://api.moonshot.ai/v1" },
+          openai: { baseUrl: "https://api.openai.com/v1" },
+          anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+        },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+      proxy: true,
+    });
+    const providers = (result.models as Record<string, unknown>)
+      .providers as Record<string, Record<string, unknown>>;
+    expect(providers.moonshot.baseUrl).toBe(
+      "http://localhost:4318/proxy/moonshot",
+    );
+    expect(providers.openai.baseUrl).toBe("http://localhost:4318/proxy/openai");
+    expect(providers.anthropic.baseUrl).toBe(
+      "http://localhost:4318/proxy/anthropic",
+    );
+  });
+
+  it("applyInstallConfig leaves unknown providers' baseUrl alone", () => {
+    const existing = {
+      models: {
+        providers: {
+          moonshot: { baseUrl: "https://api.moonshot.ai/v1" },
+          // Not in panopticon's provider registry
+          someprivateprovider: { baseUrl: "https://internal.corp/v1" },
+        },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+      proxy: true,
+    });
+    const providers = (result.models as Record<string, unknown>)
+      .providers as Record<string, Record<string, unknown>>;
+    expect(providers.moonshot.baseUrl).toBe(
+      "http://localhost:4318/proxy/moonshot",
+    );
+    expect(providers.someprivateprovider.baseUrl).toBe(
+      "https://internal.corp/v1",
+    );
+  });
+
+  it("applyInstallConfig without proxy does not touch provider baseUrls", () => {
     const existing = {
       models: {
         providers: { moonshot: { baseUrl: "https://api.moonshot.ai/v1" } },
@@ -325,7 +374,6 @@ describe("openclaw target adapter", () => {
     const result = openclaw.hooks.applyInstallConfig(existing, {
       pluginRoot: "/app",
       port: 4318,
-      proxy: true,
     });
     const moonshot = (
       (result.models as Record<string, unknown>).providers as Record<
@@ -333,7 +381,7 @@ describe("openclaw target adapter", () => {
         Record<string, unknown>
       >
     ).moonshot;
-    expect(moonshot.baseUrl).toBe("http://localhost:4318/proxy/openclaw");
+    expect(moonshot.baseUrl).toBe("https://api.moonshot.ai/v1");
   });
 
   it("removeInstallConfig removes diagnostics-otel from plugins", () => {
@@ -370,23 +418,23 @@ describe("openclaw target adapter", () => {
     expect(moonshot.baseUrl).toBe("https://api.moonshot.ai/v1");
   });
 
-  it("removeInstallConfig reverts proxy-rewritten moonshot.baseUrl", () => {
+  it("removeInstallConfig reverts proxy-rewritten baseUrls across all providers", () => {
     const existing = openclaw.hooks.applyInstallConfig(
       {
         models: {
-          providers: { moonshot: { baseUrl: "https://api.moonshot.ai/v1" } },
+          providers: {
+            moonshot: { baseUrl: "https://api.moonshot.ai/v1" },
+            anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+          },
         },
       },
       { pluginRoot: "/app", port: 4318, proxy: true },
     );
     const result = openclaw.hooks.removeInstallConfig(existing);
-    const moonshot = (
-      (result.models as Record<string, unknown>).providers as Record<
-        string,
-        Record<string, unknown>
-      >
-    ).moonshot;
-    expect(moonshot.baseUrl).toBeUndefined();
+    const providers = (result.models as Record<string, unknown>)
+      .providers as Record<string, Record<string, unknown>>;
+    expect(providers.moonshot.baseUrl).toBeUndefined();
+    expect(providers.anthropic.baseUrl).toBeUndefined();
   });
 
   it("removeInstallConfig leaves unrelated config untouched", () => {
@@ -410,12 +458,6 @@ describe("openclaw target adapter", () => {
     ]);
   });
 
-  it("proxy rewritePath prepends /v1", () => {
-    expect(openclaw.proxy!.rewritePath!("/chat/completions", {})).toBe(
-      "/v1/chat/completions",
-    );
-  });
-
   it("declares otel.serviceName as openclaw-gateway", () => {
     expect(openclaw.otel?.serviceName).toBe("openclaw-gateway");
   });
@@ -428,11 +470,8 @@ describe("openclaw target adapter", () => {
     expect(openclaw.otel?.metrics?.modelAttrs).toEqual(['$."openclaw.model"']);
   });
 
-  it("identifies kimi/moonshot model names", () => {
-    expect(openclaw.ident?.modelPatterns?.[0].test("kimi-k2.5")).toBe(true);
-    expect(openclaw.ident?.modelPatterns?.[1].test("moonshot/kimi-k2.5")).toBe(
-      true,
-    );
+  it("does not declare ident.modelPatterns (multi-provider; would conflict)", () => {
+    expect(openclaw.ident?.modelPatterns).toBeUndefined();
   });
 
   it("isConfigured requires both diagnostics.otel and plugin entry", () => {

@@ -29,8 +29,23 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # OpenClaw gateway — AI agent with Kimi (Moonshot AI).
-  # Configured by setup.sh to enable diagnostics-otel → panopticon:4318.
+  # One-shot init: chown the openclaw volumes to uid 1000 (the `node` user
+  # openclaw runs as). Docker creates named-volume mount points as root
+  # when the target path doesn't exist in the image, which causes openclaw
+  # to EACCES on every config write. We run as root in this init service
+  # specifically to fix perms before the main container starts.
+  openclaw-init:
+    image: alpine:3
+    command: sh -c "chown -R 1000:1000 /config /workspace"
+    volumes:
+      - openclaw-config:/config
+      - openclaw-workspace:/workspace
+    restart: "no"
+
+  # OpenClaw gateway — multi-provider (Kimi + Claude).
+  # Configured by setup.sh to enable diagnostics-otel → panopticon:4318,
+  # AND to rewrite each provider's baseUrl to panopticon's proxy so full
+  # request/response bodies are captured.
   openclaw:
     image: ghcr.io/openclaw/openclaw:latest
     container_name: openclaw
@@ -40,10 +55,15 @@ services:
       - openclaw-config:/home/node/.openclaw
       - openclaw-workspace:/home/node/.openclaw/workspace
     environment:
-      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:?MOONSHOT_API_KEY must be set — see .env.example}
+      # At least one of these must be set — setup.sh enforces that. Individual
+      # providers are configured only if their key is present.
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     depends_on:
       panopticon:
         condition: service_healthy
+      openclaw-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
