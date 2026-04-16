@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { HookInput } from "../hooks/ingest.js";
 import { allTargets, getTarget, targetIds } from "./index.js";
 
@@ -435,6 +435,184 @@ describe("openclaw target adapter", () => {
       .providers as Record<string, Record<string, unknown>>;
     expect(providers.moonshot.baseUrl).toBeUndefined();
     expect(providers.anthropic.baseUrl).toBeUndefined();
+  });
+
+  // OpenClaw's anthropic provider routes through a dedicated SDK code path
+  // that ignores models.providers.anthropic.baseUrl. The SDK does honor the
+  // ANTHROPIC_BASE_URL env var though. applyInstallConfig sets both; see #150.
+  it("applyInstallConfig with proxy sets ANTHROPIC_BASE_URL env when anthropic is configured", () => {
+    const existing = {
+      models: {
+        providers: {
+          anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+        },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+      proxy: true,
+    });
+    const env = result.env as Record<string, string>;
+    expect(env.ANTHROPIC_BASE_URL).toBe(
+      "http://localhost:4318/proxy/anthropic",
+    );
+  });
+
+  it("applyInstallConfig with proxy does NOT set env vars for providers without an SDK env mapping", () => {
+    const existing = {
+      models: {
+        providers: {
+          moonshot: { baseUrl: "https://api.moonshot.ai/v1" },
+        },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+      proxy: true,
+    });
+    // Moonshot honors models.providers.moonshot.baseUrl directly — no env
+    // var needed. `env` block should not be created just for moonshot.
+    expect(result.env).toBeUndefined();
+  });
+
+  it("applyInstallConfig without proxy does not touch env block", () => {
+    const existing = {
+      models: {
+        providers: {
+          anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+        },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+    });
+    expect(result.env).toBeUndefined();
+  });
+
+  it("applyInstallConfig with proxy preserves unrelated env vars", () => {
+    const existing = {
+      env: { CUSTOM_VAR: "keep-me" },
+      models: {
+        providers: {
+          anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+        },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+      proxy: true,
+    });
+    const env = result.env as Record<string, string>;
+    expect(env.CUSTOM_VAR).toBe("keep-me");
+    expect(env.ANTHROPIC_BASE_URL).toBe(
+      "http://localhost:4318/proxy/anthropic",
+    );
+  });
+
+  it("removeInstallConfig reverts proxy-set ANTHROPIC_BASE_URL env var", () => {
+    const existing = openclaw.hooks.applyInstallConfig(
+      {
+        models: {
+          providers: {
+            anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+          },
+        },
+      },
+      { pluginRoot: "/app", port: 4318, proxy: true },
+    );
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    expect(result.env).toBeUndefined();
+  });
+
+  it("applyInstallConfig warns when overwriting a user-set non-proxy env var", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      openclaw.hooks.applyInstallConfig(
+        {
+          env: { ANTHROPIC_BASE_URL: "https://gateway.corp.example.com" },
+          models: {
+            providers: {
+              anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+            },
+          },
+        },
+        { pluginRoot: "/app", port: 4318, proxy: true },
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'overwriting existing ANTHROPIC_BASE_URL="https://gateway.corp.example.com"',
+        ),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("applyInstallConfig does NOT warn when overwriting a previous panopticon install (idempotent re-install)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      openclaw.hooks.applyInstallConfig(
+        {
+          // Already has our proxy URL — second install is a no-op, shouldn't warn
+          env: {
+            ANTHROPIC_BASE_URL: "http://localhost:4318/proxy/anthropic",
+          },
+          models: {
+            providers: {
+              anthropic: {
+                baseUrl: "http://localhost:4318/proxy/anthropic",
+              },
+            },
+          },
+        },
+        { pluginRoot: "/app", port: 4318, proxy: true },
+      );
+      const clobberWarnCalls = warn.mock.calls.filter((args) =>
+        String(args[0]).includes("overwriting"),
+      );
+      expect(clobberWarnCalls).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("applyInstallConfig does NOT warn when env var was previously unset", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      openclaw.hooks.applyInstallConfig(
+        {
+          models: {
+            providers: {
+              anthropic: { baseUrl: "https://api.anthropic.com/v1" },
+            },
+          },
+        },
+        { pluginRoot: "/app", port: 4318, proxy: true },
+      );
+      const clobberWarnCalls = warn.mock.calls.filter((args) =>
+        String(args[0]).includes("overwriting"),
+      );
+      expect(clobberWarnCalls).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("removeInstallConfig preserves user-set env vars and ANTHROPIC_BASE_URL that isn't ours", () => {
+    const existing = {
+      env: {
+        CUSTOM_VAR: "keep-me",
+        ANTHROPIC_BASE_URL: "https://my-own-proxy.example.com", // not ours
+      },
+    };
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    const env = result.env as Record<string, string>;
+    expect(env.CUSTOM_VAR).toBe("keep-me");
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://my-own-proxy.example.com");
   });
 
   it("removeInstallConfig leaves unrelated config untouched", () => {

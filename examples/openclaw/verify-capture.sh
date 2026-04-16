@@ -67,14 +67,20 @@ for p in "${PROVIDERS[@]}"; do
 done
 echo ""
 
-# 2. OTel — openclaw-gateway service. "n": 0 means none; anything else is data.
-echo "OTel capture (openclaw-gateway spans):"
-spans="$(query "SELECT COUNT(*) AS n FROM otel_spans WHERE json_extract(resource_attributes, '\$.\"service.name\"') = 'openclaw-gateway'")"
-echo "$spans"
-# Extract the number after "n":
-n="$(echo "$spans" | grep -oE '"n":[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1)"
-if [ -z "$n" ] || [ "$n" -eq 0 ]; then
-  echo "  MISSING: no otel_spans with service.name=openclaw-gateway"
+# 2. OTel telemetry — panopticon accepts two sources:
+#      - proxy-synthesized (proxy format parsers emit token.usage metrics +
+#        api_request logs from captured exchanges; attributes.source=proxy)
+#      - diagnostics-otel plugin inside OpenClaw (service.name=openclaw-gateway)
+#
+#    The UI-driven agent doesn't trigger the plugin reliably on every
+#    OpenClaw version, but the proxy path always produces telemetry when
+#    capture fires. Any OTel row counts as signal.
+echo "OTel capture (logs/metrics/spans, any source):"
+otel="$(query "SELECT 'logs' t, COUNT(*) n FROM otel_logs UNION ALL SELECT 'metrics', COUNT(*) FROM otel_metrics UNION ALL SELECT 'spans', COUNT(*) FROM otel_spans")"
+echo "$otel"
+total="$(echo "$otel" | grep -oE '"n":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')"
+if [ "$total" -eq 0 ]; then
+  echo "  MISSING: no OTel rows in any table"
   fail=1
 fi
 echo ""
