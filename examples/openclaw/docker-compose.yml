@@ -1,0 +1,52 @@
+# OpenClaw + Panopticon — capture every API call, tool execution, and token
+# spent by an OpenClaw agent into Panopticon's local database.
+#
+# Quick:  cp .env.example .env && ./setup.sh
+# Manual: docker compose up -d
+#
+# For visualization, query panopticon directly:
+#   docker exec panopticon node /app/bin/panopticon query "SELECT ..."
+# Or wire Grafana separately via examples/grafana/.
+
+services:
+  # Panopticon — receives OTLP from OpenClaw, stores in SQLite
+  panopticon:
+    build:
+      context: ../..
+      dockerfile: examples/openclaw/Dockerfile.panopticon
+    container_name: panopticon
+    ports:
+      - "4318:4318"      # OTLP + hooks + proxy
+    volumes:
+      - panopticon-data:/data
+    environment:
+      - PANOPTICON_DATA_DIR=/data
+      - PANOPTICON_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4318/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # OpenClaw gateway — AI agent with Kimi (Moonshot AI).
+  # Configured by setup.sh to enable diagnostics-otel → panopticon:4318.
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw
+    ports:
+      - "18789:18789"    # OpenClaw web UI
+    volumes:
+      - openclaw-config:/home/node/.openclaw
+      - openclaw-workspace:/home/node/.openclaw/workspace
+    environment:
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:?MOONSHOT_API_KEY must be set — see .env.example}
+    depends_on:
+      panopticon:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  openclaw-config:
+  openclaw-workspace:
+  panopticon-data:

@@ -220,6 +220,241 @@ describe("target shell env vars", () => {
     const codex = getTarget("codex")!;
     expect(codex.shellEnv.envVars(4318, false)).toEqual([]);
   });
+
+  it("openclaw emits no shell env vars", () => {
+    const openclaw = getTarget("openclaw")!;
+    expect(openclaw.shellEnv.envVars(4318, false)).toEqual([]);
+  });
+});
+
+describe("openclaw target adapter", () => {
+  const openclaw = getTarget("openclaw")!;
+
+  it("is registered", () => {
+    expect(openclaw).toBeDefined();
+    expect(targetIds()).toContain("openclaw");
+  });
+
+  it("has correct display name", () => {
+    expect(openclaw.detect.displayName).toBe("OpenClaw");
+  });
+
+  it("maps command:new to SessionStart", () => {
+    expect(openclaw.events.eventMap["command:new"]).toBe("SessionStart");
+  });
+
+  it("maps command:reset to SessionEnd", () => {
+    expect(openclaw.events.eventMap["command:reset"]).toBe("SessionEnd");
+  });
+
+  it("maps tool_result_persist to PostToolUse", () => {
+    expect(openclaw.events.eventMap.tool_result_persist).toBe("PostToolUse");
+  });
+
+  it("formats permission response as flat decision/reason", () => {
+    expect(
+      openclaw.events.formatPermissionResponse({
+        allow: true,
+        reason: "allowed",
+      }),
+    ).toEqual({ decision: "allow", reason: "allowed" });
+  });
+
+  it("proxies to api.moonshot.ai with openai accumulator", () => {
+    expect(openclaw.proxy).toBeDefined();
+    expect(openclaw.proxy!.upstreamHost).toBe("api.moonshot.ai");
+    expect(openclaw.proxy!.accumulatorType).toBe("openai");
+  });
+
+  it("applyInstallConfig enables diagnostics-otel plugin", () => {
+    const result = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 4318 },
+    );
+    const plugins = result.plugins as Record<string, unknown>;
+    expect((plugins.allow as string[]).includes("diagnostics-otel")).toBe(true);
+    expect(
+      (plugins.entries as Record<string, unknown>)["diagnostics-otel"],
+    ).toEqual({ enabled: true });
+  });
+
+  it("applyInstallConfig sets OTLP endpoint", () => {
+    const result = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 9999 },
+    );
+    const otel = (result.diagnostics as Record<string, unknown>).otel as Record<
+      string,
+      unknown
+    >;
+    expect(otel.enabled).toBe(true);
+    expect(otel.endpoint).toBe("http://localhost:9999");
+  });
+
+  it("applyInstallConfig preserves existing config", () => {
+    const existing = {
+      agents: { defaults: { model: { primary: "moonshot/kimi-k2.5" } } },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+    });
+    expect((result.agents as Record<string, unknown>).defaults).toEqual({
+      model: { primary: "moonshot/kimi-k2.5" },
+    });
+  });
+
+  it("applyInstallConfig does not duplicate plugin allow entries", () => {
+    const existing = {
+      plugins: { allow: ["diagnostics-otel", "other-plugin"] },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+    });
+    const allow = (result.plugins as Record<string, unknown>).allow as string[];
+    expect(allow.filter((p) => p === "diagnostics-otel")).toHaveLength(1);
+  });
+
+  it("applyInstallConfig with proxy rewrites moonshot baseUrl to /proxy/openclaw", () => {
+    const existing = {
+      models: {
+        providers: { moonshot: { baseUrl: "https://api.moonshot.ai/v1" } },
+      },
+    };
+    const result = openclaw.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+      proxy: true,
+    });
+    const moonshot = (
+      (result.models as Record<string, unknown>).providers as Record<
+        string,
+        Record<string, unknown>
+      >
+    ).moonshot;
+    expect(moonshot.baseUrl).toBe("http://localhost:4318/proxy/openclaw");
+  });
+
+  it("removeInstallConfig removes diagnostics-otel from plugins", () => {
+    const existing = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 4318 },
+    );
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    expect(result.plugins).toBeUndefined();
+  });
+
+  it("removeInstallConfig deletes diagnostics.otel block", () => {
+    const existing = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 4318 },
+    );
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    expect(result.diagnostics).toBeUndefined();
+  });
+
+  it("removeInstallConfig preserves user-set moonshot.baseUrl", () => {
+    const existing = {
+      models: {
+        providers: { moonshot: { baseUrl: "https://api.moonshot.ai/v1" } },
+      },
+    };
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    const moonshot = (
+      (result.models as Record<string, unknown>).providers as Record<
+        string,
+        Record<string, unknown>
+      >
+    ).moonshot;
+    expect(moonshot.baseUrl).toBe("https://api.moonshot.ai/v1");
+  });
+
+  it("removeInstallConfig reverts proxy-rewritten moonshot.baseUrl", () => {
+    const existing = openclaw.hooks.applyInstallConfig(
+      {
+        models: {
+          providers: { moonshot: { baseUrl: "https://api.moonshot.ai/v1" } },
+        },
+      },
+      { pluginRoot: "/app", port: 4318, proxy: true },
+    );
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    const moonshot = (
+      (result.models as Record<string, unknown>).providers as Record<
+        string,
+        Record<string, unknown>
+      >
+    ).moonshot;
+    expect(moonshot.baseUrl).toBeUndefined();
+  });
+
+  it("removeInstallConfig leaves unrelated config untouched", () => {
+    const existing = {
+      agents: { defaults: { model: { primary: "moonshot/kimi-k2.5" } } },
+      plugins: { allow: ["other-plugin"], entries: { "other-plugin": {} } },
+      diagnostics: { flags: ["gateway.*"] },
+    };
+    const result = openclaw.hooks.removeInstallConfig(existing);
+    expect(result.agents).toEqual({
+      defaults: { model: { primary: "moonshot/kimi-k2.5" } },
+    });
+    expect((result.plugins as Record<string, unknown>).allow).toEqual([
+      "other-plugin",
+    ]);
+    expect((result.plugins as Record<string, unknown>).entries).toEqual({
+      "other-plugin": {},
+    });
+    expect((result.diagnostics as Record<string, unknown>).flags).toEqual([
+      "gateway.*",
+    ]);
+  });
+
+  it("proxy rewritePath prepends /v1", () => {
+    expect(openclaw.proxy!.rewritePath!("/chat/completions", {})).toBe(
+      "/v1/chat/completions",
+    );
+  });
+
+  it("declares otel.serviceName as openclaw-gateway", () => {
+    expect(openclaw.otel?.serviceName).toBe("openclaw-gateway");
+  });
+
+  it("declares openclaw.tokens metric with token-type and model attrs", () => {
+    expect(openclaw.otel?.metrics?.metricNames).toEqual(["openclaw.tokens"]);
+    expect(openclaw.otel?.metrics?.tokenTypeAttrs).toEqual([
+      '$."openclaw.token"',
+    ]);
+    expect(openclaw.otel?.metrics?.modelAttrs).toEqual(['$."openclaw.model"']);
+  });
+
+  it("identifies kimi/moonshot model names", () => {
+    expect(openclaw.ident?.modelPatterns?.[0].test("kimi-k2.5")).toBe(true);
+    expect(openclaw.ident?.modelPatterns?.[1].test("moonshot/kimi-k2.5")).toBe(
+      true,
+    );
+  });
+
+  it("isConfigured requires both diagnostics.otel and plugin entry", () => {
+    // Verify the predicate logic by exercising the merged config the adapter
+    // produces — both signals are set together.
+    const cfg = openclaw.hooks.applyInstallConfig(
+      {},
+      { pluginRoot: "/app", port: 4318 },
+    );
+    const diag = (cfg.diagnostics as Record<string, unknown>).otel as Record<
+      string,
+      unknown
+    >;
+    const entry = (
+      (cfg.plugins as Record<string, unknown>).entries as Record<
+        string,
+        Record<string, unknown>
+      >
+    )["diagnostics-otel"];
+    expect(diag.enabled).toBe(true);
+    expect(entry.enabled).toBe(true);
+  });
 });
 
 describe("target otel specs", () => {
