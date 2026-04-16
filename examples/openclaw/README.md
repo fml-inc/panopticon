@@ -104,7 +104,15 @@ curl http://localhost:4318/health
 
 ## Using a different model
 
-Kimi (Moonshot AI) is the default. To use a different OpenAI-compatible provider, edit `~/.openclaw/openclaw.json` inside the container — change `agents.defaults.model.primary` and add the provider under `models.providers`. Set the corresponding API key in `.env`.
+Kimi (Moonshot AI) is the default. To use a different provider, edit `~/.openclaw/openclaw.json` inside the container — change `agents.defaults.model.primary` and add the provider under `models.providers`. Set the corresponding API key in `.env`.
+
+If you also want full request/response capture (not just OTel telemetry), install with `--proxy`:
+
+```bash
+panopticon install --target openclaw --proxy
+```
+
+Panopticon's provider registry (`src/providers/builtin.ts`) currently knows openai, anthropic, google, moonshot, deepseek, groq, xai, and mistral. When `--proxy` is on, the OpenClaw adapter rewrites each known provider's `baseUrl` to route through panopticon's per-provider proxy. Providers panopticon doesn't know about are left alone.
 
 ## Teardown
 

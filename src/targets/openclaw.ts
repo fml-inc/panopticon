@@ -1,11 +1,22 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { getProvider } from "../providers/index.js";
 import { registerTarget } from "./registry.js";
 import type { TargetAdapter } from "./types.js";
 
 const OPENCLAW_DIR = path.join(os.homedir(), ".openclaw");
 const CONFIG_PATH = path.join(OPENCLAW_DIR, "openclaw.json");
+
+/**
+ * Test whether a `baseUrl` string was rewritten by a previous
+ * `applyInstallConfig` call (i.e. points at panopticon's proxy under a known
+ * provider id). Used by `removeInstallConfig` to revert only what we own.
+ */
+function isProxyRewrittenBaseUrl(baseUrl: string): boolean {
+  const match = baseUrl.match(/\/proxy\/([^/?#]+)/);
+  return !!match && !!getProvider(match[1]);
+}
 
 const openclaw: TargetAdapter = {
   id: "openclaw",
@@ -33,7 +44,7 @@ const openclaw: TargetAdapter = {
         enabled: true,
       };
 
-      // Configure OTLP endpoint
+      // Configure OTLP endpoint for the diagnostics-otel plugin to send to
       cfg.diagnostics = (cfg.diagnostics as Record<string, unknown>) ?? {};
       (cfg.diagnostics as Record<string, unknown>).otel = {
         enabled: true,
@@ -46,15 +57,25 @@ const openclaw: TargetAdapter = {
         sampleRate: 1.0,
       };
 
-      // Optionally route Moonshot API through proxy
+      // Optionally route every configured provider through panopticon's proxy
+      // so request/response bodies are captured. Providers panopticon doesn't
+      // know about are left alone — we don't want to break the user's setup.
       if (opts.proxy) {
-        cfg.models = (cfg.models as Record<string, unknown>) ?? {};
-        const models = cfg.models as Record<string, unknown>;
-        models.providers = (models.providers as Record<string, unknown>) ?? {};
-        const providers = models.providers as Record<string, unknown>;
-        if (providers.moonshot) {
-          (providers.moonshot as Record<string, unknown>).baseUrl =
-            `http://localhost:${opts.port}/proxy/openclaw`;
+        const models = (cfg.models as Record<string, unknown>) ?? {};
+        const providers =
+          (models.providers as Record<string, Record<string, unknown>>) ?? {};
+        for (const id of Object.keys(providers)) {
+          if (!getProvider(id)) {
+            console.warn(
+              `panopticon: OpenClaw provider "${id}" is not in panopticon's provider registry — leaving baseUrl unchanged`,
+            );
+            continue;
+          }
+          providers[id].baseUrl = `http://localhost:${opts.port}/proxy/${id}`;
+        }
+        if (Object.keys(providers).length > 0) {
+          models.providers = providers;
+          cfg.models = models;
         }
       }
 
@@ -88,17 +109,19 @@ const openclaw: TargetAdapter = {
         if (Object.keys(diagnostics).length === 0) delete cfg.diagnostics;
       }
 
-      // Revert moonshot baseUrl rewrite if it points at the proxy
+      // Revert any provider baseUrl that points at panopticon's proxy
       const models = cfg.models as Record<string, unknown> | undefined;
       const providers = models?.providers as
-        | Record<string, unknown>
+        | Record<string, Record<string, unknown>>
         | undefined;
-      const moonshot = providers?.moonshot as
-        | Record<string, unknown>
-        | undefined;
-      if (moonshot && typeof moonshot.baseUrl === "string") {
-        if (moonshot.baseUrl.includes("/proxy/openclaw")) {
-          delete moonshot.baseUrl;
+      if (providers) {
+        for (const provider of Object.values(providers)) {
+          if (
+            typeof provider.baseUrl === "string" &&
+            isProxyRewrittenBaseUrl(provider.baseUrl)
+          ) {
+            delete provider.baseUrl;
+          }
         }
       }
 
@@ -159,19 +182,16 @@ const openclaw: TargetAdapter = {
     },
   },
 
-  ident: {
-    // Kimi models from Moonshot, plus any explicit moonshot/* references
-    modelPatterns: [/^kimi-/i, /^moonshot\//i],
-  },
+  // No `ident.modelPatterns`: OpenClaw routes to many providers (kimi, gpt-*,
+  // claude-*, etc.) so model-name-based detection would conflict with
+  // claude/codex/gemini adapters. Source attribution for OpenClaw rows comes
+  // from explicit `source: "openclaw"` on hook payloads (matched via eventMap)
+  // and `service.name=openclaw-gateway` on OTel rows (matched via
+  // _serviceNameMap in src/otlp/server.ts).
 
-  proxy: {
-    // OpenClaw routes Moonshot/Kimi traffic. Moonshot's API lives under /v1.
-    upstreamHost: "api.moonshot.ai",
-    rewritePath(requestPath) {
-      return `/v1${requestPath}`;
-    },
-    accumulatorType: "openai",
-  },
+  // No `proxy` spec: OpenClaw proxy capture happens through the provider
+  // registry — `applyInstallConfig` rewrites each configured provider's
+  // baseUrl to panopticon's per-provider proxy prefix. See providers/builtin.ts.
 };
 
 registerTarget(openclaw);

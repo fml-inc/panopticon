@@ -2,8 +2,14 @@ import http from "node:http";
 import https from "node:https";
 import { config } from "../config.js";
 import { log } from "../log.js";
+import {
+  allProviders,
+  getProvider,
+  type ProviderSpec,
+} from "../providers/index.js";
 import { addBreadcrumb, captureException } from "../sentry.js";
 import { allTargets, getTarget } from "../targets/index.js";
+import type { TargetProxySpec } from "../targets/types.js";
 import { emitHookEventAsync, emitOtelLogs, emitOtelMetrics } from "./emit.js";
 import { anthropicParser } from "./formats/anthropic.js";
 import { openaiParser } from "./formats/openai.js";
@@ -17,31 +23,36 @@ import {
 } from "./streaming.js";
 import { WebSocketMessageExtractor } from "./ws-capture.js";
 
-// Build upstream route table from target adapters that have proxy specs,
-// plus static entries for targets without full adapters (e.g. openai, google)
+// Build a flat route table of static (string-host) upstreams from both
+// registries — used for the startup banner and for static-route fallbacks
+// where headers aren't needed to resolve the host. Target wins on id match.
 function buildUpstreamRoutes(): Record<string, string> {
   const routes: Record<string, string> = {};
-  for (const v of allTargets()) {
-    if (v.proxy && typeof v.proxy.upstreamHost === "string") {
-      routes[v.id] = v.proxy.upstreamHost;
+  for (const p of allProviders()) {
+    if (typeof p.upstreamHost === "string") {
+      routes[p.id] = p.upstreamHost;
     }
   }
-  // Static routes for API-only targets (not CLI tools with full adapters)
-  if (!routes.openai) routes.openai = "api.openai.com";
-  if (!routes.google) routes.google = "generativelanguage.googleapis.com";
-  // Alias: Claude adapter registers as "claude" but ANTHROPIC_BASE_URL uses /proxy/anthropic
-  if (!routes.anthropic) routes.anthropic = "api.anthropic.com";
+  for (const t of allTargets()) {
+    if (t.proxy && typeof t.proxy.upstreamHost === "string") {
+      routes[t.id] = t.proxy.upstreamHost;
+    }
+  }
   return routes;
 }
 
 const UPSTREAM_ROUTES = buildUpstreamRoutes();
 
-// Pre-compute known route prefixes for error messages
+// Pre-compute known route prefixes for 404 error messages — union of
+// static and dynamic ids across both registries.
 const KNOWN_ROUTES_MSG = [
   ...Object.keys(UPSTREAM_ROUTES),
   ...allTargets()
-    .filter((v) => v.proxy && typeof v.proxy.upstreamHost === "function")
-    .map((v) => v.id),
+    .filter((t) => t.proxy && typeof t.proxy.upstreamHost === "function")
+    .map((t) => t.id),
+  ...allProviders()
+    .filter((p) => typeof p.upstreamHost === "function")
+    .map((p) => p.id),
 ]
   .filter((v, i, a) => a.indexOf(v) === i)
   .map((v) => `/${v}/*`)
@@ -56,45 +67,62 @@ const FORMAT_PARSERS: ApiFormatParser[] = [
 const sessions = new SessionTracker();
 
 interface Route {
+  /** URL prefix that matched — either a target id or a provider id. */
   target: string;
   upstream: string;
   path: string;
+  accumulatorType: "openai" | "anthropic";
 }
 
+/**
+ * Resolve a `/<id>/<rest>` URL to forwarding rules.
+ *
+ * Precedence: target registry first, then provider registry. Targets win on
+ * id collision because adapters can express dynamic routing (e.g. codex JWT
+ * detection) that flat provider entries can't. In practice today no target
+ * id collides with a provider id, but the rule is documented so future
+ * adapters can rely on it.
+ */
 function parseRoute(
   url: string,
   headers?: http.IncomingHttpHeaders,
 ): Route | null {
-  // Match /target/rest-of-path
   const match = url.match(/^\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
-  const targetId = match[1];
+  const id = match[1];
   const requestPath = match[2] ?? "/";
+  const flatHeaders = flattenHeaders(headers ?? {});
 
-  // Check target adapter for dynamic routing (e.g. Codex JWT auto-detect)
-  const targetAdapter = getTarget(targetId);
-  if (targetAdapter?.proxy) {
-    const { proxy } = targetAdapter;
-    const flatHeaders = flattenHeaders(headers ?? {});
-
-    const upstream =
-      typeof proxy.upstreamHost === "function"
-        ? proxy.upstreamHost(flatHeaders)
-        : proxy.upstreamHost;
-
-    const finalPath = proxy.rewritePath
-      ? proxy.rewritePath(requestPath, flatHeaders)
-      : requestPath;
-
-    return { target: targetId, upstream, path: finalPath };
+  // 1. Target adapter (target wins on id match)
+  const target = getTarget(id);
+  if (target?.proxy) {
+    return resolveFromSpec(id, target.proxy, requestPath, flatHeaders);
   }
 
-  // Fall back to static route table
-  const upstream = UPSTREAM_ROUTES[targetId];
-  if (!upstream) return null;
+  // 2. Provider registry
+  const provider = getProvider(id);
+  if (provider) {
+    return resolveFromSpec(id, provider, requestPath, flatHeaders);
+  }
 
-  return { target: targetId, upstream, path: requestPath };
+  return null;
+}
+
+function resolveFromSpec(
+  id: string,
+  spec: TargetProxySpec | ProviderSpec,
+  requestPath: string,
+  headers: Record<string, string>,
+): Route {
+  const upstream =
+    typeof spec.upstreamHost === "function"
+      ? spec.upstreamHost(headers)
+      : spec.upstreamHost;
+  const path = spec.rewritePath
+    ? spec.rewritePath(requestPath, headers)
+    : requestPath;
+  return { target: id, upstream, path, accumulatorType: spec.accumulatorType };
 }
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -256,9 +284,8 @@ function forwardStreaming(
     });
   }
 
-  const targetSpec = getTarget(route.target);
   const accumulator =
-    targetSpec?.proxy?.accumulatorType === "anthropic"
+    route.accumulatorType === "anthropic"
       ? createAnthropicAccumulator()
       : createOpenaiAccumulator();
 
