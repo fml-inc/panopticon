@@ -40,7 +40,7 @@ services:
       - openclaw-config:/home/node/.openclaw
       - openclaw-workspace:/home/node/.openclaw/workspace
     environment:
-      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:?MOONSHOT_API_KEY must be set — see .env.example}
     depends_on:
       panopticon:
         condition: service_healthy

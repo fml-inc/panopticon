@@ -20,8 +20,8 @@ Capture every API call, tool execution, and token spent by an [OpenClaw](https:/
 │  SQLite: hook_events, otel_logs, otel_metrics, otel_spans    │
 │                                                              │
 │  Query via:                                                  │
-│    docker exec panopticon panopticon query '...'             │
-│    docker exec panopticon panopticon mcp                     │
+│    docker exec panopticon node /app/bin/panopticon query ... │
+│    docker exec panopticon node /app/bin/panopticon mcp       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
