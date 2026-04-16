@@ -20,8 +20,8 @@ Capture every API call, tool execution, and token spent by an [OpenClaw](https:/
 │  SQLite: hook_events, otel_logs, otel_metrics, otel_spans    │
 │                                                              │
 │  Query via:                                                  │
-│    docker exec panopticon node /app/bin/panopticon query ... │
-│    docker exec panopticon node /app/bin/panopticon mcp       │
+│    docker exec panopticon panopticon query '...'             │
+│    docker exec panopticon panopticon mcp                     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,7 +68,7 @@ Panopticon stores everything in SQLite under `/data` (volume `panopticon-data`).
 
 ```bash
 # Recent token-usage metrics
-docker exec panopticon node /app/bin/panopticon query \
+docker exec panopticon panopticon query \
   "SELECT name, json_extract(attributes, '$.\"openclaw.token\"') AS token_type,
           json_extract(attributes, '$.\"openclaw.model\"') AS model, value
    FROM otel_metrics
@@ -76,7 +76,7 @@ docker exec panopticon node /app/bin/panopticon query \
    ORDER BY id DESC LIMIT 20"
 
 # Recent model-call spans
-docker exec panopticon node /app/bin/panopticon query \
+docker exec panopticon panopticon query \
   "SELECT name, attributes FROM otel_spans
    WHERE name = 'openclaw.model.usage'
    ORDER BY id DESC LIMIT 10"

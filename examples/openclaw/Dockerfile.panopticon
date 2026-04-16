@@ -13,6 +13,9 @@ RUN npm install -g pnpm && \
 COPY dist/ dist/
 COPY bin/ bin/
 
+# Put `panopticon` on PATH so `docker exec panopticon panopticon query ...` works
+RUN ln -s /app/bin/panopticon /usr/local/bin/panopticon
+
 # Server: OTLP, hooks, proxy. Reads PANOPTICON_DATA_DIR from env.
 EXPOSE 4318
 
