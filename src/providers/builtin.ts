@@ -20,58 +20,37 @@ import type { ProviderSpec } from "./types.js";
  */
 const v1 = (p: string) => (p === "/v1" || p.startsWith("/v1/") ? p : `/v1${p}`);
 
-const openaiV1 = (p: string) =>
-  p === "/openai/v1" || p.startsWith("/openai/v1/") ? p : `/openai/v1${p}`;
-
+// Only providers we've exercised against a real upstream ship here. Adding a
+// new one is a four-line entry — do it in a separate PR alongside a test that
+// actually hits that provider, so we don't accumulate unverified guesses
+// (deepseek, groq, mistral, xai, etc. were all briefly in this list but cut
+// because their configs were never verified end-to-end).
 const BUILTIN: ProviderSpec[] = [
-  // OpenAI and OpenAI-compatible providers
+  // OpenAI — standard /v1 prefix, openai SSE format.
   {
     id: "openai",
     upstreamHost: "api.openai.com",
     rewritePath: v1,
     accumulatorType: "openai",
   },
+  // Moonshot (Kimi) — OpenAI-compatible, /v1 prefix. Exercised via the
+  // OpenClaw example.
   {
     id: "moonshot",
     upstreamHost: "api.moonshot.ai",
     rewritePath: v1,
     accumulatorType: "openai",
   },
-  {
-    id: "deepseek",
-    upstreamHost: "api.deepseek.com",
-    rewritePath: v1,
-    accumulatorType: "openai",
-  },
-  {
-    id: "xai",
-    upstreamHost: "api.x.ai",
-    rewritePath: v1,
-    accumulatorType: "openai",
-  },
-  {
-    id: "mistral",
-    upstreamHost: "api.mistral.ai",
-    rewritePath: v1,
-    accumulatorType: "openai",
-  },
-  {
-    id: "groq",
-    upstreamHost: "api.groq.com",
-    rewritePath: openaiV1,
-    accumulatorType: "openai",
-  },
-
-  // Anthropic
+  // Anthropic — /v1/messages, anthropic SSE format.
   {
     id: "anthropic",
     upstreamHost: "api.anthropic.com",
     rewritePath: v1,
     accumulatorType: "anthropic",
   },
-
-  // Google Gemini — passthrough path; Gemini's URL convention bakes the version
-  // into the request path already (e.g. /v1beta/models/...:streamGenerateContent).
+  // Google Gemini — passthrough path; Gemini's URL convention bakes the
+  // version into the request path already
+  // (e.g. /v1beta/models/...:streamGenerateContent).
   {
     id: "google",
     upstreamHost: "generativelanguage.googleapis.com",

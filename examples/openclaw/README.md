@@ -137,7 +137,7 @@ curl http://localhost:4318/health
 
 ## Adding more providers
 
-`setup.sh` configures Moonshot + Anthropic because those are the two this example targets. Panopticon's provider registry (`src/providers/builtin.ts`) also knows openai, google, deepseek, groq, xai, and mistral — any of these can be added by editing `~/.openclaw/openclaw.json` inside the container to add another entry under `models.providers`, with `baseUrl: "http://panopticon:4318/proxy/<id>"`. Providers panopticon doesn't know will fail at proxy time; leave them unrewritten if you want to use them untouched.
+`setup.sh` configures Moonshot + Anthropic because those are the two this example targets. Panopticon's provider registry (`src/providers/builtin.ts`) also knows `openai` and `google` — either can be added by editing `~/.openclaw/openclaw.json` inside the container to include another entry under `models.providers` with `baseUrl: "http://panopticon:4318/proxy/<id>"`. Providers panopticon doesn't know will fail at proxy time; leave them unrewritten if you want to use them untouched. To add a new provider (deepseek, groq, xai, mistral, etc.), append an entry to `src/providers/builtin.ts` alongside a test that actually exercises it.
 
 For a non-example install (your own OpenClaw), the panopticon CLI does the rewrite for you:
 

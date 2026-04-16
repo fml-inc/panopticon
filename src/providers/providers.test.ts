@@ -11,16 +11,7 @@ import {
 describe("provider registry", () => {
   it("registers built-in providers on import", () => {
     const ids = providerIds();
-    for (const id of [
-      "openai",
-      "anthropic",
-      "google",
-      "moonshot",
-      "deepseek",
-      "groq",
-      "xai",
-      "mistral",
-    ]) {
+    for (const id of ["openai", "anthropic", "google", "moonshot"]) {
       expect(ids).toContain(id);
     }
   });
@@ -42,7 +33,7 @@ describe("provider registry", () => {
 
   it("allProviders returns the full set", () => {
     const all = allProviders();
-    expect(all.length).toBeGreaterThanOrEqual(8);
+    expect(all.length).toBeGreaterThanOrEqual(4);
   });
 
   it("rejects duplicate registration", () => {
@@ -76,13 +67,6 @@ describe("built-in provider rewritePath", () => {
     );
   });
 
-  it("groq prepends /openai/v1", () => {
-    const p = getProvider("groq")!;
-    expect(p.rewritePath!("/chat/completions", {})).toBe(
-      "/openai/v1/chat/completions",
-    );
-  });
-
   it("google passes path through unchanged", () => {
     const p = getProvider("google")!;
     expect(p.rewritePath).toBeUndefined();
@@ -92,30 +76,13 @@ describe("built-in provider rewritePath", () => {
   // Code, OpenAI SDK) and "send /v1-prefixed verbatim" (OpenClaw). Rewriting
   // needs to handle both — never double-prefix.
   it("v1 rewrite is idempotent — does not double-prefix pre-prefixed paths", () => {
-    for (const id of [
-      "openai",
-      "anthropic",
-      "moonshot",
-      "deepseek",
-      "xai",
-      "mistral",
-    ]) {
+    for (const id of ["openai", "anthropic", "moonshot"]) {
       const p = getProvider(id)!;
       expect(p.rewritePath!("/v1/chat/completions", {})).toBe(
         "/v1/chat/completions",
       );
       expect(p.rewritePath!("/v1/messages", {})).toBe("/v1/messages");
     }
-  });
-
-  it("groq /openai/v1 rewrite is idempotent", () => {
-    const p = getProvider("groq")!;
-    expect(p.rewritePath!("/openai/v1/chat/completions", {})).toBe(
-      "/openai/v1/chat/completions",
-    );
-    expect(p.rewritePath!("/chat/completions", {})).toBe(
-      "/openai/v1/chat/completions",
-    );
   });
 });
 
@@ -125,15 +92,7 @@ describe("built-in provider accumulator types", () => {
   });
 
   it("openai-compatible providers use openai accumulator", () => {
-    for (const id of [
-      "openai",
-      "moonshot",
-      "deepseek",
-      "groq",
-      "xai",
-      "mistral",
-      "google",
-    ]) {
+    for (const id of ["openai", "moonshot", "google"]) {
       expect(getProvider(id)!.accumulatorType).toBe("openai");
     }
   });
@@ -167,11 +126,6 @@ describe("parseRoute picks the right accumulator per provider prefix", () => {
     expect(route!.target).toBe("moonshot");
     expect(route!.upstream).toBe("api.moonshot.ai");
     expect(route!.accumulatorType).toBe("openai");
-  });
-
-  it("/groq/chat/completions applies /openai/v1 rewrite", () => {
-    const route = parseRoute("/groq/chat/completions");
-    expect(route!.path).toBe("/openai/v1/chat/completions");
   });
 
   it("target registry still wins on id collision (claude → anthropic upstream via target adapter)", () => {
