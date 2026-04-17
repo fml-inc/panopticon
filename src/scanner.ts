@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { config } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +33,13 @@ export interface ClaudeCodeConfig {
   instructions: Array<{ path: string; content: string; lineCount: number }>;
   enabledPlugins: Array<{ pluginName: string; marketplace: string }>;
   pluginHooks: PluginHooksSummary[];
+  /** Panopticon's own permission state (user-global). Null fields when files absent. */
+  panopticonPermissions: {
+    allowed: Record<string, unknown> | null;
+    approvals: Record<string, unknown> | null;
+  };
+  /** Claude Code memory files keyed by project-dir name, then by relative path within memory/. */
+  memoryFiles: Record<string, Record<string, string>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +97,58 @@ function readSkills(dir: string): Array<{ name: string; content: string }> {
     }
   }
   return results;
+}
+
+function walkMemoryDir(
+  root: string,
+  current: string,
+  out: Record<string, string>,
+): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(current, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const full = path.join(current, e.name);
+    if (e.isDirectory()) {
+      walkMemoryDir(root, full, out);
+    } else if (e.isFile() && e.name.endsWith(".md")) {
+      const rel = path.relative(root, full);
+      const content = readFileOrNull(full);
+      if (content !== null) out[rel] = content;
+    }
+  }
+}
+
+function readMemoryFiles(): Record<string, Record<string, string>> {
+  const projectsDir = path.join(os.homedir(), ".claude", "projects");
+  let projectEntries: fs.Dirent[];
+  try {
+    projectEntries = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return {};
+  }
+  const out: Record<string, Record<string, string>> = {};
+  for (const pe of projectEntries) {
+    if (!pe.isDirectory()) continue;
+    const memoryDir = path.join(projectsDir, pe.name, "memory");
+    const files: Record<string, string> = {};
+    walkMemoryDir(memoryDir, memoryDir, files);
+    if (Object.keys(files).length > 0) {
+      out[pe.name] = files;
+    }
+  }
+  return out;
+}
+
+function readPanopticonPermissions(): ClaudeCodeConfig["panopticonPermissions"] {
+  const base = path.join(config.dataDir, "permissions");
+  return {
+    allowed: readJsonOrNull(path.join(base, "allowed.json")),
+    approvals: readJsonOrNull(path.join(base, "approvals.json")),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +643,8 @@ export function readConfig(cwd?: string): ClaudeCodeConfig {
     instructions,
     enabledPlugins,
     pluginHooks,
+    panopticonPermissions: readPanopticonPermissions(),
+    memoryFiles: readMemoryFiles(),
   };
 }
 

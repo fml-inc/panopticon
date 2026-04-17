@@ -424,11 +424,54 @@ function parseJsonObject(raw: string | null): Record<string, unknown> {
   }
 }
 
+function parseJsonObjectOrNull(
+  raw: string | null,
+): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null) return null;
+    return typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMemoryMap(
+  raw: string | null,
+): Record<string, Record<string, string>> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return {};
+    }
+    const out: Record<string, Record<string, string>> = {};
+    for (const [projectSlug, files] of Object.entries(parsed)) {
+      if (typeof files !== "object" || files === null || Array.isArray(files))
+        continue;
+      const inner: Record<string, string> = {};
+      for (const [rel, content] of Object.entries(files)) {
+        if (typeof content === "string") inner[rel] = content;
+      }
+      out[projectSlug] = inner;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // ── User config snapshots ──────────────────────────────────────────────────
 
 const USER_CONFIG_SQL = `
   SELECT id, device_name, snapshot_at_ms, content_hash,
-         permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks
+         permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
+         panopticon_allowed, panopticon_approvals, memory_files
   FROM user_config_snapshots
   WHERE id > ?
   ORDER BY id
@@ -452,6 +495,9 @@ export function readUserConfigSnapshots(
     rules: string | null;
     skills: string | null;
     plugin_hooks: string | null;
+    panopticon_allowed: string | null;
+    panopticon_approvals: string | null;
+    memory_files: string | null;
   }>;
 
   const rows: UserConfigSnapshotRecord[] = rawRows.map((r) => ({
@@ -466,6 +512,9 @@ export function readUserConfigSnapshots(
     rules: parseJsonArray(r.rules),
     skills: parseJsonArray(r.skills),
     pluginHooks: parseJsonArray(r.plugin_hooks),
+    panopticonAllowed: parseJsonObjectOrNull(r.panopticon_allowed),
+    panopticonApprovals: parseJsonObjectOrNull(r.panopticon_approvals),
+    memoryFiles: parseMemoryMap(r.memory_files),
   }));
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].id : afterId;

@@ -263,7 +263,12 @@ CREATE TABLE IF NOT EXISTS user_config_snapshots (
   commands JSON NOT NULL DEFAULT '[]',
   rules JSON NOT NULL DEFAULT '[]',
   skills JSON NOT NULL DEFAULT '[]',
-  plugin_hooks JSON NOT NULL DEFAULT '[]'
+  plugin_hooks JSON NOT NULL DEFAULT '[]',
+  -- Panopticon's own permission allowlist + approvals (user-global)
+  panopticon_allowed JSON NOT NULL DEFAULT 'null',
+  panopticon_approvals JSON NOT NULL DEFAULT 'null',
+  -- Claude Code memory files: { projectSlug: { relPath: content } }
+  memory_files JSON NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS repo_config_snapshots (
