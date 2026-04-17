@@ -18,6 +18,24 @@ function isProxyRewrittenBaseUrl(baseUrl: string): boolean {
   return !!match && !!getProvider(match[1]);
 }
 
+/**
+ * Map of provider id → env var name that OpenClaw's spawned agent subprocess
+ * reads to override the upstream URL for that provider. Based on each SDK's
+ * convention — Anthropic's Python/TS SDKs read ANTHROPIC_BASE_URL, OpenAI's
+ * read OPENAI_BASE_URL, etc.
+ *
+ * Reason this exists: some OpenClaw providers (anthropic, specifically) route
+ * through a dedicated SDK code path that ignores `models.providers.<id>.baseUrl`
+ * and only respects the SDK's native env var. See issue #150.
+ *
+ * Only populated for providers where rewriting `models.providers.<id>.baseUrl`
+ * alone has been shown to not work — adding other providers here should be
+ * gated on actually reproducing a bypass.
+ */
+const SDK_BASE_URL_ENV: Record<string, string> = {
+  anthropic: "ANTHROPIC_BASE_URL",
+};
+
 const openclaw: TargetAdapter = {
   id: "openclaw",
 
@@ -64,6 +82,7 @@ const openclaw: TargetAdapter = {
         const models = (cfg.models as Record<string, unknown>) ?? {};
         const providers =
           (models.providers as Record<string, Record<string, unknown>>) ?? {};
+        const env = (cfg.env as Record<string, unknown>) ?? {};
         for (const id of Object.keys(providers)) {
           if (!getProvider(id)) {
             console.warn(
@@ -71,11 +90,40 @@ const openclaw: TargetAdapter = {
             );
             continue;
           }
-          providers[id].baseUrl = `http://localhost:${opts.port}/proxy/${id}`;
+          const proxyUrl = `http://localhost:${opts.port}/proxy/${id}`;
+          providers[id].baseUrl = proxyUrl;
+
+          // Belt-and-suspenders: some OpenClaw providers (anthropic) route
+          // through an SDK code path that ignores models.providers.<id>.baseUrl
+          // and only respects the SDK's env var. Set both; whichever is read
+          // wins. See issue #150.
+          const envVar = SDK_BASE_URL_ENV[id];
+          if (envVar) {
+            // Warn if we're clobbering a user-set value that isn't already
+            // our proxy — they may have been using a different upstream
+            // (e.g. corporate gateway, Cloudflare AI Gateway). `uninstall`
+            // deletes this value without restoring the original, so losing
+            // it here is a one-way trip until the user manually re-adds it.
+            const existing = env[envVar];
+            if (
+              typeof existing === "string" &&
+              existing !== proxyUrl &&
+              !isProxyRewrittenBaseUrl(existing)
+            ) {
+              console.warn(
+                `panopticon: overwriting existing ${envVar}="${existing}" with "${proxyUrl}". ` +
+                  "Your original value is not saved — if you need it, note it now before running uninstall.",
+              );
+            }
+            env[envVar] = proxyUrl;
+          }
         }
         if (Object.keys(providers).length > 0) {
           models.providers = providers;
           cfg.models = models;
+        }
+        if (Object.keys(env).length > 0) {
+          cfg.env = env;
         }
       }
 
@@ -123,6 +171,20 @@ const openclaw: TargetAdapter = {
             delete provider.baseUrl;
           }
         }
+      }
+
+      // Revert any SDK base-URL env vars that point at panopticon's proxy
+      const env = cfg.env as Record<string, unknown> | undefined;
+      if (env) {
+        for (const envVar of Object.values(SDK_BASE_URL_ENV)) {
+          if (
+            typeof env[envVar] === "string" &&
+            isProxyRewrittenBaseUrl(env[envVar] as string)
+          ) {
+            delete env[envVar];
+          }
+        }
+        if (Object.keys(env).length === 0) delete cfg.env;
       }
 
       return cfg;

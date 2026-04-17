@@ -125,6 +125,11 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T -u node openclaw sh -
         api: \"anthropic-messages\",
         models: [{ id: \"claude-sonnet-4-6\", name: \"Claude Sonnet 4.6\" }],
       };
+      // OpenClaws anthropic provider uses its own SDK code path that ignores
+      // models.providers.anthropic.baseUrl and only honors ANTHROPIC_BASE_URL.
+      // Set both; see panopticon issue #150.
+      cfg.env = cfg.env || {};
+      cfg.env.ANTHROPIC_BASE_URL = \"http://panopticon:4318/proxy/anthropic\";
     }
 
     // Default agent — prefer moonshot if configured, else anthropic.
