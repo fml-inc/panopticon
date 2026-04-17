@@ -16,6 +16,12 @@ import {
   sessionTimeline,
 } from "../api/client.js";
 import { log, logPaths } from "../log.js";
+import {
+  categorySchema,
+  permissionsApply,
+  permissionsPreview,
+  permissionsShow,
+} from "./permissions.js";
 
 const server = new McpServer({
   name: "panopticon",
@@ -270,6 +276,90 @@ server.tool(
         { type: "text" as const, text: JSON.stringify(stats, null, 2) },
       ],
     };
+  },
+);
+
+// ───────────────────────────────────────────────────────────────────────────
+// Permissions tools — read/preview/apply the panopticon hook allowlist.
+// Used by the /optimize-permissions skill.
+// ───────────────────────────────────────────────────────────────────────────
+
+const permissionsInputSchema = {
+  repository: z
+    .string()
+    .optional()
+    .describe("Optional org/repo slug — stored in backup metadata."),
+  approved_categories: z
+    .array(z.string())
+    .describe("Categories to approve. 'safe' is always included."),
+  denied_categories: z
+    .array(z.string())
+    .describe("Categories to permanently deny (won't re-ask next run)."),
+  custom_overrides: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe("Per-pattern overrides, e.g. { 'Bash(rm *)': 'deny' }."),
+  permissions: z
+    .array(z.string())
+    .describe(
+      "Permission patterns. 'Bash(<cmd> *)' entries are split into bash_commands; other strings go to tools.",
+    ),
+  categories: z
+    .record(z.string(), categorySchema)
+    .describe("Full category breakdown for backup/audit."),
+};
+
+server.tool(
+  "permissions_show",
+  "Read current permissions state: existing approvals + allowed.json. Call first when running /optimize-permissions. Returns { approvals, allowed, paths }.",
+  {},
+  async () => {
+    const result = permissionsShow();
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "permissions_preview",
+  "Compute the diff between the current allowed.json and the proposed state — added, removed, unchanged. Writes nothing. Use for dry-run / confirmation before permissions_apply.",
+  permissionsInputSchema,
+  async (params) => {
+    const result = permissionsPreview(params);
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "permissions_apply",
+  "Write allowed.json and approvals.json atomically (tmp + rename), create a timestamped backup, and update Codex .rules if installed. Returns the diff that was applied plus file paths.",
+  permissionsInputSchema,
+  async (params) => {
+    try {
+      const result = permissionsApply(params);
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   },
 );
 
