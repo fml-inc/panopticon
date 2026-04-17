@@ -44,7 +44,11 @@ import {
   logPaths,
   openLogFd,
 } from "./log.js";
-import { permissionsApply, permissionsShow } from "./mcp/permissions.js";
+import {
+  permissionsApply,
+  permissionsPreview,
+  permissionsShow,
+} from "./mcp/permissions.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -1392,6 +1396,16 @@ permissions
   .description("Show current approvals and allowed tools/commands")
   .action(() => {
     output(permissionsShow());
+  });
+
+permissions
+  .command("preview")
+  .description(
+    "Compute the diff against allowed.json without writing. Reads JSON payload from stdin.",
+  )
+  .action(async () => {
+    const input = JSON.parse(await readStdin());
+    output(permissionsPreview(input));
   });
 
 permissions

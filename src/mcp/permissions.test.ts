@@ -14,12 +14,21 @@ vi.mock("../config.js", () => ({
   },
 }));
 
-const { permissionsShow, permissionsApply } = await import("./permissions.js");
+const mockCodexDir = path.join(
+  os.tmpdir(),
+  `panopticon-codex-test-${process.pid}`,
+);
+process.env.PANOPTICON_CODEX_DIR = mockCodexDir;
+
+const { permissionsShow, permissionsPreview, permissionsApply } = await import(
+  "./permissions.js"
+);
 
 const PERMISSIONS_DIR = path.join(mockDataDir, "permissions");
 const ALLOWED_PATH = path.join(PERMISSIONS_DIR, "allowed.json");
 const APPROVALS_PATH = path.join(PERMISSIONS_DIR, "approvals.json");
 const BACKUPS_DIR = path.join(PERMISSIONS_DIR, "backups");
+const CODEX_RULES_PATH = path.join(mockCodexDir, "rules", "panopticon.rules");
 
 beforeEach(() => {
   fs.mkdirSync(PERMISSIONS_DIR, { recursive: true });
@@ -27,6 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(mockDataDir, { recursive: true, force: true });
+  fs.rmSync(mockCodexDir, { recursive: true, force: true });
 });
 
 describe("permissionsShow", () => {
@@ -212,5 +222,152 @@ describe("permissionsApply", () => {
     const allowed = JSON.parse(fs.readFileSync(ALLOWED_PATH, "utf-8"));
     expect(allowed.tools).toEqual(["Grep"]);
     expect(allowed.bash_commands).toEqual([]);
+  });
+
+  it("returns diff in the apply result", () => {
+    permissionsApply({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Read"],
+      categories: {},
+    });
+
+    const result = permissionsApply({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Bash(git log *)", "Grep"],
+      categories: {},
+    });
+
+    expect(result.diff.added.sort()).toEqual(["Bash(git log *)", "Grep"]);
+    expect(result.diff.removed).toEqual(["Read"]);
+    expect(result.diff.unchanged).toEqual(["Bash(ls *)"]);
+  });
+
+  it("leaves no .tmp files behind", () => {
+    permissionsApply({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Read"],
+      categories: {},
+    });
+
+    const leftovers = fs
+      .readdirSync(PERMISSIONS_DIR)
+      .filter((f) => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+  });
+});
+
+describe("permissionsPreview", () => {
+  it("writes nothing to disk", () => {
+    const before = fs.existsSync(ALLOWED_PATH);
+    permissionsPreview({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Read"],
+      categories: {},
+    });
+    expect(fs.existsSync(ALLOWED_PATH)).toBe(before);
+  });
+
+  it("returns structured diff against current allowed state", () => {
+    permissionsApply({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Read"],
+      categories: {},
+    });
+
+    const preview = permissionsPreview({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Bash(git log *)", "Grep"],
+      categories: {},
+    });
+
+    expect(preview.diff.added.sort()).toEqual(["Bash(git log *)", "Grep"]);
+    expect(preview.diff.removed).toEqual(["Read"]);
+    expect(preview.diff.unchanged).toEqual(["Bash(ls *)"]);
+    expect(preview.proposed.allowed.bash_commands).toEqual(["ls", "git log"]);
+  });
+});
+
+describe("codex target", () => {
+  it("permissionsShow reports codex as not installed when dir is missing", () => {
+    // Ensure codex dir does not exist
+    fs.rmSync(mockCodexDir, { recursive: true, force: true });
+    const result = permissionsShow();
+    expect(result.codex.installed).toBe(false);
+    expect(result.codex.rules_path).toBeNull();
+    expect(result.codex.rule_count).toBe(0);
+  });
+
+  it("permissionsShow reports installed codex and counts existing rules", () => {
+    fs.mkdirSync(path.join(mockCodexDir, "rules"), { recursive: true });
+    fs.writeFileSync(
+      CODEX_RULES_PATH,
+      '# header\nprefix_rule(pattern = ["ls"], decision = "allow", justification = "x")\nprefix_rule(pattern = ["git", "status"], decision = "allow", justification = "x")\n',
+    );
+
+    const result = permissionsShow();
+    expect(result.codex.installed).toBe(true);
+    expect(result.codex.rules_path).toBe(CODEX_RULES_PATH);
+    expect(result.codex.rule_count).toBe(2);
+  });
+
+  it("permissionsApply writes codex rules when installed", () => {
+    fs.mkdirSync(mockCodexDir, { recursive: true });
+
+    const result = permissionsApply({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Bash(npx tsup *)", "Read"],
+      categories: {},
+    });
+
+    expect(result.codex.installed).toBe(true);
+    expect(result.codex.rule_count).toBe(2);
+    expect(result.codex.error).toBeUndefined();
+
+    const rules = fs.readFileSync(CODEX_RULES_PATH, "utf-8");
+    expect(rules).toContain('prefix_rule(pattern = ["ls"]');
+    expect(rules).toContain('prefix_rule(pattern = ["npx", "tsup"]');
+  });
+
+  it("permissionsApply skips codex when dir is missing but still succeeds", () => {
+    fs.rmSync(mockCodexDir, { recursive: true, force: true });
+
+    const result = permissionsApply({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)"],
+      categories: {},
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.codex.installed).toBe(false);
+    expect(result.codex.rules_path).toBeNull();
+    expect(fs.existsSync(CODEX_RULES_PATH)).toBe(false);
+  });
+
+  it("permissionsPreview returns codex diff when installed", () => {
+    fs.mkdirSync(path.join(mockCodexDir, "rules"), { recursive: true });
+    fs.writeFileSync(
+      CODEX_RULES_PATH,
+      '# header\nprefix_rule(pattern = ["ls"], decision = "allow", justification = "x")\n',
+    );
+
+    const preview = permissionsPreview({
+      approved_categories: ["safe"],
+      denied_categories: [],
+      permissions: ["Bash(ls *)", "Bash(npx tsup *)"],
+      categories: {},
+    });
+
+    expect(preview.codex.installed).toBe(true);
+    expect(preview.codex.proposed_rule_count).toBe(2);
+    expect(preview.codex.diff.added).toEqual(["prefix_rule: npx tsup"]);
+    expect(preview.codex.diff.unchanged).toEqual(["prefix_rule: ls"]);
   });
 });

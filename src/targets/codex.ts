@@ -37,7 +37,8 @@ function isCodexSystemMessage(content: string): boolean {
   return CODEX_SYSTEM_PREFIXES.some((p) => content.startsWith(p));
 }
 
-const CODEX_DIR = path.join(os.homedir(), ".codex");
+const CODEX_DIR =
+  process.env.PANOPTICON_CODEX_DIR ?? path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
 
 // PascalCase event names matching the Codex hooks engine schema
