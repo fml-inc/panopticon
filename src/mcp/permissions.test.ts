@@ -27,7 +27,6 @@ const { permissionsShow, permissionsPreview, permissionsApply } = await import(
 const PERMISSIONS_DIR = path.join(mockDataDir, "permissions");
 const ALLOWED_PATH = path.join(PERMISSIONS_DIR, "allowed.json");
 const APPROVALS_PATH = path.join(PERMISSIONS_DIR, "approvals.json");
-const BACKUPS_DIR = path.join(PERMISSIONS_DIR, "backups");
 const CODEX_RULES_PATH = path.join(mockCodexDir, "rules", "panopticon.rules");
 
 beforeEach(() => {
@@ -137,26 +136,6 @@ describe("permissionsApply", () => {
     expect(approvals.denied_categories).toEqual(["high_destructive"]);
   });
 
-  it("creates timestamped backup", () => {
-    permissionsApply({
-      repository: "org/repo",
-      approved_categories: ["safe"],
-      denied_categories: [],
-      permissions: ["Read"],
-      categories: minimalCategories,
-    });
-
-    const backups = fs.readdirSync(BACKUPS_DIR);
-    expect(backups).toHaveLength(1);
-
-    const backup = JSON.parse(
-      fs.readFileSync(path.join(BACKUPS_DIR, backups[0]), "utf-8"),
-    );
-    expect(backup.repository).toBe("org/repo");
-    expect(backup.generated_permissions).toEqual(["Read"]);
-    expect(backup.approvals_state.approved_categories).toContain("safe");
-  });
-
   it("writes allowed.json with updated timestamp", () => {
     permissionsApply({
       approved_categories: ["safe"],
@@ -189,7 +168,7 @@ describe("permissionsApply", () => {
       approved_categories: ["safe"],
       denied_categories: [],
       permissions: [
-        "mcp__plugin_panopticon_panopticon__panopticon_query",
+        "mcp__plugin_panopticon_panopticon__query",
         "WebSearch",
         "Bash(ls *)",
       ],
@@ -198,7 +177,7 @@ describe("permissionsApply", () => {
 
     const allowed = JSON.parse(fs.readFileSync(ALLOWED_PATH, "utf-8"));
     expect(allowed.tools).toEqual([
-      "mcp__plugin_panopticon_panopticon__panopticon_query",
+      "mcp__plugin_panopticon_panopticon__query",
       "WebSearch",
     ]);
     expect(allowed.bash_commands).toEqual(["ls"]);

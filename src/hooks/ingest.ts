@@ -1,13 +1,16 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
+import {
+  captureUserConfigSnapshot,
+  extractWrittenFilePath,
+  isTrackedUserConfigPath,
+} from "../config-capture.js";
 import {
   incrementEventTypeCount,
   incrementToolCount,
   insertHookEvent,
   insertRepoConfigSnapshot,
-  insertUserConfigSnapshot,
   upsertSession,
   upsertSessionCwd,
   upsertSessionRepository,
@@ -501,23 +504,21 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
   }
 
-  // Capture user config on SessionStart (once per session)
+  // Capture user config on SessionStart (once per session) — baseline
   if (eventType === "SessionStart" && !userConfigCaptured.has(sessionId)) {
     userConfigCaptured.add(sessionId);
-    try {
-      const config = readConfig(data.cwd as string | undefined);
-      insertUserConfigSnapshot({
-        deviceName: os.hostname(),
-        permissions: config.user.permissions,
-        enabledPlugins: config.enabledPlugins,
-        hooks: config.user.hooks,
-        commands: config.user.commands,
-        rules: config.user.rules,
-        skills: config.user.skills,
-        pluginHooks: config.pluginHooks,
-      });
-    } catch {
-      // Non-fatal
+    captureUserConfigSnapshot(data.cwd as string | undefined);
+  }
+
+  // Capture user config on PostToolUse when a tool wrote to a tracked file
+  // (memory/*.md or panopticon permissions). Content-hash dedup inside the
+  // insert means no-op when nothing actually changed.
+  if (eventType === "PostToolUse") {
+    const writtenPath = extractWrittenFilePath(
+      data.tool_input as Record<string, unknown> | undefined,
+    );
+    if (writtenPath && isTrackedUserConfigPath(writtenPath)) {
+      captureUserConfigSnapshot(data.cwd as string | undefined);
     }
   }
 

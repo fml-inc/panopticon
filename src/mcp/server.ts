@@ -339,7 +339,7 @@ server.tool(
 
 server.tool(
   "permissions_apply",
-  "Write allowed.json and approvals.json atomically (tmp + rename), create a timestamped backup, and update Codex .rules if installed. Returns the diff that was applied plus file paths.",
+  "Write allowed.json and approvals.json atomically (tmp + rename), record a dedup'd snapshot in user_config_snapshots for sync-based history, and update Codex .rules if installed. Returns the diff that was applied plus file paths.",
   permissionsInputSchema,
   async (params) => {
     try {
