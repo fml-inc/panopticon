@@ -264,7 +264,7 @@ SQLite with WAL mode. Location depends on platform (see data directory above).
 | `watermarks` | Sync watermarks for OTLP export targets |
 | `target_session_sync` | Per-target session sync state |
 
-Query directly with `panopticon query` or via the `panopticon_query` MCP tool.
+Query directly with `panopticon query` or via the `query` MCP tool.
 
 ## Development
 
