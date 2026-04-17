@@ -652,13 +652,14 @@ describe("openclaw target adapter", () => {
     expect(openclaw.ident?.modelPatterns).toBeUndefined();
   });
 
-  it("isConfigured requires both diagnostics.otel and plugin entry", () => {
+  it("isConfigured requires diagnostics.enabled master toggle, otel, and plugin entry", () => {
     // Verify the predicate logic by exercising the merged config the adapter
-    // produces — both signals are set together.
+    // produces — all three signals are set together.
     const cfg = openclaw.hooks.applyInstallConfig(
       {},
       { pluginRoot: "/app", port: 4318 },
     );
+    expect((cfg.diagnostics as Record<string, unknown>).enabled).toBe(true);
     const diag = (cfg.diagnostics as Record<string, unknown>).otel as Record<
       string,
       unknown
