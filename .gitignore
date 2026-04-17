@@ -8,3 +8,7 @@ dist/
 .claude/
 .claude-plugin/
 *.tgz
+
+.env
+.env.local
+.env.*.local
