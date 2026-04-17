@@ -64,6 +64,7 @@ const openclaw: TargetAdapter = {
 
       // Configure OTLP endpoint for the diagnostics-otel plugin to send to
       cfg.diagnostics = (cfg.diagnostics as Record<string, unknown>) ?? {};
+      (cfg.diagnostics as Record<string, unknown>).enabled = true;
       (cfg.diagnostics as Record<string, unknown>).otel = {
         enabled: true,
         endpoint: `http://localhost:${opts.port}`,
@@ -148,12 +149,13 @@ const openclaw: TargetAdapter = {
         if (Object.keys(plugins).length === 0) delete cfg.plugins;
       }
 
-      // Remove diagnostics.otel block
+      // Remove diagnostics.otel block and master toggle
       const diagnostics = cfg.diagnostics as
         | Record<string, unknown>
         | undefined;
       if (diagnostics) {
         delete diagnostics.otel;
+        delete diagnostics.enabled;
         if (Object.keys(diagnostics).length === 0) delete cfg.diagnostics;
       }
 
@@ -217,6 +219,7 @@ const openclaw: TargetAdapter = {
       try {
         const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
         return (
+          cfg.diagnostics?.enabled === true &&
           cfg.diagnostics?.otel?.enabled === true &&
           cfg.plugins?.entries?.["diagnostics-otel"]?.enabled === true
         );
