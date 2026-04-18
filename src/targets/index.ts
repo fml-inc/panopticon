@@ -24,3 +24,4 @@ import "./claude-desktop.js";
 import "./gemini.js";
 import "./codex.js";
 import "./openclaw.js";
+import "./pi.js";
