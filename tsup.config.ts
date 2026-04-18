@@ -38,6 +38,8 @@ export default defineConfig({
     "api/client": "src/api/client.ts",
     "sync/index": "src/sync/index.ts",
     targets: "src/targets/index.ts",
+    // Pi extension — bundled for Pi to load
+    "targets/pi/extension": "src/targets/pi/extension.ts",
   },
   format: ["esm"],
   target: "node24",
@@ -53,5 +55,7 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   shims: true,
-  dts: true,
+  // Skip DTS for the Pi extension — it's loaded by Pi, not imported as TypeScript
+  // The @mariozechner/pi-coding-agent types are a peer dependency
+  dts: false,
 });

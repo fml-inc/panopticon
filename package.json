@@ -92,7 +92,7 @@
     }
   },
   "scripts": {
-    "build": "node scripts/generate-plugin-manifest.js && tsup",
+    "build": "node scripts/generate-plugin-manifest.js && tsup && node scripts/bundle-pi-extension.js",
     "dev": "tsup --watch",
     "check": "biome check src/",
     "check:fix": "biome check --write src/",
@@ -114,9 +114,10 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
-    "@types/node": "^24.0.0",
-    "lefthook": "^2.1.1",
     "@sentry/core": "^10.46.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.0",
+    "lefthook": "^2.1.1",
     "tsup": "^8.0.0",
     "typescript": "^5",
     "vitest": "^4.1.0"

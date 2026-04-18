@@ -8,7 +8,7 @@
 
 <br>
 
-Self-contained observability for AI coding tools. Captures OpenTelemetry signals, hook events, API traffic, and local session files from Claude Code, Gemini CLI, and Codex CLI — stored in SQLite, queryable via MCP.
+Self-contained observability for AI coding tools. Captures OpenTelemetry signals, hook events, API traffic, and local session files from Claude Code, Gemini CLI, Codex CLI, and Pi — stored in SQLite, queryable via MCP.
 
 No Docker, no external services. Just Node.js.
 
@@ -28,13 +28,14 @@ panopticon install --target claude
 panopticon install --target gemini
 panopticon install --target codex
 panopticon install --target claude-desktop
+panopticon install --target pi
 ```
 
 Options:
 
 | Flag | Description |
 |------|-------------|
-| `--target <t>` | Target: `claude`, `gemini`, `codex`, `claude-desktop`, or `all` (default: `all`) |
+| `--target <t>` | Target: `claude`, `gemini`, `codex`, `claude-desktop`, `pi`, or `all` (default: `all`) |
 | `--proxy` | Route API traffic through the panopticon proxy |
 | `--force` | Overwrite customized env vars with defaults |
 
@@ -52,7 +53,7 @@ panopticon install
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│          Claude Code / Gemini CLI / Codex CLI                │
+│     Claude Code / Gemini CLI / Codex CLI / Pi               │
 │                                                              │
 │  ┌──────────┐  ┌──────────────┐  ┌───────────┐  ┌────────┐  │
 │  │ OTel SDK │  │ Plugin Hooks │  │ Session   │  │  API   │  │
@@ -130,6 +131,7 @@ concurrency/workpooling follow-up, see
 | Gemini CLI | `settings.json` hooks | Native OTel SDK (HTTP) | `~/.gemini/tmp/` JSON | Google AI API | Scanner captures tool calls, reasoning thoughts |
 | Codex CLI | `hooks.json` | Native OTel SDK (HTTP) | `~/.codex/sessions/` JSONL | OpenAI API | Scanner captures tool calls, reasoning tokens, agent messages |
 | Claude Desktop | MCP server | — | — | — | MCP query tools only |
+| Pi | Extension (HTTP) | — | — | — | Extension emits hook events via fire-and-forget HTTP to panopticon server |
 
 Each tool is implemented as a **target adapter** in `src/targets/`. To add support for a new tool, create a single adapter file that declares config paths, hook events, shell env vars, event normalization, detection logic, and proxy routing — then register it in `src/targets/index.ts`.
 
@@ -175,7 +177,7 @@ but they become much richer once projections are enabled.
 
 ```
 panopticon install          Register hooks, init DB, configure shell
-  --target <t>              Target: claude, gemini, codex, claude-desktop, all (default: all)
+  --target <t>              Target: claude, gemini, codex, claude-desktop, pi, all (default: all)
   --proxy                   Route API traffic through the panopticon proxy
   --force                   Overwrite customized env vars with defaults
 
