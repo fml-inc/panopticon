@@ -764,3 +764,84 @@ describe("target ident specs", () => {
     expect(gemini.ident).toBeUndefined();
   });
 });
+
+describe("pi target adapter", () => {
+  it("registers pi target", () => {
+    expect(getTarget("pi")).toBeDefined();
+  });
+
+  it("has correct config paths", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.config.dir).toContain(".pi");
+    expect(pi.config.configPath).toContain(".pi");
+    expect(pi.config.configFormat).toBe("json");
+  });
+
+  it("has displayName 'Pi'", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.detect.displayName).toBe("Pi");
+  });
+
+  it("maps session events correctly", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.events.eventMap.session_start).toBe("SessionStart");
+    expect(pi.events.eventMap.input).toBe("UserPromptSubmit");
+    expect(pi.events.eventMap.tool_call).toBe("PreToolUse");
+    expect(pi.events.eventMap.tool_result).toBe("PostToolUse");
+    expect(pi.events.eventMap.session_shutdown).toBe("SessionEnd");
+  });
+
+  it("returns empty env vars (Pi uses its own config)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.shellEnv.envVars(4318, true)).toEqual([]);
+    expect(pi.shellEnv.envVars(4318, false)).toEqual([]);
+  });
+
+  it("has no proxy spec (Pi routes through its own config)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.proxy).toBeUndefined();
+  });
+
+  it("has no otel spec (Pi doesn't emit OTel natively)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.otel).toBeUndefined();
+  });
+
+  it("has no scanner spec (Pi doesn't write session files)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.scanner).toBeUndefined();
+  });
+
+  it("applyInstallConfig does not modify existing config", () => {
+    const pi = getTarget("pi")!;
+    const existing = { foo: "bar" };
+    // applyInstallConfig copies extension to ~/.pi/agent/extensions/ but
+    // doesn't modify the config object itself
+    const result = pi.hooks.applyInstallConfig(existing, {
+      pluginRoot: "/app",
+      port: 4318,
+    });
+    expect(result).toEqual(existing);
+  });
+
+  it("removeInstallConfig does not modify existing config", () => {
+    const pi = getTarget("pi")!;
+    const existing = { foo: "bar" };
+    const result = pi.hooks.removeInstallConfig(existing);
+    expect(result).toEqual(existing);
+  });
+
+  it("formatPermissionResponse returns allow/deny structure", () => {
+    const pi = getTarget("pi")!;
+    const allow = pi.events.formatPermissionResponse({
+      allow: true,
+      reason: "ok",
+    });
+    expect(allow).toEqual({ decision: "allow", reason: "ok" });
+    const deny = pi.events.formatPermissionResponse({
+      allow: false,
+      reason: "blocked",
+    });
+    expect(deny).toEqual({ decision: "deny", reason: "blocked" });
+  });
+});
