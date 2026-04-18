@@ -32,6 +32,27 @@ describe("readConfig", () => {
     expect(projectInstructions).toEqual([]);
   });
 
+  it("includes panopticonPermissions and memoryFiles fields", () => {
+    const result = readConfig(tmpDir);
+
+    // Shape-only checks — the actual files depend on the host machine
+    expect(result.panopticonPermissions).toBeDefined();
+    expect(result.panopticonPermissions).toHaveProperty("allowed");
+    expect(result.panopticonPermissions).toHaveProperty("approvals");
+    const allowed = result.panopticonPermissions.allowed;
+    expect(allowed === null || typeof allowed === "object").toBe(true);
+
+    expect(result.memoryFiles).toBeDefined();
+    expect(typeof result.memoryFiles).toBe("object");
+    // If any memory files exist, inner values must be strings (md content)
+    for (const files of Object.values(result.memoryFiles)) {
+      expect(typeof files).toBe("object");
+      for (const content of Object.values(files)) {
+        expect(typeof content).toBe("string");
+      }
+    }
+  });
+
   it("returns project layer when .claude directory exists", () => {
     fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
 

@@ -157,6 +157,12 @@ export interface UserConfigSnapshotRecord {
   rules: unknown[];
   skills: unknown[];
   pluginHooks: unknown[];
+  /** Panopticon's own allowlist (allowed.json content, or null). */
+  panopticonAllowed: Record<string, unknown> | null;
+  /** Panopticon's own approvals state (approvals.json content, or null). */
+  panopticonApprovals: Record<string, unknown> | null;
+  /** Claude Code memory files keyed by project slug, then relative path. */
+  memoryFiles: Record<string, Record<string, string>>;
 }
 
 export interface RepoConfigSnapshotRecord {

@@ -10,8 +10,8 @@ anthropics/claude-code-monitoring-guide) and our own data.
 
 Compute per-tool acceptance vs rejection rates. A low acceptance rate on a
 specific tool (e.g. Write at 65%) signals Claude is proposing bad edits there.
-Could surface in `panopticon_tool_stats` as `acceptance_rate` alongside existing
-`call_count`.
+Could surface in a future `tool_stats` MCP tool (or a field on `summary`) as
+`acceptance_rate` alongside `call_count`.
 
 Stretch: track acceptance rate over time to see if prompt engineering or model
 upgrades improve tool accuracy.
@@ -26,8 +26,7 @@ A cache hit ratio (`cache_read / (cache_read + cache_creation + input)`) would
 show whether prompt caching is working or if you're paying for redundant context
 on every request.
 
-Could be a new field in `panopticon_costs` or a standalone
-`panopticon_cache_efficiency` tool.
+Could be a new field in `costs` or a standalone `cache_efficiency` MCP tool.
 
 ## Session cost efficiency
 
@@ -40,9 +39,9 @@ produced 1. Useful for the summary/reporting layer.
 
 ## Automated periodic reports
 
-**Source data**: `panopticon_summary` + external integrations (Linear, GitHub)
+**Source data**: `summary` MCP tool + external integrations (Linear, GitHub)
 
-A skill or cron prompt that runs `panopticon_summary` for a time window, pulls
+A skill or cron prompt that runs `summary` for a time window, pulls
 in Linear/GitHub activity, and generates a standup or weekly report. The
 monitoring-guide project does this with a prompt template + `claude -p`. We
 could ship a `/report` skill that does it natively.

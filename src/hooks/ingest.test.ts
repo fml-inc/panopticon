@@ -322,7 +322,21 @@ describe("resolveAllEventRepos", () => {
 });
 
 describe("isPanopticonMcpTool", () => {
-  it("matches plugin-prefixed panopticon MCP tools", () => {
+  it("matches plugin-prefixed panopticon MCP tools (bare tool names)", () => {
+    expect(
+      isPanopticonMcpTool("mcp__plugin_panopticon_panopticon__query"),
+    ).toBe(true);
+    expect(
+      isPanopticonMcpTool(
+        "mcp__plugin_panopticon_panopticon__permissions_apply",
+      ),
+    ).toBe(true);
+  });
+
+  it("still matches historical tool names with panopticon_ prefix", () => {
+    // Backward-compat: pre-rename sessions captured tool names like
+    // `panopticon_query`. The hook matches on plugin prefix, not tool name,
+    // so these still resolve to panopticon.
     expect(
       isPanopticonMcpTool(
         "mcp__plugin_panopticon_panopticon__panopticon_query",
@@ -331,7 +345,7 @@ describe("isPanopticonMcpTool", () => {
   });
 
   it("matches plain panopticon MCP server tools", () => {
-    expect(isPanopticonMcpTool("mcp__panopticon__panopticon_query")).toBe(true);
+    expect(isPanopticonMcpTool("mcp__panopticon__query")).toBe(true);
   });
 
   it("does not match other MCP tools", () => {

@@ -202,6 +202,59 @@ describe("runMigrations — existing DB", () => {
     expect(getApplied(db).map((r) => r.id)).toContain(1);
   });
 
+  it("migration 4 adds panopticon_allowed, panopticon_approvals, memory_files", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE user_config_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_name TEXT NOT NULL,
+        snapshot_at_ms INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        permissions JSON NOT NULL DEFAULT '{}',
+        enabled_plugins JSON NOT NULL DEFAULT '[]',
+        hooks JSON NOT NULL DEFAULT '[]',
+        commands JSON NOT NULL DEFAULT '[]',
+        rules JSON NOT NULL DEFAULT '[]',
+        skills JSON NOT NULL DEFAULT '[]',
+        plugin_hooks JSON NOT NULL DEFAULT '[]'
+      )
+    `);
+    // Stamp migrations 1-3 as already applied so only 4 runs
+    db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?), (?, ?), (?, ?)",
+    ).run(1, "stamp1", 2, "stamp2", 3, "stamp3");
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(user_config_snapshots)")
+      .all() as Array<{ name: string; dflt_value: string | null }>;
+    const names = cols.map((c) => c.name);
+    expect(names).toContain("panopticon_allowed");
+    expect(names).toContain("panopticon_approvals");
+    expect(names).toContain("memory_files");
+    expect(getApplied(db).map((r) => r.id)).toContain(4);
+
+    // Insert a row with defaults — confirms defaults are valid JSON that reader helpers
+    // (parseJsonObjectOrNull, parseMemoryMap) can handle.
+    db.prepare(
+      `INSERT INTO user_config_snapshots (device_name, snapshot_at_ms, content_hash)
+       VALUES ('test', 1, 'abc')`,
+    ).run();
+    const row = db
+      .prepare(
+        "SELECT panopticon_allowed, panopticon_approvals, memory_files FROM user_config_snapshots WHERE device_name = 'test'",
+      )
+      .get() as {
+      panopticon_allowed: string;
+      panopticon_approvals: string;
+      memory_files: string;
+    };
+    expect(row.panopticon_allowed).toBe("null");
+    expect(row.panopticon_approvals).toBe("null");
+    expect(row.memory_files).toBe("{}");
+  });
+
   it("runs up() function migration", () => {
     const db = createExistingDb();
     db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)");

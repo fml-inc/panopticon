@@ -76,6 +76,23 @@ export const MIGRATIONS: Migration[] = [
     // the dead table for DBs that were created before the rewrite.
     sql: "DROP TABLE IF EXISTS session_summary_deltas",
   },
+  {
+    id: 4,
+    name: "add_panopticon_perms_and_memory_to_user_config",
+    // Track panopticon's own allowlist/approvals and Claude Code memory files
+    // inside user_config_snapshots so sync captures their history.
+    up: (db) => {
+      db.exec(
+        "ALTER TABLE user_config_snapshots ADD COLUMN panopticon_allowed JSON NOT NULL DEFAULT 'null'",
+      );
+      db.exec(
+        "ALTER TABLE user_config_snapshots ADD COLUMN panopticon_approvals JSON NOT NULL DEFAULT 'null'",
+      );
+      db.exec(
+        "ALTER TABLE user_config_snapshots ADD COLUMN memory_files JSON NOT NULL DEFAULT '{}'",
+      );
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

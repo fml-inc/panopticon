@@ -39,16 +39,16 @@ Both live in `~/.local/share/panopticon/permissions/allowed.json`. The hook retu
 
 ## MCP Tools
 
-- **`panopticon_permissions_show`** — Load existing approvals + current allowed tools/commands. Call this first (no arguments needed).
-- **`panopticon_permissions_apply`** — Write allowed.json (Bash commands + tool names), save approvals, and create a timestamped backup. Call this at the end.
+- **`permissions_show`** — Load existing approvals + current allowed tools/commands. Call this first (no arguments needed).
+- **`permissions_apply`** — Write allowed.json (Bash commands + tool names), save approvals, and record a dedup'd snapshot in `user_config_snapshots` so the config sync captures the change. Call this at the end.
 
-All analysis uses `panopticon_query` against the `tool_calls` table (scanner data — captures 100% of history even before hooks were installed).
+All analysis uses `query` against the `tool_calls` table (scanner data — captures 100% of history even before hooks were installed).
 
 ---
 
 ## Step 1 — Load State
 
-Call `panopticon_permissions_show` (no arguments). It returns:
+Call `permissions_show` (no arguments). It returns:
 - `approvals` — previously approved/denied categories and custom overrides
 - `allowed` — current `{ bash_commands, tools }` list
 - File paths for reference
@@ -57,7 +57,7 @@ Call `panopticon_permissions_show` (no arguments). It returns:
 
 ## Step 2 — Identify Current Repository
 
-Run `git remote get-url origin` and extract `org/repo` (strip `.git` suffix and host prefix). Used for backup metadata only — **not** for scoping queries, since the whitelist is global.
+Run `git remote get-url origin` and extract `org/repo` (strip `.git` suffix and host prefix). Used for snapshot annotation only — **not** for scoping queries, since the whitelist is global.
 
 ## Step 3 — Query Panopticon
 
@@ -65,7 +65,7 @@ The allowed list is global (not per-repo), so queries must aggregate across **al
 
 Queries use the `tool_calls` table (populated from scanner data — local JSONL transcript files). This works even at cold start before hooks are installed, since scanner data captures 100% of tool usage history.
 
-Run via `panopticon_query`:
+Run via `query`:
 
 **Query A — Non-Bash tools:**
 ```sql
@@ -241,11 +241,11 @@ For each approved category, generate permission patterns based on observed usage
 
 ### Non-Bash tools
 
-Use the tool name directly (e.g., `WebSearch`, `mcp__plugin_panopticon_panopticon__panopticon_query`).
+Use the tool name directly (e.g., `WebSearch`, `mcp__plugin_panopticon_panopticon__query`). The plugin harness supplies the `mcp__plugin_panopticon_panopticon__` prefix — the MCP tool name itself is bare (`query`, `sessions`, `permissions_apply`, etc.).
 
 ### Bash commands
 
-For each unique base command observed in panopticon data that falls within an approved category, generate `Bash({base_command} *)`. The `panopticon_permissions_apply` tool splits these into the `bash_commands` list in `allowed.json`.
+For each unique base command observed in panopticon data that falls within an approved category, generate `Bash({base_command} *)`. The `permissions_apply` tool splits these into the `bash_commands` list in `allowed.json`.
 
 ### Only generate for observed commands
 
@@ -365,7 +365,7 @@ Selected categories move to pending for this run and get their own question in t
 
 ## Step 6.5 — Diff Confirmation
 
-Call `panopticon_permissions_preview` with the exact same payload you'll later send to `panopticon_permissions_apply`. It returns a structured diff — no files touched:
+Call `permissions_preview` with the exact same payload you'll later send to `permissions_apply`. It returns a structured diff — no files touched:
 
 ```json
 {
@@ -413,7 +413,7 @@ Otherwise ask one final `AskUserQuestion`:
   "options": [
     {
       "label": "Apply (Recommended)",
-      "description": "Write allowed.json and create a timestamped backup",
+      "description": "Write allowed.json and record a snapshot in config sync",
       "preview": "<formatted diff goes here>"
     },
     {
@@ -434,15 +434,15 @@ Otherwise ask one final `AskUserQuestion`:
 
 ## Step 7 — Apply
 
-If the user chose **Apply**, call `panopticon_permissions_apply` with the same payload used in preview:
-- `repository` (optional) — org/repo slug, included in backup metadata
+If the user chose **Apply**, call `permissions_apply` with the same payload used in preview:
+- `repository` (optional) — org/repo slug, stored on the snapshot
 - `approved_categories` — all approved (including previously approved from state)
 - `denied_categories` — all denied (including previously denied from state)
 - `custom_overrides` — any per-pattern overrides
 - `permissions` — the full permission patterns list (Bash and non-Bash mixed — the tool splits them)
-- `categories` — full category breakdown (for backup)
+- `categories` — full category breakdown (persisted in the snapshot for audit)
 
-The tool returns `{ success, diff, backup_path, allowed_path, approvals_path, codex, details }`. Writes are atomic per-file (tmp sibling + rename). A timestamped backup is created before any mutation, so a crash mid-apply is recoverable.
+The tool returns `{ success, diff, allowed_path, approvals_path, codex, details }`. Writes are atomic per-file (tmp sibling + rename). After writing, the tool records a dedup'd row in `user_config_snapshots` so panopticon's config sync captures the change — prior state is recoverable from that history rather than a local backup file.
 
 Check `codex.error` after apply. If present, the Claude Code allowlist was committed successfully but the Codex rules write failed — surface the error string to the user in Step 8's summary so they know Codex enforcement is out of sync.
 
@@ -465,10 +465,11 @@ allowed.json (hook enforcement):
 Pairs with auto mode: these rules survive compaction and run before the classifier,
 reducing classifier calls and surviving classifier outages.
 
-Backup saved to ~/.local/share/panopticon/permissions/backups/...
+History:       tracked in user_config_snapshots (panopticon config sync)
 
 Run /optimize-permissions again to update as new patterns appear.
 To reset all decisions: rm ~/.local/share/panopticon/permissions/approvals.json
+  (this triggers a new snapshot on next session / apply; prior state remains queryable via sync history)
 ```
 
 Omit the "Estimated hook latency saved" line if no latency data was available (Query D returned 0 rows).

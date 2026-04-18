@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { config } from "../config.js";
+import { captureUserConfigSnapshot } from "../config-capture.js";
 
 const PERMISSIONS_DIR = path.join(config.dataDir, "permissions");
 const APPROVALS_PATH = path.join(PERMISSIONS_DIR, "approvals.json");
 const ALLOWED_PATH = path.join(PERMISSIONS_DIR, "allowed.json");
-const BACKUPS_DIR = path.join(PERMISSIONS_DIR, "backups");
 
 const DEFAULT_APPROVALS = {
   approved_categories: ["safe"],
@@ -341,7 +341,6 @@ export interface CodexApplyResult {
 export interface ApplyResult {
   success: true;
   diff: Diff;
-  backup_path: string;
   allowed_path: string;
   approvals_path: string;
   codex: CodexApplyResult;
@@ -389,29 +388,10 @@ export function permissionsApply(params: PermissionsInput): ApplyResult {
 
   fs.mkdirSync(PERMISSIONS_DIR, { recursive: true });
 
-  // 1. Backup first — timestamped filename makes this operation independent
-  //    of any later step. If we crash after this, the user can restore.
-  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
-  const dateStr = now.slice(0, 10);
-  const timeStr = now.slice(11, 19).replace(/:/g, "");
-  const backupPath = path.join(BACKUPS_DIR, `${dateStr}_${timeStr}.json`);
-  const backup = {
-    timestamp: now,
-    repository: params.repository,
-    skill_version: "6",
-    categories: params.categories,
-    generated_permissions: intended.generated_permissions,
-    approvals_state: intended.approvals,
-    previous_allowed: current,
-    diff,
-  };
-  fs.writeFileSync(backupPath, `${JSON.stringify(backup, null, 2)}\n`);
-  details.push(`Backup saved to ${backupPath}`);
-
-  // 2. Commit allowed.json first — it drives enforcement. Each write is
-  //    atomic per-file via tmp + rename. Multi-file atomicity is not
-  //    possible without a journal; the window between the three renames
-  //    is microseconds.
+  // Commit allowed.json first — it drives enforcement. Each write is atomic
+  // per-file via tmp + rename. Prior state is preserved by the config-sync
+  // pipeline (captureUserConfigSnapshot below writes a dedup'd row to
+  // user_config_snapshots) instead of a local backup file.
   writeJsonAtomic(ALLOWED_PATH, intended.allowed);
   details.push(
     `Allowed list written to ${ALLOWED_PATH} (${intended.allowed.bash_commands.length} Bash commands, ${intended.allowed.tools.length} tools)`,
@@ -434,10 +414,14 @@ export function permissionsApply(params: PermissionsInput): ApplyResult {
     );
   }
 
+  // Capture a new user_config_snapshot so the sync pipeline tracks this
+  // permission change. Atomic tmp+rename writes above don't trigger
+  // PostToolUse hooks, so we call the capture helper explicitly.
+  captureUserConfigSnapshot();
+
   return {
     success: true as const,
     diff,
-    backup_path: backupPath,
     allowed_path: ALLOWED_PATH,
     approvals_path: APPROVALS_PATH,
     codex,

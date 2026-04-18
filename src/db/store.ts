@@ -227,6 +227,12 @@ export interface UserConfigSnapshot {
   rules: unknown;
   skills: unknown;
   pluginHooks: unknown;
+  /** Panopticon's own allowlist (from ~/.../panopticon/permissions/allowed.json). */
+  panopticonAllowed: unknown;
+  /** Panopticon's own approvals state (approvals.json). */
+  panopticonApprovals: unknown;
+  /** Claude Code memory files: { projectSlug: { relPath: content } }. */
+  memoryFiles: unknown;
 }
 
 /**
@@ -243,6 +249,9 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
     rules: snap.rules,
     skills: snap.skills,
     pluginHooks: snap.pluginHooks,
+    panopticonAllowed: snap.panopticonAllowed,
+    panopticonApprovals: snap.panopticonApprovals,
+    memoryFiles: snap.memoryFiles,
   });
 
   // Check if latest snapshot for this device has the same hash
@@ -256,8 +265,9 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
 
   db.prepare(
     `INSERT INTO user_config_snapshots
-       (device_name, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (device_name, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
+        panopticon_allowed, panopticon_approvals, memory_files)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     snap.deviceName,
     Date.now(),
@@ -269,6 +279,9 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
     JSON.stringify(snap.rules),
     JSON.stringify(snap.skills),
     JSON.stringify(snap.pluginHooks),
+    JSON.stringify(snap.panopticonAllowed),
+    JSON.stringify(snap.panopticonApprovals),
+    JSON.stringify(snap.memoryFiles),
   );
   return true;
 }
