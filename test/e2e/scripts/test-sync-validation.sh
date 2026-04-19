@@ -582,6 +582,49 @@ sqlite3 -header -column "$DB_PATH" \
 # `panopticon scan compare` was a debug-only reconciliation report removed
 # in #124 along with direct DB access from the CLI. Skip it.
 
+# ── 7a: Claim-backed intent projection ─────────────────────────────────────
+
+log_info "── Claim-backed intent projection ──"
+
+assert_db_count "SELECT COUNT(*) FROM intent_units;" 1 \
+  "intent_units: >= 1 projected intent"
+
+assert_db_count "SELECT COUNT(*) FROM intent_edits;" 1 \
+  "intent_edits: >= 1 projected edit"
+
+assert_db_not_empty \
+  "SELECT 1 FROM intent_units
+   WHERE prompt_text IS NOT NULL AND prompt_text != ''
+   LIMIT 1;" \
+  "intent_units: prompt_text is populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM intent_edits
+   WHERE landed IS NOT NULL
+   LIMIT 1;" \
+  "intent_edits: landed status is populated"
+
+assert_db_not_empty \
+  "SELECT 1 FROM intent_edits
+   WHERE landed = 1 AND landed_reason = 'present_in_file'
+   LIMIT 1;" \
+  "intent_edits: has at least one landed edit present in file"
+
+# Show sample projected intents
+sqlite3 -header -column "$DB_PATH" \
+  "SELECT id, session_id, substr(prompt_text, 1, 60) AS prompt_preview,
+          edit_count, landed_count
+   FROM intent_units
+   ORDER BY prompt_ts_ms DESC
+   LIMIT 5;" 2>/dev/null || true
+
+sqlite3 -header -column "$DB_PATH" \
+  "SELECT intent_unit_id, file_path, landed, landed_reason,
+          substr(new_string_snippet, 1, 40) AS new_snippet
+   FROM intent_edits
+   ORDER BY timestamp_ms DESC
+   LIMIT 5;" 2>/dev/null || true
+
 # ── 7b: OTLP traces (otel_spans) ───────────────────────────────────────────
 
 log_info "── OTLP trace storage ──"
