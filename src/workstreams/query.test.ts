@@ -191,6 +191,80 @@ describe("workstreams", () => {
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
   });
+
+  it("deduplicates path-filtered workstream results", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "dedupe.ts");
+    fs.writeFileSync(file, "final state");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "first pass", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "first pass",
+        },
+      },
+    });
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "final state", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "final state",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const rows = listWorkstreams({ path: file });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].repository).toBe(repo);
+  });
 });
 
 describe("why_code", () => {
@@ -315,5 +389,6 @@ describe("recent_work_on_path", () => {
     expect(result.recent[1].prompt_text).toBe("old state");
     expect(result.recent[1].status).toBe("reverted");
     expect(result.recent[0].workstream_title).toBeTruthy();
+    expect(result.repository).toBe(repo);
   });
 });

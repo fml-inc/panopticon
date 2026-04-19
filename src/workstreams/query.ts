@@ -113,7 +113,7 @@ export function listWorkstreams(opts?: {
   const db = getDb();
   const params: unknown[] = [];
   let sql = `
-    SELECT w.id AS workstream_id,
+    SELECT DISTINCT w.id AS workstream_id,
            w.workstream_key,
            w.title,
            w.status,
@@ -475,7 +475,8 @@ export function recentWorkOnPath(opts: {
 
   return {
     path: normalizedPath,
-    repository: opts.repository ?? null,
+    repository:
+      opts.repository ?? lookupRepositoryForPath(normalizedPath) ?? null,
     recent: rows.map((row) => ({
       workstream_id: row.workstream_id,
       workstream_title: row.workstream_title,
@@ -509,6 +510,29 @@ function ensureLocalWorkProjections(): void {
 
 function normalizeLookupPath(filePath: string, repository?: string): string {
   return resolveFilePathFromCwd(filePath, repository ?? null);
+}
+
+function lookupRepositoryForPath(filePath: string): string | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT repository
+       FROM code_provenance
+       WHERE file_path = ?
+         AND repository IS NOT NULL
+         AND repository != ''
+       ORDER BY CASE status
+                  WHEN 'current' THEN 0
+                  WHEN 'ambiguous' THEN 1
+                  ELSE 2
+                END ASC,
+                confidence DESC,
+                verified_at_ms DESC,
+                id DESC
+       LIMIT 1`,
+    )
+    .get(filePath) as { repository: string | null } | undefined;
+  return emptyToNull(row?.repository ?? null);
 }
 
 function parseSince(since: string): number | null {
