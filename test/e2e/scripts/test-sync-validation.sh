@@ -167,6 +167,54 @@ else
   log_fail "Doctor: Database not ok"
 fi
 
+log_info "── Fresh-home MCP stdio smoke ──"
+MCP_SMOKE_HOME="$(mktemp -d /tmp/pano-mcp-home.XXXXXX)"
+if (
+  cd /opt/panopticon
+  env HOME="$MCP_SMOKE_HOME" node --input-type=module <<'EOF'
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: ["dist/mcp/server.js"],
+  cwd: process.cwd(),
+  env: { ...process.env, HOME: process.env.HOME },
+});
+
+const client = new Client({ name: "e2e-mcp-smoke", version: "1.0.0" });
+await client.connect(transport);
+
+const tools = await client.listTools();
+if (!tools.tools.some((tool) => tool.name === "query")) {
+  throw new Error("query tool was not exposed by the MCP server");
+}
+
+const result = await client.callTool({
+  name: "query",
+  arguments: { sql: "SELECT 1 AS ok" },
+});
+const text = result.content.find((item) => item.type === "text")?.text ?? "";
+const rows = JSON.parse(text);
+if (!Array.isArray(rows) || rows[0]?.ok !== 1) {
+  throw new Error(`Unexpected query result: ${text}`);
+}
+
+await client.close();
+EOF
+); then
+  log_pass "Fresh-home MCP server starts and answers query over stdio"
+else
+  log_fail "Fresh-home MCP stdio smoke failed"
+  rm -rf "$MCP_SMOKE_HOME"
+  print_summary
+fi
+
+assert_file_exists \
+  "$MCP_SMOKE_HOME/.local/state/panopticon/logs/mcp-server.log" \
+  "Fresh-home MCP log file"
+rm -rf "$MCP_SMOKE_HOME"
+
 # Source env vars (OTel endpoints, proxy URLs) written by install
 # shellcheck disable=SC1090
 source "$HOME/.bashrc" 2>/dev/null || true

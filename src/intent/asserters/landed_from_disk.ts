@@ -7,6 +7,7 @@ import {
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
+import { canUseLocalPathApis } from "../../paths.js";
 import {
   type ActiveEdit,
   loadActiveEdits,
@@ -58,6 +59,9 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
         continue;
       }
       const verdict = decideForEdit(edit, ordered);
+      if (!verdict) {
+        continue;
+      }
       const observedAtMs = edit.timestampMs ?? intent.closedAtMs ?? Date.now();
       const content =
         verdict.reason === "file_deleted" ? null : readFileSafe(edit.filePath!);
@@ -103,7 +107,7 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
 function decideForEdit(
   edit: ActiveEdit,
   allEditsForSession: ActiveEdit[],
-): { status: "landed" | "churned"; reason: LandedReason } {
+): { status: "landed" | "churned"; reason: LandedReason } | null {
   const snippet = edit.newStringSnippet ?? "";
   const later = allEditsForSession.filter(
     (candidate) =>
@@ -128,6 +132,10 @@ function decideForEdit(
         return { status: "churned", reason: "overwritten_in_session" };
       }
     }
+  }
+
+  if (!canUseLocalPathApis(edit.filePath!)) {
+    return null;
   }
 
   const fileContent = readFileSafe(edit.filePath!);

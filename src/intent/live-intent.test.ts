@@ -380,4 +380,59 @@ describe("scanner-only landed reconciliation", () => {
       { landed: 1, landed_reason: "present_in_file" },
     ]);
   });
+
+  it("leaves foreign absolute paths unresolved instead of marking them deleted", () => {
+    const sessionId = "scanner-only-foreign";
+    const foreignFilePath =
+      process.platform === "win32"
+        ? "/workspace/panopticon/src/foreign.ts"
+        : "C:\\repo\\foreign.ts";
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "edit foreign file",
+      timestampMs: 1000,
+      uuid: "msg-foreign",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "Edit",
+      inputJson: {
+        file_path: foreignFilePath,
+        old_string: "OLD",
+        new_string: "NEW",
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    rebuildActiveClaims();
+    reconcileLandedClaimsFromDisk({ sessionId });
+    rebuildIntentProjection({ sessionId });
+
+    const edits = getDb()
+      .prepare(
+        `SELECT landed, landed_reason
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .all(sessionId) as Array<{
+      landed: number | null;
+      landed_reason: string | null;
+    }>;
+
+    expect(edits).toEqual([{ landed: null, landed_reason: null }]);
+  });
 });

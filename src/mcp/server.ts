@@ -4,27 +4,16 @@ import fs from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import {
-  activitySummary,
-  costBreakdown,
-  dbStats,
-  intentForCode,
-  listPlans,
-  listSessions,
-  outcomesForIntent,
-  print,
-  rawQuery,
-  search,
-  searchIntent,
-  sessionTimeline,
-} from "../api/client.js";
-import { log, logPaths } from "../log.js";
+import { log, openLogFd } from "../log.js";
+import { httpPanopticonService } from "../service/http.js";
 import {
   categorySchema,
   permissionsApply,
   permissionsPreview,
   permissionsShow,
 } from "./permissions.js";
+
+const service = httpPanopticonService;
 
 const server = new McpServer({
   name: "panopticon",
@@ -45,7 +34,7 @@ server.tool(
       .describe('Time filter: ISO date or relative like "24h", "7d", "30m"'),
   },
   async ({ limit, since }) => {
-    const results = await listSessions({ limit, since });
+    const results = await service.listSessions({ limit, since });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(results, null, 2) },
@@ -73,7 +62,7 @@ server.tool(
       .describe("Return full content instead of truncated (default false)"),
   },
   async ({ sessionId, limit, offset, fullPayloads }) => {
-    const result = await sessionTimeline({
+    const result = await service.sessionTimeline({
       sessionId,
       limit,
       offset,
@@ -101,7 +90,7 @@ server.tool(
       .describe("Group results by session, model, or day (default: session)"),
   },
   async ({ since, groupBy }) => {
-    const results = await costBreakdown({ since, groupBy });
+    const results = await service.costBreakdown({ since, groupBy });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(results, null, 2) },
@@ -122,7 +111,7 @@ server.tool(
       ),
   },
   async ({ since }) => {
-    const summary = await activitySummary({ since });
+    const summary = await service.activitySummary({ since });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(summary, null, 2) },
@@ -143,7 +132,7 @@ server.tool(
     limit: z.number().optional().describe("Max plans to return (default 20)"),
   },
   async ({ session_id, since, limit }) => {
-    const plans = await listPlans({ session_id, since, limit });
+    const plans = await service.listPlans({ session_id, since, limit });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(plans, null, 2) },
@@ -176,7 +165,7 @@ server.tool(
       .describe("Return full payloads instead of truncated (default false)"),
   },
   async ({ query, eventTypes, since, limit, offset, fullPayloads }) => {
-    const result = await search({
+    const result = await service.search({
       query,
       eventTypes,
       since,
@@ -204,7 +193,7 @@ server.tool(
     id: z.number().describe("Record ID from search/timeline results"),
   },
   async ({ source, id }) => {
-    const result = await print({ source, id });
+    const result = await service.print({ source, id });
     if (!result) {
       return {
         content: [
@@ -248,7 +237,7 @@ Join on session_id across tables. hook_events payload is gzipped — use decompr
   },
   async ({ sql }) => {
     try {
-      const results = await rawQuery(sql);
+      const results = await service.rawQuery(sql);
       return {
         content: [
           { type: "text" as const, text: JSON.stringify(results, null, 2) },
@@ -273,7 +262,7 @@ server.tool(
   "Show panopticon database stats: row counts for each table",
   {},
   async () => {
-    const stats = await dbStats();
+    const stats = await service.dbStats();
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(stats, null, 2) },
@@ -297,7 +286,7 @@ server.tool(
       .describe("Max intent edits to return (default 50)"),
   },
   async ({ file_path, limit }) => {
-    const result = await intentForCode({ file_path, limit });
+    const result = await service.intentForCode({ file_path, limit });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(result, null, 2) },
@@ -325,7 +314,7 @@ server.tool(
     offset: z.number().optional().describe("Skip N results for pagination"),
   },
   async ({ query, only_landed, repository, limit, offset }) => {
-    const result = await searchIntent({
+    const result = await service.searchIntent({
       query,
       only_landed,
       repository,
@@ -347,7 +336,7 @@ server.tool(
     intent_unit_id: z.number().describe("ID of the intent unit"),
   },
   async ({ intent_unit_id }) => {
-    const result = await outcomesForIntent({ intent_unit_id });
+    const result = await service.outcomesForIntent({ intent_unit_id });
     if (!result) {
       return {
         content: [
@@ -453,7 +442,7 @@ server.tool(
 
 async function main() {
   // Redirect stderr to log file (stdout is reserved for MCP JSON-RPC protocol)
-  const logFd = fs.openSync(logPaths.mcp, "a");
+  const logFd = openLogFd("mcp");
   const logStream = fs.createWriteStream("", { fd: logFd });
   process.stderr.write = logStream.write.bind(
     logStream,

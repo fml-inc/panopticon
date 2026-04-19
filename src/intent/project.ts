@@ -1,5 +1,5 @@
-import path from "node:path";
 import { getDb } from "../db/schema.js";
+import { resolveFilePathFromCwd } from "../paths.js";
 import { loadActiveEdits, loadActiveIntents } from "./claimViews.js";
 
 export function rebuildIntentProjection(opts?: { sessionId?: string }): {
@@ -192,6 +192,5 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
 }
 
 function normalizeFilePath(filePath: string, cwd: string | null): string {
-  if (path.isAbsolute(filePath) || !cwd) return filePath;
-  return path.resolve(cwd, filePath);
+  return resolveFilePathFromCwd(filePath, cwd);
 }

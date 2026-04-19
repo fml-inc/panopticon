@@ -271,6 +271,28 @@ describe("extractEventPaths", () => {
     expect(paths).toEqual([{ dir: "/workspace/fml", source: "cwd" }]);
   });
 
+  it("extracts foreign absolute tool paths without normalizing to host style", () => {
+    const foreignFilePath =
+      process.platform === "win32"
+        ? "/workspace/panopticon/src/index.ts"
+        : "C:\\repo\\src\\index.ts";
+    const expectedDir =
+      process.platform === "win32"
+        ? "/workspace/panopticon/src"
+        : "C:\\repo\\src";
+
+    const data = makeInput({
+      tool_input: { file_path: foreignFilePath },
+      cwd: "/workspace/fml",
+    });
+    const paths = extractEventPaths(data);
+
+    expect(paths).toEqual([
+      { dir: expectedDir, source: "tool_input.file_path" },
+      { dir: "/workspace/fml", source: "cwd" },
+    ]);
+  });
+
   it("returns empty for events with no paths", () => {
     const data = makeInput({ hook_event_name: "Stop" });
     expect(extractEventPaths(data)).toEqual([]);

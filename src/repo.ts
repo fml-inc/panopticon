@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { canUseLocalPathApis } from "./paths.js";
 import { SupersetProvider } from "./workspaces/superset.js";
 import type { WorkspaceProvider } from "./workspaces/types.js";
 
@@ -15,6 +16,7 @@ const providers: WorkspaceProvider[] = [new SupersetProvider()];
 
 /** Resolve "org/repo" from a directory's git remote origin URL. */
 function resolveGitRemote(dir: string): string | null {
+  if (!canUseLocalPathApis(dir)) return null;
   try {
     const url = execFileSync(
       "git",
@@ -41,6 +43,7 @@ function resolveGitRemote(dir: string): string | null {
 
 /** Resolve the current git branch for a directory. */
 function resolveGitBranch(dir: string): string | null {
+  if (!canUseLocalPathApis(dir)) return null;
   try {
     return (
       execFileSync("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], {
@@ -113,6 +116,10 @@ export function resolveGitIdentity(cwd: string): {
   if (cached) return cached;
 
   const result = { name: null as string | null, email: null as string | null };
+  if (!canUseLocalPathApis(cwd)) {
+    gitIdentityCache.set(cwd, result);
+    return result;
+  }
   try {
     result.name =
       execFileSync("git", ["-C", cwd, "config", "user.name"], {
