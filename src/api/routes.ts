@@ -6,6 +6,8 @@
  *   POST /api/exec  — write command dispatch (CLI only)
  */
 import type http from "node:http";
+import { rebuildActiveClaims } from "../claims/canonicalize.js";
+import { runIntegrityCheck } from "../claims/integrity.js";
 import { refreshPricing } from "../db/pricing.js";
 import { pruneEstimate, pruneExecute } from "../db/prune.js";
 import {
@@ -20,6 +22,16 @@ import {
   sessionTimeline,
 } from "../db/query.js";
 import { getDb } from "../db/schema.js";
+import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
+import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
+import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
+import { rebuildIntentProjection } from "../intent/project.js";
+import {
+  diffIntentProjectionV1VsV2,
+  intentForCode,
+  outcomesForIntent,
+  searchIntent,
+} from "../intent/query.js";
 import { log } from "../log.js";
 import { scanOnce } from "../scanner/index.js";
 import { generateSummariesOnce } from "../summary/index.js";
@@ -47,6 +59,15 @@ const TOOLS: Record<string, ToolFn> = {
   get: (p) => print(p as Parameters<typeof print>[0]),
   query: (p) => rawQuery((p as { sql: string }).sql),
   status: () => dbStats(),
+  intent_for_code: (p) =>
+    intentForCode(p as Parameters<typeof intentForCode>[0]),
+  search_intent: (p) => searchIntent(p as Parameters<typeof searchIntent>[0]),
+  outcomes_for_intent: (p) =>
+    outcomesForIntent(p as Parameters<typeof outcomesForIntent>[0]),
+  diff_intent_projection_v1_vs_v2: (p) =>
+    diffIntentProjectionV1VsV2(
+      p as Parameters<typeof diffIntentProjectionV1VsV2>[0],
+    ),
 };
 
 // ── Exec dispatch ────────────────────────────────────────────────────────────
@@ -129,6 +150,33 @@ const EXEC: Record<string, ExecFn> = {
     writeWatermark(key, value);
     return { key, value };
   },
+  "rebuild-claims-from-raw": (p) => {
+    const sessionId =
+      typeof p.sessionId === "string" && p.sessionId.length > 0
+        ? p.sessionId
+        : undefined;
+    const scanner = rebuildIntentClaimsFromScanner({ sessionId });
+    const hooks = rebuildIntentClaimsFromHooks({ sessionId });
+    const activeHeads = rebuildActiveClaims();
+    return { scanner, hooks, activeHeads };
+  },
+  "rebuild-intent-projection-from-claims": (p) => {
+    const sessionId =
+      typeof p.sessionId === "string" && p.sessionId.length > 0
+        ? p.sessionId
+        : undefined;
+    return rebuildIntentProjection({ sessionId });
+  },
+  "reconcile-landed-status-from-disk": (p) => {
+    const sessionId =
+      typeof p.sessionId === "string" && p.sessionId.length > 0
+        ? p.sessionId
+        : undefined;
+    const landed = reconcileLandedClaimsFromDisk({ sessionId });
+    const activeHeads = rebuildActiveClaims();
+    return { landed, activeHeads };
+  },
+  "claim-evidence-integrity": () => runIntegrityCheck(),
   "sync-pending": (p) => {
     const target = p.target as string;
     if (!target) throw new Error("target is required");

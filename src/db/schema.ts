@@ -290,6 +290,153 @@ CREATE TABLE IF NOT EXISTS repo_config_snapshots (
   instructions JSON NOT NULL DEFAULT '[]'
 );
 
+-- ── Claims layer ────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS claims (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_key TEXT NOT NULL UNIQUE,
+  head_key TEXT NOT NULL,
+  predicate TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  value_kind TEXT NOT NULL,
+  value_text TEXT,
+  value_num REAL,
+  value_json TEXT,
+  source_type TEXT NOT NULL,
+  source_rank INTEGER NOT NULL DEFAULT 0,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  observed_at_ms INTEGER NOT NULL,
+  asserted_at_ms INTEGER NOT NULL,
+  asserter TEXT NOT NULL,
+  asserter_version TEXT NOT NULL,
+  machine TEXT NOT NULL DEFAULT 'local',
+  sync_id TEXT DEFAULT (hex(randomblob(8)))
+);
+
+CREATE TABLE IF NOT EXISTS claim_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  claim_id INTEGER NOT NULL,
+  evidence_key TEXT NOT NULL,
+  detail JSON,
+  role TEXT NOT NULL DEFAULT 'supporting'
+);
+
+CREATE TABLE IF NOT EXISTS active_claims (
+  head_key TEXT PRIMARY KEY,
+  claim_id INTEGER NOT NULL,
+  selected_at_ms INTEGER NOT NULL,
+  selection_reason TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_cursors (
+  asserter TEXT NOT NULL,
+  source TEXT NOT NULL,
+  cursor_text TEXT NOT NULL DEFAULT '',
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (asserter, source)
+);
+
+CREATE TABLE IF NOT EXISTS claim_rebuild_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asserter TEXT NOT NULL,
+  asserter_version TEXT NOT NULL,
+  started_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER,
+  rows_emitted INTEGER NOT NULL DEFAULT 0,
+  scope JSON
+);
+
+-- ── Intent index ────────────────────────────────────────────────────────────
+--
+-- Maps engineer prompts (UserPromptSubmit) to the file edits they produced.
+-- Schema is sync-agnostic: local_uuid is the stable cross-machine identity so
+-- a fml-based sync layer can ship intents to a shared store without a migration.
+--
+-- intent_units: one row per (session, prompt) pair that produced ≥1 edit.
+-- intent_edits: one row per Edit/Write call (MultiEdit is fanned out into N).
+
+CREATE TABLE IF NOT EXISTS intent_units (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  local_uuid TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  prompt_event_id INTEGER NOT NULL,            -- hook_events.id of the UserPromptSubmit
+  prompt_text TEXT NOT NULL,
+  prompt_ts_ms INTEGER NOT NULL,
+  next_prompt_ts_ms INTEGER,                   -- NULL while still the open unit in its session
+  edit_count INTEGER NOT NULL DEFAULT 0,
+  landed_count INTEGER,                        -- NULL until reconciled
+  reconciled_at_ms INTEGER,
+  cwd TEXT,
+  repository TEXT,
+  machine TEXT NOT NULL DEFAULT 'local',
+  sync_id TEXT DEFAULT (hex(randomblob(8)))
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts USING fts5(
+  prompt_text,
+  content='',
+  contentless_delete=1,
+  tokenize='trigram'
+);
+
+CREATE TABLE IF NOT EXISTS intent_edits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  local_uuid TEXT NOT NULL UNIQUE,
+  intent_unit_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,                    -- denormalized for query speed
+  hook_event_id INTEGER NOT NULL,              -- the Edit/Write/MultiEdit event in hook_events
+  multi_edit_index INTEGER NOT NULL DEFAULT 0, -- 0-based index for MultiEdit fan-out
+  timestamp_ms INTEGER NOT NULL,
+  file_path TEXT NOT NULL,
+  tool_name TEXT NOT NULL,                     -- 'Edit' | 'Write' | 'MultiEdit'
+  new_string_hash TEXT NOT NULL,               -- sha256 hex of inserted content
+  new_string_snippet TEXT,                     -- first ~200 chars, for display + landed check
+  new_string_len INTEGER NOT NULL,
+  landed INTEGER,                              -- NULL = not checked, 0/1 after reconciliation
+  landed_reason TEXT,                          -- 'present_in_file' | 'overwritten_in_session' | 'file_deleted' | 'reverted_post_session' | 'write_replaced'
+  landed_checked_at_ms INTEGER,
+  sync_id TEXT DEFAULT (hex(randomblob(8)))
+);
+
+-- ── Intent v2 projection ────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS intent_units_v2 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  intent_key TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  prompt_text TEXT NOT NULL,
+  prompt_ts_ms INTEGER,
+  next_prompt_ts_ms INTEGER,
+  edit_count INTEGER NOT NULL DEFAULT 0,
+  landed_count INTEGER,
+  reconciled_at_ms INTEGER,
+  cwd TEXT,
+  repository TEXT
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts_v2 USING fts5(
+  prompt_text,
+  content='',
+  contentless_delete=1,
+  tokenize='trigram'
+);
+
+CREATE TABLE IF NOT EXISTS intent_edits_v2 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  edit_key TEXT NOT NULL UNIQUE,
+  intent_unit_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  timestamp_ms INTEGER,
+  file_path TEXT NOT NULL,
+  tool_name TEXT,
+  multi_edit_index INTEGER NOT NULL DEFAULT 0,
+  new_string_hash TEXT,
+  new_string_snippet TEXT,
+  landed INTEGER,
+  landed_reason TEXT
+);
+
 -- ── Sync watermarks ─────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS watermarks (
@@ -391,6 +538,44 @@ CREATE INDEX IF NOT EXISTS idx_user_config_device_hash ON user_config_snapshots(
 CREATE INDEX IF NOT EXISTS idx_repo_config_repo_ts ON repo_config_snapshots(repository, snapshot_at_ms);
 CREATE INDEX IF NOT EXISTS idx_repo_config_session ON repo_config_snapshots(session_id);
 CREATE INDEX IF NOT EXISTS idx_repo_config_repo_hash ON repo_config_snapshots(repository, content_hash);
+
+-- claims
+CREATE INDEX IF NOT EXISTS idx_claims_head ON claims(head_key);
+CREATE INDEX IF NOT EXISTS idx_claims_predicate_subject ON claims(predicate, subject_kind, subject);
+CREATE INDEX IF NOT EXISTS idx_claims_observed ON claims(observed_at_ms);
+CREATE INDEX IF NOT EXISTS idx_claims_asserter ON claims(asserter, observed_at_ms);
+
+-- claim_evidence
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_id);
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_key ON claim_evidence(evidence_key);
+
+-- active_claims
+CREATE INDEX IF NOT EXISTS idx_active_claims_claim ON active_claims(claim_id);
+
+-- intent_units
+CREATE INDEX IF NOT EXISTS idx_intent_units_session ON intent_units(session_id);
+CREATE INDEX IF NOT EXISTS idx_intent_units_repo ON intent_units(repository);
+CREATE INDEX IF NOT EXISTS idx_intent_units_prompt_ts ON intent_units(prompt_ts_ms);
+CREATE INDEX IF NOT EXISTS idx_intent_units_open ON intent_units(session_id)
+  WHERE next_prompt_ts_ms IS NULL;
+CREATE INDEX IF NOT EXISTS idx_intent_units_unreconciled ON intent_units(session_id)
+  WHERE reconciled_at_ms IS NULL;
+
+-- intent_edits
+CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_intent_edits_session ON intent_edits(session_id);
+CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
+CREATE INDEX IF NOT EXISTS idx_intent_edits_hook ON intent_edits(hook_event_id);
+
+-- intent_units_v2
+CREATE INDEX IF NOT EXISTS idx_intent_units_v2_session ON intent_units_v2(session_id);
+CREATE INDEX IF NOT EXISTS idx_intent_units_v2_repo ON intent_units_v2(repository);
+CREATE INDEX IF NOT EXISTS idx_intent_units_v2_prompt_ts ON intent_units_v2(prompt_ts_ms);
+
+-- intent_edits_v2
+CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_unit ON intent_edits_v2(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_session ON intent_edits_v2(session_id);
+CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_file ON intent_edits_v2(file_path);
 
 `;
 

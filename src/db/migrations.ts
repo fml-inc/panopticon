@@ -93,6 +93,221 @@ export const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    id: 5,
+    name: "add_claims_and_intent_index_tables",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS claims (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_key TEXT NOT NULL UNIQUE,
+          head_key TEXT NOT NULL,
+          predicate TEXT NOT NULL,
+          subject_kind TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          value_kind TEXT NOT NULL,
+          value_text TEXT,
+          value_num REAL,
+          value_json TEXT,
+          source_type TEXT NOT NULL,
+          source_rank INTEGER NOT NULL DEFAULT 0,
+          confidence REAL NOT NULL DEFAULT 1.0,
+          observed_at_ms INTEGER NOT NULL,
+          asserted_at_ms INTEGER NOT NULL,
+          asserter TEXT NOT NULL,
+          asserter_version TEXT NOT NULL,
+          machine TEXT NOT NULL DEFAULT 'local',
+          sync_id TEXT DEFAULT (hex(randomblob(8)))
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS claim_evidence (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          claim_id INTEGER NOT NULL,
+          evidence_key TEXT NOT NULL,
+          detail JSON,
+          role TEXT NOT NULL DEFAULT 'supporting'
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS active_claims (
+          head_key TEXT PRIMARY KEY,
+          claim_id INTEGER NOT NULL,
+          selected_at_ms INTEGER NOT NULL,
+          selection_reason TEXT NOT NULL
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ingestion_cursors (
+          asserter TEXT NOT NULL,
+          source TEXT NOT NULL,
+          cursor_text TEXT NOT NULL DEFAULT '',
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (asserter, source)
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS claim_rebuild_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          asserter TEXT NOT NULL,
+          asserter_version TEXT NOT NULL,
+          started_at_ms INTEGER NOT NULL,
+          finished_at_ms INTEGER,
+          rows_emitted INTEGER NOT NULL DEFAULT 0,
+          scope JSON
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS intent_units (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          local_uuid TEXT NOT NULL UNIQUE,
+          session_id TEXT NOT NULL,
+          prompt_event_id INTEGER NOT NULL,
+          prompt_text TEXT NOT NULL,
+          prompt_ts_ms INTEGER NOT NULL,
+          next_prompt_ts_ms INTEGER,
+          edit_count INTEGER NOT NULL DEFAULT 0,
+          landed_count INTEGER,
+          reconciled_at_ms INTEGER,
+          cwd TEXT,
+          repository TEXT,
+          machine TEXT NOT NULL DEFAULT 'local',
+          sync_id TEXT DEFAULT (hex(randomblob(8)))
+        )
+      `);
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts USING fts5(
+          prompt_text,
+          content='',
+          contentless_delete=1,
+          tokenize='trigram'
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS intent_edits (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          local_uuid TEXT NOT NULL UNIQUE,
+          intent_unit_id INTEGER NOT NULL,
+          session_id TEXT NOT NULL,
+          hook_event_id INTEGER NOT NULL,
+          multi_edit_index INTEGER NOT NULL DEFAULT 0,
+          timestamp_ms INTEGER NOT NULL,
+          file_path TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          new_string_hash TEXT NOT NULL,
+          new_string_snippet TEXT,
+          new_string_len INTEGER NOT NULL,
+          landed INTEGER,
+          landed_reason TEXT,
+          landed_checked_at_ms INTEGER,
+          sync_id TEXT DEFAULT (hex(randomblob(8)))
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS intent_units_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          intent_key TEXT NOT NULL UNIQUE,
+          session_id TEXT NOT NULL,
+          prompt_text TEXT NOT NULL,
+          prompt_ts_ms INTEGER,
+          next_prompt_ts_ms INTEGER,
+          edit_count INTEGER NOT NULL DEFAULT 0,
+          landed_count INTEGER,
+          reconciled_at_ms INTEGER,
+          cwd TEXT,
+          repository TEXT
+        )
+      `);
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts_v2 USING fts5(
+          prompt_text,
+          content='',
+          contentless_delete=1,
+          tokenize='trigram'
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS intent_edits_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          edit_key TEXT NOT NULL UNIQUE,
+          intent_unit_id INTEGER NOT NULL,
+          session_id TEXT NOT NULL,
+          timestamp_ms INTEGER,
+          file_path TEXT NOT NULL,
+          tool_name TEXT,
+          multi_edit_index INTEGER NOT NULL DEFAULT 0,
+          new_string_hash TEXT,
+          new_string_snippet TEXT,
+          landed INTEGER,
+          landed_reason TEXT
+        )
+      `);
+      db.exec("CREATE INDEX IF NOT EXISTS idx_claims_head ON claims(head_key)");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_claims_predicate_subject ON claims(predicate, subject_kind, subject)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_claims_observed ON claims(observed_at_ms)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_claims_asserter ON claims(asserter, observed_at_ms)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_claim_evidence_key ON claim_evidence(evidence_key)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_active_claims_claim ON active_claims(claim_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_session ON intent_units(session_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_repo ON intent_units(repository)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_prompt_ts ON intent_units(prompt_ts_ms)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_open ON intent_units(session_id) WHERE next_prompt_ts_ms IS NULL",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_unreconciled ON intent_units(session_id) WHERE reconciled_at_ms IS NULL",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_session ON intent_edits(session_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_hook ON intent_edits(hook_event_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_v2_session ON intent_units_v2(session_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_v2_repo ON intent_units_v2(repository)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_units_v2_prompt_ts ON intent_units_v2(prompt_ts_ms)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_unit ON intent_edits_v2(intent_unit_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_session ON intent_edits_v2(session_id)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_file ON intent_edits_v2(file_path)",
+      );
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

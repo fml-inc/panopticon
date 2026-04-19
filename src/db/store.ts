@@ -596,7 +596,7 @@ function extractStr(
   return typeof v === "string" ? v : undefined;
 }
 
-export function insertHookEvent(row: HookEventRow): void {
+export function insertHookEvent(row: HookEventRow): number {
   const db = getDb();
   const data = row.payload as Record<string, unknown>;
   const toolInput = data.tool_input as Record<string, unknown> | undefined;
@@ -619,6 +619,7 @@ export function insertHookEvent(row: HookEventRow): void {
 
   const fullJson = JSON.stringify(data);
 
+  let insertedId = 0;
   const insertWithFts = db.transaction(() => {
     db.prepare(INSERT_HOOK_SQL).run({
       session_id: row.session_id,
@@ -639,10 +640,12 @@ export function insertHookEvent(row: HookEventRow): void {
     const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
       id: number;
     };
+    insertedId = id;
     db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(
       id,
       fullJson,
     );
   });
   insertWithFts();
+  return insertedId;
 }

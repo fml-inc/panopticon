@@ -175,6 +175,40 @@ export function dbStats(): Promise<unknown> {
   return callTool("status");
 }
 
+export function intentForCode(opts: {
+  file_path: string;
+  limit?: number;
+}): Promise<unknown> {
+  return callTool("intent_for_code", opts as Record<string, unknown>);
+}
+
+export function searchIntent(opts: {
+  query: string;
+  only_landed?: boolean;
+  repository?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<unknown> {
+  return callTool("search_intent", opts as Record<string, unknown>);
+}
+
+export function outcomesForIntent(opts: {
+  intent_unit_id: number;
+}): Promise<unknown> {
+  return callTool("outcomes_for_intent", opts as Record<string, unknown>);
+}
+
+export function diffIntentProjectionV1VsV2(opts?: {
+  session_id?: string;
+  limit?: number;
+  shared_sessions_only?: boolean;
+}): Promise<unknown> {
+  return callTool(
+    "diff_intent_projection_v1_vs_v2",
+    opts as Record<string, unknown>,
+  );
+}
+
 // ── Exec calls (write operations, CLI only) ─────────────────────────────────
 
 const EXEC_TIMEOUT = 60_000;
@@ -213,6 +247,28 @@ export function scan(opts?: { summaries?: boolean }): Promise<ScanResult> {
 
 export function syncReset(target?: string): Promise<unknown> {
   return callExec("sync-reset", target ? { target } : {});
+}
+
+export function rebuildClaimsFromRaw(opts?: {
+  sessionId?: string;
+}): Promise<unknown> {
+  return callExec("rebuild-claims-from-raw", opts ?? {});
+}
+
+export function rebuildIntentProjectionFromClaims(opts?: {
+  sessionId?: string;
+}): Promise<unknown> {
+  return callExec("rebuild-intent-projection-from-claims", opts ?? {});
+}
+
+export function reconcileLandedStatusFromDisk(opts?: {
+  sessionId?: string;
+}): Promise<unknown> {
+  return callExec("reconcile-landed-status-from-disk", opts ?? {});
+}
+
+export function claimEvidenceIntegrity(): Promise<unknown> {
+  return callExec("claim-evidence-integrity");
 }
 
 export function syncWatermarkGet(
