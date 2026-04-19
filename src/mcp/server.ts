@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { log, logPaths } from "../log.js";
+import { log, openLogFd } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
 import {
   categorySchema,
@@ -442,7 +442,7 @@ server.tool(
 
 async function main() {
   // Redirect stderr to log file (stdout is reserved for MCP JSON-RPC protocol)
-  const logFd = fs.openSync(logPaths.mcp, "a");
+  const logFd = openLogFd("mcp");
   const logStream = fs.createWriteStream("", { fd: logFd });
   process.stderr.write = logStream.write.bind(
     logStream,
