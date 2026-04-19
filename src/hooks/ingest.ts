@@ -16,6 +16,9 @@ import {
   upsertSessionRepository,
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
+import { recordIntentClaimsFromHookEvent } from "../intent/asserters/from_hooks.js";
+import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
+import { rebuildIntentProjection } from "../intent/project.js";
 import { log } from "../log.js";
 import { getProvider } from "../providers/index.js";
 import {
@@ -368,7 +371,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     return {};
   }
 
-  insertHookEvent({
+  const hookEventId = insertHookEvent({
     session_id: sessionId,
     event_type: eventType,
     timestamp_ms: timestampMs,
@@ -378,6 +381,43 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     target: targetId,
     payload: data,
   });
+
+  try {
+    recordIntentClaimsFromHookEvent({
+      sessionId,
+      eventType,
+      hookEventId,
+      timestampMs,
+      cwd: typeof data.cwd === "string" ? data.cwd : null,
+      repository: repo ?? null,
+      payload: data as Record<string, unknown>,
+    });
+  } catch (err) {
+    log.hooks.error("intent claim ingest failed:", err);
+  }
+
+  const shouldRefreshIntentProjection =
+    eventType === "UserPromptSubmit" ||
+    (eventType === "PostToolUse" &&
+      typeof toolName === "string" &&
+      ["Edit", "Write", "MultiEdit"].includes(toolName));
+
+  if (shouldRefreshIntentProjection) {
+    try {
+      rebuildIntentProjection({ sessionId });
+    } catch (err) {
+      log.hooks.error("intent projection refresh failed:", err);
+    }
+  }
+
+  if (eventType === "Stop" || eventType === "SessionEnd") {
+    try {
+      reconcileLandedClaimsFromDisk({ sessionId });
+      rebuildIntentProjection({ sessionId });
+    } catch (err) {
+      log.hooks.error("intent reconciliation failed:", err);
+    }
+  }
 
   // Upsert session — each event type contributes different fields.
   // SessionStart seeds the row; subsequent events enrich it. The session

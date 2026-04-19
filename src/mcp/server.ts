@@ -8,11 +8,14 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
+  intentForCode,
   listPlans,
   listSessions,
+  outcomesForIntent,
   print,
   rawQuery,
   search,
+  searchIntent,
   sessionTimeline,
 } from "../api/client.js";
 import { log, logPaths } from "../log.js";
@@ -274,6 +277,91 @@ server.tool(
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(stats, null, 2) },
+      ],
+    };
+  },
+);
+
+// ───────────────────────────────────────────────────────────────────────────
+// Intent index — maps engineer prompts to the file edits they produced.
+// ───────────────────────────────────────────────────────────────────────────
+
+server.tool(
+  "intent_for_code",
+  "Given a file path, return the chronological intent history at that location: every prompt that produced an edit to this file, most recent first, annotated with whether the inserted content survived (status: 'current' | 'superseded' | 'reverted' | 'unknown'). Use this for 'why does this code exist?' questions.",
+  {
+    file_path: z.string().describe("Absolute path to the file"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Max intent edits to return (default 50)"),
+  },
+  async ({ file_path, limit }) => {
+    const result = await intentForCode({ file_path, limit });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "search_intent",
+  "Search the intent index for prompts whose edits matched the query. Defaults to only_landed=true (excludes intents that produced no surviving edits). Each result includes the prompt, the files touched, and the landed_ratio.",
+  {
+    query: z.string().describe("Text to search for in prompt text (FTS5)"),
+    only_landed: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true (default), only return intents with at least one surviving edit",
+      ),
+    repository: z
+      .string()
+      .optional()
+      .describe("Filter to intents recorded in this repository"),
+    limit: z.number().optional().describe("Max results (default 20)"),
+    offset: z.number().optional().describe("Skip N results for pagination"),
+  },
+  async ({ query, only_landed, repository, limit, offset }) => {
+    const result = await searchIntent({
+      query,
+      only_landed,
+      repository,
+      limit,
+      offset,
+    });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "outcomes_for_intent",
+  "Get the t0 (session-end) outcome view for an intent: which edits survived to session end, which were churned in-session, and which haven't been reconciled yet. Use intent_unit_id from search_intent or intent_for_code results.",
+  {
+    intent_unit_id: z.number().describe("ID of the intent unit"),
+  },
+  async ({ intent_unit_id }) => {
+    const result = await outcomesForIntent({ intent_unit_id });
+    if (!result) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `No intent unit found with id ${intent_unit_id}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
       ],
     };
   },
