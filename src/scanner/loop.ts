@@ -1,6 +1,10 @@
 import fs from "node:fs";
+import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { getDb, markResyncComplete, needsResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
+import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
+import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
+import { rebuildIntentProjection } from "../intent/project.js";
 // Import targets so they self-register before we iterate the registry
 import "../targets/claude.js";
 import "../targets/codex.js";
@@ -35,11 +39,13 @@ const DEFAULT_CATCHUP_MS = 5_000;
 export function scanOnce(): {
   filesScanned: number;
   newTurns: number;
+  touchedSessions: string[];
 } {
   getDb(); // ensure DB is accessible
 
   let filesScanned = 0;
   let newTurns = 0;
+  const touchedSessions = new Set<string>();
 
   for (const target of allTargets()) {
     if (!target.scanner) continue;
@@ -113,6 +119,7 @@ export function scanOnce(): {
 
         writeFileWatermark(filePath, fileResult.newByteOffset);
       })();
+      touchedSessions.add(sessionId);
 
       newTurns += result.turns.length;
 
@@ -137,6 +144,7 @@ export function scanOnce(): {
             }
             // No watermark — shared file, one watermark for the whole file
           })();
+          touchedSessions.add(forkSessionId);
           newTurns += fork.turns.length;
         }
       }
@@ -170,6 +178,18 @@ export function scanOnce(): {
 
   // Link subagent sessions to parents after all files are processed
   if (filesScanned > 0) {
+    if (touchedSessions.size > 0) {
+      for (const sessionId of touchedSessions) {
+        rebuildIntentClaimsFromScanner({ sessionId });
+      }
+      rebuildActiveClaims();
+      for (const sessionId of touchedSessions) {
+        reconcileLandedClaimsFromDisk({ sessionId });
+      }
+      for (const sessionId of touchedSessions) {
+        rebuildIntentProjection({ sessionId });
+      }
+    }
     const linked = linkSubagentSessions();
     if (linked > 0) {
       log.scanner.info(
@@ -179,7 +199,7 @@ export function scanOnce(): {
     log.scanner.info(`Scanned ${filesScanned} files, ${newTurns} new turns`);
   }
 
-  return { filesScanned, newTurns };
+  return { filesScanned, newTurns, touchedSessions: [...touchedSessions] };
 }
 
 function reindexTurns(result: ParseResult, startIndex: number): void {

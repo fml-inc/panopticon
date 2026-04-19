@@ -347,61 +347,9 @@ CREATE TABLE IF NOT EXISTS claim_rebuild_runs (
   scope JSON
 );
 
--- ── Intent index ────────────────────────────────────────────────────────────
---
--- Maps engineer prompts (UserPromptSubmit) to the file edits they produced.
--- Schema is sync-agnostic: local_uuid is the stable cross-machine identity so
--- a fml-based sync layer can ship intents to a shared store without a migration.
---
--- intent_units: one row per (session, prompt) pair that produced ≥1 edit.
--- intent_edits: one row per Edit/Write call (MultiEdit is fanned out into N).
+-- ── Intent projection ───────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS intent_units (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  local_uuid TEXT NOT NULL UNIQUE,
-  session_id TEXT NOT NULL,
-  prompt_event_id INTEGER NOT NULL,            -- hook_events.id of the UserPromptSubmit
-  prompt_text TEXT NOT NULL,
-  prompt_ts_ms INTEGER NOT NULL,
-  next_prompt_ts_ms INTEGER,                   -- NULL while still the open unit in its session
-  edit_count INTEGER NOT NULL DEFAULT 0,
-  landed_count INTEGER,                        -- NULL until reconciled
-  reconciled_at_ms INTEGER,
-  cwd TEXT,
-  repository TEXT,
-  machine TEXT NOT NULL DEFAULT 'local',
-  sync_id TEXT DEFAULT (hex(randomblob(8)))
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts USING fts5(
-  prompt_text,
-  content='',
-  contentless_delete=1,
-  tokenize='trigram'
-);
-
-CREATE TABLE IF NOT EXISTS intent_edits (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  local_uuid TEXT NOT NULL UNIQUE,
-  intent_unit_id INTEGER NOT NULL,
-  session_id TEXT NOT NULL,                    -- denormalized for query speed
-  hook_event_id INTEGER NOT NULL,              -- the Edit/Write/MultiEdit event in hook_events
-  multi_edit_index INTEGER NOT NULL DEFAULT 0, -- 0-based index for MultiEdit fan-out
-  timestamp_ms INTEGER NOT NULL,
-  file_path TEXT NOT NULL,
-  tool_name TEXT NOT NULL,                     -- 'Edit' | 'Write' | 'MultiEdit'
-  new_string_hash TEXT NOT NULL,               -- sha256 hex of inserted content
-  new_string_snippet TEXT,                     -- first ~200 chars, for display + landed check
-  new_string_len INTEGER NOT NULL,
-  landed INTEGER,                              -- NULL = not checked, 0/1 after reconciliation
-  landed_reason TEXT,                          -- 'present_in_file' | 'overwritten_in_session' | 'file_deleted' | 'reverted_post_session' | 'write_replaced'
-  landed_checked_at_ms INTEGER,
-  sync_id TEXT DEFAULT (hex(randomblob(8)))
-);
-
--- ── Intent v2 projection ────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS intent_units_v2 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   intent_key TEXT NOT NULL UNIQUE,
   session_id TEXT NOT NULL,
@@ -415,14 +363,14 @@ CREATE TABLE IF NOT EXISTS intent_units_v2 (
   repository TEXT
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts_v2 USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts USING fts5(
   prompt_text,
   content='',
   contentless_delete=1,
   tokenize='trigram'
 );
 
-CREATE TABLE IF NOT EXISTS intent_edits_v2 (
+CREATE TABLE IF NOT EXISTS intent_edits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   edit_key TEXT NOT NULL UNIQUE,
   intent_unit_id INTEGER NOT NULL,
@@ -556,26 +504,11 @@ CREATE INDEX IF NOT EXISTS idx_active_claims_claim ON active_claims(claim_id);
 CREATE INDEX IF NOT EXISTS idx_intent_units_session ON intent_units(session_id);
 CREATE INDEX IF NOT EXISTS idx_intent_units_repo ON intent_units(repository);
 CREATE INDEX IF NOT EXISTS idx_intent_units_prompt_ts ON intent_units(prompt_ts_ms);
-CREATE INDEX IF NOT EXISTS idx_intent_units_open ON intent_units(session_id)
-  WHERE next_prompt_ts_ms IS NULL;
-CREATE INDEX IF NOT EXISTS idx_intent_units_unreconciled ON intent_units(session_id)
-  WHERE reconciled_at_ms IS NULL;
 
 -- intent_edits
 CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id);
 CREATE INDEX IF NOT EXISTS idx_intent_edits_session ON intent_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
-CREATE INDEX IF NOT EXISTS idx_intent_edits_hook ON intent_edits(hook_event_id);
-
--- intent_units_v2
-CREATE INDEX IF NOT EXISTS idx_intent_units_v2_session ON intent_units_v2(session_id);
-CREATE INDEX IF NOT EXISTS idx_intent_units_v2_repo ON intent_units_v2(repository);
-CREATE INDEX IF NOT EXISTS idx_intent_units_v2_prompt_ts ON intent_units_v2(prompt_ts_ms);
-
--- intent_edits_v2
-CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_unit ON intent_edits_v2(intent_unit_id);
-CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_session ON intent_edits_v2(session_id);
-CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_file ON intent_edits_v2(file_path);
 
 `;
 

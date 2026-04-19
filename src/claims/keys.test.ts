@@ -8,7 +8,7 @@ import {
 } from "./keys.js";
 
 describe("intentKey", () => {
-  it("prefers message uuid when present", () => {
+  it("prefers stable user index when present, even if a uuid exists", () => {
     expect(
       intentKey({
         sessionId: "session-1",
@@ -16,17 +16,17 @@ describe("intentKey", () => {
         userIndex: 3,
         uuid: "msg-uuid",
       }),
-    ).toBe("intent:msg-uuid");
+    ).toBe("intent:session-1:user:3");
   });
 
-  it("falls back to stable user index before ordinal", () => {
+  it("falls back to uuid when there is no user index", () => {
     expect(
       intentKey({
         sessionId: "session-1",
         ordinal: 7,
-        userIndex: 3,
+        uuid: "msg-uuid",
       }),
-    ).toBe("intent:session-1:user:3");
+    ).toBe("intent:msg-uuid");
   });
 
   it("falls back to ordinal when no uuid or user index exists", () => {
@@ -43,8 +43,7 @@ describe("editKey", () => {
   it("prefers tool_use_id and preserves multi-edit suffixes", () => {
     expect(
       editKey({
-        sessionId: "session-1",
-        assistantOrdinal: 9,
+        intentKey: "intent:session-1:user:3",
         toolCallIndex: 2,
         toolUseId: "tool-123",
         multiEditIndex: 1,
@@ -52,25 +51,22 @@ describe("editKey", () => {
     ).toBe("edit:tool-123:1");
   });
 
-  it("falls back to hook event id when tool_use_id is missing", () => {
+  it("falls back to per-intent tool-call index when tool_use_id is missing", () => {
+    expect(
+      editKey({
+        intentKey: "intent:session-1:user:3",
+        toolCallIndex: 2,
+      }),
+    ).toBe("edit:intent:session-1:user:3:tool:2");
+  });
+
+  it("falls back to hook event id when no stronger key exists", () => {
     expect(
       editKey({
         sessionId: "session-1",
-        assistantOrdinal: 9,
-        toolCallIndex: 2,
         hookEventId: 44,
       }),
     ).toBe("edit:hook:44");
-  });
-
-  it("falls back to assistant ordinal and tool-call index otherwise", () => {
-    expect(
-      editKey({
-        sessionId: "session-1",
-        assistantOrdinal: 9,
-        toolCallIndex: 2,
-      }),
-    ).toBe("edit:session-1:9:2");
   });
 });
 

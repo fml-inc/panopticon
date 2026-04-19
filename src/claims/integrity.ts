@@ -3,7 +3,11 @@ import { getDb } from "../db/schema.js";
 export function resolveEvidenceKey(key: string): unknown | null {
   const db = getDb();
   if (key.startsWith("message:")) {
-    const [, sessionId, ordinal] = key.split(":");
+    const remainder = key.slice("message:".length);
+    const splitAt = remainder.lastIndexOf(":");
+    if (splitAt <= 0) return null;
+    const sessionId = remainder.slice(0, splitAt);
+    const ordinal = remainder.slice(splitAt + 1);
     return (
       db
         .prepare(
@@ -22,7 +26,14 @@ export function resolveEvidenceKey(key: string): unknown | null {
     );
   }
   if (key.startsWith("tool_local:")) {
-    const [, sessionId, ordinal, toolCallIndex] = key.split(":");
+    const remainder = key.slice("tool_local:".length);
+    const last = remainder.lastIndexOf(":");
+    if (last <= 0) return null;
+    const secondLast = remainder.lastIndexOf(":", last - 1);
+    if (secondLast <= 0) return null;
+    const sessionId = remainder.slice(0, secondLast);
+    const ordinal = remainder.slice(secondLast + 1, last);
+    const toolCallIndex = remainder.slice(last + 1);
     return (
       db
         .prepare(

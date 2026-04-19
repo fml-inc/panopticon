@@ -22,6 +22,7 @@ export interface ActiveEdit {
   timestampMs?: number;
   timestampSource?: string;
   hookEventId?: number | null;
+  payloadEvidenceKey?: string | null;
   landedStatus?: string | null;
   landedReason?: string | null;
 }
@@ -147,17 +148,34 @@ export function loadActiveEdits(): Map<string, ActiveEdit> {
        FROM active_claims ac
        JOIN claims c ON c.id = ac.claim_id
        JOIN claim_evidence ce ON ce.claim_id = c.id
-       WHERE c.subject_kind = 'edit' AND ce.evidence_key LIKE 'hook:%'`,
+       WHERE c.subject_kind = 'edit'
+         AND (
+           ce.evidence_key LIKE 'hook:%'
+           OR ce.evidence_key LIKE 'tool:%'
+           OR ce.evidence_key LIKE 'tool_local:%'
+         )
+       ORDER BY
+         CASE
+           WHEN ce.evidence_key LIKE 'hook:%' THEN 0
+           WHEN ce.evidence_key LIKE 'tool:%' THEN 1
+           ELSE 2
+         END,
+         ce.id ASC`,
     )
     .all() as Array<{ subject: string; evidence_key: string }>;
   for (const row of evidenceRows) {
     const edit = edits.get(row.subject);
-    if (!edit || edit.hookEventId != null) continue;
-    const hookEventId = Number(row.evidence_key.slice("hook:".length));
-    if (!Number.isNaN(hookEventId)) {
-      edit.hookEventId = hookEventId;
-      edits.set(row.subject, edit);
+    if (!edit) continue;
+    if (!edit.payloadEvidenceKey) {
+      edit.payloadEvidenceKey = row.evidence_key;
     }
+    if (row.evidence_key.startsWith("hook:") && edit.hookEventId == null) {
+      const hookEventId = Number(row.evidence_key.slice("hook:".length));
+      if (!Number.isNaN(hookEventId)) {
+        edit.hookEventId = hookEventId;
+      }
+    }
+    edits.set(row.subject, edit);
   }
 
   return edits;

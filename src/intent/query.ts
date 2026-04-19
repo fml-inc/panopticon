@@ -54,8 +54,8 @@ export function intentForCode(opts: {
               e.landed,
               e.landed_reason,
               e.new_string_snippet
-       FROM intent_edits_v2 e
-       JOIN intent_units_v2 u ON u.id = e.intent_unit_id
+       FROM intent_edits e
+       JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
        ORDER BY e.timestamp_ms DESC
        LIMIT ?`,
@@ -148,7 +148,7 @@ export function searchIntent(opts: {
     offset,
   };
 
-  let where = `intent_units_fts_v2 MATCH @q`;
+  let where = `intent_units_fts MATCH @q`;
   if (opts.repository) {
     where += ` AND u.repository = @repository`;
     params.repository = opts.repository;
@@ -168,8 +168,8 @@ export function searchIntent(opts: {
               u.repository,
               u.edit_count,
               u.landed_count
-       FROM intent_units_fts_v2
-       JOIN intent_units_v2 u ON u.id = intent_units_fts_v2.rowid
+       FROM intent_units_fts
+       JOIN intent_units u ON u.id = intent_units_fts.rowid
        WHERE ${where}
        ORDER BY rank
        LIMIT @limit OFFSET @offset`,
@@ -191,7 +191,7 @@ export function searchIntent(opts: {
   const editRows = db
     .prepare(
       `SELECT intent_unit_id, file_path, landed, landed_reason
-       FROM intent_edits_v2
+       FROM intent_edits
        WHERE intent_unit_id IN (${placeholders})
        ORDER BY timestamp_ms ASC`,
     )
@@ -278,7 +278,7 @@ export function outcomesForIntent(opts: {
     .prepare(
       `SELECT id, prompt_text, session_id, prompt_ts_ms, next_prompt_ts_ms,
               reconciled_at_ms, edit_count, landed_count
-       FROM intent_units_v2 WHERE id = ?`,
+       FROM intent_units WHERE id = ?`,
     )
     .get(opts.intent_unit_id) as
     | {
@@ -297,7 +297,7 @@ export function outcomesForIntent(opts: {
   const edits = db
     .prepare(
       `SELECT id, file_path, tool_name, landed, landed_reason
-       FROM intent_edits_v2
+       FROM intent_edits
        WHERE intent_unit_id = ?
        ORDER BY timestamp_ms ASC, id ASC`,
     )
@@ -355,244 +355,4 @@ export function outcomesForIntent(opts: {
       edits_unknown: unknown,
     },
   };
-}
-
-// ── diff_intent_projection_v1_vs_v2 ────────────────────────────────────────
-
-export interface IntentProjectionDiffResult {
-  unitCounts: { v1: number; v2: number };
-  editCounts: { v1: number; v2: number };
-  unitsOnlyInV1: Array<{
-    session_id: string;
-    seq: number;
-    prompt_text: string;
-  }>;
-  unitsOnlyInV2: Array<{
-    session_id: string;
-    seq: number;
-    prompt_text: string;
-  }>;
-  mismatches: Array<{
-    session_id: string;
-    seq: number;
-    promptTextEqual: boolean;
-    promptTsEqual: boolean;
-    repositoryEqual: boolean;
-    editCountEqual: boolean;
-    landedCountEqual: boolean;
-    fileSetEqual: boolean;
-    v1: {
-      prompt_text: string;
-      prompt_ts_ms: number | null;
-      repository: string | null;
-      edit_count: number;
-      landed_count: number | null;
-      files: string[];
-    };
-    v2: {
-      prompt_text: string;
-      prompt_ts_ms: number | null;
-      repository: string | null;
-      edit_count: number;
-      landed_count: number | null;
-      files: string[];
-    };
-  }>;
-}
-
-interface IntentProjectionUnit {
-  session_id: string;
-  prompt_text: string;
-  prompt_ts_ms: number | null;
-  repository: string | null;
-  edit_count: number;
-  landed_count: number | null;
-  files: string[];
-}
-
-export function diffIntentProjectionV1VsV2(opts?: {
-  session_id?: string;
-  limit?: number;
-  shared_sessions_only?: boolean;
-}): IntentProjectionDiffResult {
-  const _db = getDb();
-  const limit = opts?.limit ?? 100;
-  const sessionFilter = opts?.session_id ? "WHERE session_id = ?" : "";
-  const params = opts?.session_id ? [opts.session_id] : [];
-
-  const v1 = loadIntentProjectionUnits(
-    "intent_units",
-    "intent_edits",
-    sessionFilter,
-    params,
-  );
-  const v2 = loadIntentProjectionUnits(
-    "intent_units_v2",
-    "intent_edits_v2",
-    sessionFilter,
-    params,
-  );
-
-  const sessions = opts?.shared_sessions_only
-    ? new Set<string>([...v1.keys()].filter((sessionId) => v2.has(sessionId)))
-    : new Set<string>([...v1.keys(), ...v2.keys()]);
-  const unitsOnlyInV1: IntentProjectionDiffResult["unitsOnlyInV1"] = [];
-  const unitsOnlyInV2: IntentProjectionDiffResult["unitsOnlyInV2"] = [];
-  const mismatches: IntentProjectionDiffResult["mismatches"] = [];
-
-  for (const sessionId of [...sessions].sort()) {
-    const left = v1.get(sessionId) ?? [];
-    const right = v2.get(sessionId) ?? [];
-    const max = Math.max(left.length, right.length);
-    for (let i = 0; i < max; i += 1) {
-      const a = left[i];
-      const b = right[i];
-      const seq = i + 1;
-      if (a && !b) {
-        if (unitsOnlyInV1.length < limit) {
-          unitsOnlyInV1.push({
-            session_id: sessionId,
-            seq,
-            prompt_text: a.prompt_text,
-          });
-        }
-        continue;
-      }
-      if (!a && b) {
-        if (unitsOnlyInV2.length < limit) {
-          unitsOnlyInV2.push({
-            session_id: sessionId,
-            seq,
-            prompt_text: b.prompt_text,
-          });
-        }
-        continue;
-      }
-      if (!a || !b) continue;
-      const promptTextEqual = a.prompt_text === b.prompt_text;
-      const promptTsEqual = a.prompt_ts_ms === b.prompt_ts_ms;
-      const repositoryEqual = a.repository === b.repository;
-      const editCountEqual = a.edit_count === b.edit_count;
-      const landedCountEqual = a.landed_count === b.landed_count;
-      const fileSetEqual = sameArray(a.files, b.files);
-      if (
-        !promptTextEqual ||
-        !promptTsEqual ||
-        !repositoryEqual ||
-        !editCountEqual ||
-        !landedCountEqual ||
-        !fileSetEqual
-      ) {
-        if (mismatches.length < limit) {
-          mismatches.push({
-            session_id: sessionId,
-            seq,
-            promptTextEqual,
-            promptTsEqual,
-            repositoryEqual,
-            editCountEqual,
-            landedCountEqual,
-            fileSetEqual,
-            v1: a,
-            v2: b,
-          });
-        }
-      }
-    }
-  }
-
-  return {
-    unitCounts: {
-      v1: [...v1.values()].reduce((sum, rows) => sum + rows.length, 0),
-      v2: [...v2.values()].reduce((sum, rows) => sum + rows.length, 0),
-    },
-    editCounts: {
-      v1: countProjectionEdits("intent_edits", opts?.session_id),
-      v2: countProjectionEdits("intent_edits_v2", opts?.session_id),
-    },
-    unitsOnlyInV1,
-    unitsOnlyInV2,
-    mismatches,
-  };
-}
-
-function loadIntentProjectionUnits(
-  unitsTable: "intent_units" | "intent_units_v2",
-  editsTable: "intent_edits" | "intent_edits_v2",
-  sessionFilter: string,
-  params: unknown[],
-): Map<string, IntentProjectionUnit[]> {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT u.id,
-              u.session_id,
-              u.prompt_text,
-              u.prompt_ts_ms,
-              u.repository,
-              u.edit_count,
-              u.landed_count
-       FROM ${unitsTable} u
-       ${sessionFilter}
-       ORDER BY u.session_id ASC, u.prompt_ts_ms ASC, u.id ASC`,
-    )
-    .all(...params) as Array<{
-    id: number;
-    session_id: string;
-    prompt_text: string;
-    prompt_ts_ms: number | null;
-    repository: string | null;
-    edit_count: number;
-    landed_count: number | null;
-  }>;
-
-  const result = new Map<string, IntentProjectionUnit[]>();
-  const fileStmt = db.prepare(
-    `SELECT file_path
-     FROM ${editsTable}
-     WHERE intent_unit_id = ?
-     ORDER BY file_path ASC, id ASC`,
-  );
-  for (const row of rows) {
-    const files = (fileStmt.all(row.id) as Array<{ file_path: string }>).map(
-      (entry) => entry.file_path,
-    );
-    const list = result.get(row.session_id) ?? [];
-    list.push({
-      session_id: row.session_id,
-      prompt_text: row.prompt_text,
-      prompt_ts_ms: row.prompt_ts_ms,
-      repository: row.repository,
-      edit_count: row.edit_count,
-      landed_count: row.landed_count,
-      files,
-    });
-    result.set(row.session_id, list);
-  }
-  return result;
-}
-
-function countProjectionEdits(
-  table: "intent_edits" | "intent_edits_v2",
-  sessionId?: string,
-): number {
-  const db = getDb();
-  if (sessionId) {
-    return (
-      db
-        .prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE session_id = ?`)
-        .get(sessionId) as { c: number }
-    ).c;
-  }
-  return (
-    db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }
-  ).c;
-}
-
-function sameArray(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let i = 0; i < left.length; i += 1) {
-    if (left[i] !== right[i]) return false;
-  }
-  return true;
 }

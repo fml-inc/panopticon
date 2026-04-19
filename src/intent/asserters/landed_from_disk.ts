@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { fileSnapshotEvidenceKey } from "../../claims/keys.js";
-import { assertClaim, deleteClaimsByAsserter } from "../../claims/store.js";
+import {
+  assertClaim,
+  deleteClaimsByAsserter,
+  deleteClaimsByAsserterForSession,
+} from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
 import {
   type ActiveEdit,
@@ -22,7 +26,11 @@ type LandedReason =
 export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
   checked: number;
 } {
-  deleteClaimsByAsserter(ASSERTER);
+  if (opts?.sessionId) {
+    deleteClaimsByAsserterForSession(ASSERTER, opts.sessionId);
+  } else {
+    deleteClaimsByAsserter(ASSERTER);
+  }
   const edits = loadActiveEdits();
   const intents = loadActiveIntents();
 
@@ -71,7 +79,7 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
+        canonicalize: !!opts?.sessionId,
       });
       assertClaim({
         predicate: "edit/landed-reason",
@@ -83,7 +91,7 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
+        canonicalize: !!opts?.sessionId,
       });
       checked += 1;
     }
@@ -141,9 +149,11 @@ function readFileSafe(filePath: string): string | null {
 }
 
 function fetchEditNewString(edit: ActiveEdit): string | null {
-  const payload = decodeHookPayload(edit.hookEventId);
-  if (!payload) return null;
-  const toolInput = payload.tool_input as Record<string, unknown> | undefined;
+  const payload = decodePayloadEvidence(
+    edit.payloadEvidenceKey,
+    edit.hookEventId,
+  );
+  const toolInput = payload?.toolInput;
   if (!toolInput) return null;
 
   if (edit.toolName === "Write") {
@@ -166,9 +176,11 @@ function fetchEditNewString(edit: ActiveEdit): string | null {
 }
 
 function fetchOldStrings(edit: ActiveEdit): string[] {
-  const payload = decodeHookPayload(edit.hookEventId);
-  if (!payload) return [];
-  const toolInput = payload.tool_input as Record<string, unknown> | undefined;
+  const payload = decodePayloadEvidence(
+    edit.payloadEvidenceKey,
+    edit.hookEventId,
+  );
+  const toolInput = payload?.toolInput;
   if (!toolInput) return [];
 
   if (edit.toolName === "Edit") {
@@ -186,9 +198,61 @@ function fetchOldStrings(edit: ActiveEdit): string[] {
   return [];
 }
 
-function decodeHookPayload(
+function decodePayloadEvidence(
+  evidenceKey: string | null | undefined,
   hookEventId: number | null | undefined,
-): Record<string, unknown> | null {
+): {
+  toolName: string | null;
+  toolInput: Record<string, unknown> | undefined;
+} | null {
+  if (evidenceKey?.startsWith("tool:")) {
+    const toolUseId = evidenceKey.slice("tool:".length);
+    const db = getDb();
+    const row = db
+      .prepare(
+        `SELECT tool_name, input_json
+         FROM tool_calls
+         WHERE tool_use_id = ?`,
+      )
+      .get(toolUseId) as
+      | { tool_name: string; input_json: string | null }
+      | undefined;
+    if (!row?.input_json) return null;
+    try {
+      return {
+        toolName: row.tool_name,
+        toolInput: JSON.parse(row.input_json) as Record<string, unknown>,
+      };
+    } catch {
+      return null;
+    }
+  }
+  if (evidenceKey?.startsWith("tool_local:")) {
+    const parsed = parseToolLocalEvidenceKey(evidenceKey);
+    if (!parsed) return null;
+    const db = getDb();
+    const row = db
+      .prepare(
+        `SELECT tc.tool_name, tc.input_json
+         FROM tool_calls tc
+         JOIN messages m ON m.id = tc.message_id
+         WHERE tc.session_id = ? AND m.ordinal = ?
+         ORDER BY tc.id ASC
+         LIMIT 1 OFFSET ?`,
+      )
+      .get(parsed.sessionId, parsed.messageOrdinal, parsed.toolCallIndex) as
+      | { tool_name: string; input_json: string | null }
+      | undefined;
+    if (!row?.input_json) return null;
+    try {
+      return {
+        toolName: row.tool_name,
+        toolInput: JSON.parse(row.input_json) as Record<string, unknown>,
+      };
+    } catch {
+      return null;
+    }
+  }
   if (typeof hookEventId !== "number") return null;
   const db = getDb();
   const row = db
@@ -196,11 +260,32 @@ function decodeHookPayload(
     .get(hookEventId) as { payload: Uint8Array } | undefined;
   if (!row) return null;
   try {
-    return JSON.parse(gunzipSync(row.payload).toString("utf8")) as Record<
-      string,
-      unknown
-    >;
+    const payload = JSON.parse(
+      gunzipSync(row.payload).toString("utf8"),
+    ) as Record<string, unknown>;
+    return {
+      toolName:
+        typeof payload.tool_name === "string" ? payload.tool_name : null,
+      toolInput: payload.tool_input as Record<string, unknown> | undefined,
+    };
   } catch {
     return null;
   }
+}
+
+function parseToolLocalEvidenceKey(key: string): {
+  sessionId: string;
+  messageOrdinal: number;
+  toolCallIndex: number;
+} | null {
+  const remainder = key.slice("tool_local:".length);
+  const last = remainder.lastIndexOf(":");
+  if (last <= 0) return null;
+  const secondLast = remainder.lastIndexOf(":", last - 1);
+  if (secondLast <= 0) return null;
+  return {
+    sessionId: remainder.slice(0, secondLast),
+    messageOrdinal: Number(remainder.slice(secondLast + 1, last)),
+    toolCallIndex: Number(remainder.slice(last + 1)),
+  };
 }

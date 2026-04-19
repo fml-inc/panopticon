@@ -25,6 +25,7 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
     [...loadActiveIntents()].filter(([, intent]) => {
       if (!intent.sessionId) return false;
       if (opts?.sessionId && intent.sessionId !== opts.sessionId) return false;
+      // For hook-backed sessions, trust hook-sourced prompt boundaries.
       if (!hookBackedSessions.has(intent.sessionId)) return true;
       return intent.promptTsSource === "hook";
     }),
@@ -42,25 +43,25 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   const tx = db.transaction(() => {
     if (opts?.sessionId) {
       const rows = db
-        .prepare(`SELECT id FROM intent_units_v2 WHERE session_id = ?`)
+        .prepare(`SELECT id FROM intent_units WHERE session_id = ?`)
         .all(opts.sessionId) as Array<{ id: number }>;
       const ids = rows.map((row) => row.id);
       if (ids.length > 0) {
         const placeholders = ids.map(() => "?").join(",");
         db.prepare(
-          `DELETE FROM intent_units_fts_v2 WHERE rowid IN (${placeholders})`,
+          `DELETE FROM intent_units_fts WHERE rowid IN (${placeholders})`,
         ).run(...ids);
       }
-      db.prepare(`DELETE FROM intent_edits_v2 WHERE session_id = ?`).run(
+      db.prepare(`DELETE FROM intent_edits WHERE session_id = ?`).run(
         opts.sessionId,
       );
-      db.prepare(`DELETE FROM intent_units_v2 WHERE session_id = ?`).run(
+      db.prepare(`DELETE FROM intent_units WHERE session_id = ?`).run(
         opts.sessionId,
       );
     } else {
-      db.prepare(`DELETE FROM intent_units_fts_v2`).run();
-      db.prepare(`DELETE FROM intent_edits_v2`).run();
-      db.prepare(`DELETE FROM intent_units_v2`).run();
+      db.prepare(`DELETE FROM intent_units_fts`).run();
+      db.prepare(`DELETE FROM intent_edits`).run();
+      db.prepare(`DELETE FROM intent_units`).run();
     }
 
     const intentRows = [...intents.values()].sort(
@@ -69,16 +70,16 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
         a.intentKey.localeCompare(b.intentKey),
     );
     const unitStmt = db.prepare(
-      `INSERT INTO intent_units_v2
+      `INSERT INTO intent_units
        (intent_key, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms,
         edit_count, landed_count, reconciled_at_ms, cwd, repository)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const ftsStmt = db.prepare(
-      `INSERT INTO intent_units_fts_v2(rowid, prompt_text) VALUES (?, ?)`,
+      `INSERT INTO intent_units_fts(rowid, prompt_text) VALUES (?, ?)`,
     );
     const editStmt = db.prepare(
-      `INSERT INTO intent_edits_v2
+      `INSERT INTO intent_edits
        (edit_key, intent_unit_id, session_id, timestamp_ms, file_path,
         tool_name, multi_edit_index, new_string_hash, new_string_snippet,
         landed, landed_reason)
@@ -160,7 +161,7 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
     }
 
     const updateStmt = db.prepare(
-      `UPDATE intent_units_v2
+      `UPDATE intent_units
        SET edit_count = ?, landed_count = ?, reconciled_at_ms = ?
        WHERE id = ?`,
     );

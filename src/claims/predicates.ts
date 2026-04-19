@@ -73,12 +73,12 @@ const PREDICATE_SPECS: Record<ClaimPredicate, PredicateSpec> = {
     sourceRanks: { hook: 100, scanner: 50 },
   },
   "edit/landed-status": {
-    cardinality: "timeline",
+    cardinality: "singleton",
     valueKind: "text",
     sourceRanks: { git_disk: 100 },
   },
   "edit/landed-reason": {
-    cardinality: "timeline",
+    cardinality: "singleton",
     valueKind: "text",
     sourceRanks: { git_disk: 100 },
   },

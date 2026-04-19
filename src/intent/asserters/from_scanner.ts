@@ -6,7 +6,11 @@ import {
   toolEvidenceKey,
   toolLocalEvidenceKey,
 } from "../../claims/keys.js";
-import { assertClaim, deleteClaimsByAsserter } from "../../claims/store.js";
+import {
+  assertClaim,
+  deleteClaimsByAsserter,
+  deleteClaimsByAsserterForSession,
+} from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
 
 const ASSERTER = "intent.from_scanner";
@@ -50,7 +54,11 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   intents: number;
   edits: number;
 } {
-  deleteClaimsByAsserter(ASSERTER);
+  if (opts?.sessionId) {
+    deleteClaimsByAsserterForSession(ASSERTER, opts.sessionId);
+  } else {
+    deleteClaimsByAsserter(ASSERTER);
+  }
   const db = getDb();
   const params: unknown[] = [];
   const userFilters = ["m.role = 'user'", "m.is_system = 0"];
@@ -208,6 +216,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
 
   let edits = 0;
   const perAssistantIndex = new Map<string, number>();
+  const perIntentIndex = new Map<string, number>();
   for (const row of toolRows) {
     const userMsgs = intentsBySession.get(row.session_id) ?? [];
     const intentMsg = findIntentMessage(userMsgs, row.assistant_ordinal);
@@ -223,12 +232,13 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       uuid: intentMsg.uuid,
     });
     const assistantKey = `${row.session_id}:${row.assistant_ordinal}`;
-    const toolCallIndex = perAssistantIndex.get(assistantKey) ?? 0;
+    const localToolCallIndex = perAssistantIndex.get(assistantKey) ?? 0;
+    const subjectToolCallIndex = perIntentIndex.get(intentSubject) ?? 0;
     for (const entry of parsed) {
       const subject = editKey({
+        intentKey: intentSubject,
         sessionId: row.session_id,
-        assistantOrdinal: row.assistant_ordinal,
-        toolCallIndex,
+        toolCallIndex: subjectToolCallIndex,
         toolUseId: row.tool_use_id,
         multiEditIndex: entry.multiEditIndex,
       });
@@ -237,7 +247,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         : toolLocalEvidenceKey(
             row.session_id,
             row.assistant_ordinal,
-            toolCallIndex,
+            localToolCallIndex,
           );
       const evidence = [{ key: evidenceKey, role: "origin" as const }];
       const observedAtMs = row.timestamp_ms ?? intentMsg.timestamp_ms ?? 0;
@@ -329,7 +339,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       }
       edits += 1;
     }
-    perAssistantIndex.set(assistantKey, toolCallIndex + 1);
+    perAssistantIndex.set(assistantKey, localToolCallIndex + 1);
+    perIntentIndex.set(intentSubject, subjectToolCallIndex + 1);
   }
 
   return { intents, edits };

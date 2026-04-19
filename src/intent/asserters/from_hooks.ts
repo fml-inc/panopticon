@@ -6,7 +6,11 @@ import {
   intentKey,
   sha256Hex,
 } from "../../claims/keys.js";
-import { assertClaim, deleteClaimsByAsserter } from "../../claims/store.js";
+import {
+  assertClaim,
+  deleteClaimsByAsserter,
+  deleteClaimsByAsserterForSession,
+} from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
 
 const ASSERTER = "intent.from_hooks";
@@ -43,7 +47,11 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
   prompts: number;
   edits: number;
 } {
-  deleteClaimsByAsserter(ASSERTER);
+  if (opts?.sessionId) {
+    deleteClaimsByAsserterForSession(ASSERTER, opts.sessionId);
+  } else {
+    deleteClaimsByAsserter(ASSERTER);
+  }
   const db = getDb();
   const hookRows = db
     .prepare(
@@ -84,6 +92,8 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
     let searchStart = 0;
     let promptIndex = 0;
     let lastSubject: string | null = null;
+    let currentClosed = false;
+    let currentToolCallIndex = 0;
     for (const event of events) {
       if (event.event_type === "UserPromptSubmit") {
         const resolved = resolveIntentSubject({
@@ -95,7 +105,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
         });
         const subject = resolved.subject;
         searchStart = resolved.nextSearchStart;
-        if (lastSubject) {
+        if (lastSubject && !currentClosed) {
           assertClosedAtClaim({
             subject: lastSubject,
             timestampMs: event.timestamp_ms,
@@ -114,6 +124,8 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           canonicalize: false,
         });
         lastSubject = subject;
+        currentClosed = false;
+        currentToolCallIndex = 0;
         promptIndex += 1;
         prompts += 1;
       } else if (event.event_type === "PostToolUse") {
@@ -131,11 +143,13 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           event.tool_name,
           parsedPayload.tool_input as Record<string, unknown> | undefined,
         );
+        const toolCallIndex = currentToolCallIndex;
         for (const entry of editEntries) {
           assertHookEditClaims({
             intentSubject: lastSubject,
             sessionId,
             hookEventId: event.id,
+            toolCallIndex,
             toolName: event.tool_name,
             payload: parsedPayload,
             entry,
@@ -145,13 +159,17 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           });
           edits += 1;
         }
-      } else if (lastSubject) {
+        if (editEntries.length > 0) {
+          currentToolCallIndex += 1;
+        }
+      } else if (lastSubject && !currentClosed) {
         assertClosedAtClaim({
           subject: lastSubject,
           timestampMs: event.timestamp_ms,
           evidenceKey: hookEvidenceKey(event.id),
           canonicalize: false,
         });
+        currentClosed = true;
       }
     }
   }
@@ -219,11 +237,13 @@ export function recordIntentClaimsFromHookEvent(args: {
         promptIndex: count - 2,
         searchStart: 0,
       }).subject;
-      assertClosedAtClaim({
-        subject: previousSubject,
-        timestampMs: args.timestampMs,
-        evidenceKey,
-      });
+      if (!hasHookClosedAtClaim(previousSubject)) {
+        assertClosedAtClaim({
+          subject: previousSubject,
+          timestampMs: args.timestampMs,
+          evidenceKey,
+        });
+      }
     }
     assertHookIntentClaims({
       subject,
@@ -254,11 +274,16 @@ export function recordIntentClaimsFromHookEvent(args: {
       toolName,
       args.payload.tool_input as Record<string, unknown> | undefined,
     );
+    const toolCallIndex = resolveLiveToolCallIndex(
+      args.sessionId,
+      args.hookEventId,
+    );
     for (const entry of entries) {
       assertHookEditClaims({
         intentSubject: subject,
         sessionId: args.sessionId,
         hookEventId: args.hookEventId,
+        toolCallIndex,
         toolName,
         payload: args.payload,
         entry,
@@ -268,11 +293,13 @@ export function recordIntentClaimsFromHookEvent(args: {
     }
     return;
   }
-  assertClosedAtClaim({
-    subject,
-    timestampMs: args.timestampMs,
-    evidenceKey,
-  });
+  if (!hasHookClosedAtClaim(subject)) {
+    assertClosedAtClaim({
+      subject,
+      timestampMs: args.timestampMs,
+      evidenceKey,
+    });
+  }
 }
 
 function assertHookIntentClaims(args: {
@@ -358,6 +385,7 @@ function assertHookEditClaims(args: {
   intentSubject: string;
   sessionId: string;
   hookEventId: number;
+  toolCallIndex: number;
   toolName: string;
   payload: Record<string, unknown>;
   entry: EditEntry;
@@ -367,9 +395,9 @@ function assertHookEditClaims(args: {
 }): void {
   const toolUseId = readToolUseId(args.payload);
   const subject = editKey({
+    intentKey: args.intentSubject,
     sessionId: args.sessionId,
-    assistantOrdinal: 0,
-    toolCallIndex: 0,
+    toolCallIndex: args.toolCallIndex,
     hookEventId: args.hookEventId,
     toolUseId,
     multiEditIndex: args.entry.multiEditIndex,
@@ -529,6 +557,47 @@ function normalizeText(value: string | null | undefined): string | null {
   if (!value) return null;
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function hasHookClosedAtClaim(subject: string): boolean {
+  const db = getDb();
+  return Boolean(
+    db
+      .prepare(
+        `SELECT 1
+         FROM claims
+         WHERE asserter = ?
+           AND predicate = 'intent/closed-at-ms'
+           AND subject = ?
+         LIMIT 1`,
+      )
+      .get(ASSERTER, subject),
+  );
+}
+
+function resolveLiveToolCallIndex(
+  sessionId: string,
+  hookEventId: number,
+): number {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS c
+       FROM hook_events
+       WHERE session_id = ?
+         AND event_type = 'PostToolUse'
+         AND tool_name IN ('Edit', 'Write', 'MultiEdit')
+         AND id < ?
+         AND id > COALESCE((
+           SELECT MAX(id)
+           FROM hook_events
+           WHERE session_id = ?
+             AND event_type = 'UserPromptSubmit'
+             AND id < ?
+         ), 0)`,
+    )
+    .get(sessionId, hookEventId, sessionId, hookEventId) as { c: number };
+  return row.c;
 }
 
 function parseEditEntries(

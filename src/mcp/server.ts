@@ -8,7 +8,6 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
-  diffIntentProjectionV1VsV2,
   intentForCode,
   listPlans,
   listSessions,
@@ -217,34 +216,6 @@ server.tool(
         isError: true,
       };
     }
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
-  },
-);
-
-server.tool(
-  "diff_intent_projection_v1_vs_v2",
-  "Compare the original intent projection tables with the claim-backed v2 shadow projection.",
-  {
-    session_id: z.string().optional().describe("Filter to a specific session"),
-    limit: z
-      .number()
-      .optional()
-      .describe("Max mismatches/examples to return (default 100)"),
-    shared_sessions_only: z
-      .boolean()
-      .optional()
-      .describe("Compare only sessions that exist in both v1 and v2"),
-  },
-  async ({ session_id, limit, shared_sessions_only }) => {
-    const result = await diffIntentProjectionV1VsV2({
-      session_id,
-      limit,
-      shared_sessions_only,
-    });
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(result, null, 2) },

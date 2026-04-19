@@ -118,3 +118,59 @@ export function deleteClaimsByAsserter(asserter: string): number {
   });
   return tx();
 }
+
+export function deleteClaimsByAsserterForSession(
+  asserter: string,
+  sessionId: string,
+): number {
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const intentSubjects = (
+      db
+        .prepare(
+          `SELECT DISTINCT subject
+           FROM claims
+           WHERE predicate = 'intent/session' AND value_text = ?`,
+        )
+        .all(sessionId) as Array<{ subject: string }>
+    ).map((row) => row.subject);
+    if (intentSubjects.length === 0) return 0;
+
+    const intentPlaceholders = intentSubjects.map(() => "?").join(",");
+    const editSubjects = (
+      db
+        .prepare(
+          `SELECT DISTINCT subject
+           FROM claims
+           WHERE predicate = 'edit/part-of-intent'
+             AND value_text IN (${intentPlaceholders})`,
+        )
+        .all(...intentSubjects) as Array<{ subject: string }>
+    ).map((row) => row.subject);
+
+    const subjects = [...new Set([...intentSubjects, ...editSubjects])];
+    const subjectPlaceholders = subjects.map(() => "?").join(",");
+    const ids = db
+      .prepare(
+        `SELECT id, head_key
+         FROM claims
+         WHERE asserter = ? AND subject IN (${subjectPlaceholders})`,
+      )
+      .all(asserter, ...subjects) as Array<{ id: number; head_key: string }>;
+    if (ids.length === 0) return 0;
+
+    const idList = ids.map((row) => row.id);
+    const idPlaceholders = idList.map(() => "?").join(",");
+    db.prepare(
+      `DELETE FROM claim_evidence WHERE claim_id IN (${idPlaceholders})`,
+    ).run(...idList);
+    db.prepare(`DELETE FROM claims WHERE id IN (${idPlaceholders})`).run(
+      ...idList,
+    );
+    for (const headKey of new Set(ids.map((row) => row.head_key))) {
+      selectActiveClaimForHeadKey(headKey);
+    }
+    return ids.length;
+  });
+  return tx();
+}

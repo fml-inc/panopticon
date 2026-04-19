@@ -17,8 +17,8 @@ import {
 } from "../db/store.js";
 import { isEventEnabled } from "../eventConfig.js";
 import { recordIntentClaimsFromHookEvent } from "../intent/asserters/from_hooks.js";
-import { recordIntent } from "../intent/ingest.js";
-import { reconcileSessionIntents } from "../intent/reconcile.js";
+import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
+import { rebuildIntentProjection } from "../intent/project.js";
 import { log } from "../log.js";
 import { getProvider } from "../providers/index.js";
 import {
@@ -382,22 +382,6 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     payload: data,
   });
 
-  // Build the intent index off the just-inserted event. Wrapped so a bug here
-  // never breaks hook ingest (which is on the request path).
-  try {
-    recordIntent({
-      session_id: sessionId,
-      event_type: eventType,
-      hook_event_id: hookEventId,
-      timestamp_ms: timestampMs,
-      cwd: typeof data.cwd === "string" ? data.cwd : null,
-      repository: repo,
-      payload: data as Record<string, unknown>,
-    });
-  } catch (err) {
-    log.hooks.error("intent ingest failed:", err);
-  }
-
   try {
     recordIntentClaimsFromHookEvent({
       sessionId,
@@ -412,11 +396,24 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     log.hooks.error("intent claim ingest failed:", err);
   }
 
-  // Reconcile landed/churn for the session on its end markers. Cheap when
-  // there's nothing new to score (idempotent), so safe to run on every Stop.
+  const shouldRefreshIntentProjection =
+    eventType === "UserPromptSubmit" ||
+    (eventType === "PostToolUse" &&
+      typeof toolName === "string" &&
+      ["Edit", "Write", "MultiEdit"].includes(toolName));
+
+  if (shouldRefreshIntentProjection) {
+    try {
+      rebuildIntentProjection({ sessionId });
+    } catch (err) {
+      log.hooks.error("intent projection refresh failed:", err);
+    }
+  }
+
   if (eventType === "Stop" || eventType === "SessionEnd") {
     try {
-      reconcileSessionIntents(sessionId);
+      reconcileLandedClaimsFromDisk({ sessionId });
+      rebuildIntentProjection({ sessionId });
     } catch (err) {
       log.hooks.error("intent reconciliation failed:", err);
     }

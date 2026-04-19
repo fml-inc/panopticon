@@ -13,19 +13,22 @@ export function intentKey(args: {
   userIndex?: number;
   uuid?: string | null;
 }): string {
-  if (args.uuid && args.uuid.length > 0) {
-    return `intent:${args.uuid}`;
-  }
+  // Prefer the prompt's session-local user index so hook ingest and scanner
+  // rebuilds converge on the same subject even before message UUIDs exist.
   if (typeof args.userIndex === "number") {
     return `intent:${args.sessionId}:user:${args.userIndex}`;
+  }
+  if (args.uuid && args.uuid.length > 0) {
+    return `intent:${args.uuid}`;
   }
   return `intent:${args.sessionId}:${args.ordinal ?? 0}`;
 }
 
 export function editKey(args: {
-  sessionId: string;
-  assistantOrdinal: number;
-  toolCallIndex: number;
+  intentKey?: string;
+  sessionId?: string;
+  assistantOrdinal?: number;
+  toolCallIndex?: number;
   toolUseId?: string | null;
   multiEditIndex?: number;
   hookEventId?: number;
@@ -35,10 +38,13 @@ export function editKey(args: {
   if (args.toolUseId && args.toolUseId.length > 0) {
     return `edit:${args.toolUseId}${suffix}`;
   }
+  if (args.intentKey && typeof args.toolCallIndex === "number") {
+    return `edit:${args.intentKey}:tool:${args.toolCallIndex}${suffix}`;
+  }
   if (typeof args.hookEventId === "number") {
     return `edit:hook:${args.hookEventId}${suffix}`;
   }
-  return `edit:${args.sessionId}:${args.assistantOrdinal}:${args.toolCallIndex}${suffix}`;
+  return `edit:${args.sessionId ?? "unknown"}:${args.assistantOrdinal ?? 0}:${args.toolCallIndex ?? 0}${suffix}`;
 }
 
 export function messageEvidenceKey(sessionId: string, ordinal: number): string {

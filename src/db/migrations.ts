@@ -160,52 +160,6 @@ export const MIGRATIONS: Migration[] = [
       db.exec(`
         CREATE TABLE IF NOT EXISTS intent_units (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          local_uuid TEXT NOT NULL UNIQUE,
-          session_id TEXT NOT NULL,
-          prompt_event_id INTEGER NOT NULL,
-          prompt_text TEXT NOT NULL,
-          prompt_ts_ms INTEGER NOT NULL,
-          next_prompt_ts_ms INTEGER,
-          edit_count INTEGER NOT NULL DEFAULT 0,
-          landed_count INTEGER,
-          reconciled_at_ms INTEGER,
-          cwd TEXT,
-          repository TEXT,
-          machine TEXT NOT NULL DEFAULT 'local',
-          sync_id TEXT DEFAULT (hex(randomblob(8)))
-        )
-      `);
-      db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts USING fts5(
-          prompt_text,
-          content='',
-          contentless_delete=1,
-          tokenize='trigram'
-        )
-      `);
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS intent_edits (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          local_uuid TEXT NOT NULL UNIQUE,
-          intent_unit_id INTEGER NOT NULL,
-          session_id TEXT NOT NULL,
-          hook_event_id INTEGER NOT NULL,
-          multi_edit_index INTEGER NOT NULL DEFAULT 0,
-          timestamp_ms INTEGER NOT NULL,
-          file_path TEXT NOT NULL,
-          tool_name TEXT NOT NULL,
-          new_string_hash TEXT NOT NULL,
-          new_string_snippet TEXT,
-          new_string_len INTEGER NOT NULL,
-          landed INTEGER,
-          landed_reason TEXT,
-          landed_checked_at_ms INTEGER,
-          sync_id TEXT DEFAULT (hex(randomblob(8)))
-        )
-      `);
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS intent_units_v2 (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
           intent_key TEXT NOT NULL UNIQUE,
           session_id TEXT NOT NULL,
           prompt_text TEXT NOT NULL,
@@ -219,7 +173,7 @@ export const MIGRATIONS: Migration[] = [
         )
       `);
       db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts_v2 USING fts5(
+        CREATE VIRTUAL TABLE IF NOT EXISTS intent_units_fts USING fts5(
           prompt_text,
           content='',
           contentless_delete=1,
@@ -227,7 +181,7 @@ export const MIGRATIONS: Migration[] = [
         )
       `);
       db.exec(`
-        CREATE TABLE IF NOT EXISTS intent_edits_v2 (
+        CREATE TABLE IF NOT EXISTS intent_edits (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           edit_key TEXT NOT NULL UNIQUE,
           intent_unit_id INTEGER NOT NULL,
@@ -271,12 +225,6 @@ export const MIGRATIONS: Migration[] = [
         "CREATE INDEX IF NOT EXISTS idx_intent_units_prompt_ts ON intent_units(prompt_ts_ms)",
       );
       db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_units_open ON intent_units(session_id) WHERE next_prompt_ts_ms IS NULL",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_units_unreconciled ON intent_units(session_id) WHERE reconciled_at_ms IS NULL",
-      );
-      db.exec(
         "CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id)",
       );
       db.exec(
@@ -284,27 +232,6 @@ export const MIGRATIONS: Migration[] = [
       );
       db.exec(
         "CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_edits_hook ON intent_edits(hook_event_id)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_units_v2_session ON intent_units_v2(session_id)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_units_v2_repo ON intent_units_v2(repository)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_units_v2_prompt_ts ON intent_units_v2(prompt_ts_ms)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_unit ON intent_edits_v2(intent_unit_id)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_session ON intent_edits_v2(session_id)",
-      );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_intent_edits_v2_file ON intent_edits_v2(file_path)",
       );
     },
   },

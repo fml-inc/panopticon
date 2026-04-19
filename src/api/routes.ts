@@ -27,7 +27,6 @@ import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import {
-  diffIntentProjectionV1VsV2,
   intentForCode,
   outcomesForIntent,
   searchIntent,
@@ -64,10 +63,6 @@ const TOOLS: Record<string, ToolFn> = {
   search_intent: (p) => searchIntent(p as Parameters<typeof searchIntent>[0]),
   outcomes_for_intent: (p) =>
     outcomesForIntent(p as Parameters<typeof outcomesForIntent>[0]),
-  diff_intent_projection_v1_vs_v2: (p) =>
-    diffIntentProjectionV1VsV2(
-      p as Parameters<typeof diffIntentProjectionV1VsV2>[0],
-    ),
 };
 
 // ── Exec dispatch ────────────────────────────────────────────────────────────

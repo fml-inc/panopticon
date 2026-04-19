@@ -198,17 +198,6 @@ export function outcomesForIntent(opts: {
   return callTool("outcomes_for_intent", opts as Record<string, unknown>);
 }
 
-export function diffIntentProjectionV1VsV2(opts?: {
-  session_id?: string;
-  limit?: number;
-  shared_sessions_only?: boolean;
-}): Promise<unknown> {
-  return callTool(
-    "diff_intent_projection_v1_vs_v2",
-    opts as Record<string, unknown>,
-  );
-}
-
 // ── Exec calls (write operations, CLI only) ─────────────────────────────────
 
 const EXEC_TIMEOUT = 60_000;
