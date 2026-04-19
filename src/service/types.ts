@@ -64,6 +64,32 @@ export interface OutcomesForIntentInput {
   intent_unit_id: number;
 }
 
+export interface ListWorkstreamsInput {
+  repository?: string;
+  cwd?: string;
+  status?: "active" | "landed" | "mixed" | "abandoned";
+  path?: string;
+  since?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WorkstreamDetailInput {
+  workstream_id: number;
+}
+
+export interface WhyCodeInput {
+  path: string;
+  line?: number;
+  repository?: string;
+}
+
+export interface RecentWorkOnPathInput {
+  path: string;
+  repository?: string;
+  limit?: number;
+}
+
 export interface PruneExecuteInput {
   vacuum?: boolean;
 }
@@ -116,6 +142,10 @@ export interface PanopticonService {
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;
   searchIntent(opts: SearchIntentInput): Promise<unknown>;
   outcomesForIntent(opts: OutcomesForIntentInput): Promise<unknown>;
+  listWorkstreams(opts?: ListWorkstreamsInput): Promise<unknown>;
+  workstreamDetail(opts: WorkstreamDetailInput): Promise<unknown>;
+  whyCode(opts: WhyCodeInput): Promise<unknown>;
+  recentWorkOnPath(opts: RecentWorkOnPathInput): Promise<unknown>;
   pruneEstimate(cutoffMs: number): Promise<unknown>;
   pruneExecute(cutoffMs: number, opts?: PruneExecuteInput): Promise<unknown>;
   refreshPricing(): Promise<unknown>;

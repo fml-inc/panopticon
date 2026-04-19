@@ -385,6 +385,65 @@ CREATE TABLE IF NOT EXISTS intent_edits (
   landed_reason TEXT
 );
 
+-- ── Local workstream projections ───────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS workstreams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workstream_key TEXT NOT NULL UNIQUE,
+  repository TEXT,
+  cwd TEXT,
+  branch TEXT,
+  worktree TEXT,
+  actor TEXT,
+  machine TEXT NOT NULL DEFAULT 'local',
+  origin_scope TEXT NOT NULL DEFAULT 'local',
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  first_intent_ts_ms INTEGER,
+  last_intent_ts_ms INTEGER,
+  intent_count INTEGER NOT NULL DEFAULT 0,
+  edit_count INTEGER NOT NULL DEFAULT 0,
+  landed_edit_count INTEGER NOT NULL DEFAULT 0,
+  open_edit_count INTEGER NOT NULL DEFAULT 0,
+  reconciled_at_ms INTEGER,
+  reason_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS intent_workstreams (
+  intent_unit_id INTEGER NOT NULL,
+  workstream_id INTEGER NOT NULL,
+  membership_kind TEXT NOT NULL,
+  source TEXT NOT NULL,
+  score REAL NOT NULL DEFAULT 1.0,
+  reason_json TEXT,
+  UNIQUE(intent_unit_id, workstream_id)
+);
+
+CREATE TABLE IF NOT EXISTS code_provenance (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository TEXT NOT NULL DEFAULT '',
+  file_path TEXT NOT NULL,
+  binding_level TEXT NOT NULL,
+  start_line INTEGER,
+  end_line INTEGER,
+  snippet_hash TEXT,
+  snippet_preview TEXT,
+  language TEXT,
+  symbol_kind TEXT,
+  symbol_name TEXT,
+  actor TEXT,
+  machine TEXT NOT NULL DEFAULT 'local',
+  origin_scope TEXT NOT NULL DEFAULT 'local',
+  intent_unit_id INTEGER NOT NULL,
+  intent_edit_id INTEGER,
+  workstream_id INTEGER,
+  status TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  file_hash TEXT,
+  established_at_ms INTEGER NOT NULL,
+  verified_at_ms INTEGER NOT NULL
+);
+
 -- ── Sync watermarks ─────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS watermarks (
@@ -509,6 +568,27 @@ CREATE INDEX IF NOT EXISTS idx_intent_units_prompt_ts ON intent_units(prompt_ts_
 CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id);
 CREATE INDEX IF NOT EXISTS idx_intent_edits_session ON intent_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
+
+-- workstreams
+CREATE INDEX IF NOT EXISTS idx_workstreams_repo ON workstreams(repository);
+CREATE INDEX IF NOT EXISTS idx_workstreams_status ON workstreams(status);
+CREATE INDEX IF NOT EXISTS idx_workstreams_last_ts ON workstreams(last_intent_ts_ms);
+
+-- intent_workstreams
+CREATE INDEX IF NOT EXISTS idx_intent_workstreams_intent
+  ON intent_workstreams(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_intent_workstreams_workstream
+  ON intent_workstreams(workstream_id);
+
+-- code_provenance
+CREATE INDEX IF NOT EXISTS idx_code_provenance_repo_file
+  ON code_provenance(repository, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_workstream
+  ON code_provenance(workstream_id);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
+  ON code_provenance(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_status
+  ON code_provenance(status);
 
 `;
 

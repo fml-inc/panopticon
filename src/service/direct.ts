@@ -35,6 +35,12 @@ import {
   watermarkKey,
   writeWatermark,
 } from "../sync/watermark.js";
+import {
+  listWorkstreams,
+  recentWorkOnPath,
+  whyCode,
+  workstreamDetail,
+} from "../workstreams/query.js";
 import type {
   PanopticonService,
   PruneExecuteInput,
@@ -84,6 +90,18 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async outcomesForIntent(opts) {
       return outcomesForIntent(opts);
+    },
+    async listWorkstreams(opts) {
+      return listWorkstreams(opts);
+    },
+    async workstreamDetail(opts) {
+      return workstreamDetail(opts);
+    },
+    async whyCode(opts) {
+      return whyCode(opts);
+    },
+    async recentWorkOnPath(opts) {
+      return recentWorkOnPath(opts);
     },
     async pruneEstimate(cutoffMs) {
       return pruneEstimate(cutoffMs);

@@ -356,6 +356,120 @@ server.tool(
   },
 );
 
+server.tool(
+  "workstreams",
+  "List local workstreams derived from intent history. Useful for browsing active, landed, mixed, or abandoned work on this machine.",
+  {
+    repository: z
+      .string()
+      .optional()
+      .describe("Filter to a repository path or identifier"),
+    cwd: z.string().optional().describe("Filter to a working directory"),
+    status: z
+      .enum(["active", "landed", "mixed", "abandoned"])
+      .optional()
+      .describe("Filter by derived workstream status"),
+    path: z
+      .string()
+      .optional()
+      .describe("Only return workstreams touching this file path"),
+    since: z
+      .string()
+      .optional()
+      .describe('Time filter: ISO date or relative like "24h", "7d"'),
+    limit: z.number().optional().describe("Max results (default 20)"),
+    offset: z.number().optional().describe("Skip N results for pagination"),
+  },
+  async ({ repository, cwd, status, path, since, limit, offset }) => {
+    const result = await service.listWorkstreams({
+      repository,
+      cwd,
+      status,
+      path,
+      since,
+      limit,
+      offset,
+    });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "workstream_detail",
+  "Get a single local workstream with its member intents and touched files.",
+  {
+    workstream_id: z.number().describe("ID of the workstream"),
+  },
+  async ({ workstream_id }) => {
+    const result = await service.workstreamDetail({ workstream_id });
+    if (!result) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `No workstream found with id ${workstream_id}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "why_code",
+  "Explain the best current local provenance for a file path and optional line: which intent/workstream most likely established the code and what evidence supports it.",
+  {
+    path: z.string().describe("File path to explain"),
+    line: z
+      .number()
+      .optional()
+      .describe("Optional 1-based line number for a more specific answer"),
+    repository: z
+      .string()
+      .optional()
+      .describe("Optional repository root used to resolve relative paths"),
+  },
+  async ({ path, line, repository }) => {
+    const result = await service.whyCode({ path, line, repository });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "recent_work_on_path",
+  "Show recent local intents, edits, and workstreams that touched a file path.",
+  {
+    path: z.string().describe("File path to inspect"),
+    repository: z
+      .string()
+      .optional()
+      .describe("Optional repository root used to resolve relative paths"),
+    limit: z.number().optional().describe("Max results (default 20)"),
+  },
+  async ({ path, repository, limit }) => {
+    const result = await service.recentWorkOnPath({ path, repository, limit });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
 // ───────────────────────────────────────────────────────────────────────────
 // Permissions tools — read/preview/apply the panopticon hook allowlist.
 // Used by the /optimize-permissions skill.
