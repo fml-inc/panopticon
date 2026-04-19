@@ -20,6 +20,7 @@ import { recordIntentClaimsFromHookEvent } from "../intent/asserters/from_hooks.
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import { log } from "../log.js";
+import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
 import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
@@ -119,12 +120,12 @@ export function extractEventPaths(data: HookInput): EventPath[] {
   const toolInput = data.tool_input;
   if (toolInput && typeof toolInput === "object") {
     const fp = (toolInput as Record<string, unknown>).file_path;
-    if (typeof fp === "string" && path.isAbsolute(fp)) {
-      add(path.dirname(fp), "tool_input.file_path");
+    if (typeof fp === "string" && isObservedAbsolutePath(fp)) {
+      add(dirnameOfObservedPath(fp), "tool_input.file_path");
     }
     const p = (toolInput as Record<string, unknown>).path;
-    if (typeof p === "string" && path.isAbsolute(p)) {
-      add(path.dirname(p), "tool_input.path");
+    if (typeof p === "string" && isObservedAbsolutePath(p)) {
+      add(dirnameOfObservedPath(p), "tool_input.path");
     }
   }
 

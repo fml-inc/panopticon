@@ -23,6 +23,13 @@ export function isObservedAbsolutePath(value: string): boolean {
   );
 }
 
+export function dirnameOfObservedPath(value: string): string {
+  const style = detectObservedPathStyle(value);
+  if (style === "windows") return path.win32.dirname(value);
+  if (style === "posix") return path.posix.dirname(value);
+  return path.dirname(value);
+}
+
 export function canUseLocalPathApis(value: string): boolean {
   const style = detectObservedPathStyle(value);
   if (!style) return true;
