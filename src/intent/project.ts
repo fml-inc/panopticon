@@ -108,7 +108,12 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
 
     const stats = new Map<
       string,
-      { edits: number; landed: number; unresolved: number }
+      {
+        edits: number;
+        landed: number;
+        unresolved: number;
+        latestTimestampMs: number | null;
+      }
     >();
     for (const edit of edits.values()) {
       if (!edit.intentKey || !edit.filePath) continue;
@@ -139,10 +144,18 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
         edits: 0,
         landed: 0,
         unresolved: 0,
+        latestTimestampMs: null,
       };
       stat.edits += 1;
       if (landed === 1) stat.landed += 1;
       if (landed === null) stat.unresolved += 1;
+      if (
+        typeof edit.timestampMs === "number" &&
+        (stat.latestTimestampMs === null ||
+          edit.timestampMs > stat.latestTimestampMs)
+      ) {
+        stat.latestTimestampMs = edit.timestampMs;
+      }
       stats.set(edit.intentKey, stat);
     }
 
@@ -158,11 +171,14 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
         edits: 0,
         landed: 0,
         unresolved: 0,
+        latestTimestampMs: null,
       };
       const isClosed = intent.closedAtMs != null;
       const landedCount = !isClosed || stat.unresolved > 0 ? null : stat.landed;
       const reconciledAtMs =
-        isClosed && stat.edits > 0 && stat.unresolved === 0 ? Date.now() : null;
+        isClosed && stat.edits > 0 && stat.unresolved === 0
+          ? Math.max(intent.closedAtMs ?? 0, stat.latestTimestampMs ?? 0)
+          : null;
       updateStmt.run(stat.edits, landedCount, reconciledAtMs, unitId);
     }
   });

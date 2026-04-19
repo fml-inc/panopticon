@@ -30,9 +30,13 @@ vi.mock("../config.js", () => {
   };
 });
 
+import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { closeDb, getDb } from "../db/schema.js";
 import { insertHookEvent } from "../db/store.js";
+import { rebuildIntentClaimsFromHooks } from "./asserters/from_hooks.js";
+import { reconcileLandedClaimsFromDisk } from "./asserters/landed_from_disk.js";
 import { recordIntent } from "./ingest.js";
+import { rebuildIntentProjection } from "./project.js";
 import { intentForCode, outcomesForIntent, searchIntent } from "./query.js";
 import { reconcileSessionIntents } from "./reconcile.js";
 
@@ -51,6 +55,12 @@ afterAll(() => {
 
 beforeEach(() => {
   const db = getDb();
+  db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM active_claims").run();
+  db.prepare("DELETE FROM claims").run();
+  db.prepare("DELETE FROM intent_edits_v2").run();
+  db.prepare("DELETE FROM intent_units_fts_v2").run();
+  db.prepare("DELETE FROM intent_units_v2").run();
   db.prepare("DELETE FROM intent_edits").run();
   db.prepare("DELETE FROM intent_units").run();
   db.prepare("DELETE FROM intent_units_fts").run();
@@ -87,6 +97,14 @@ function ingest(opts: {
     payload: opts.payload,
   });
   return id;
+}
+
+function rebuildClaimBackedProjection(): void {
+  rebuildIntentClaimsFromHooks({ sessionId: SESSION });
+  rebuildActiveClaims();
+  reconcileLandedClaimsFromDisk({ sessionId: SESSION });
+  rebuildActiveClaims();
+  rebuildIntentProjection({ sessionId: SESSION });
 }
 
 describe("intent ingest", () => {
@@ -559,6 +577,7 @@ describe("query: intent_for_code", () => {
       payload: { session_id: SESSION },
     });
     reconcileSessionIntents(SESSION);
+    rebuildClaimBackedProjection();
 
     const result = intentForCode({ file_path: file });
     expect(result).toHaveLength(2);
@@ -621,6 +640,7 @@ describe("query: search_intent", () => {
       payload: { session_id: SESSION },
     });
     reconcileSessionIntents(SESSION);
+    rebuildClaimBackedProjection();
 
     const landed = searchIntent({ query: "retry policy" });
     expect(landed).toHaveLength(1);
@@ -673,9 +693,10 @@ describe("query: outcomes_for_intent", () => {
       payload: { session_id: SESSION },
     });
     reconcileSessionIntents(SESSION);
+    rebuildClaimBackedProjection();
 
     const db = getDb();
-    const { id } = db.prepare("SELECT id FROM intent_units").get() as {
+    const { id } = db.prepare("SELECT id FROM intent_units_v2").get() as {
       id: number;
     };
     const out = outcomesForIntent({ intent_unit_id: id });
@@ -685,5 +706,124 @@ describe("query: outcomes_for_intent", () => {
     expect(out!.t0_session_end.edits_survived).toHaveLength(1);
     expect(out!.t0_session_end.edits_churned).toHaveLength(1);
     expect(out!.t0_session_end.edits_unknown).toHaveLength(0);
+  });
+});
+
+describe("query: diff_intent_projection_v1_vs_v2", () => {
+  it("reports no mismatches for a simple hook-backed session", async () => {
+    const file = path.join(scratchDir, "diff.ts");
+    fs.writeFileSync(file, "DIFF_CONTENT");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      payload: { prompt: "diff parity", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "DIFF_CONTENT",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      payload: { session_id: SESSION },
+    });
+
+    reconcileSessionIntents(SESSION);
+    rebuildClaimBackedProjection();
+
+    const { diffIntentProjectionV1VsV2 } = await import("./query.js");
+    const diff = diffIntentProjectionV1VsV2({
+      session_id: SESSION,
+      shared_sessions_only: true,
+    });
+
+    expect(diff.unitCounts).toEqual({ v1: 1, v2: 1 });
+    expect(diff.editCounts).toEqual({ v1: 1, v2: 1 });
+    expect(diff.unitsOnlyInV1).toEqual([]);
+    expect(diff.unitsOnlyInV2).toEqual([]);
+    expect(diff.mismatches).toEqual([]);
+  });
+});
+
+describe("claim-backed projection rebuild", () => {
+  it("is idempotent for hook-backed intent sessions", () => {
+    const file = path.join(scratchDir, "idempotent.ts");
+    fs.writeFileSync(file, "IDEMPOTENT");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      payload: { prompt: "idempotent rebuild", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "IDEMPOTENT",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 1200,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildClaimBackedProjection();
+    const db = getDb();
+    const firstUnits = db
+      .prepare(
+        `SELECT intent_key, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms,
+                edit_count, landed_count, reconciled_at_ms, cwd, repository
+         FROM intent_units_v2
+         ORDER BY id ASC`,
+      )
+      .all();
+    const firstEdits = db
+      .prepare(
+        `SELECT e.edit_key, u.intent_key, e.session_id, e.timestamp_ms, e.file_path, e.tool_name,
+                multi_edit_index, new_string_hash, new_string_snippet, landed, landed_reason
+         FROM intent_edits_v2 e
+         JOIN intent_units_v2 u ON u.id = e.intent_unit_id
+         ORDER BY e.id ASC`,
+      )
+      .all();
+
+    rebuildClaimBackedProjection();
+    const secondUnits = db
+      .prepare(
+        `SELECT intent_key, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms,
+                edit_count, landed_count, reconciled_at_ms, cwd, repository
+         FROM intent_units_v2
+         ORDER BY id ASC`,
+      )
+      .all();
+    const secondEdits = db
+      .prepare(
+        `SELECT e.edit_key, u.intent_key, e.session_id, e.timestamp_ms, e.file_path, e.tool_name,
+                multi_edit_index, new_string_hash, new_string_snippet, landed, landed_reason
+         FROM intent_edits_v2 e
+         JOIN intent_units_v2 u ON u.id = e.intent_unit_id
+         ORDER BY e.id ASC`,
+      )
+      .all();
+
+    expect(secondUnits).toEqual(firstUnits);
+    expect(secondEdits).toEqual(firstEdits);
   });
 });
