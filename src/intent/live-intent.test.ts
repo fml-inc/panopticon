@@ -428,7 +428,10 @@ describe("scanner-only landed reconciliation", () => {
          FROM intent_edits
          WHERE session_id = ?`,
       )
-      .all(sessionId) as Array<{ landed: number | null; landed_reason: string | null }>;
+      .all(sessionId) as Array<{
+      landed: number | null;
+      landed_reason: string | null;
+    }>;
 
     expect(edits).toEqual([{ landed: null, landed_reason: null }]);
   });
