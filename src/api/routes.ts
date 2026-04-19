@@ -6,270 +6,16 @@
  *   POST /api/exec  — write command dispatch (CLI only)
  */
 import type http from "node:http";
-import { rebuildActiveClaims } from "../claims/canonicalize.js";
-import { runIntegrityCheck } from "../claims/integrity.js";
-import { refreshPricing } from "../db/pricing.js";
-import { pruneEstimate, pruneExecute } from "../db/prune.js";
-import {
-  activitySummary,
-  costBreakdown,
-  dbStats,
-  listPlans,
-  listSessions,
-  print,
-  rawQuery,
-  search,
-  sessionTimeline,
-} from "../db/query.js";
-import { getDb } from "../db/schema.js";
-import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
-import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
-import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
-import { rebuildIntentProjection } from "../intent/project.js";
-import {
-  intentForCode,
-  outcomesForIntent,
-  searchIntent,
-} from "../intent/query.js";
 import { log } from "../log.js";
-import { scanOnce } from "../scanner/index.js";
-import { generateSummariesOnce } from "../summary/index.js";
-import { addTarget, listTargets, removeTarget } from "../sync/config.js";
-import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
-import type { SyncTarget } from "../sync/types.js";
 import {
-  readWatermark,
-  resetWatermarks,
-  watermarkKey,
-  writeWatermark,
-} from "../sync/watermark.js";
-
-// ── Tool dispatch ────────────────────────────────────────────────────────────
-
-type ToolFn = (params: Record<string, unknown>) => unknown;
-
-const TOOLS: Record<string, ToolFn> = {
-  sessions: (p) => listSessions(p as Parameters<typeof listSessions>[0]),
-  timeline: (p) => sessionTimeline(p as Parameters<typeof sessionTimeline>[0]),
-  costs: (p) => costBreakdown(p as Parameters<typeof costBreakdown>[0]),
-  summary: (p) => activitySummary(p as Parameters<typeof activitySummary>[0]),
-  plans: (p) => listPlans(p as Parameters<typeof listPlans>[0]),
-  search: (p) => search(p as Parameters<typeof search>[0]),
-  get: (p) => print(p as Parameters<typeof print>[0]),
-  query: (p) => rawQuery((p as { sql: string }).sql),
-  status: () => dbStats(),
-  intent_for_code: (p) =>
-    intentForCode(p as Parameters<typeof intentForCode>[0]),
-  search_intent: (p) => searchIntent(p as Parameters<typeof searchIntent>[0]),
-  outcomes_for_intent: (p) =>
-    outcomesForIntent(p as Parameters<typeof outcomesForIntent>[0]),
-};
-
-// ── Exec dispatch ────────────────────────────────────────────────────────────
-
-type ExecFn = (params: Record<string, unknown>) => unknown;
-
-const EXEC: Record<string, ExecFn> = {
-  prune: (p) => {
-    const cutoffMs = p.cutoffMs as number;
-    if (typeof cutoffMs !== "number") {
-      throw new Error("cutoffMs is required and must be a number");
-    }
-    if (p.dryRun) {
-      return pruneEstimate(cutoffMs);
-    }
-    const result = pruneExecute(cutoffMs);
-    if (p.vacuum) {
-      const db = getDb();
-      db.pragma("wal_checkpoint(TRUNCATE)");
-      db.exec("VACUUM");
-    }
-    return result;
-  },
-  "refresh-pricing": () => refreshPricing(),
-  scan: (p) => {
-    // Run a synchronous scan pass — picks up any new session JSONL files,
-    // then runs summary generation on idle sessions. Used by the e2e test
-    // and by anyone who needs deterministic "scan now" semantics instead
-    // of waiting for the background loop's next tick.
-    const result = scanOnce();
-    let summariesUpdated = 0;
-    if (p.summaries !== false) {
-      try {
-        summariesUpdated = generateSummariesOnce((msg) =>
-          log.scanner.info(msg),
-        ).updated;
-      } catch (err) {
-        log.scanner.error(
-          `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    }
-    return {
-      filesScanned: result.filesScanned,
-      newTurns: result.newTurns,
-      summariesUpdated,
-    };
-  },
-  "sync-reset": (p) => {
-    const target = p.target as string | undefined;
-    resetWatermarks(target);
-    return { ok: true, target: target ?? "all" };
-  },
-  "sync-watermark-get": (p) => {
-    const target = p.target as string;
-    if (!target) throw new Error("target is required");
-    const table = p.table as string | undefined;
-    if (table) {
-      return {
-        key: watermarkKey(table, target),
-        value: readWatermark(watermarkKey(table, target)),
-      };
-    }
-    // Return all watermarks for this target
-    const watermarks: Record<string, number> = {};
-    for (const desc of TABLE_SYNC_REGISTRY) {
-      const key = watermarkKey(desc.table, target);
-      watermarks[desc.table] = readWatermark(key);
-    }
-    return { target, watermarks };
-  },
-  "sync-watermark-set": (p) => {
-    const target = p.target as string;
-    const table = p.table as string;
-    const value = p.value as number;
-    if (!target) throw new Error("target is required");
-    if (!table) throw new Error("table is required");
-    if (typeof value !== "number") throw new Error("value must be a number");
-    const key = watermarkKey(table, target);
-    writeWatermark(key, value);
-    return { key, value };
-  },
-  "rebuild-claims-from-raw": (p) => {
-    const sessionId =
-      typeof p.sessionId === "string" && p.sessionId.length > 0
-        ? p.sessionId
-        : undefined;
-    const scanner = rebuildIntentClaimsFromScanner({ sessionId });
-    const hooks = rebuildIntentClaimsFromHooks({ sessionId });
-    const activeHeads = rebuildActiveClaims();
-    return { scanner, hooks, activeHeads };
-  },
-  "rebuild-intent-projection-from-claims": (p) => {
-    const sessionId =
-      typeof p.sessionId === "string" && p.sessionId.length > 0
-        ? p.sessionId
-        : undefined;
-    return rebuildIntentProjection({ sessionId });
-  },
-  "reconcile-landed-status-from-disk": (p) => {
-    const sessionId =
-      typeof p.sessionId === "string" && p.sessionId.length > 0
-        ? p.sessionId
-        : undefined;
-    const landed = reconcileLandedClaimsFromDisk({ sessionId });
-    const activeHeads = rebuildActiveClaims();
-    return { landed, activeHeads };
-  },
-  "claim-evidence-integrity": () => runIntegrityCheck(),
-  "sync-pending": (p) => {
-    const target = p.target as string;
-    if (!target) throw new Error("target is required");
-    const db = getDb();
-
-    /** Maps table name → wm column in target_session_sync. */
-    const WM_COLUMNS: Record<string, string> = {
-      messages: "wm_messages",
-      tool_calls: "wm_tool_calls",
-      scanner_turns: "wm_scanner_turns",
-      scanner_events: "wm_scanner_events",
-      hook_events: "wm_hook_events",
-      otel_logs: "wm_otel_logs",
-      otel_metrics: "wm_otel_metrics",
-      otel_spans: "wm_otel_spans",
-    };
-
-    const pending: Record<
-      string,
-      { total: number; synced: number; pending: number }
-    > = {};
-    for (const desc of TABLE_SYNC_REGISTRY) {
-      const wmCol = WM_COLUMNS[desc.table];
-      if (desc.sessionLinked && wmCol) {
-        // Session-linked tables: count rows belonging to confirmed sessions
-        // that are beyond each session's per-session watermark.
-        const total =
-          (
-            db
-              .prepare(
-                `SELECT COUNT(*) as c FROM ${desc.table} t
-               INNER JOIN target_session_sync tss
-                 ON tss.session_id = t.session_id AND tss.target = ?
-               WHERE tss.confirmed = 1`,
-              )
-              .get(target) as { c: number }
-          )?.c ?? 0;
-        const pendingCount =
-          (
-            db
-              .prepare(
-                `SELECT COUNT(*) as c FROM ${desc.table} t
-               INNER JOIN target_session_sync tss
-                 ON tss.session_id = t.session_id AND tss.target = ?
-               WHERE tss.confirmed = 1 AND t.id > tss.${wmCol}`,
-              )
-              .get(target) as { c: number }
-          )?.c ?? 0;
-        if (pendingCount > 0) {
-          pending[desc.table] = {
-            total,
-            synced: total - pendingCount,
-            pending: pendingCount,
-          };
-        }
-      } else {
-        // Sessions table and non-session-linked tables: use global watermark.
-        const key = watermarkKey(desc.table, target);
-        const wm = readWatermark(key);
-        const maxId =
-          (
-            db
-              .prepare(
-                `SELECT MAX(${desc.table === "sessions" ? "sync_seq" : "id"}) as m FROM ${desc.table}`,
-              )
-              .get() as { m: number | null }
-          )?.m ?? 0;
-        const count = Math.max(0, maxId - wm);
-        if (count > 0) {
-          pending[desc.table] = { total: maxId, synced: wm, pending: count };
-        }
-      }
-    }
-    const totalPending = Object.values(pending).reduce(
-      (s, v) => s + v.pending,
-      0,
-    );
-    return { target, totalPending, tables: pending };
-  },
-  "sync-target-list": () => {
-    return { targets: listTargets() };
-  },
-  "sync-target-add": (p) => {
-    const target = p as unknown as SyncTarget;
-    if (!target.name) throw new Error("name is required");
-    if (!target.url) throw new Error("url is required");
-    addTarget(target);
-    return { ok: true, name: target.name, url: target.url };
-  },
-  "sync-target-remove": (p) => {
-    const name = p.name as string;
-    if (!name) throw new Error("name is required");
-    const removed = removeTarget(name);
-    return { ok: removed, name };
-  },
-};
-
-// ── Request handler ──────────────────────────────────────────────────────────
+  directPanopticonService,
+  dispatchExec,
+  dispatchTool,
+  EXEC_NAMES,
+  isExecName,
+  isToolName,
+  TOOL_NAMES,
+} from "../service/index.js";
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -306,16 +52,16 @@ export async function handleApiRequest(
 
   if (url === "/api/tool") {
     const name = body.name as string | undefined;
-    if (!name || !(name in TOOLS)) {
+    if (!name || !isToolName(name)) {
       jsonResponse(res, 404, {
         error: `Unknown tool: ${name}`,
-        available: Object.keys(TOOLS),
+        available: TOOL_NAMES,
       });
       return;
     }
     try {
       const params = (body.params as Record<string, unknown>) ?? {};
-      const result = TOOLS[name](params);
+      const result = await dispatchTool(directPanopticonService, name, params);
       jsonResponse(res, 200, result);
     } catch (err) {
       log.server.error(`API tool "${name}" error:`, err);
@@ -328,16 +74,20 @@ export async function handleApiRequest(
 
   if (url === "/api/exec") {
     const command = body.command as string | undefined;
-    if (!command || !(command in EXEC)) {
+    if (!command || !isExecName(command)) {
       jsonResponse(res, 404, {
         error: `Unknown command: ${command}`,
-        available: Object.keys(EXEC),
+        available: EXEC_NAMES,
       });
       return;
     }
     try {
       const params = (body.params as Record<string, unknown>) ?? {};
-      const result = await EXEC[command](params);
+      const result = await dispatchExec(
+        directPanopticonService,
+        command,
+        params,
+      );
       jsonResponse(res, 200, result ?? { ok: true });
     } catch (err) {
       log.server.error(`API exec "${command}" error:`, err);

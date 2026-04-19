@@ -1,4 +1,3 @@
-import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import {
   editKey,
@@ -12,6 +11,7 @@ import {
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
+import { resolveFilePathFromCwd } from "../../paths.js";
 
 const ASSERTER = "intent.from_hooks";
 const VERSION = "1";
@@ -647,6 +647,5 @@ function readToolUseId(payload: Record<string, unknown>): string | null {
 }
 
 function resolveFilePath(filePath: string, cwd: string | null): string {
-  if (path.isAbsolute(filePath) || !cwd) return filePath;
-  return path.resolve(cwd, filePath);
+  return resolveFilePathFromCwd(filePath, cwd);
 }

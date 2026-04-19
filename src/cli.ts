@@ -12,28 +12,6 @@ import { Command, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
-import {
-  activitySummary,
-  costBreakdown,
-  dbStats,
-  listPlans,
-  listSessions,
-  print,
-  pruneEstimate,
-  pruneExecute,
-  rawQuery,
-  refreshPricing,
-  scan as scanApi,
-  search,
-  sessionTimeline,
-  syncPending,
-  syncReset,
-  syncTargetAdd,
-  syncTargetList,
-  syncTargetRemove,
-  syncWatermarkGet,
-  syncWatermarkSet,
-} from "./api/client.js";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
@@ -49,9 +27,12 @@ import {
   permissionsPreview,
   permissionsShow,
 } from "./mcp/permissions.js";
+import { httpPanopticonService } from "./service/http.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
+
+const service = httpPanopticonService;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -950,7 +931,7 @@ program
 
       if (server.running) {
         try {
-          const stats = (await dbStats()) as Record<string, number>;
+          const stats = (await service.dbStats()) as Record<string, number>;
           console.log();
           console.log("Row counts:");
           console.log(`  sessions:       ${stats.sessions}`);
@@ -981,7 +962,7 @@ program
 
           if (server.running) {
             try {
-              const result = await syncPending(t.name);
+              const result = await service.syncPending(t.name);
               if (result.totalPending === 0) {
                 console.log("    status: up to date");
               } else {
@@ -1064,7 +1045,10 @@ program
     );
     console.log();
 
-    const estimate = (await pruneEstimate(cutoffMs)) as Record<string, number>;
+    const estimate = (await service.pruneEstimate(cutoffMs)) as Record<
+      string,
+      number
+    >;
     const total = Object.values(estimate).reduce((a, b) => a + b, 0);
 
     console.log("Rows to delete:");
@@ -1092,7 +1076,7 @@ program
       }
     }
 
-    const result = (await pruneExecute(cutoffMs, {
+    const result = (await service.pruneExecute(cutoffMs, {
       vacuum: opts.vacuum,
     })) as Record<string, number>;
     console.log("Deleted:");
@@ -1119,7 +1103,7 @@ program
         "Shell command that returns a token (e.g. 'gh auth token')",
       )
       .action(async (name: string, url: string, opts: Opts) => {
-        await syncTargetAdd({
+        await service.syncTargetAdd({
           name,
           url,
           token: opts.token ?? undefined,
@@ -1134,7 +1118,9 @@ program
       .description("Remove a sync target")
       .argument("<name>", "Target name")
       .action(async (name: string) => {
-        const result = (await syncTargetRemove(name)) as { ok: boolean };
+        const result = (await service.syncTargetRemove(name)) as {
+          ok: boolean;
+        };
         if (result.ok) {
           console.log(`Removed sync target "${name}"`);
           console.log("Restart panopticon to apply.");
@@ -1145,7 +1131,7 @@ program
   )
   .addCommand(
     new Command("list").description("List sync targets").action(async () => {
-      const result = (await syncTargetList()) as {
+      const result = (await service.syncTargetList()) as {
         targets: Array<{
           name: string;
           url: string;
@@ -1172,7 +1158,7 @@ program
       .description("Reset sync watermarks (re-syncs all data)")
       .argument("[target]", "Reset only this sync target (default: all)")
       .action(async (targetName?: string) => {
-        await syncReset(targetName);
+        await service.syncReset(targetName);
         console.log(
           targetName
             ? `Reset sync watermarks for "${targetName}"`
@@ -1193,13 +1179,17 @@ program
             console.error("Table name is required when setting a watermark");
             process.exit(1);
           }
-          const result = (await syncWatermarkSet(target, table, opts.set)) as {
+          const result = (await service.syncWatermarkSet(
+            target,
+            table,
+            opts.set,
+          )) as {
             key: string;
             value: number;
           };
           console.log(`${result.key} = ${result.value}`);
         } else {
-          const result = await syncWatermarkGet(target, table);
+          const result = await service.syncWatermarkGet(target, table);
           if (table) {
             const r = result as { key: string; value: number };
             console.log(`${r.key} = ${r.value}`);
@@ -1230,7 +1220,9 @@ program
     'Time filter: ISO date or relative like "24h", "7d", "30m"',
   )
   .action(async (opts: Opts) => {
-    output(await listSessions({ limit: opts.limit, since: opts.since }));
+    output(
+      await service.listSessions({ limit: opts.limit, since: opts.since }),
+    );
   });
 
 program
@@ -1241,7 +1233,7 @@ program
   .option("--offset <n>", "Number of messages to skip", parseInt)
   .option("--full", "Return full content instead of truncated")
   .action(async (sessionId: string, opts: Opts) => {
-    const result = await sessionTimeline({
+    const result = await service.sessionTimeline({
       sessionId,
       limit: opts.limit,
       offset: opts.offset,
@@ -1259,7 +1251,9 @@ program
   )
   .option("--group-by <key>", "Group by: session, model, or day")
   .action(async (opts: Opts) => {
-    output(await costBreakdown({ since: opts.since, groupBy: opts.groupBy }));
+    output(
+      await service.costBreakdown({ since: opts.since, groupBy: opts.groupBy }),
+    );
   });
 
 program
@@ -1270,7 +1264,7 @@ program
     'Time window (default "24h"). ISO date or relative like "24h", "7d"',
   )
   .action(async (opts: Opts) => {
-    output(await activitySummary({ since: opts.since }));
+    output(await service.activitySummary({ since: opts.since }));
   });
 
 program
@@ -1284,7 +1278,7 @@ program
   .option("--limit <n>", "Max plans to return (default 20)", parseInt)
   .action(async (opts: Opts) => {
     output(
-      await listPlans({
+      await service.listPlans({
         session_id: opts.session,
         since: opts.since,
         limit: opts.limit,
@@ -1305,7 +1299,7 @@ program
   .option("--offset <n>", "Number of results to skip", parseInt)
   .option("--full", "Return full payloads instead of truncated")
   .action(async (query: string, opts: Opts) => {
-    const result = await search({
+    const result = await service.search({
       query,
       eventTypes: opts.types,
       since: opts.since,
@@ -1329,7 +1323,7 @@ program
       );
       process.exit(1);
     }
-    const result = await print({ source, id: parseInt(id, 10) });
+    const result = await service.print({ source, id: parseInt(id, 10) });
     if (!result) {
       console.error(`No ${source} record found with id ${id}`);
       process.exit(1);
@@ -1343,7 +1337,7 @@ program
   .argument("<sql>", "SQL query (SELECT/WITH/PRAGMA only)")
   .action(async (sql: string) => {
     try {
-      output(await rawQuery(sql));
+      output(await service.rawQuery(sql));
     } catch (err: unknown) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -1354,7 +1348,7 @@ program
   .command("db-stats")
   .description("Show database row counts for each table")
   .action(async () => {
-    output(await dbStats());
+    output(await service.dbStats());
   });
 
 program
@@ -1364,7 +1358,7 @@ program
   )
   .option("--no-summaries", "Skip summary generation")
   .action(async (opts: { summaries?: boolean }) => {
-    const result = await scanApi({ summaries: opts.summaries });
+    const result = await service.scan({ summaries: opts.summaries });
     console.log(
       `Scanned ${result.filesScanned} files, ${result.newTurns} new turns, ${result.summariesUpdated} summaries updated`,
     );
@@ -1375,7 +1369,7 @@ program
   .description("Fetch latest model pricing from LiteLLM")
   .action(async () => {
     console.log("Fetching pricing from LiteLLM...");
-    const result = await refreshPricing();
+    const result = await service.refreshPricing();
     if (result && typeof result === "object" && "models" in result) {
       const models = (result as { models: Record<string, unknown> }).models;
       console.log(`Cached pricing for ${Object.keys(models).length} models`);
