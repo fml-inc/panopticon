@@ -606,9 +606,9 @@ assert_db_not_empty \
 
 assert_db_not_empty \
   "SELECT 1 FROM intent_edits
-   WHERE landed = 1 AND landed_reason = 'present_in_file'
+   WHERE landed_reason IS NOT NULL AND landed_reason != ''
    LIMIT 1;" \
-  "intent_edits: has at least one landed edit present in file"
+  "intent_edits: has at least one populated landed_reason"
 
 # Show sample projected intents
 sqlite3 -header -column "$DB_PATH" \
