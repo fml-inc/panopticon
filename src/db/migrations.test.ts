@@ -288,18 +288,7 @@ describe("runMigrations — existing DB", () => {
     `);
     db.prepare(
       "INSERT INTO schema_migrations (id, name) VALUES (?, ?), (?, ?), (?, ?), (?, ?), (?, ?)",
-    ).run(
-      1,
-      "stamp1",
-      2,
-      "stamp2",
-      3,
-      "stamp3",
-      4,
-      "stamp4",
-      5,
-      "stamp5",
-    );
+    ).run(1, "stamp1", 2, "stamp2", 3, "stamp3", 4, "stamp4", 5, "stamp5");
     db.prepare(
       `INSERT INTO messages (session_id, ordinal, role, content, uuid)
        VALUES (?, ?, 'assistant', 'with-uuid', ?), (?, ?, 'assistant', 'without-uuid', NULL)`,
@@ -307,9 +296,9 @@ describe("runMigrations — existing DB", () => {
 
     runMigrations(db);
 
-    const cols = db
-      .prepare("PRAGMA table_info(messages)")
-      .all() as Array<{ name: string }>;
+    const cols = db.prepare("PRAGMA table_info(messages)").all() as Array<{
+      name: string;
+    }>;
     expect(cols.map((c) => c.name)).toContain("sync_id");
 
     const rows = db
@@ -404,7 +393,9 @@ describe("runMigrations — existing DB", () => {
        VALUES (?, ?, 'assistant', 'msg', ?, ?)`,
     ).run("sess-1", 0, "uuid-123", messageSyncId);
     const messageId = (
-      db.prepare("SELECT id FROM messages WHERE session_id = 'sess-1'").get() as {
+      db
+        .prepare("SELECT id FROM messages WHERE session_id = 'sess-1'")
+        .get() as {
         id: number;
       }
     ).id;
@@ -416,9 +407,9 @@ describe("runMigrations — existing DB", () => {
 
     runMigrations(db);
 
-    const cols = db
-      .prepare("PRAGMA table_info(tool_calls)")
-      .all() as Array<{ name: string }>;
+    const cols = db.prepare("PRAGMA table_info(tool_calls)").all() as Array<{
+      name: string;
+    }>;
     expect(cols.map((c) => c.name)).toContain("call_index");
 
     const rows = db
@@ -596,13 +587,7 @@ describe("runMigrations — existing DB", () => {
         event_type: "note",
         timestamp_ms: 201,
         tool_name: null,
-        sync_id: buildScannerEventSyncId(
-          "sess-1",
-          "claude",
-          "note",
-          201,
-          null,
-        ),
+        sync_id: buildScannerEventSyncId("sess-1", "claude", "note", 201, null),
       },
     ]);
     expect(getApplied(db).map((r) => r.id)).toContain(8);

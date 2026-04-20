@@ -363,16 +363,17 @@ describe("createSyncLoop integration", () => {
       );
       expect(toolCallCalls).toHaveLength(1);
 
-      const rows = toolCallCalls.flatMap(([, body]) =>
-        body.rows as Array<{
-          id: number;
-          messageId: number;
-          messageSyncId: string | null;
-          callIndex: number;
-          syncId: string | null;
-          toolName: string;
-          sessionId: string;
-        }>,
+      const rows = toolCallCalls.flatMap(
+        ([, body]) =>
+          body.rows as Array<{
+            id: number;
+            messageId: number;
+            messageSyncId: string | null;
+            callIndex: number;
+            syncId: string | null;
+            toolName: string;
+            sessionId: string;
+          }>,
       );
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
@@ -474,20 +475,7 @@ describe("createSyncLoop integration", () => {
            wm_messages, wm_tool_calls, wm_scanner_turns, wm_scanner_events,
            wm_hook_events, wm_otel_logs, wm_otel_metrics, wm_otel_spans
          ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        "reparsed",
-        "fml",
-        4,
-        4,
-        0,
-        0,
-        0,
-        0,
-        12,
-        13,
-        14,
-        15,
-      );
+      ).run("reparsed", "fml", 4, 4, 0, 0, 0, 0, 12, 13, 14, 15);
 
       const handle = createSyncLoop({ targets: [makeTarget()] });
       await handle.runOnce();

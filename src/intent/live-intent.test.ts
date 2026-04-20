@@ -32,8 +32,8 @@ vi.mock("../config.js", () => {
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { buildMessageSyncId, buildToolCallSyncId } from "../db/sync-ids.js";
 import { insertHookEvent } from "../db/store.js";
+import { buildMessageSyncId, buildToolCallSyncId } from "../db/sync-ids.js";
 import {
   rebuildIntentClaimsFromHooks,
   recordIntentClaimsFromHookEvent,

@@ -55,12 +55,7 @@ function insertMessage(
       `INSERT INTO messages (session_id, ordinal, role, content, sync_id)
        VALUES (?, ?, 'assistant', ?, ?)`,
     )
-    .run(
-      sessionId,
-      ordinal,
-      content,
-      buildMessageSyncId(sessionId, ordinal),
-    );
+    .run(sessionId, ordinal, content, buildMessageSyncId(sessionId, ordinal));
   return Number(result.lastInsertRowid);
 }
 

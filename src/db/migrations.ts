@@ -261,9 +261,9 @@ export const MIGRATIONS: Migration[] = [
         db.exec("ALTER TABLE messages ADD COLUMN sync_id TEXT");
       }
 
-      const rows = db.prepare(
-        "SELECT id, session_id, ordinal, uuid FROM messages",
-      ).all() as Array<{
+      const rows = db
+        .prepare("SELECT id, session_id, ordinal, uuid FROM messages")
+        .all() as Array<{
         id: number;
         session_id: string;
         ordinal: number;
@@ -290,10 +290,14 @@ export const MIGRATIONS: Migration[] = [
         .get();
       if (!toolCallsTableExists) return;
 
-      const toolCallCols = db.prepare("PRAGMA table_info(tool_calls)").all() as Array<{
+      const toolCallCols = db
+        .prepare("PRAGMA table_info(tool_calls)")
+        .all() as Array<{
         name: string;
       }>;
-      const hasCallIndex = toolCallCols.some((col) => col.name === "call_index");
+      const hasCallIndex = toolCallCols.some(
+        (col) => col.name === "call_index",
+      );
       if (!hasCallIndex) {
         db.exec(
           "ALTER TABLE tool_calls ADD COLUMN call_index INTEGER NOT NULL DEFAULT 0",
@@ -345,7 +349,9 @@ export const MIGRATIONS: Migration[] = [
         )
         .get();
       if (scannerTurnsTableExists) {
-        const turnCols = db.prepare("PRAGMA table_info(scanner_turns)").all() as Array<{
+        const turnCols = db
+          .prepare("PRAGMA table_info(scanner_turns)")
+          .all() as Array<{
           name: string;
         }>;
         const hasTurnSyncId = turnCols.some((col) => col.name === "sync_id");
@@ -353,9 +359,11 @@ export const MIGRATIONS: Migration[] = [
           db.exec("ALTER TABLE scanner_turns ADD COLUMN sync_id TEXT");
         }
 
-        const turnRows = db.prepare(
-          "SELECT id, session_id, source, turn_index FROM scanner_turns",
-        ).all() as Array<{
+        const turnRows = db
+          .prepare(
+            "SELECT id, session_id, source, turn_index FROM scanner_turns",
+          )
+          .all() as Array<{
           id: number;
           session_id: string;
           source: string;
@@ -367,11 +375,7 @@ export const MIGRATIONS: Migration[] = [
         );
         for (const row of turnRows) {
           updateTurn.run(
-            buildScannerTurnSyncId(
-              row.session_id,
-              row.source,
-              row.turn_index,
-            ),
+            buildScannerTurnSyncId(row.session_id, row.source, row.turn_index),
             row.id,
           );
         }
@@ -384,7 +388,9 @@ export const MIGRATIONS: Migration[] = [
         .get();
       if (!scannerEventsTableExists) return;
 
-      const eventCols = db.prepare("PRAGMA table_info(scanner_events)").all() as Array<{
+      const eventCols = db
+        .prepare("PRAGMA table_info(scanner_events)")
+        .all() as Array<{
         name: string;
       }>;
       const hasEventSyncId = eventCols.some((col) => col.name === "sync_id");
@@ -392,10 +398,12 @@ export const MIGRATIONS: Migration[] = [
         db.exec("ALTER TABLE scanner_events ADD COLUMN sync_id TEXT");
       }
 
-      const eventRows = db.prepare(
-        `SELECT id, session_id, source, event_type, timestamp_ms, tool_name
+      const eventRows = db
+        .prepare(
+          `SELECT id, session_id, source, event_type, timestamp_ms, tool_name
          FROM scanner_events`,
-      ).all() as Array<{
+        )
+        .all() as Array<{
         id: number;
         session_id: string;
         source: string;

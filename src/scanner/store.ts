@@ -1,10 +1,4 @@
 import path from "node:path";
-import {
-  buildMessageSyncId,
-  buildScannerEventSyncId,
-  buildScannerTurnSyncId,
-  buildToolCallSyncId,
-} from "../db/sync-ids.js";
 import { refreshIfStale } from "../db/pricing.js";
 import { getDb } from "../db/schema.js";
 import {
@@ -12,6 +6,12 @@ import {
   upsertSessionRepository,
   upsertSession as upsertSessionRow,
 } from "../db/store.js";
+import {
+  buildMessageSyncId,
+  buildScannerEventSyncId,
+  buildScannerTurnSyncId,
+  buildToolCallSyncId,
+} from "../db/sync-ids.js";
 import { resolveGitIdentity, resolveRepoFromCwd } from "../repo.js";
 import type {
   ParsedEvent,

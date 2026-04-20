@@ -26,8 +26,8 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { buildMessageSyncId } from "../db/sync-ids.js";
 import { insertHookEvent, upsertSession } from "../db/store.js";
+import { buildMessageSyncId } from "../db/sync-ids.js";
 import {
   rebuildDerivedStateFromRaw,
   rewindTargetSessionSyncForScannerReparse,

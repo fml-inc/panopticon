@@ -507,7 +507,6 @@ export function reparseAll(
           `  target_session_sync: rewound scanner watermarks for ${rewound.rewoundRows} session${rewound.rewoundRows === 1 ? "" : "s"}`,
         );
       }
-
     });
     tx();
 
