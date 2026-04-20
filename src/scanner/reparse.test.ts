@@ -26,6 +26,7 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
+import { buildMessageSyncId } from "../db/sync-ids.js";
 import { insertHookEvent, upsertSession } from "../db/store.js";
 import { rebuildDerivedStateFromRaw } from "./reparse.js";
 
@@ -65,9 +66,17 @@ describe("rebuildDerivedStateFromRaw", () => {
     });
 
     db.prepare(
-      `INSERT INTO messages (session_id, ordinal, role, content, timestamp_ms, is_system)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(sessionId, 0, "user", "change file", 1_700_000_000_000, 0);
+      `INSERT INTO messages (session_id, ordinal, role, content, timestamp_ms, is_system, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      sessionId,
+      0,
+      "user",
+      "change file",
+      1_700_000_000_000,
+      0,
+      buildMessageSyncId(sessionId, 0),
+    );
 
     insertHookEvent({
       session_id: sessionId,
