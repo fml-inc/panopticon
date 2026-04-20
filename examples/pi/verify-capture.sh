@@ -73,5 +73,7 @@ echo "  - Confirm pi is running: docker compose -f $COMPOSE ps"
 echo "  - Check pi logs: docker compose -f $COMPOSE logs pi | tail -50"
 echo "  - Check panopticon logs: docker compose -f $COMPOSE logs panopticon | grep -i hook"
 echo "  - Verify extension is installed in pi container:"
-echo "      docker compose -f $COMPOSE exec pi ls -la /app/extensions/"
+echo "      docker compose -f $COMPOSE exec pi ls -la /workspace/.pi/extensions/"
+echo "  - Verify PANOPTICON_HOST is set in pi container:"
+echo "      docker compose -f $COMPOSE exec pi env | grep PANOPTICON"
 exit 1

@@ -114,6 +114,8 @@ The panopticon extension (`src/targets/pi/extension.ts`) is bundled via esbuild 
 3. For each event (`session_start`, `input`, `tool_call`, `tool_result`, `session_shutdown`), the extension POSTs to `http://panopticon:4318/hooks`
 4. Panopticon's hook handler processes the event and stores it in SQLite
 
+The extension connects to `PANOPTICON_HOST` (default `127.0.0.1`) on `PANOPTICON_PORT` (default `4318`). In the Docker setup, `PANOPTICON_HOST` is set to `panopticon` (the Docker service name) so the Pi container can reach the Panopticon server.
+
 Events are fire-and-forget — failures are silently swallowed so the agent is never blocked.
 
 ## Manual setup
@@ -131,12 +133,13 @@ docker compose -f examples/pi/docker-compose.yml up -d --build
 docker compose -f examples/pi/docker-compose.yml exec pi \
   npm install -g @mariozechner/pi-coding-agent
 
-# Copy the bundled extension
+# Copy the bundled extension to Pi's project-local discovery directory
+# Pi discovers extensions from <cwd>/.pi/extensions/*.js and ~/.pi/agent/extensions/
 docker compose -f examples/pi/docker-compose.yml exec pi bash -c \
-  'mkdir -p /app/extensions && cp /opt/panopticon/dist/targets/pi/extension.js /app/extensions/'
+  'mkdir -p /workspace/.pi/extensions && cp /opt/panopticon/dist/targets/pi/extension.js /workspace/.pi/extensions/panopticon.js'
 
-# Run pi with the extension
-docker compose -f examples/pi/docker-compose.yml exec -e PI_EXTENSIONS_DIR=/app/extensions pi bash
+# Run pi with the extension (the extension is auto-discovered from the project-local dir)
+docker compose -f examples/pi/docker-compose.yml exec pi bash
 pi
 ```
 

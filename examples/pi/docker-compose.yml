@@ -39,7 +39,7 @@ services:
       - ../../dist:/opt/panopticon/dist:ro
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - PI_EXTENSIONS_DIR=/app/extensions
+      - PANOPTICON_HOST=panopticon
     working_dir: /workspace
     # The setup script installs pi and copies the extension into the container.
     # This command is overridden by setup.sh to run a test prompt.
