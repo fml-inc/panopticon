@@ -461,6 +461,58 @@ describe("createSyncLoop integration", () => {
       expect(getTss("stuck", "fml")?.wm_messages).toBeGreaterThan(0);
       expect(getTss("stuck", "fml")?.synced_seq).toBe(100);
     });
+
+    it("replays scanner data after a reparse-style watermark rewind", async () => {
+      insertSession("reparsed", 5);
+      insertSessionRepo("reparsed");
+      const messageId = insertMessage("reparsed", 0);
+
+      const db = getDb();
+      db.prepare(
+        `INSERT INTO target_session_sync (
+           session_id, target, confirmed, sync_seq, synced_seq,
+           wm_messages, wm_tool_calls, wm_scanner_turns, wm_scanner_events,
+           wm_hook_events, wm_otel_logs, wm_otel_metrics, wm_otel_spans
+         ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "reparsed",
+        "fml",
+        4,
+        4,
+        0,
+        0,
+        0,
+        0,
+        12,
+        13,
+        14,
+        15,
+      );
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      expect(postedSessionIds()).toContain("reparsed");
+
+      const messageCalls = mockedPostSync.mock.calls.filter(
+        ([, body]) => body.table === "messages",
+      );
+      const postedMessageIds = messageCalls.flatMap(([, body]) =>
+        body.rows.map((r) => (r as { id: number }).id),
+      );
+      expect(postedMessageIds).toEqual([messageId]);
+
+      const tss = getTss("reparsed", "fml");
+      expect(tss).toMatchObject({
+        sync_seq: 5,
+        synced_seq: 5,
+        wm_messages: messageId,
+        wm_hook_events: 12,
+        wm_otel_logs: 13,
+        wm_otel_metrics: 14,
+        wm_otel_spans: 15,
+      });
+    });
   });
 
   describe("multi-target", () => {

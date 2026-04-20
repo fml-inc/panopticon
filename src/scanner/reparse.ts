@@ -86,6 +86,10 @@ export interface ReparseDerivedStateResult {
   totalMs: number;
 }
 
+export interface RewoundTargetSessionSyncState {
+  rewoundRows: number;
+}
+
 function formatMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
   if (ms >= 100) return `${Math.round(ms)}ms`;
@@ -160,6 +164,51 @@ function initTempDb(tempPath: string): Database {
   return db;
 }
 
+/**
+ * Atomic reparse rebuilds scanner-owned rows in a fresh database, so the
+ * copied per-session watermarks from the previous DB can point past the new
+ * local row IDs. Rewind only the scanner-owned sync state while preserving
+ * hook/OTel progress for mixed sessions.
+ *
+ * The rewind sets target_session_sync to a "session must be re-confirmed, then
+ * dependent scanner data must be drained again" state:
+ * - session sync will rerun because sessions.sync_seq will now be greater than
+ *   target_session_sync.sync_seq
+ * - dependent scanner tables will rerun after confirmation because synced_seq
+ *   still lags behind the refreshed sync_seq
+ */
+export function rewindTargetSessionSyncForScannerReparse(
+  db: Database,
+): RewoundTargetSessionSyncState {
+  const result = db
+    .prepare(
+      `UPDATE target_session_sync
+       SET sync_seq = (
+             SELECT COALESCE(s.sync_seq, 0) - 1
+             FROM sessions s
+             WHERE s.session_id = target_session_sync.session_id
+           ),
+           synced_seq = (
+             SELECT COALESCE(s.sync_seq, 0) - 1
+             FROM sessions s
+             WHERE s.session_id = target_session_sync.session_id
+           ),
+           wm_messages = 0,
+           wm_tool_calls = 0,
+           wm_scanner_turns = 0,
+           wm_scanner_events = 0
+       WHERE EXISTS (
+         SELECT 1
+         FROM sessions s
+         WHERE s.session_id = target_session_sync.session_id
+           AND COALESCE(s.has_scanner, 0) = 1
+       )`,
+    )
+    .run();
+
+  return { rewoundRows: result.changes };
+}
+
 export function rebuildDerivedStateFromRaw(
   log: (msg: string) => void = () => {},
 ): ReparseDerivedStateResult {
@@ -229,7 +278,7 @@ export function rebuildDerivedStateFromRaw(
  * 2. Create a fresh temp DB with current schema
  * 3. Redirect config.dbPath → temp, run full scan into it
  * 4. Copy preserved (non-scanner) data from old DB via ATTACH
- * 5. Merge session metadata from hooks/OTLP
+ * 5. Merge session metadata from hooks/OTLP and rewind scanner sync state
  * 6. Atomic file swap (rename)
  * 7. Reopen the main DB handle
  */
@@ -450,6 +499,13 @@ export function reparseAll(
         );
       } catch (e) {
         log(`  session_cwds: ${e instanceof Error ? e.message : e}`);
+      }
+
+      const rewound = rewindTargetSessionSyncForScannerReparse(tempDb);
+      if (rewound.rewoundRows > 0) {
+        log(
+          `  target_session_sync: rewound scanner watermarks for ${rewound.rewoundRows} session${rewound.rewoundRows === 1 ? "" : "s"}`,
+        );
       }
 
     });
