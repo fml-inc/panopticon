@@ -10,3 +10,13 @@ services:
       - GEMINI_API_KEY
       - SHELL=/bin/bash
       - PANOPTICON_PORT=4318
+
+  test-pi-extension:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      target: test-pi-extension
+    environment:
+      - ANTHROPIC_API_KEY
+      - SHELL=/bin/bash
+      - PANOPTICON_PORT=4318

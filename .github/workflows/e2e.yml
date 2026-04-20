@@ -60,94 +60,16 @@ jobs:
         if: steps.check_key.outputs.has_key == 'true'
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        if: steps.check_key.outputs.has_key == 'true'
-        uses: pnpm/action-setup@v4
-
       - name: Set up Docker Buildx
         if: steps.check_key.outputs.has_key == 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Build panopticon
-        if: steps.check_key.outputs.has_key == 'true'
-        run: |
-          pnpm install --frozen-lockfile --ignore-scripts
-          pnpm build
-
-      - name: Copy .env
-        if: steps.check_key.outputs.has_key == 'true'
-        run: |
-          cp examples/pi/.env.example examples/pi/.env
-          echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" >> examples/pi/.env
-
-      - name: Run Pi + Panopticon setup
+      - name: Run Pi extension E2E test
         if: steps.check_key.outputs.has_key == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          docker compose -f examples/pi/docker-compose.yml up -d --build
-
-      - name: Wait for panopticon
-        if: steps.check_key.outputs.has_key == 'true'
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:4318/health > /dev/null 2>&1; then
-              echo "Panopticon ready!"
-              exit 0
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Timeout waiting for panopticon"
-              docker compose -f examples/pi/docker-compose.yml logs panopticon
-              exit 1
-            fi
-            sleep 2
-          done
-
-      - name: Install Pi and extension
-        if: steps.check_key.outputs.has_key == 'true'
-        run: |
-          docker compose -f examples/pi/docker-compose.yml exec -T pi bash -c '
-            npm install -g @mariozechner/pi-coding-agent || true
-            # Pi discovers extensions from <cwd>/.pi/extensions/ (project-local)
-            # and ~/.pi/agent/extensions/ (global)
-            mkdir -p /workspace/.pi/extensions
-            cp /opt/panopticon/dist/targets/pi/extension.js /workspace/.pi/extensions/panopticon.js
-            ls -la /workspace/.pi/extensions/ || echo "Extension not found"
-          '
-
-      - name: Run test prompt
-        if: steps.check_key.outputs.has_key == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          # Run a simple test prompt non-interactively
-          docker compose -f examples/pi/docker-compose.yml exec -T -e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" pi bash -c '
-            PANOPTICON_HOST=panopticon \
-              timeout 60 pi --mode print "Say hello and list files" 2>&1 || true
-            sleep 2
-          ' || true
-
-      - name: Verify capture
-        if: steps.check_key.outputs.has_key == 'true'
-        run: |
-          QUERY="SELECT COUNT(*) as n FROM hook_events WHERE target = 'pi'"
-          RESULT=$(docker compose -f examples/pi/docker-compose.yml exec -T panopticon \
-            panopticon query "$QUERY")
-          EVENT_COUNT=$(echo "$RESULT" | grep -oE '"n":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "0")
-
-          echo "Captured events: $EVENT_COUNT"
-
-          if [ -n "$EVENT_COUNT" ] && [ "$EVENT_COUNT" -gt 0 ]; then
-            echo "✓ Pi extension is capturing events"
-            exit 0
-          else
-            echo "✗ No events captured from Pi"
-            docker compose -f examples/pi/docker-compose.yml logs panopticon | grep -i hook || true
-            docker compose -f examples/pi/docker-compose.yml logs pi | tail -20 || true
-            exit 1
-          fi
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker compose -f examples/pi/docker-compose.yml down -v || true
+          docker compose -f test/e2e/docker-compose.yml \
+            up --build --abort-on-container-exit \
+            --exit-code-from test-pi-extension \
+            test-pi-extension
