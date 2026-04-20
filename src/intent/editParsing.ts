@@ -125,6 +125,7 @@ function parseApplyPatchEntries(patch: string): ParsedEditEntry[] {
   const entries: ParsedEditEntry[] = [];
   const lines = patch.split(/\r?\n/);
   let currentFilePath: string | null = null;
+  let renamedFromPath: string | null = null;
   let addedLines: string[] = [];
   let removedLines: string[] = [];
   let deletedFile = false;
@@ -132,12 +133,28 @@ function parseApplyPatchEntries(patch: string): ParsedEditEntry[] {
   const flushEntry = () => {
     if (!currentFilePath) return;
     if (!deletedFile && addedLines.length === 0 && removedLines.length === 0) {
+      if (renamedFromPath && renamedFromPath !== currentFilePath) {
+        entries.push({
+          filePath: renamedFromPath,
+          newString: "",
+          oldStrings: [],
+          multiEditIndex: entries.length,
+          deletedFile: true,
+        });
+        entries.push({
+          filePath: currentFilePath,
+          newString: "",
+          oldStrings: [],
+          multiEditIndex: entries.length,
+          deletedFile: false,
+        });
+      }
+      renamedFromPath = null;
       return;
     }
     entries.push({
       filePath: currentFilePath,
-      newString:
-        addedLines.length > 0 ? addedLines.join("\n") : removedLines.join("\n"),
+      newString: addedLines.join("\n"),
       oldStrings: removedLines.length > 0 ? [removedLines.join("\n")] : [],
       multiEditIndex: entries.length,
       deletedFile,
@@ -145,12 +162,14 @@ function parseApplyPatchEntries(patch: string): ParsedEditEntry[] {
     addedLines = [];
     removedLines = [];
     deletedFile = false;
+    renamedFromPath = null;
   };
 
   const startFile = (filePath: string, isDeletedFile = false) => {
     flushEntry();
     currentFilePath = filePath;
     deletedFile = isDeletedFile;
+    renamedFromPath = null;
   };
 
   for (const line of lines) {
@@ -167,6 +186,7 @@ function parseApplyPatchEntries(patch: string): ParsedEditEntry[] {
       continue;
     }
     if (line.startsWith("*** Move to: ")) {
+      renamedFromPath = currentFilePath;
       currentFilePath = line.slice("*** Move to: ".length);
       continue;
     }

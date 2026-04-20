@@ -52,7 +52,10 @@ export function rebuildActiveClaims(): number {
   const headKeys = db
     .prepare(`SELECT DISTINCT head_key FROM claims ORDER BY head_key ASC`)
     .all() as Array<{ head_key: string }>;
-  return canonicalizeHeadKeys(headKeys.map((row) => row.head_key), true);
+  return canonicalizeHeadKeys(
+    headKeys.map((row) => row.head_key),
+    true,
+  );
 }
 
 export function canonicalizeHeadKeys(

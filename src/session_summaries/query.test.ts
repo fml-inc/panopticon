@@ -45,6 +45,7 @@ import {
   listSessionSummaries,
   recentWorkOnPath,
   sessionSummaryDetail,
+  sessionSummaryKeyForSession,
   whyCode,
 } from "./query.js";
 
@@ -271,6 +272,65 @@ describe("session_summaries", () => {
     const rows = listSessionSummaries({ path: file });
     expect(rows).toHaveLength(1);
     expect(rows[0].repository).toBe(repo);
+  });
+
+  it("does not rebuild projections repeatedly when a valid session has no provenance rows", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "investigate only", session_id: SESSION },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const db = getDb();
+    const key = sessionSummaryKeyForSession(SESSION);
+    const before = db
+      .prepare(`SELECT id FROM session_summaries WHERE session_summary_key = ?`)
+      .get(key) as { id: number } | undefined;
+    expect(before).toBeDefined();
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS c FROM code_provenance`).get() as {
+          c: number;
+        }
+      ).c,
+    ).toBe(0);
+
+    const first = listSessionSummaries({ repository: repo });
+    const afterFirst = db
+      .prepare(`SELECT id FROM session_summaries WHERE session_summary_key = ?`)
+      .get(key) as { id: number } | undefined;
+    const second = listSessionSummaries({ repository: repo });
+    const afterSecond = db
+      .prepare(`SELECT id FROM session_summaries WHERE session_summary_key = ?`)
+      .get(key) as { id: number } | undefined;
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(afterFirst?.id).toBe(before?.id);
+    expect(afterSecond?.id).toBe(before?.id);
   });
 
   it("exposes explicit session summary detail by session id", () => {

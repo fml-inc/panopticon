@@ -121,8 +121,7 @@ export const httpPanopticonService: PanopticonService = {
   intentForCode: (opts) => callTool("intent_for_code", toParams(opts)),
   searchIntent: (opts) => callTool("search_intent", toParams(opts)),
   outcomesForIntent: (opts) => callTool("outcomes_for_intent", toParams(opts)),
-  listSessionSummaries: (opts) =>
-    callTool("session_summaries", toParams(opts)),
+  listSessionSummaries: (opts) => callTool("session_summaries", toParams(opts)),
   sessionSummaryDetail: (opts) =>
     callTool("session_summary_detail", toParams(opts)),
   whyCode: (opts) => callTool("why_code", toParams(opts)),

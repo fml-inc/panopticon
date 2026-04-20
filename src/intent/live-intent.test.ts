@@ -926,6 +926,144 @@ describe("scanner-only landed reconciliation", () => {
     });
   });
 
+  it("marks deletion-only apply_patch hunks as landed when the removed text stays gone", () => {
+    const sessionId = "scanner-delete-only-apply-patch";
+    const filePath = path.join(
+      scratchDir,
+      "scanner-delete-only-apply-patch.ts",
+    );
+    fs.writeFileSync(filePath, "export const keep = 1;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "remove the old export",
+      timestampMs: 1000,
+      uuid: "scanner-delete-only-apply-patch-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "apply_patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          `*** Update File: ${filePath}`,
+          "@@",
+          "-export const removed = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    reconcileLandedClaimsFromDisk({ sessionId });
+    rebuildIntentProjection({ sessionId });
+
+    const row = getDb()
+      .prepare(
+        `SELECT file_path, tool_name, landed, landed_reason
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          file_path: string;
+          tool_name: string;
+          landed: number | null;
+          landed_reason: string | null;
+        }
+      | undefined;
+
+    expect(row).toEqual({
+      file_path: filePath,
+      tool_name: "apply_patch",
+      landed: 1,
+      landed_reason: "present_in_file",
+    });
+  });
+
+  it("projects rename-only apply_patch operations into intent_edits", () => {
+    const sessionId = "scanner-rename-only-apply-patch";
+    const oldPath = path.join(scratchDir, "scanner-rename-before.ts");
+    const newPath = path.join(scratchDir, "scanner-rename-after.ts");
+    fs.rmSync(oldPath, { force: true });
+    fs.writeFileSync(newPath, "export const renamed = true;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "rename the file",
+      timestampMs: 1000,
+      uuid: "scanner-rename-only-apply-patch-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "apply_patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          `*** Update File: ${oldPath}`,
+          `*** Move to: ${newPath}`,
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    reconcileLandedClaimsFromDisk({ sessionId });
+    rebuildIntentProjection({ sessionId });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT file_path, tool_name, landed
+         FROM intent_edits
+         WHERE session_id = ?
+         ORDER BY file_path ASC`,
+      )
+      .all(sessionId) as Array<{
+      file_path: string;
+      tool_name: string;
+      landed: number | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        file_path: newPath,
+        tool_name: "apply_patch",
+        landed: 1,
+      },
+      {
+        file_path: oldPath,
+        tool_name: "apply_patch",
+        landed: 1,
+      },
+    ]);
+  });
+
   it("keeps scanner-backed apply_patch edits for hook-backed sessions", () => {
     const sessionId = "hook-backed-scanner-apply-patch";
     const filePath = path.join(

@@ -40,6 +40,54 @@ describe("parseEditEntries apply_patch", () => {
     });
   });
 
+  it("treats deletion-only hunks as removals, not insertions", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/delete-only.ts",
+      "@@",
+      "-const removed = true;",
+      "*** End Patch",
+    ].join("\n");
+
+    const entries = parseEditEntries("apply_patch", { input: patch });
+    expect(entries).toEqual([
+      {
+        filePath: "src/delete-only.ts",
+        newString: "",
+        oldStrings: ["const removed = true;"],
+        multiEditIndex: 0,
+        deletedFile: false,
+      },
+    ]);
+  });
+
+  it("preserves rename-only patches as a delete plus add", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/old-name.ts",
+      "*** Move to: src/new-name.ts",
+      "*** End Patch",
+    ].join("\n");
+
+    const entries = parseEditEntries("apply_patch", { input: patch });
+    expect(entries).toEqual([
+      {
+        filePath: "src/old-name.ts",
+        newString: "",
+        oldStrings: [],
+        multiEditIndex: 0,
+        deletedFile: true,
+      },
+      {
+        filePath: "src/new-name.ts",
+        newString: "",
+        oldStrings: [],
+        multiEditIndex: 1,
+        deletedFile: false,
+      },
+    ]);
+  });
+
   it("splits multiple hunks in one file into distinct entries", () => {
     const patch = [
       "*** Begin Patch",

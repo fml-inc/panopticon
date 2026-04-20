@@ -453,12 +453,12 @@ export function ensureSessionSummaryProjections(): void {
       c: number;
     }
   ).c;
-  const provenanceCount = (
-    db.prepare(`SELECT COUNT(*) AS c FROM code_provenance`).get() as {
+  const membershipCount = (
+    db.prepare(`SELECT COUNT(*) AS c FROM intent_session_summaries`).get() as {
       c: number;
     }
   ).c;
-  if (sessionSummaryCount === 0 || provenanceCount === 0) {
+  if (sessionSummaryCount === 0 || membershipCount === 0) {
     rebuildSessionSummaryProjections();
   }
 }
