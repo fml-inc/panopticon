@@ -90,18 +90,18 @@ Each event includes `session_id`, `tool_name`, `tool_input`, `cwd`, and `reposit
 # All Pi events
 docker exec panopticon panopticon query \
   "SELECT event_type, tool_name, COUNT(*) as n FROM hook_events
-   WHERE source = 'pi' GROUP BY event_type, tool_name"
+   WHERE target = 'pi' GROUP BY event_type, tool_name"
 
 # Recent tool calls
 docker exec panopticon panopticon query \
   "SELECT event_type, tool_name, tool_input FROM hook_events
-   WHERE source = 'pi' AND event_type LIKE '%Tool%'
+   WHERE target = 'pi' AND event_type LIKE '%Tool%'
    ORDER BY id DESC LIMIT 20"
 
 # Sessions
 docker exec panopticon panopticon query \
   "SELECT session_id, COUNT(*) as events, MIN(cwd) as cwd
-   FROM hook_events WHERE source = 'pi'
+   FROM hook_events WHERE target = 'pi'
    GROUP BY session_id"
 ```
 
