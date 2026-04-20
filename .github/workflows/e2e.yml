@@ -127,9 +127,10 @@ jobs:
       - name: Verify capture
         if: steps.check_key.outputs.has_key == 'true'
         run: |
-          EVENT_COUNT=$(docker compose -f examples/pi/docker-compose.yml exec -T panopticon \
-            panopticon query "SELECT COUNT(*) as n FROM hook_events WHERE source = '\''pi'\''" | \
-            grep -oE '\''"n":[[:space:]]*[0-9]+'\'' | grep -oE '\''[0-9]+'\'' | head -1 || echo "0")
+          QUERY="SELECT COUNT(*) as n FROM hook_events WHERE source = 'pi'"
+          RESULT=$(docker compose -f examples/pi/docker-compose.yml exec -T panopticon \
+            panopticon query "$QUERY")
+          EVENT_COUNT=$(echo "$RESULT" | grep -oE '"n":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "0")
 
           echo "Captured events: $EVENT_COUNT"
 
