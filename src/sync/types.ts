@@ -117,6 +117,7 @@ export interface ScannerEventRecord {
   sessionId: string;
   syncId: string | null;
   source: string;
+  eventIndex: number;
   eventType: string;
   timestampMs: number;
   toolName: string | null;
@@ -232,6 +233,7 @@ export interface SessionSyncRecord {
 
 export interface MessageSyncRecord {
   id: number;
+  syncId: string | null;
   sessionId: string;
   ordinal: number;
   role: string;
@@ -252,7 +254,9 @@ export interface MessageSyncRecord {
 export interface ToolCallSyncRecord {
   id: number;
   messageId: number;
+  messageSyncId: string | null;
   sessionId: string;
+  callIndex: number;
   syncId: string | null;
   toolName: string;
   category: string;

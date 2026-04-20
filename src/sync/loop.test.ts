@@ -23,6 +23,7 @@ vi.mock("../config.js", () => {
 });
 
 import { closeDb, getDb } from "../db/schema.js";
+import { buildMessageSyncId } from "../db/sync-ids.js";
 import { readSessionMessages, readSessionsByIds } from "./reader.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -51,10 +52,10 @@ function insertMessage(
   const db = getDb();
   const result = db
     .prepare(
-      `INSERT INTO messages (session_id, ordinal, role, content)
-       VALUES (?, ?, 'assistant', ?)`,
+      `INSERT INTO messages (session_id, ordinal, role, content, sync_id)
+       VALUES (?, ?, 'assistant', ?, ?)`,
     )
-    .run(sessionId, ordinal, content);
+    .run(sessionId, ordinal, content, buildMessageSyncId(sessionId, ordinal));
   return Number(result.lastInsertRowid);
 }
 
@@ -319,6 +320,7 @@ describe("target_session_sync", () => {
       const second = readSessionMessages("sess-1", id2, 100);
       expect(second.rows).toHaveLength(1);
       expect(second.rows[0].ordinal).toBe(2);
+      expect(second.rows[0].syncId).toBe(buildMessageSyncId("sess-1", 2));
       expect(second.maxId).toBe(id3);
     });
 
@@ -346,6 +348,7 @@ describe("target_session_sync", () => {
       const result = readSessionMessages("sess-1", pending[0].wm_messages, 100);
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0].ordinal).toBe(2);
+      expect(result.rows[0].syncId).toBe(buildMessageSyncId("sess-1", 2));
     });
   });
 

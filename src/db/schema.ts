@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS messages (
   has_output_tokens  INTEGER NOT NULL DEFAULT 0,
   uuid            TEXT,
   parent_uuid     TEXT,
+  sync_id         TEXT NOT NULL,
   UNIQUE(session_id, ordinal)
 );
 
@@ -184,6 +185,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id            INTEGER NOT NULL,
   session_id            TEXT NOT NULL,
+  call_index            INTEGER NOT NULL DEFAULT 0,
   tool_name             TEXT NOT NULL,
   category              TEXT NOT NULL,
   tool_use_id           TEXT,
@@ -193,7 +195,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   result_content        TEXT,
   duration_ms           INTEGER,
   subagent_session_id   TEXT,
-  sync_id               TEXT DEFAULT (hex(randomblob(8)))
+  sync_id               TEXT NOT NULL
 );
 
 -- ── Scanner tables ──────────────────────────────────────────────────────────
@@ -212,7 +214,7 @@ CREATE TABLE IF NOT EXISTS scanner_turns (
   cache_read_tokens INTEGER DEFAULT 0,
   cache_creation_tokens INTEGER DEFAULT 0,
   reasoning_tokens INTEGER DEFAULT 0,
-  sync_id TEXT DEFAULT (hex(randomblob(8))),
+  sync_id TEXT NOT NULL,
   UNIQUE(session_id, source, turn_index)
 );
 
@@ -220,6 +222,7 @@ CREATE TABLE IF NOT EXISTS scanner_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
   source TEXT NOT NULL,
+  event_index INTEGER NOT NULL,
   event_type TEXT NOT NULL,
   timestamp_ms INTEGER NOT NULL,
   tool_name TEXT,
@@ -227,8 +230,8 @@ CREATE TABLE IF NOT EXISTS scanner_events (
   tool_output TEXT,
   content TEXT,
   metadata JSON,
-  sync_id TEXT DEFAULT (hex(randomblob(8))),
-  UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+  sync_id TEXT NOT NULL,
+  UNIQUE(session_id, source, event_index)
 );
 
 CREATE TABLE IF NOT EXISTS scanner_file_watermarks (

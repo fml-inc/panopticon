@@ -6,6 +6,12 @@ import {
   upsertSessionRepository,
   upsertSession as upsertSessionRow,
 } from "../db/store.js";
+import {
+  buildMessageSyncId,
+  buildScannerEventSyncId,
+  buildScannerTurnSyncId,
+  buildToolCallSyncId,
+} from "../db/sync-ids.js";
 import { resolveGitIdentity, resolveRepoFromCwd } from "../repo.js";
 import type {
   ParsedEvent,
@@ -15,7 +21,11 @@ import type {
   ParsedTurn,
 } from "../targets/types.js";
 
-// ── Sync ID preservation across single-file reparses ──────────────────────
+// ── Legacy sync-id snapshot shape ─────────────────────────────────────────
+
+// Scanner-owned rows now recompute deterministic sync IDs on re-insert.
+// Keep this shape temporarily so resetFileForReparse can return a stable
+// value while older call sites are removed.
 
 export interface SavedSyncIds {
   turns: Array<{
@@ -35,6 +45,7 @@ export interface SavedSyncIds {
   toolCalls: Array<{
     sessionId: string;
     ordinal: number;
+    callIndex: number;
     toolUseId: string;
     toolName: string;
     syncId: string;
@@ -100,8 +111,8 @@ const INSERT_TURN_SQL = `
   INSERT OR IGNORE INTO scanner_turns
     (session_id, source, turn_index, timestamp_ms, model, role,
      content_preview, input_tokens, output_tokens,
-     cache_read_tokens, cache_creation_tokens, reasoning_tokens)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     cache_read_tokens, cache_creation_tokens, reasoning_tokens, sync_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 export function insertTurns(turns: ParsedTurn[], source: string): void {
@@ -123,6 +134,7 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
         t.cacheReadTokens,
         t.cacheCreationTokens,
         t.reasoningTokens,
+        buildScannerTurnSyncId(t.sessionId, source, t.turnIndex),
       );
     }
   });
@@ -133,8 +145,8 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
 
 const INSERT_EVENT_SQL = `
   INSERT OR IGNORE INTO scanner_events
-    (session_id, source, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (session_id, source, event_index, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata, sync_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 export function insertScannerEvents(
@@ -145,10 +157,23 @@ export function insertScannerEvents(
   const db = getDb();
   const stmt = db.prepare(INSERT_EVENT_SQL);
   const tx = db.transaction(() => {
+    const nextEventIndexBySessionSource = new Map<string, number>();
     for (const e of events) {
+      let eventIndex = e.eventIndex;
+      if (eventIndex == null) {
+        const eventStreamKey = `${e.sessionId}|${source}`;
+        let next = nextEventIndexBySessionSource.get(eventStreamKey);
+        if (next == null) {
+          next = getEventCount(e.sessionId, source);
+        }
+        eventIndex = next;
+        nextEventIndexBySessionSource.set(eventStreamKey, next + 1);
+      }
+
       stmt.run(
         e.sessionId,
         source,
+        eventIndex,
         e.eventType,
         e.timestampMs,
         e.toolName ?? null,
@@ -156,6 +181,7 @@ export function insertScannerEvents(
         e.toolOutput ?? null,
         e.content ?? null,
         e.metadata ? JSON.stringify(e.metadata) : null,
+        buildScannerEventSyncId(e.sessionId, source, eventIndex),
       );
     }
   });
@@ -274,108 +300,19 @@ export function writeFileWatermark(filePath: string, byteOffset: number): void {
 }
 
 /**
- * Snapshot sync_id values for a session and its fork children so they
- * can be restored after re-insertion (preserving upstream sync identity).
- */
-function snapshotSyncIds(sessionId: string): SavedSyncIds {
-  const db = getDb();
-  const saved: SavedSyncIds = { turns: [], events: [], toolCalls: [] };
-
-  const forkRows = db
-    .prepare(
-      "SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
-    )
-    .all(sessionId) as Array<{ session_id: string }>;
-  const allIds = [sessionId, ...forkRows.map((r) => r.session_id)];
-
-  for (const sid of allIds) {
-    const turns = db
-      .prepare(
-        "SELECT session_id, source, turn_index, sync_id FROM scanner_turns WHERE session_id = ?",
-      )
-      .all(sid) as Array<{
-      session_id: string;
-      source: string;
-      turn_index: number;
-      sync_id: string;
-    }>;
-    for (const t of turns) {
-      saved.turns.push({
-        sessionId: t.session_id,
-        source: t.source,
-        turnIndex: t.turn_index,
-        syncId: t.sync_id,
-      });
-    }
-
-    const events = db
-      .prepare(
-        "SELECT session_id, source, event_type, timestamp_ms, COALESCE(tool_name, '') as tool_name, sync_id FROM scanner_events WHERE session_id = ?",
-      )
-      .all(sid) as Array<{
-      session_id: string;
-      source: string;
-      event_type: string;
-      timestamp_ms: number;
-      tool_name: string;
-      sync_id: string;
-    }>;
-    for (const e of events) {
-      saved.events.push({
-        sessionId: e.session_id,
-        source: e.source,
-        eventType: e.event_type,
-        timestampMs: e.timestamp_ms,
-        toolName: e.tool_name,
-        syncId: e.sync_id,
-      });
-    }
-
-    const tcs = db
-      .prepare(
-        `SELECT tc.session_id, m.ordinal, COALESCE(tc.tool_use_id, '') as tool_use_id,
-                tc.tool_name, tc.sync_id
-         FROM tool_calls tc
-         INNER JOIN messages m ON tc.message_id = m.id
-         WHERE tc.session_id = ?`,
-      )
-      .all(sid) as Array<{
-      session_id: string;
-      ordinal: number;
-      tool_use_id: string;
-      tool_name: string;
-      sync_id: string;
-    }>;
-    for (const tc of tcs) {
-      saved.toolCalls.push({
-        sessionId: tc.session_id,
-        ordinal: tc.ordinal,
-        toolUseId: tc.tool_use_id,
-        toolName: tc.tool_name,
-        syncId: tc.sync_id,
-      });
-    }
-  }
-
-  return saved;
-}
-
-/**
  * Reset a single file for full reparse: clear its watermark and delete
  * all turns, messages, tool_calls, and events for the session so the
  * full-file parse can re-insert cleanly (including fork detection).
  *
- * Returns previously-assigned sync_id values keyed by natural keys so
- * the caller can restore them after re-insertion.
+ * Returns an empty legacy sync-id snapshot object; scanner rows now rebuild
+ * deterministic sync IDs directly from their natural keys when re-inserted.
  */
 export function resetFileForReparse(
   filePath: string,
   sessionId?: string,
 ): SavedSyncIds {
   const db = getDb();
-  const saved: SavedSyncIds = sessionId
-    ? snapshotSyncIds(sessionId)
-    : { turns: [], events: [], toolCalls: [] };
+  const saved: SavedSyncIds = { turns: [], events: [], toolCalls: [] };
 
   db.prepare("DELETE FROM scanner_file_watermarks WHERE file_path = ?").run(
     filePath,
@@ -417,62 +354,9 @@ export function resetFileForReparse(
 }
 
 /**
- * Restore previously-saved sync_id values after data has been re-inserted.
- * Matches rows by the same natural keys used in reparseAll().
+ * Legacy no-op: scanner rows now compute deterministic sync IDs at insert time.
  */
-export function restoreSyncIds(saved: SavedSyncIds): void {
-  if (!saved.turns.length && !saved.events.length && !saved.toolCalls.length)
-    return;
-
-  const db = getDb();
-  const tx = db.transaction(() => {
-    if (saved.turns.length > 0) {
-      const stmt = db.prepare(
-        "UPDATE scanner_turns SET sync_id = ? WHERE session_id = ? AND source = ? AND turn_index = ?",
-      );
-      for (const t of saved.turns) {
-        stmt.run(t.syncId, t.sessionId, t.source, t.turnIndex);
-      }
-    }
-
-    if (saved.events.length > 0) {
-      const stmt = db.prepare(
-        `UPDATE scanner_events SET sync_id = ?
-         WHERE session_id = ? AND source = ? AND event_type = ? AND timestamp_ms = ?
-           AND COALESCE(tool_name, '') = ?`,
-      );
-      for (const e of saved.events) {
-        stmt.run(
-          e.syncId,
-          e.sessionId,
-          e.source,
-          e.eventType,
-          e.timestampMs,
-          e.toolName,
-        );
-      }
-    }
-
-    if (saved.toolCalls.length > 0) {
-      const stmt = db.prepare(
-        `UPDATE tool_calls SET sync_id = ?
-         WHERE message_id IN (SELECT id FROM messages WHERE session_id = ? AND ordinal = ?)
-           AND COALESCE(tool_use_id, '') = ?
-           AND tool_name = ?`,
-      );
-      for (const tc of saved.toolCalls) {
-        stmt.run(
-          tc.syncId,
-          tc.sessionId,
-          tc.ordinal,
-          tc.toolUseId,
-          tc.toolName,
-        );
-      }
-    }
-  });
-  tx();
-}
+export function restoreSyncIds(_saved: SavedSyncIds): void {}
 
 // ── Turn count for incremental parsing ──────────────────────────────────────
 
@@ -481,6 +365,16 @@ export function getTurnCount(sessionId: string, source: string): number {
   const row = db
     .prepare(
       "SELECT COUNT(*) as count FROM scanner_turns WHERE session_id = ? AND source = ?",
+    )
+    .get(sessionId, source) as { count: number };
+  return row.count;
+}
+
+export function getEventCount(sessionId: string, source: string): number {
+  const db = getDb();
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) as count FROM scanner_events WHERE session_id = ? AND source = ?",
     )
     .get(sessionId, source) as { count: number };
   return row.count;
@@ -538,16 +432,16 @@ const INSERT_MESSAGE_SQL = `
     (session_id, ordinal, role, content, timestamp_ms,
      has_thinking, has_tool_use, content_length, is_system,
      model, token_usage, context_tokens, output_tokens,
-     has_context_tokens, has_output_tokens, uuid, parent_uuid)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     has_context_tokens, has_output_tokens, uuid, parent_uuid, sync_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const INSERT_TOOL_CALL_SQL = `
   INSERT INTO tool_calls
-    (message_id, session_id, tool_name, category, tool_use_id,
+    (message_id, session_id, call_index, tool_name, category, tool_use_id,
      input_json, skill_name, result_content_length, result_content,
-     subagent_session_id, duration_ms)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     subagent_session_id, duration_ms, sync_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 /**
@@ -617,15 +511,21 @@ export function insertMessages(
         msg.hasOutputTokens ? 1 : 0,
         msg.uuid ?? null,
         msg.parentUuid ?? null,
+        buildMessageSyncId(msg.sessionId, msg.ordinal, msg.uuid),
       );
 
       // INSERT OR IGNORE returns 0 changes if the row already exists
       if (result.changes === 0) continue;
 
       const messageId = result.lastInsertRowid;
+      const messageSyncId = buildMessageSyncId(
+        msg.sessionId,
+        msg.ordinal,
+        msg.uuid,
+      );
       ftsStmt.run(messageId, content);
 
-      for (const tc of msg.toolCalls) {
+      for (const [callIndex, tc] of msg.toolCalls.entries()) {
         // Look up result from the tool_result blocks
         const toolResult = toolResultMap.get(tc.toolUseId);
         const durationMs =
@@ -635,6 +535,7 @@ export function insertMessages(
         tcStmt.run(
           messageId,
           msg.sessionId,
+          callIndex,
           tc.toolName,
           tc.category,
           tc.toolUseId,
@@ -644,6 +545,7 @@ export function insertMessages(
           toolResult?.contentRaw ?? null,
           tc.subagentSessionId ?? null,
           durationMs != null && durationMs >= 0 ? durationMs : null,
+          buildToolCallSyncId(messageSyncId, callIndex, tc.toolUseId),
         );
       }
     }

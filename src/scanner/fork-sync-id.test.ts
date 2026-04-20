@@ -1,6 +1,6 @@
 /**
- * Tests that sync_id values are preserved for fork sessions across
- * resetFileForReparse + re-insert + restoreSyncIds.
+ * Tests that deterministic sync_id values remain stable for fork sessions
+ * across resetFileForReparse + re-insert.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -27,6 +27,7 @@ vi.mock("../config.js", () => {
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
+import { buildScannerEventSyncId } from "../db/sync-ids.js";
 import { getTarget } from "../targets/index.js";
 import "../targets/claude.js";
 import {
@@ -34,7 +35,6 @@ import {
   insertScannerEvents,
   insertTurns,
   resetFileForReparse,
-  restoreSyncIds,
   updateSessionTotals,
   upsertSession,
   writeFileWatermark,
@@ -148,7 +148,7 @@ function getSyncIds(sessionId: string): {
 
   const tcRows = db
     .prepare(
-      `SELECT tc.session_id, tc.tool_name, tc.tool_use_id, tc.sync_id, m.ordinal
+      `SELECT tc.session_id, tc.tool_name, tc.tool_use_id, tc.call_index, tc.sync_id, m.ordinal
        FROM tool_calls tc
        INNER JOIN messages m ON tc.message_id = m.id
        WHERE tc.session_id = ?`,
@@ -157,23 +157,25 @@ function getSyncIds(sessionId: string): {
     session_id: string;
     tool_name: string;
     tool_use_id: string;
+    call_index: number;
     sync_id: string;
     ordinal: number;
   }>;
   for (const r of tcRows) {
     toolCalls.set(
-      `${r.session_id}:${r.ordinal}:${r.tool_use_id || ""}:${r.tool_name}`,
+      `${r.session_id}:${r.ordinal}:${r.tool_use_id || `idx:${r.call_index}`}:${r.tool_name}`,
       r.sync_id,
     );
   }
 
   const evRows = db
     .prepare(
-      "SELECT session_id, source, event_type, timestamp_ms, COALESCE(tool_name, '') as tool_name, sync_id FROM scanner_events WHERE session_id = ?",
+      "SELECT session_id, source, event_index, event_type, timestamp_ms, COALESCE(tool_name, '') as tool_name, sync_id FROM scanner_events WHERE session_id = ?",
     )
     .all(sessionId) as Array<{
     session_id: string;
     source: string;
+    event_index: number;
     event_type: string;
     timestamp_ms: number;
     tool_name: string;
@@ -181,7 +183,7 @@ function getSyncIds(sessionId: string): {
   }>;
   for (const r of evRows) {
     events.set(
-      `${r.session_id}:${r.source}:${r.event_type}:${r.timestamp_ms}:${r.tool_name}`,
+      `${r.session_id}:${r.source}:${r.event_index}:${r.event_type}:${r.timestamp_ms}:${r.tool_name}`,
       r.sync_id,
     );
   }
@@ -291,7 +293,7 @@ afterEach(() => {
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("fork sync_id preservation", () => {
+describe("fork sync_id stability", () => {
   it("parser detects fork and produces separate session", () => {
     const file = path.join(tmpDir, `${SESSION_ID}.jsonl`);
     fs.writeFileSync(file, `${buildForkedSessionLines().join("\n")}\n`);
@@ -308,7 +310,7 @@ describe("fork sync_id preservation", () => {
     expect(result!.forks![0].turns.length).toBeGreaterThan(0);
   });
 
-  it("resetFileForReparse snapshots sync_ids for parent and fork children", () => {
+  it("resetFileForReparse clears file data without snapshotting sync_ids", () => {
     const file = path.join(tmpDir, `${SESSION_ID}.jsonl`);
     fs.writeFileSync(file, `${buildForkedSessionLines().join("\n")}\n`);
 
@@ -329,16 +331,12 @@ describe("fork sync_id preservation", () => {
     expect(before.turns.size).toBeGreaterThan(0);
     expect(before.toolCalls.size).toBeGreaterThan(0);
 
-    // Reset — should snapshot + delete
+    // Reset — should clear data without keeping snapshot state
     const saved = resetFileForReparse(file, SESSION_ID);
 
-    // Snapshot should include both parent AND fork turns/toolCalls
-    expect(saved.turns.length).toBe(before.turns.size);
-    expect(saved.toolCalls.length).toBe(before.toolCalls.size);
-
-    // Some turns should belong to the fork session
-    const forkTurns = saved.turns.filter((t) => t.sessionId !== SESSION_ID);
-    expect(forkTurns.length).toBeGreaterThan(0);
+    expect(saved.turns.length).toBe(0);
+    expect(saved.events.length).toBe(0);
+    expect(saved.toolCalls.length).toBe(0);
 
     // Data should be cleared
     const parentTurns = db
@@ -355,7 +353,7 @@ describe("fork sync_id preservation", () => {
     expect(forksAfter.c).toBe(0);
   });
 
-  it("sync_ids are preserved after resetFileForReparse + re-insert + restoreSyncIds", () => {
+  it("sync_ids stay stable after resetFileForReparse + re-insert", () => {
     const file = path.join(tmpDir, `${SESSION_ID}.jsonl`);
     fs.writeFileSync(file, `${buildForkedSessionLines().join("\n")}\n`);
 
@@ -363,29 +361,10 @@ describe("fork sync_id preservation", () => {
     parseAndInsert(file);
     const before = getAllSyncIds(SESSION_ID);
 
-    // Reset (snapshots sync_ids, then clears data)
-    const saved = resetFileForReparse(file, SESSION_ID);
+    // Reset and re-insert (simulates a full re-scan)
+    resetFileForReparse(file, SESSION_ID);
 
-    // Re-insert (simulates re-scan)
     parseAndInsert(file);
-
-    // After re-insert, sync_ids should be random/new (different from before)
-    const afterReinsert = getAllSyncIds(SESSION_ID);
-    let allSame = true;
-    for (const [key, oldSyncId] of before.turns) {
-      const newSyncId = afterReinsert.turns.get(key);
-      if (newSyncId && newSyncId !== oldSyncId) {
-        allSame = false;
-        break;
-      }
-    }
-    // At least some sync_ids should differ (they're random)
-    expect(allSame).toBe(false);
-
-    // Restore sync_ids from snapshot
-    restoreSyncIds(saved);
-
-    // Now verify ALL sync_ids match the originals
     const after = getAllSyncIds(SESSION_ID);
 
     // Turns
@@ -410,7 +389,7 @@ describe("fork sync_id preservation", () => {
     }
   });
 
-  it("fork-only sync_ids are preserved (not just parent)", () => {
+  it("fork-only sync_ids stay stable (not just parent)", () => {
     const file = path.join(tmpDir, `${SESSION_ID}.jsonl`);
     fs.writeFileSync(file, `${buildForkedSessionLines().join("\n")}\n`);
 
@@ -429,10 +408,9 @@ describe("fork sync_id preservation", () => {
     const forkBefore = getSyncIds(forkSessionId);
     expect(forkBefore.turns.size).toBeGreaterThan(0);
 
-    // Reset + re-insert + restore
-    const saved = resetFileForReparse(file, SESSION_ID);
+    // Reset + re-insert
+    resetFileForReparse(file, SESSION_ID);
     parseAndInsert(file);
-    restoreSyncIds(saved);
 
     // Verify fork sync_ids
     const forkAfter = getSyncIds(forkSessionId);
@@ -455,8 +433,130 @@ describe("fork sync_id preservation", () => {
     expect(saved.turns.length).toBe(0);
     expect(saved.events.length).toBe(0);
     expect(saved.toolCalls.length).toBe(0);
+  });
 
-    // restoreSyncIds with empty saved should be a no-op
-    restoreSyncIds(saved);
+  it("keeps repeated same-key scanner events distinct and stable", () => {
+    const sessionId = "dup-events-session";
+    const source = "claude";
+    const file = path.join(tmpDir, `${sessionId}.jsonl`);
+
+    upsertSession({ sessionId, startedAtMs: 1 }, file, source);
+    insertScannerEvents(
+      [
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-a",
+          metadata: { messageId: "m1" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-b",
+          metadata: { messageId: "m2" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-c",
+          metadata: { messageId: "m3" },
+        },
+      ],
+      source,
+    );
+
+    let rows = getDb()
+      .prepare(
+        `SELECT event_index, content, sync_id
+         FROM scanner_events
+         WHERE session_id = ?
+         ORDER BY event_index`,
+      )
+      .all(sessionId) as Array<{
+      event_index: number;
+      content: string | null;
+      sync_id: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        event_index: 0,
+        content: "snapshot-a",
+        sync_id: buildScannerEventSyncId(sessionId, source, 0),
+      },
+      {
+        event_index: 1,
+        content: "snapshot-b",
+        sync_id: buildScannerEventSyncId(sessionId, source, 1),
+      },
+      {
+        event_index: 2,
+        content: "snapshot-c",
+        sync_id: buildScannerEventSyncId(sessionId, source, 2),
+      },
+    ]);
+
+    resetFileForReparse(file, sessionId);
+    upsertSession({ sessionId, startedAtMs: 1 }, file, source);
+    insertScannerEvents(
+      [
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-a",
+          metadata: { messageId: "m1" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-b",
+          metadata: { messageId: "m2" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-c",
+          metadata: { messageId: "m3" },
+        },
+      ],
+      source,
+    );
+
+    rows = getDb()
+      .prepare(
+        `SELECT event_index, content, sync_id
+         FROM scanner_events
+         WHERE session_id = ?
+         ORDER BY event_index`,
+      )
+      .all(sessionId) as Array<{
+      event_index: number;
+      content: string | null;
+      sync_id: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        event_index: 0,
+        content: "snapshot-a",
+        sync_id: buildScannerEventSyncId(sessionId, source, 0),
+      },
+      {
+        event_index: 1,
+        content: "snapshot-b",
+        sync_id: buildScannerEventSyncId(sessionId, source, 1),
+      },
+      {
+        event_index: 2,
+        content: "snapshot-c",
+        sync_id: buildScannerEventSyncId(sessionId, source, 2),
+      },
+    ]);
   });
 });

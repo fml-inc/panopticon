@@ -33,6 +33,7 @@ import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
 import { insertHookEvent } from "../db/store.js";
+import { buildMessageSyncId, buildToolCallSyncId } from "../db/sync-ids.js";
 import {
   rebuildIntentClaimsFromHooks,
   recordIntentClaimsFromHookEvent,
@@ -82,14 +83,15 @@ function insertUserMessage(args: {
   const db = getDb();
   db.prepare(
     `INSERT INTO messages
-       (session_id, ordinal, role, content, timestamp_ms, uuid)
-     VALUES (?, ?, 'user', ?, ?, ?)`,
+       (session_id, ordinal, role, content, timestamp_ms, uuid, sync_id)
+     VALUES (?, ?, 'user', ?, ?, ?, ?)`,
   ).run(
     args.sessionId,
     args.ordinal,
     args.content,
     args.timestampMs,
     args.uuid ?? null,
+    buildMessageSyncId(args.sessionId, args.ordinal, args.uuid),
   );
   return (
     db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
@@ -105,9 +107,15 @@ function insertAssistantMessage(args: {
   const db = getDb();
   db.prepare(
     `INSERT INTO messages
-       (session_id, ordinal, role, content, timestamp_ms)
-     VALUES (?, ?, 'assistant', ?, ?)`,
-  ).run(args.sessionId, args.ordinal, args.content ?? "", args.timestampMs);
+       (session_id, ordinal, role, content, timestamp_ms, sync_id)
+     VALUES (?, ?, 'assistant', ?, ?, ?)`,
+  ).run(
+    args.sessionId,
+    args.ordinal,
+    args.content ?? "",
+    args.timestampMs,
+    buildMessageSyncId(args.sessionId, args.ordinal),
+  );
   return (
     db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
   ).id;
@@ -120,11 +128,14 @@ function insertToolCall(args: {
   inputJson: Record<string, unknown>;
   toolUseId?: string | null;
 }): void {
+  const message = getDb()
+    .prepare("SELECT sync_id FROM messages WHERE id = ?")
+    .get(args.messageId) as { sync_id: string };
   getDb()
     .prepare(
       `INSERT INTO tool_calls
-         (message_id, session_id, tool_name, category, tool_use_id, input_json)
-       VALUES (?, ?, ?, 'file', ?, ?)`,
+         (message_id, session_id, call_index, tool_name, category, tool_use_id, input_json, sync_id)
+       VALUES (?, ?, 0, ?, 'file', ?, ?, ?)`,
     )
     .run(
       args.messageId,
@@ -132,6 +143,7 @@ function insertToolCall(args: {
       args.toolName,
       args.toolUseId ?? null,
       JSON.stringify(args.inputJson),
+      buildToolCallSyncId(message.sync_id, 0, args.toolUseId),
     );
 }
 

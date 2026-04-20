@@ -300,7 +300,7 @@ export function readScannerTurns(
 // ── Scanner events ──────────────────────────────────────────────────────────
 
 const SCANNER_EVENTS_SQL = `
-  SELECT id, session_id, sync_id, source, event_type, timestamp_ms,
+  SELECT id, session_id, sync_id, source, event_index, event_type, timestamp_ms,
          tool_name, tool_input, tool_output, content, metadata
   FROM scanner_events
   WHERE id > ?
@@ -318,6 +318,7 @@ export function readScannerEvents(
     session_id: string;
     sync_id: string | null;
     source: string;
+    event_index: number;
     event_type: string;
     timestamp_ms: number;
     tool_name: string | null;
@@ -332,6 +333,7 @@ export function readScannerEvents(
     sessionId: r.session_id,
     syncId: r.sync_id,
     source: r.source,
+    eventIndex: r.event_index,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
     toolName: r.tool_name,
@@ -584,7 +586,7 @@ export function readRepoConfigSnapshots(
 // ── Messages ────────────────────────────────────────────────────────────────
 
 const MESSAGES_SQL = `
-  SELECT id, session_id, ordinal, role, content, timestamp_ms,
+  SELECT id, sync_id, session_id, ordinal, role, content, timestamp_ms,
          has_thinking, has_tool_use, content_length, is_system,
          model, token_usage, context_tokens, output_tokens,
          has_context_tokens, has_output_tokens
@@ -601,6 +603,7 @@ export function readMessages(
   const db = getDb();
   const rawRows = db.prepare(MESSAGES_SQL).all(afterId, limit) as Array<{
     id: number;
+    sync_id: string | null;
     session_id: string;
     ordinal: number;
     role: string;
@@ -620,6 +623,7 @@ export function readMessages(
 
   const rows: MessageSyncRecord[] = rawRows.map((r) => ({
     id: r.id,
+    syncId: r.sync_id,
     sessionId: r.session_id,
     ordinal: r.ordinal,
     role: r.role,
@@ -644,12 +648,14 @@ export function readMessages(
 // ── Tool calls ──────────────────────────────────────────────────────────────
 
 const TOOL_CALLS_SQL = `
-  SELECT id, message_id, session_id, sync_id, tool_name, category, tool_use_id,
+  SELECT tc.id, tc.message_id, m.sync_id as message_sync_id, tc.session_id,
+         tc.call_index, tc.sync_id, tc.tool_name, tc.category, tc.tool_use_id,
          input_json, skill_name, result_content_length, result_content,
          subagent_session_id
-  FROM tool_calls
-  WHERE id > ?
-  ORDER BY id
+  FROM tool_calls tc
+  LEFT JOIN messages m ON m.id = tc.message_id
+  WHERE tc.id > ?
+  ORDER BY tc.id
   LIMIT ?
 `;
 
@@ -661,7 +667,9 @@ export function readToolCalls(
   const rawRows = db.prepare(TOOL_CALLS_SQL).all(afterId, limit) as Array<{
     id: number;
     message_id: number;
+    message_sync_id: string | null;
     session_id: string;
+    call_index: number;
     sync_id: string | null;
     tool_name: string;
     category: string;
@@ -676,7 +684,9 @@ export function readToolCalls(
   const rows: ToolCallSyncRecord[] = rawRows.map((r) => ({
     id: r.id,
     messageId: r.message_id,
+    messageSyncId: r.message_sync_id,
     sessionId: r.session_id,
+    callIndex: r.call_index,
     syncId: r.sync_id,
     toolName: r.tool_name,
     category: r.category,
@@ -851,7 +861,7 @@ export function readSessionMessages(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, session_id, ordinal, role, content, timestamp_ms,
+      `SELECT id, sync_id, session_id, ordinal, role, content, timestamp_ms,
               has_thinking, has_tool_use, content_length, is_system,
               model, token_usage, context_tokens, output_tokens,
               has_context_tokens, has_output_tokens
@@ -862,6 +872,7 @@ export function readSessionMessages(
     )
     .all(sessionId, afterId, limit) as Array<{
     id: number;
+    sync_id: string | null;
     session_id: string;
     ordinal: number;
     role: string;
@@ -881,6 +892,7 @@ export function readSessionMessages(
 
   const rows: MessageSyncRecord[] = rawRows.map((r) => ({
     id: r.id,
+    syncId: r.sync_id,
     sessionId: r.session_id,
     ordinal: r.ordinal,
     role: r.role,
@@ -910,18 +922,22 @@ export function readSessionToolCalls(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, message_id, session_id, sync_id, tool_name, category, tool_use_id,
+      `SELECT tc.id, tc.message_id, m.sync_id as message_sync_id, tc.session_id,
+              tc.call_index, tc.sync_id, tc.tool_name, tc.category, tc.tool_use_id,
               input_json, skill_name, result_content_length, result_content,
               subagent_session_id
-       FROM tool_calls
-       WHERE session_id = ? AND id > ?
-       ORDER BY id
+       FROM tool_calls tc
+       LEFT JOIN messages m ON m.id = tc.message_id
+       WHERE tc.session_id = ? AND tc.id > ?
+       ORDER BY tc.id
        LIMIT ?`,
     )
     .all(sessionId, afterId, limit) as Array<{
     id: number;
     message_id: number;
+    message_sync_id: string | null;
     session_id: string;
+    call_index: number;
     sync_id: string | null;
     tool_name: string;
     category: string;
@@ -936,7 +952,9 @@ export function readSessionToolCalls(
   const rows: ToolCallSyncRecord[] = rawRows.map((r) => ({
     id: r.id,
     messageId: r.message_id,
+    messageSyncId: r.message_sync_id,
     sessionId: r.session_id,
+    callIndex: r.call_index,
     syncId: r.sync_id,
     toolName: r.tool_name,
     category: r.category,
@@ -1019,7 +1037,7 @@ export function readSessionScannerEvents(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, session_id, sync_id, source, event_type, timestamp_ms,
+      `SELECT id, session_id, sync_id, source, event_index, event_type, timestamp_ms,
               tool_name, tool_input, tool_output, content, metadata
        FROM scanner_events
        WHERE session_id = ? AND id > ?
@@ -1031,6 +1049,7 @@ export function readSessionScannerEvents(
     session_id: string;
     sync_id: string | null;
     source: string;
+    event_index: number;
     event_type: string;
     timestamp_ms: number;
     tool_name: string | null;
@@ -1045,6 +1064,7 @@ export function readSessionScannerEvents(
     sessionId: r.session_id,
     syncId: r.sync_id,
     source: r.source,
+    eventIndex: r.event_index,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
     toolName: r.tool_name,

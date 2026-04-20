@@ -27,7 +27,11 @@ vi.mock("../config.js", () => {
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
 import { insertHookEvent, upsertSession } from "../db/store.js";
-import { rebuildDerivedStateFromRaw } from "./reparse.js";
+import { buildMessageSyncId } from "../db/sync-ids.js";
+import {
+  rebuildDerivedStateFromRaw,
+  rewindTargetSessionSyncForScannerReparse,
+} from "./reparse.js";
 
 beforeEach(() => {
   closeDb();
@@ -65,9 +69,17 @@ describe("rebuildDerivedStateFromRaw", () => {
     });
 
     db.prepare(
-      `INSERT INTO messages (session_id, ordinal, role, content, timestamp_ms, is_system)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(sessionId, 0, "user", "change file", 1_700_000_000_000, 0);
+      `INSERT INTO messages (session_id, ordinal, role, content, timestamp_ms, is_system, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      sessionId,
+      0,
+      "user",
+      "change file",
+      1_700_000_000_000,
+      0,
+      buildMessageSyncId(sessionId, 0),
+    );
 
     insertHookEvent({
       session_id: sessionId,
@@ -152,5 +164,118 @@ describe("rebuildDerivedStateFromRaw", () => {
     expect(countsAfterSecond).toEqual(countsAfterFirst);
 
     fs.rmSync(scratchDir, { recursive: true, force: true });
+  });
+});
+
+describe("rewindTargetSessionSyncForScannerReparse", () => {
+  it("rewinds only scanner-owned session sync state", () => {
+    const db = getDb();
+
+    db.prepare(
+      `INSERT INTO sessions (session_id, sync_seq, has_scanner, has_hooks, machine, relationship_type)
+       VALUES (?, ?, ?, ?, 'local', 'standalone')`,
+    ).run("scanner-session", 5, 1, 1);
+    db.prepare(
+      `INSERT INTO sessions (session_id, sync_seq, has_scanner, has_hooks, machine, relationship_type)
+       VALUES (?, ?, ?, ?, 'local', 'standalone')`,
+    ).run("hooks-only-session", 7, 0, 1);
+
+    db.prepare(
+      `INSERT INTO target_session_sync (
+         session_id, target, confirmed, sync_seq, synced_seq,
+         wm_messages, wm_tool_calls, wm_scanner_turns, wm_scanner_events,
+         wm_hook_events, wm_otel_logs, wm_otel_metrics, wm_otel_spans
+       ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "scanner-session",
+      "fml",
+      99,
+      99,
+      101,
+      102,
+      103,
+      104,
+      205,
+      206,
+      207,
+      208,
+    );
+    db.prepare(
+      `INSERT INTO target_session_sync (
+         session_id, target, confirmed, sync_seq, synced_seq,
+         wm_messages, wm_tool_calls, wm_scanner_turns, wm_scanner_events,
+         wm_hook_events, wm_otel_logs, wm_otel_metrics, wm_otel_spans
+       ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "hooks-only-session",
+      "fml",
+      88,
+      88,
+      111,
+      112,
+      113,
+      114,
+      215,
+      216,
+      217,
+      218,
+    );
+
+    const rewound = rewindTargetSessionSyncForScannerReparse(db);
+    expect(rewound.rewoundRows).toBe(1);
+
+    const scannerRow = db
+      .prepare("SELECT * FROM target_session_sync WHERE session_id = ?")
+      .get("scanner-session") as {
+      sync_seq: number;
+      synced_seq: number;
+      wm_messages: number;
+      wm_tool_calls: number;
+      wm_scanner_turns: number;
+      wm_scanner_events: number;
+      wm_hook_events: number;
+      wm_otel_logs: number;
+      wm_otel_metrics: number;
+      wm_otel_spans: number;
+    };
+    expect(scannerRow).toMatchObject({
+      sync_seq: 4,
+      synced_seq: 4,
+      wm_messages: 0,
+      wm_tool_calls: 0,
+      wm_scanner_turns: 0,
+      wm_scanner_events: 0,
+      wm_hook_events: 205,
+      wm_otel_logs: 206,
+      wm_otel_metrics: 207,
+      wm_otel_spans: 208,
+    });
+
+    const hooksOnlyRow = db
+      .prepare("SELECT * FROM target_session_sync WHERE session_id = ?")
+      .get("hooks-only-session") as {
+      sync_seq: number;
+      synced_seq: number;
+      wm_messages: number;
+      wm_tool_calls: number;
+      wm_scanner_turns: number;
+      wm_scanner_events: number;
+      wm_hook_events: number;
+      wm_otel_logs: number;
+      wm_otel_metrics: number;
+      wm_otel_spans: number;
+    };
+    expect(hooksOnlyRow).toMatchObject({
+      sync_seq: 88,
+      synced_seq: 88,
+      wm_messages: 111,
+      wm_tool_calls: 112,
+      wm_scanner_turns: 113,
+      wm_scanner_events: 114,
+      wm_hook_events: 215,
+      wm_otel_logs: 216,
+      wm_otel_metrics: 217,
+      wm_otel_spans: 218,
+    });
   });
 });

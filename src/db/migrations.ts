@@ -30,6 +30,12 @@
  */
 
 import type { Database } from "./driver.js";
+import {
+  buildMessageSyncId,
+  buildScannerEventSyncId,
+  buildScannerTurnSyncId,
+  buildToolCallSyncId,
+} from "./sync-ids.js";
 
 export interface Migration {
   id: number;
@@ -38,6 +44,140 @@ export interface Migration {
   sql?: string;
   /** Complex migrations: function that receives the db handle. */
   up?: (db: Database) => void;
+}
+
+function backfillScannerEventSyncIds(db: Database): void {
+  const eventRows = db
+    .prepare(
+      `SELECT id, session_id, source
+       FROM scanner_events
+       ORDER BY session_id, source, id`,
+    )
+    .all() as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+  }>;
+
+  const updateEvent = db.prepare(
+    "UPDATE scanner_events SET sync_id = ? WHERE id = ?",
+  );
+
+  let currentSessionId: string | null = null;
+  let currentSource: string | null = null;
+  let eventIndex = 0;
+  for (const row of eventRows) {
+    if (row.session_id !== currentSessionId || row.source !== currentSource) {
+      currentSessionId = row.session_id;
+      currentSource = row.source;
+      eventIndex = 0;
+    }
+    updateEvent.run(
+      buildScannerEventSyncId(row.session_id, row.source, eventIndex),
+      row.id,
+    );
+    eventIndex += 1;
+  }
+}
+
+function rebuildScannerEventsWithEventIndex(db: Database): void {
+  const scannerEventsTableExists = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_events'",
+    )
+    .get();
+  if (!scannerEventsTableExists) return;
+
+  const eventCols = db
+    .prepare("PRAGMA table_info(scanner_events)")
+    .all() as Array<{
+    name: string;
+  }>;
+  const hasEventIndex = eventCols.some((col) => col.name === "event_index");
+  if (hasEventIndex) {
+    backfillScannerEventSyncIds(db);
+    return;
+  }
+
+  db.exec(`
+    CREATE TABLE scanner_events_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      event_index INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      timestamp_ms INTEGER NOT NULL,
+      tool_name TEXT,
+      tool_input TEXT,
+      tool_output TEXT,
+      content TEXT,
+      metadata JSON,
+      sync_id TEXT NOT NULL,
+      UNIQUE(session_id, source, event_index)
+    )
+  `);
+
+  const rows = db
+    .prepare(
+      `SELECT id, session_id, source, event_type, timestamp_ms, tool_name,
+              tool_input, tool_output, content, metadata
+       FROM scanner_events
+       ORDER BY session_id, source, id`,
+    )
+    .all() as Array<{
+    id: number;
+    session_id: string;
+    source: string;
+    event_type: string;
+    timestamp_ms: number;
+    tool_name: string | null;
+    tool_input: string | null;
+    tool_output: string | null;
+    content: string | null;
+    metadata: string | null;
+  }>;
+
+  const insert = db.prepare(
+    `INSERT INTO scanner_events_new
+       (id, session_id, source, event_index, event_type, timestamp_ms, tool_name,
+        tool_input, tool_output, content, metadata, sync_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  let currentSessionId: string | null = null;
+  let currentSource: string | null = null;
+  let eventIndex = 0;
+  for (const row of rows) {
+    if (row.session_id !== currentSessionId || row.source !== currentSource) {
+      currentSessionId = row.session_id;
+      currentSource = row.source;
+      eventIndex = 0;
+    }
+    insert.run(
+      row.id,
+      row.session_id,
+      row.source,
+      eventIndex,
+      row.event_type,
+      row.timestamp_ms,
+      row.tool_name,
+      row.tool_input,
+      row.tool_output,
+      row.content,
+      row.metadata,
+      buildScannerEventSyncId(row.session_id, row.source, eventIndex),
+    );
+    eventIndex += 1;
+  }
+
+  db.exec("DROP TABLE scanner_events");
+  db.exec("ALTER TABLE scanner_events_new RENAME TO scanner_events");
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_scanner_events_session ON scanner_events(session_id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_scanner_events_type ON scanner_events(event_type)",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +373,172 @@ export const MIGRATIONS: Migration[] = [
       db.exec(
         "CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path)",
       );
+    },
+  },
+  {
+    id: 6,
+    name: "add_messages_sync_id",
+    up: (db) => {
+      const messagesTableExists = db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'",
+        )
+        .get();
+      if (!messagesTableExists) return;
+
+      const hasSyncId = (
+        db.prepare("PRAGMA table_info(messages)").all() as Array<{
+          name: string;
+        }>
+      ).some((col) => col.name === "sync_id");
+      if (!hasSyncId) {
+        db.exec("ALTER TABLE messages ADD COLUMN sync_id TEXT");
+      }
+
+      const rows = db
+        .prepare("SELECT id, session_id, ordinal, uuid FROM messages")
+        .all() as Array<{
+        id: number;
+        session_id: string;
+        ordinal: number;
+        uuid: string | null;
+      }>;
+
+      const update = db.prepare("UPDATE messages SET sync_id = ? WHERE id = ?");
+      for (const row of rows) {
+        update.run(
+          buildMessageSyncId(row.session_id, row.ordinal, row.uuid),
+          row.id,
+        );
+      }
+    },
+  },
+  {
+    id: 7,
+    name: "add_tool_calls_call_index_and_durable_sync_id",
+    up: (db) => {
+      const toolCallsTableExists = db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_calls'",
+        )
+        .get();
+      if (!toolCallsTableExists) return;
+
+      const toolCallCols = db
+        .prepare("PRAGMA table_info(tool_calls)")
+        .all() as Array<{
+        name: string;
+      }>;
+      const hasCallIndex = toolCallCols.some(
+        (col) => col.name === "call_index",
+      );
+      if (!hasCallIndex) {
+        db.exec(
+          "ALTER TABLE tool_calls ADD COLUMN call_index INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+
+      const rows = db
+        .prepare(
+          `SELECT tc.id, tc.message_id, tc.tool_use_id, m.sync_id as message_sync_id
+           FROM tool_calls tc
+           LEFT JOIN messages m ON m.id = tc.message_id
+           ORDER BY tc.message_id, tc.id`,
+        )
+        .all() as Array<{
+        id: number;
+        message_id: number;
+        tool_use_id: string | null;
+        message_sync_id: string | null;
+      }>;
+
+      const update = db.prepare(
+        "UPDATE tool_calls SET call_index = ?, sync_id = ? WHERE id = ?",
+      );
+      let currentMessageId: number | null = null;
+      let callIndex = 0;
+      for (const row of rows) {
+        if (row.message_id !== currentMessageId) {
+          currentMessageId = row.message_id;
+          callIndex = 0;
+        }
+        const messageSyncId =
+          row.message_sync_id || `orphan-msg|${row.message_id}`;
+        update.run(
+          callIndex,
+          buildToolCallSyncId(messageSyncId, callIndex, row.tool_use_id),
+          row.id,
+        );
+        callIndex += 1;
+      }
+    },
+  },
+  {
+    id: 8,
+    name: "backfill_scanner_turn_and_event_sync_ids",
+    up: (db) => {
+      const scannerTurnsTableExists = db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_turns'",
+        )
+        .get();
+      if (scannerTurnsTableExists) {
+        const turnCols = db
+          .prepare("PRAGMA table_info(scanner_turns)")
+          .all() as Array<{
+          name: string;
+        }>;
+        const hasTurnSyncId = turnCols.some((col) => col.name === "sync_id");
+        if (!hasTurnSyncId) {
+          db.exec("ALTER TABLE scanner_turns ADD COLUMN sync_id TEXT");
+        }
+
+        const turnRows = db
+          .prepare(
+            "SELECT id, session_id, source, turn_index FROM scanner_turns",
+          )
+          .all() as Array<{
+          id: number;
+          session_id: string;
+          source: string;
+          turn_index: number;
+        }>;
+
+        const updateTurn = db.prepare(
+          "UPDATE scanner_turns SET sync_id = ? WHERE id = ?",
+        );
+        for (const row of turnRows) {
+          updateTurn.run(
+            buildScannerTurnSyncId(row.session_id, row.source, row.turn_index),
+            row.id,
+          );
+        }
+      }
+
+      const scannerEventsTableExists = db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_events'",
+        )
+        .get();
+      if (!scannerEventsTableExists) return;
+
+      const eventCols = db
+        .prepare("PRAGMA table_info(scanner_events)")
+        .all() as Array<{
+        name: string;
+      }>;
+      const hasEventSyncId = eventCols.some((col) => col.name === "sync_id");
+      if (!hasEventSyncId) {
+        db.exec("ALTER TABLE scanner_events ADD COLUMN sync_id TEXT");
+      }
+      backfillScannerEventSyncIds(db);
+    },
+  },
+  {
+    id: 9,
+    name: "rebuild_scanner_events_with_event_index",
+    up: (db) => {
+      rebuildScannerEventsWithEventIndex(db);
     },
   },
 ];

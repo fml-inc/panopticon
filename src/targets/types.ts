@@ -293,6 +293,8 @@ export interface ParsedEvent {
   sessionId: string;
   eventType: string; // tool_call, tool_result, error, agent_message, reasoning, file_snapshot, info
   timestampMs: number;
+  /** 0-based ordinal within a session/source event stream. */
+  eventIndex?: number;
   toolName?: string;
   toolInput?: string;
   toolOutput?: string;

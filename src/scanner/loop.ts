@@ -19,8 +19,8 @@ import type {
   TargetScannerSpec,
 } from "../targets/types.js";
 import { clearScannerStatus, writeScannerStatus } from "./status.js";
-import type { SavedSyncIds } from "./store.js";
 import {
+  getEventCount,
   getMaxOrdinal,
   getTurnCount,
   insertMessages,
@@ -30,7 +30,6 @@ import {
   readArchivedSize,
   readFileWatermark,
   resetFileForReparse,
-  restoreSyncIds,
   updateSessionTotals,
   upsertSession,
   writeArchivedSize,
@@ -338,11 +337,10 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
 
         // If incremental parse detected a DAG fork, reset watermark
         // and reparse from byte 0 so fork detection runs on the full file.
-        let savedSyncIds: SavedSyncIds | undefined;
         if (result.needsFullReparse && offset > 0) {
           reparsedFromStart = true;
           targetProfile.reparses += 1;
-          savedSyncIds = resetFileForReparse(filePath, result.meta?.sessionId);
+          resetFileForReparse(filePath, result.meta?.sessionId);
           offset = 0;
           parseStartedAt = performance.now();
           result = target.scanner.parseFile(filePath, 0);
@@ -374,6 +372,13 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             const maxOrd = getMaxOrdinal(result.meta.sessionId);
             reindexMessages(result, maxOrd + 1);
           }
+        }
+        if (result.meta?.sessionId && result.events.length > 0) {
+          const eventStart =
+            offset > 0 && !result.absoluteIndices
+              ? getEventCount(result.meta.sessionId, source)
+              : 0;
+          reindexEvents(result, eventStart);
         }
 
         if (!result.meta?.sessionId) {
@@ -424,6 +429,9 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         if (result.forks) {
           for (const fork of result.forks) {
             if (!fork.meta?.sessionId) continue;
+            if (fork.events.length > 0) {
+              reindexEvents(fork, 0);
+            }
             const forkSessionId = fork.meta.sessionId;
             const forkMeta = fork.meta;
             const forkWriteStartedAt = performance.now();
@@ -451,11 +459,6 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             newTurns += fork.turns.length;
             targetProfile.turns += fork.turns.length;
           }
-        }
-
-        // Restore sync_ids after all data for this file has been re-inserted
-        if (savedSyncIds) {
-          restoreSyncIds(savedSyncIds);
         }
 
         // Archive raw file for 100% recall
@@ -644,6 +647,12 @@ function reindexTurns(result: ParseResult, startIndex: number): void {
 function reindexMessages(result: ParseResult, startOrdinal: number): void {
   for (let i = 0; i < result.messages.length; i++) {
     result.messages[i].ordinal = startOrdinal + i;
+  }
+}
+
+function reindexEvents(result: ParseResult, startIndex: number): void {
+  for (let i = 0; i < result.events.length; i++) {
+    result.events[i].eventIndex = startIndex + i;
   }
 }
 
