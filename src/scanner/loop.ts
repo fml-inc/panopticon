@@ -19,7 +19,6 @@ import type {
   TargetScannerSpec,
 } from "../targets/types.js";
 import { clearScannerStatus, writeScannerStatus } from "./status.js";
-import type { SavedSyncIds } from "./store.js";
 import {
   getMaxOrdinal,
   getTurnCount,
@@ -30,7 +29,6 @@ import {
   readArchivedSize,
   readFileWatermark,
   resetFileForReparse,
-  restoreSyncIds,
   updateSessionTotals,
   upsertSession,
   writeArchivedSize,
@@ -338,11 +336,10 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
 
         // If incremental parse detected a DAG fork, reset watermark
         // and reparse from byte 0 so fork detection runs on the full file.
-        let savedSyncIds: SavedSyncIds | undefined;
         if (result.needsFullReparse && offset > 0) {
           reparsedFromStart = true;
           targetProfile.reparses += 1;
-          savedSyncIds = resetFileForReparse(filePath, result.meta?.sessionId);
+          resetFileForReparse(filePath, result.meta?.sessionId);
           offset = 0;
           parseStartedAt = performance.now();
           result = target.scanner.parseFile(filePath, 0);
@@ -451,11 +448,6 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             newTurns += fork.turns.length;
             targetProfile.turns += fork.turns.length;
           }
-        }
-
-        // Restore sync_ids after all data for this file has been re-inserted
-        if (savedSyncIds) {
-          restoreSyncIds(savedSyncIds);
         }
 
         // Archive raw file for 100% recall

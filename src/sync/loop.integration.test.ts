@@ -33,6 +33,7 @@ vi.mock("./post.js", () => ({
 }));
 
 import { closeDb, getDb } from "../db/schema.js";
+import { buildMessageSyncId, buildToolCallSyncId } from "../db/sync-ids.js";
 import { createSyncLoop } from "./loop.js";
 import { postSync } from "./post.js";
 import type { SyncTarget } from "./types.js";
@@ -61,10 +62,43 @@ function insertMessage(sessionId: string, ordinal: number): number {
   const db = getDb();
   const result = db
     .prepare(
-      `INSERT INTO messages (session_id, ordinal, role, content)
-       VALUES (?, ?, 'assistant', ?)`,
+      `INSERT INTO messages (session_id, ordinal, role, content, sync_id)
+       VALUES (?, ?, 'assistant', ?, ?)`,
     )
-    .run(sessionId, ordinal, `msg-${ordinal}`);
+    .run(
+      sessionId,
+      ordinal,
+      `msg-${ordinal}`,
+      buildMessageSyncId(sessionId, ordinal),
+    );
+  return Number(result.lastInsertRowid);
+}
+
+function insertToolCall(
+  sessionId: string,
+  messageId: number,
+  callIndex: number,
+  toolName: string,
+  toolUseId?: string | null,
+): number {
+  const db = getDb();
+  const message = db
+    .prepare("SELECT sync_id FROM messages WHERE id = ?")
+    .get(messageId) as { sync_id: string };
+  const result = db
+    .prepare(
+      `INSERT INTO tool_calls
+         (message_id, session_id, call_index, tool_name, category, tool_use_id, sync_id)
+       VALUES (?, ?, ?, ?, 'file', ?, ?)`,
+    )
+    .run(
+      messageId,
+      sessionId,
+      callIndex,
+      toolName,
+      toolUseId ?? null,
+      buildToolCallSyncId(message.sync_id, callIndex, toolUseId),
+    );
   return Number(result.lastInsertRowid);
 }
 
@@ -315,6 +349,44 @@ describe("createSyncLoop integration", () => {
       expect(tss!.synced_seq).toBe(tss!.sync_seq);
     });
 
+    it("posts tool calls with messageSyncId, callIndex, and deterministic syncId", async () => {
+      insertSession("s1", 1);
+      insertSessionRepo("s1");
+      const messageId = insertMessage("s1", 0);
+      const toolCallId = insertToolCall("s1", messageId, 0, "Write", null);
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      const toolCallCalls = mockedPostSync.mock.calls.filter(
+        ([, body]) => body.table === "tool_calls",
+      );
+      expect(toolCallCalls).toHaveLength(1);
+
+      const rows = toolCallCalls.flatMap(([, body]) =>
+        body.rows as Array<{
+          id: number;
+          messageId: number;
+          messageSyncId: string | null;
+          callIndex: number;
+          syncId: string | null;
+          toolName: string;
+          sessionId: string;
+        }>,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: toolCallId,
+        messageId,
+        messageSyncId: buildMessageSyncId("s1", 0),
+        sessionId: "s1",
+        toolName: "Write",
+        callIndex: 0,
+        syncId: buildToolCallSyncId(buildMessageSyncId("s1", 0), 0, null),
+      });
+      expect(getTss("s1", "fml")?.wm_tool_calls).toBe(toolCallId);
+    });
+
     it("incremental sync only posts rows past the per-table watermark", async () => {
       insertSession("s1", 1);
       insertSessionRepo("s1");
@@ -345,6 +417,10 @@ describe("createSyncLoop integration", () => {
         body.rows.map((r) => (r as { id: number }).id),
       );
       expect(allPostedMessageIds).toEqual([m3]);
+      const allPostedMessageSyncIds = messageCalls.flatMap(([, body]) =>
+        body.rows.map((r) => (r as { syncId: string | null }).syncId),
+      );
+      expect(allPostedMessageSyncIds).toEqual([buildMessageSyncId("s1", 2)]);
       expect(getTss("s1", "fml")?.wm_messages).toBe(m3);
     });
 

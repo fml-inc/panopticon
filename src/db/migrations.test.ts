@@ -5,6 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Database } from "./driver.js";
 import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
+import {
+  buildMessageSyncId,
+  buildScannerEventSyncId,
+  buildScannerTurnSyncId,
+  buildToolCallSyncId,
+} from "./sync-ids.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -253,6 +259,353 @@ describe("runMigrations — existing DB", () => {
     expect(row.panopticon_allowed).toBe("null");
     expect(row.panopticon_approvals).toBe("null");
     expect(row.memory_files).toBe("{}");
+  });
+
+  it("migration 6 adds and backfills messages.sync_id", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        timestamp_ms INTEGER,
+        has_thinking INTEGER NOT NULL DEFAULT 0,
+        has_tool_use INTEGER NOT NULL DEFAULT 0,
+        content_length INTEGER NOT NULL DEFAULT 0,
+        is_system INTEGER NOT NULL DEFAULT 0,
+        model TEXT NOT NULL DEFAULT '',
+        token_usage TEXT NOT NULL DEFAULT '',
+        context_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        has_context_tokens INTEGER NOT NULL DEFAULT 0,
+        has_output_tokens INTEGER NOT NULL DEFAULT 0,
+        uuid TEXT,
+        parent_uuid TEXT,
+        UNIQUE(session_id, ordinal)
+      )
+    `);
+    db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?), (?, ?), (?, ?), (?, ?), (?, ?)",
+    ).run(
+      1,
+      "stamp1",
+      2,
+      "stamp2",
+      3,
+      "stamp3",
+      4,
+      "stamp4",
+      5,
+      "stamp5",
+    );
+    db.prepare(
+      `INSERT INTO messages (session_id, ordinal, role, content, uuid)
+       VALUES (?, ?, 'assistant', 'with-uuid', ?), (?, ?, 'assistant', 'without-uuid', NULL)`,
+    ).run("sess-1", 0, "uuid-123", "sess-1", 1);
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(messages)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("sync_id");
+
+    const rows = db
+      .prepare(
+        "SELECT session_id, ordinal, uuid, sync_id FROM messages ORDER BY ordinal",
+      )
+      .all() as Array<{
+      session_id: string;
+      ordinal: number;
+      uuid: string | null;
+      sync_id: string | null;
+    }>;
+    expect(rows).toEqual([
+      {
+        session_id: "sess-1",
+        ordinal: 0,
+        uuid: "uuid-123",
+        sync_id: buildMessageSyncId("sess-1", 0, "uuid-123"),
+      },
+      {
+        session_id: "sess-1",
+        ordinal: 1,
+        uuid: null,
+        sync_id: buildMessageSyncId("sess-1", 1),
+      },
+    ]);
+    expect(getApplied(db).map((r) => r.id)).toContain(6);
+  });
+
+  it("migration 7 adds call_index and backfills tool_call sync ids", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        timestamp_ms INTEGER,
+        has_thinking INTEGER NOT NULL DEFAULT 0,
+        has_tool_use INTEGER NOT NULL DEFAULT 0,
+        content_length INTEGER NOT NULL DEFAULT 0,
+        is_system INTEGER NOT NULL DEFAULT 0,
+        model TEXT NOT NULL DEFAULT '',
+        token_usage TEXT NOT NULL DEFAULT '',
+        context_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        has_context_tokens INTEGER NOT NULL DEFAULT 0,
+        has_output_tokens INTEGER NOT NULL DEFAULT 0,
+        uuid TEXT,
+        parent_uuid TEXT,
+        sync_id TEXT NOT NULL,
+        UNIQUE(session_id, ordinal)
+      )
+    `);
+    db.exec(`
+      CREATE TABLE tool_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        tool_use_id TEXT,
+        input_json TEXT,
+        skill_name TEXT,
+        result_content_length INTEGER,
+        result_content TEXT,
+        duration_ms INTEGER,
+        subagent_session_id TEXT,
+        sync_id TEXT DEFAULT (hex(randomblob(8)))
+      )
+    `);
+    db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?)",
+    ).run(
+      1,
+      "stamp1",
+      2,
+      "stamp2",
+      3,
+      "stamp3",
+      4,
+      "stamp4",
+      5,
+      "stamp5",
+      6,
+      "stamp6",
+    );
+    const messageSyncId = buildMessageSyncId("sess-1", 0, "uuid-123");
+    db.prepare(
+      `INSERT INTO messages (session_id, ordinal, role, content, uuid, sync_id)
+       VALUES (?, ?, 'assistant', 'msg', ?, ?)`,
+    ).run("sess-1", 0, "uuid-123", messageSyncId);
+    const messageId = (
+      db.prepare("SELECT id FROM messages WHERE session_id = 'sess-1'").get() as {
+        id: number;
+      }
+    ).id;
+    db.prepare(
+      `INSERT INTO tool_calls
+         (message_id, session_id, tool_name, category, tool_use_id)
+       VALUES (?, ?, 'Write', 'file', NULL), (?, ?, 'Edit', 'file', 'tu-1')`,
+    ).run(messageId, "sess-1", messageId, "sess-1");
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(tool_calls)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("call_index");
+
+    const rows = db
+      .prepare(
+        "SELECT call_index, tool_use_id, sync_id FROM tool_calls ORDER BY id",
+      )
+      .all() as Array<{
+      call_index: number;
+      tool_use_id: string | null;
+      sync_id: string;
+    }>;
+    expect(rows).toEqual([
+      {
+        call_index: 0,
+        tool_use_id: null,
+        sync_id: buildToolCallSyncId(messageSyncId, 0, null),
+      },
+      {
+        call_index: 1,
+        tool_use_id: "tu-1",
+        sync_id: buildToolCallSyncId(messageSyncId, 1, "tu-1"),
+      },
+    ]);
+    expect(getApplied(db).map((r) => r.id)).toContain(7);
+  });
+
+  it("migration 8 backfills deterministic scanner turn and event sync ids", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE scanner_turns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        model TEXT,
+        role TEXT,
+        content_preview TEXT,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cache_creation_tokens INTEGER DEFAULT 0,
+        reasoning_tokens INTEGER DEFAULT 0,
+        sync_id TEXT DEFAULT (hex(randomblob(8))),
+        UNIQUE(session_id, source, turn_index)
+      )
+    `);
+    db.exec(`
+      CREATE TABLE scanner_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        tool_name TEXT,
+        tool_input TEXT,
+        tool_output TEXT,
+        content TEXT,
+        metadata JSON,
+        sync_id TEXT DEFAULT (hex(randomblob(8))),
+        UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+      )
+    `);
+    db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?)",
+    ).run(
+      1,
+      "stamp1",
+      2,
+      "stamp2",
+      3,
+      "stamp3",
+      4,
+      "stamp4",
+      5,
+      "stamp5",
+      6,
+      "stamp6",
+      7,
+      "stamp7",
+    );
+    db.prepare(
+      `INSERT INTO scanner_turns (session_id, source, turn_index, timestamp_ms, role, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "sess-1",
+      "claude",
+      0,
+      100,
+      "assistant",
+      "old-turn-sync-1",
+      "sess-1",
+      "claude",
+      1,
+      101,
+      "user",
+      "old-turn-sync-2",
+    );
+    db.prepare(
+      `INSERT INTO scanner_events (session_id, source, event_type, timestamp_ms, tool_name, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "sess-1",
+      "claude",
+      "tool_call",
+      200,
+      "Bash",
+      "old-event-sync-1",
+      "sess-1",
+      "claude",
+      "note",
+      201,
+      null,
+      "old-event-sync-2",
+    );
+
+    runMigrations(db);
+
+    const turns = db
+      .prepare(
+        "SELECT session_id, source, turn_index, sync_id FROM scanner_turns ORDER BY turn_index",
+      )
+      .all() as Array<{
+      session_id: string;
+      source: string;
+      turn_index: number;
+      sync_id: string | null;
+    }>;
+    expect(turns).toEqual([
+      {
+        session_id: "sess-1",
+        source: "claude",
+        turn_index: 0,
+        sync_id: buildScannerTurnSyncId("sess-1", "claude", 0),
+      },
+      {
+        session_id: "sess-1",
+        source: "claude",
+        turn_index: 1,
+        sync_id: buildScannerTurnSyncId("sess-1", "claude", 1),
+      },
+    ]);
+
+    const events = db
+      .prepare(
+        `SELECT session_id, source, event_type, timestamp_ms, tool_name, sync_id
+         FROM scanner_events ORDER BY timestamp_ms`,
+      )
+      .all() as Array<{
+      session_id: string;
+      source: string;
+      event_type: string;
+      timestamp_ms: number;
+      tool_name: string | null;
+      sync_id: string | null;
+    }>;
+    expect(events).toEqual([
+      {
+        session_id: "sess-1",
+        source: "claude",
+        event_type: "tool_call",
+        timestamp_ms: 200,
+        tool_name: "Bash",
+        sync_id: buildScannerEventSyncId(
+          "sess-1",
+          "claude",
+          "tool_call",
+          200,
+          "Bash",
+        ),
+      },
+      {
+        session_id: "sess-1",
+        source: "claude",
+        event_type: "note",
+        timestamp_ms: 201,
+        tool_name: null,
+        sync_id: buildScannerEventSyncId(
+          "sess-1",
+          "claude",
+          "note",
+          201,
+          null,
+        ),
+      },
+    ]);
+    expect(getApplied(db).map((r) => r.id)).toContain(8);
   });
 
   it("runs up() function migration", () => {

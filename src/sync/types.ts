@@ -232,6 +232,7 @@ export interface SessionSyncRecord {
 
 export interface MessageSyncRecord {
   id: number;
+  syncId: string | null;
   sessionId: string;
   ordinal: number;
   role: string;
@@ -252,7 +253,9 @@ export interface MessageSyncRecord {
 export interface ToolCallSyncRecord {
   id: number;
   messageId: number;
+  messageSyncId: string | null;
   sessionId: string;
+  callIndex: number;
   syncId: string | null;
   toolName: string;
   category: string;

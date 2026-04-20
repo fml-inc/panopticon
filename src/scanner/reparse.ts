@@ -2,12 +2,11 @@
  * Atomic DB reparse: builds a fresh database from scratch, copies
  * non-scanner metadata from the old DB, then swaps files atomically.
  *
- * This avoids the cost of row-by-row deletes on large databases and
- * ensures that parser changes (tracked via SCANNER_DATA_VERSION) are
- * applied cleanly to all existing session data.
- *
- * Preserves sync_id values for rows that match on natural keys so
- * that remote sync targets can deduplicate correctly.
+ * This avoids the cost of row-by-row deletes on large databases and ensures
+ * that parser changes (tracked via SCANNER_DATA_VERSION) are applied cleanly
+ * to all existing session data. Scanner-produced rows now compute deterministic
+ * sync_id values during ingestion, so the rebuild only needs to preserve
+ * non-scanner metadata from the old database.
  */
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
@@ -231,9 +230,8 @@ export function rebuildDerivedStateFromRaw(
  * 3. Redirect config.dbPath → temp, run full scan into it
  * 4. Copy preserved (non-scanner) data from old DB via ATTACH
  * 5. Merge session metadata from hooks/OTLP
- * 6. Preserve sync_id values for rows matching on natural keys
- * 7. Atomic file swap (rename)
- * 8. Reopen the main DB handle
+ * 6. Atomic file swap (rename)
+ * 7. Reopen the main DB handle
  */
 export function reparseAll(
   log: (msg: string) => void = () => {},
@@ -454,48 +452,6 @@ export function reparseAll(
         log(`  session_cwds: ${e instanceof Error ? e.message : e}`);
       }
 
-      // Preserve sync_id values from old DB for scanner-produced tables
-      // by matching on natural keys
-      try {
-        tempDb.exec(`
-          UPDATE main.scanner_turns SET sync_id = old_db.scanner_turns.sync_id
-          FROM old_db.scanner_turns
-          WHERE main.scanner_turns.session_id = old_db.scanner_turns.session_id
-            AND main.scanner_turns.source = old_db.scanner_turns.source
-            AND main.scanner_turns.turn_index = old_db.scanner_turns.turn_index
-        `);
-      } catch (e) {
-        log(`  scanner_turns sync_id: ${e instanceof Error ? e.message : e}`);
-      }
-
-      try {
-        tempDb.exec(`
-          UPDATE main.scanner_events SET sync_id = old_db.scanner_events.sync_id
-          FROM old_db.scanner_events
-          WHERE main.scanner_events.session_id = old_db.scanner_events.session_id
-            AND main.scanner_events.source = old_db.scanner_events.source
-            AND main.scanner_events.event_type = old_db.scanner_events.event_type
-            AND main.scanner_events.timestamp_ms = old_db.scanner_events.timestamp_ms
-            AND COALESCE(main.scanner_events.tool_name, '') = COALESCE(old_db.scanner_events.tool_name, '')
-        `);
-      } catch (e) {
-        log(`  scanner_events sync_id: ${e instanceof Error ? e.message : e}`);
-      }
-
-      // Preserve sync_id for tool_calls by matching via message natural key + tool_use_id
-      try {
-        tempDb.exec(`
-          UPDATE main.tool_calls SET sync_id = old_tc.sync_id
-          FROM old_db.tool_calls old_tc
-          INNER JOIN old_db.messages old_m ON old_tc.message_id = old_m.id
-          INNER JOIN main.messages new_m ON new_m.session_id = old_m.session_id AND new_m.ordinal = old_m.ordinal
-          WHERE main.tool_calls.message_id = new_m.id
-            AND COALESCE(main.tool_calls.tool_use_id, '') = COALESCE(old_tc.tool_use_id, '')
-            AND main.tool_calls.tool_name = old_tc.tool_name
-        `);
-      } catch (e) {
-        log(`  tool_calls sync_id: ${e instanceof Error ? e.message : e}`);
-      }
     });
     tx();
 
