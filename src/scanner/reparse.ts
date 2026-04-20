@@ -88,6 +88,11 @@ function formatMs(ms: number): string {
   return `${ms.toFixed(1)}ms`;
 }
 
+function formatPercent(value: number, total: number): string {
+  if (total <= 0) return "0.0%";
+  return `${((value / total) * 100).toFixed(1)}%`;
+}
+
 function removeTempFiles(tempPath: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
@@ -120,11 +125,44 @@ export function rebuildDerivedStateFromRaw(
   log: (msg: string) => void = () => {},
 ): ReparseDerivedStateResult {
   const startedAt = performance.now();
+  log("Derived-state rebuild: rebuilding hook intent claims...");
+  let phaseStartedAt = performance.now();
   const hooks = rebuildIntentClaimsFromHooks();
+  log(
+    `Derived-state phase hook-claims: ${formatMs(performance.now() - phaseStartedAt)} (prompts=${hooks.prompts} edits=${hooks.edits})`,
+  );
+
+  log(
+    "Derived-state rebuild: canonicalizing active claims after raw claim rebuild...",
+  );
+  phaseStartedAt = performance.now();
   const activeHeadsAfterClaims = rebuildActiveClaims();
+  log(
+    `Derived-state phase canonicalize-claims: ${formatMs(performance.now() - phaseStartedAt)} (active_heads=${activeHeadsAfterClaims})`,
+  );
+
+  log("Derived-state rebuild: reconciling landed edits from disk...");
+  phaseStartedAt = performance.now();
   const landed = reconcileLandedClaimsFromDisk();
+  log(
+    `Derived-state phase landed-reconciliation: ${formatMs(performance.now() - phaseStartedAt)} (checked=${landed.checked})`,
+  );
+
+  log(
+    "Derived-state rebuild: canonicalizing active claims after landed reconciliation...",
+  );
+  phaseStartedAt = performance.now();
   const activeHeadsAfterLanded = rebuildActiveClaims();
+  log(
+    `Derived-state phase canonicalize-landed: ${formatMs(performance.now() - phaseStartedAt)} (active_heads=${activeHeadsAfterLanded})`,
+  );
+
+  log("Derived-state rebuild: rebuilding intent projection...");
+  phaseStartedAt = performance.now();
   const projection = rebuildIntentProjection();
+  log(
+    `Derived-state phase intent-projection: ${formatMs(performance.now() - phaseStartedAt)} (intents=${projection.intents} edits=${projection.edits} summaries=${projection.sessionSummaries})`,
+  );
   const totalMs = performance.now() - startedAt;
 
   log(
@@ -209,8 +247,18 @@ export function reparseAll(
   let newTurns = 0;
   let scanMs = 0;
   try {
+    log("Scanning raw session files into temp DB...");
     const scanStartedAt = performance.now();
-    const result = scanOnce({ profileLabel: "reparse scan", logDetails: true });
+    const result = scanOnce({
+      profileLabel: "reparse scan",
+      logDetails: true,
+      progressEveryMs: 15_000,
+      onProgress: (progress) => {
+        log(
+          `Reparse scan progress: processed=${progress.processedFiles}/${progress.discoveredFiles} (${formatPercent(progress.processedFiles, progress.discoveredFiles)}) files_scanned=${progress.filesScanned} turns=${progress.newTurns} touched_sessions=${progress.touchedSessions} elapsed=${formatMs(progress.elapsedMs)}${progress.currentSource ? ` source=${progress.currentSource}` : ""}`,
+        );
+      },
+    });
     scanMs = performance.now() - scanStartedAt;
     filesScanned = result.filesScanned;
     newTurns = result.newTurns;
