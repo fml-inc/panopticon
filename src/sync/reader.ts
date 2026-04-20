@@ -300,7 +300,7 @@ export function readScannerTurns(
 // ── Scanner events ──────────────────────────────────────────────────────────
 
 const SCANNER_EVENTS_SQL = `
-  SELECT id, session_id, sync_id, source, event_type, timestamp_ms,
+  SELECT id, session_id, sync_id, source, event_index, event_type, timestamp_ms,
          tool_name, tool_input, tool_output, content, metadata
   FROM scanner_events
   WHERE id > ?
@@ -318,6 +318,7 @@ export function readScannerEvents(
     session_id: string;
     sync_id: string | null;
     source: string;
+    event_index: number;
     event_type: string;
     timestamp_ms: number;
     tool_name: string | null;
@@ -332,6 +333,7 @@ export function readScannerEvents(
     sessionId: r.session_id,
     syncId: r.sync_id,
     source: r.source,
+    eventIndex: r.event_index,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
     toolName: r.tool_name,
@@ -1035,7 +1037,7 @@ export function readSessionScannerEvents(
   const db = getDb();
   const rawRows = db
     .prepare(
-      `SELECT id, session_id, sync_id, source, event_type, timestamp_ms,
+      `SELECT id, session_id, sync_id, source, event_index, event_type, timestamp_ms,
               tool_name, tool_input, tool_output, content, metadata
        FROM scanner_events
        WHERE session_id = ? AND id > ?
@@ -1047,6 +1049,7 @@ export function readSessionScannerEvents(
     session_id: string;
     sync_id: string | null;
     source: string;
+    event_index: number;
     event_type: string;
     timestamp_ms: number;
     tool_name: string | null;
@@ -1061,6 +1064,7 @@ export function readSessionScannerEvents(
     sessionId: r.session_id,
     syncId: r.sync_id,
     source: r.source,
+    eventIndex: r.event_index,
     eventType: r.event_type,
     timestampMs: r.timestamp_ms,
     toolName: r.tool_name,

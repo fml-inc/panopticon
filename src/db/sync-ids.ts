@@ -57,17 +57,14 @@ export function buildScannerTurnSyncId(
 /**
  * Build a deterministic sync identity for a scanner event row.
  *
- * Event rows are keyed by the same fields used for local uniqueness. Tool name
- * is normalized to an empty string so null-valued rows stay stable.
+ * Event rows are keyed by their stable ordinal within a session/source event
+ * stream. This avoids collapsing repeated same-timestamp metadata events such
+ * as file snapshots, attachments, or reasoning rows.
  */
 export function buildScannerEventSyncId(
   sessionId: string,
   source: string,
-  eventType: string,
-  timestampMs: number,
-  toolName?: string | null,
+  eventIndex: number,
 ): string {
-  return sha256Hex(
-    `evt|${sessionId}|${source}|${eventType}|${timestampMs}|${toolName?.trim() ?? ""}`,
-  );
+  return sha256Hex(`evt|${sessionId}|${source}|idx|${eventIndex}`);
 }

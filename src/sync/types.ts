@@ -117,6 +117,7 @@ export interface ScannerEventRecord {
   sessionId: string;
   syncId: string | null;
   source: string;
+  eventIndex: number;
   eventType: string;
   timestampMs: number;
   toolName: string | null;

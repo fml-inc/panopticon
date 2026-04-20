@@ -27,6 +27,7 @@ vi.mock("../config.js", () => {
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
+import { buildScannerEventSyncId } from "../db/sync-ids.js";
 import { getTarget } from "../targets/index.js";
 import "../targets/claude.js";
 import {
@@ -169,11 +170,12 @@ function getSyncIds(sessionId: string): {
 
   const evRows = db
     .prepare(
-      "SELECT session_id, source, event_type, timestamp_ms, COALESCE(tool_name, '') as tool_name, sync_id FROM scanner_events WHERE session_id = ?",
+      "SELECT session_id, source, event_index, event_type, timestamp_ms, COALESCE(tool_name, '') as tool_name, sync_id FROM scanner_events WHERE session_id = ?",
     )
     .all(sessionId) as Array<{
     session_id: string;
     source: string;
+    event_index: number;
     event_type: string;
     timestamp_ms: number;
     tool_name: string;
@@ -181,7 +183,7 @@ function getSyncIds(sessionId: string): {
   }>;
   for (const r of evRows) {
     events.set(
-      `${r.session_id}:${r.source}:${r.event_type}:${r.timestamp_ms}:${r.tool_name}`,
+      `${r.session_id}:${r.source}:${r.event_index}:${r.event_type}:${r.timestamp_ms}:${r.tool_name}`,
       r.sync_id,
     );
   }
@@ -431,5 +433,130 @@ describe("fork sync_id stability", () => {
     expect(saved.turns.length).toBe(0);
     expect(saved.events.length).toBe(0);
     expect(saved.toolCalls.length).toBe(0);
+  });
+
+  it("keeps repeated same-key scanner events distinct and stable", () => {
+    const sessionId = "dup-events-session";
+    const source = "claude";
+    const file = path.join(tmpDir, `${sessionId}.jsonl`);
+
+    upsertSession({ sessionId, startedAtMs: 1 }, file, source);
+    insertScannerEvents(
+      [
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-a",
+          metadata: { messageId: "m1" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-b",
+          metadata: { messageId: "m2" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-c",
+          metadata: { messageId: "m3" },
+        },
+      ],
+      source,
+    );
+
+    let rows = getDb()
+      .prepare(
+        `SELECT event_index, content, sync_id
+         FROM scanner_events
+         WHERE session_id = ?
+         ORDER BY event_index`,
+      )
+      .all(sessionId) as Array<{
+      event_index: number;
+      content: string | null;
+      sync_id: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        event_index: 0,
+        content: "snapshot-a",
+        sync_id: buildScannerEventSyncId(sessionId, source, 0),
+      },
+      {
+        event_index: 1,
+        content: "snapshot-b",
+        sync_id: buildScannerEventSyncId(sessionId, source, 1),
+      },
+      {
+        event_index: 2,
+        content: "snapshot-c",
+        sync_id: buildScannerEventSyncId(sessionId, source, 2),
+      },
+    ]);
+
+    resetFileForReparse(file, sessionId);
+    upsertSession({ sessionId, startedAtMs: 1 }, file, source);
+    insertScannerEvents(
+      [
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-a",
+          metadata: { messageId: "m1" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-b",
+          metadata: { messageId: "m2" },
+        },
+        {
+          sessionId,
+          eventType: "file_snapshot",
+          timestampMs: 1000,
+          content: "snapshot-c",
+          metadata: { messageId: "m3" },
+        },
+      ],
+      source,
+    );
+
+    rows = getDb()
+      .prepare(
+        `SELECT event_index, content, sync_id
+         FROM scanner_events
+         WHERE session_id = ?
+         ORDER BY event_index`,
+      )
+      .all(sessionId) as Array<{
+      event_index: number;
+      content: string | null;
+      sync_id: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        event_index: 0,
+        content: "snapshot-a",
+        sync_id: buildScannerEventSyncId(sessionId, source, 0),
+      },
+      {
+        event_index: 1,
+        content: "snapshot-b",
+        sync_id: buildScannerEventSyncId(sessionId, source, 1),
+      },
+      {
+        event_index: 2,
+        content: "snapshot-c",
+        sync_id: buildScannerEventSyncId(sessionId, source, 2),
+      },
+    ]);
   });
 });

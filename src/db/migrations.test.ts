@@ -556,7 +556,7 @@ describe("runMigrations — existing DB", () => {
     const events = db
       .prepare(
         `SELECT session_id, source, event_type, timestamp_ms, tool_name, sync_id
-         FROM scanner_events ORDER BY timestamp_ms`,
+         FROM scanner_events ORDER BY id`,
       )
       .all() as Array<{
       session_id: string;
@@ -573,13 +573,7 @@ describe("runMigrations — existing DB", () => {
         event_type: "tool_call",
         timestamp_ms: 200,
         tool_name: "Bash",
-        sync_id: buildScannerEventSyncId(
-          "sess-1",
-          "claude",
-          "tool_call",
-          200,
-          "Bash",
-        ),
+        sync_id: buildScannerEventSyncId("sess-1", "claude", 0),
       },
       {
         session_id: "sess-1",
@@ -587,10 +581,148 @@ describe("runMigrations — existing DB", () => {
         event_type: "note",
         timestamp_ms: 201,
         tool_name: null,
-        sync_id: buildScannerEventSyncId("sess-1", "claude", "note", 201, null),
+        sync_id: buildScannerEventSyncId("sess-1", "claude", 1),
       },
     ]);
     expect(getApplied(db).map((r) => r.id)).toContain(8);
+  });
+
+  it("migration 9 rebuilds scanner_events with event_index and new uniqueness", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE scanner_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        tool_name TEXT,
+        tool_input TEXT,
+        tool_output TEXT,
+        content TEXT,
+        metadata JSON,
+        sync_id TEXT DEFAULT (hex(randomblob(8))),
+        UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+      )
+    `);
+    db.prepare(
+      `INSERT INTO schema_migrations (id, name)
+       VALUES (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?)`,
+    ).run(
+      1,
+      "stamp1",
+      2,
+      "stamp2",
+      3,
+      "stamp3",
+      4,
+      "stamp4",
+      5,
+      "stamp5",
+      6,
+      "stamp6",
+      7,
+      "stamp7",
+      8,
+      "stamp8",
+    );
+    db.prepare(
+      `INSERT INTO scanner_events (
+         id, session_id, source, event_type, timestamp_ms, tool_name,
+         tool_input, tool_output, content, metadata, sync_id
+       ) VALUES
+         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      5,
+      "sess-1",
+      "claude",
+      "note",
+      100,
+      null,
+      null,
+      null,
+      "first",
+      JSON.stringify({ a: 1 }),
+      "old-sync-a",
+      7,
+      "sess-1",
+      "claude",
+      "note",
+      101,
+      null,
+      null,
+      null,
+      "second",
+      JSON.stringify({ a: 2 }),
+      "old-sync-b",
+      9,
+      "sess-2",
+      "gemini",
+      "reasoning",
+      102,
+      null,
+      null,
+      null,
+      "third",
+      JSON.stringify({ a: 3 }),
+      "old-sync-c",
+    );
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(scanner_events)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("event_index");
+
+    const rows = db
+      .prepare(
+        `SELECT id, session_id, source, event_index, event_type, timestamp_ms, sync_id
+         FROM scanner_events
+         ORDER BY session_id, source, event_index`,
+      )
+      .all() as Array<{
+      id: number;
+      session_id: string;
+      source: string;
+      event_index: number;
+      event_type: string;
+      timestamp_ms: number;
+      sync_id: string | null;
+    }>;
+    expect(rows).toEqual([
+      {
+        id: 5,
+        session_id: "sess-1",
+        source: "claude",
+        event_index: 0,
+        event_type: "note",
+        timestamp_ms: 100,
+        sync_id: buildScannerEventSyncId("sess-1", "claude", 0),
+      },
+      {
+        id: 7,
+        session_id: "sess-1",
+        source: "claude",
+        event_index: 1,
+        event_type: "note",
+        timestamp_ms: 101,
+        sync_id: buildScannerEventSyncId("sess-1", "claude", 1),
+      },
+      {
+        id: 9,
+        session_id: "sess-2",
+        source: "gemini",
+        event_index: 0,
+        event_type: "reasoning",
+        timestamp_ms: 102,
+        sync_id: buildScannerEventSyncId("sess-2", "gemini", 0),
+      },
+    ]);
+
+    expect(getApplied(db).map((r) => r.id)).toContain(9);
   });
 
   it("runs up() function migration", () => {

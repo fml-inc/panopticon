@@ -225,7 +225,7 @@ Schema:
   messages(id, session_id, ordinal, role, content, timestamp_ms, has_thinking, has_tool_use, content_length, is_system, model, token_usage, context_tokens, output_tokens, has_context_tokens, has_output_tokens, uuid, parent_uuid, sync_id)
   tool_calls(id, message_id, session_id, call_index, tool_name, category, tool_use_id, input_json, skill_name, result_content_length, result_content, subagent_session_id, duration_ms, sync_id)
   scanner_turns(id, session_id, source, turn_index, timestamp_ms, model, role, content_preview, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, sync_id)
-  scanner_events(id, session_id, source, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata JSON, sync_id)
+  scanner_events(id, session_id, source, event_index, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata JSON, sync_id)
   hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, target, user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload BLOB)
   otel_logs(id, timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, attributes JSON, resource_attributes JSON, session_id, prompt_id, trace_id, span_id)
   otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)

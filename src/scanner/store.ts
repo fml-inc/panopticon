@@ -145,8 +145,8 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
 
 const INSERT_EVENT_SQL = `
   INSERT OR IGNORE INTO scanner_events
-    (session_id, source, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata, sync_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (session_id, source, event_index, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata, sync_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 export function insertScannerEvents(
@@ -157,10 +157,22 @@ export function insertScannerEvents(
   const db = getDb();
   const stmt = db.prepare(INSERT_EVENT_SQL);
   const tx = db.transaction(() => {
+    const nextEventIndexBySession = new Map<string, number>();
     for (const e of events) {
+      let eventIndex = e.eventIndex;
+      if (eventIndex == null) {
+        let next = nextEventIndexBySession.get(e.sessionId);
+        if (next == null) {
+          next = getEventCount(e.sessionId, source);
+        }
+        eventIndex = next;
+        nextEventIndexBySession.set(e.sessionId, next + 1);
+      }
+
       stmt.run(
         e.sessionId,
         source,
+        eventIndex,
         e.eventType,
         e.timestampMs,
         e.toolName ?? null,
@@ -168,13 +180,7 @@ export function insertScannerEvents(
         e.toolOutput ?? null,
         e.content ?? null,
         e.metadata ? JSON.stringify(e.metadata) : null,
-        buildScannerEventSyncId(
-          e.sessionId,
-          source,
-          e.eventType,
-          e.timestampMs,
-          e.toolName,
-        ),
+        buildScannerEventSyncId(e.sessionId, source, eventIndex),
       );
     }
   });
@@ -358,6 +364,16 @@ export function getTurnCount(sessionId: string, source: string): number {
   const row = db
     .prepare(
       "SELECT COUNT(*) as count FROM scanner_turns WHERE session_id = ? AND source = ?",
+    )
+    .get(sessionId, source) as { count: number };
+  return row.count;
+}
+
+export function getEventCount(sessionId: string, source: string): number {
+  const db = getDb();
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) as count FROM scanner_events WHERE session_id = ? AND source = ?",
     )
     .get(sessionId, source) as { count: number };
   return row.count;

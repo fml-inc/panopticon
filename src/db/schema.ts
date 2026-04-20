@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS scanner_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
   source TEXT NOT NULL,
+  event_index INTEGER NOT NULL,
   event_type TEXT NOT NULL,
   timestamp_ms INTEGER NOT NULL,
   tool_name TEXT,
@@ -230,7 +231,7 @@ CREATE TABLE IF NOT EXISTS scanner_events (
   content TEXT,
   metadata JSON,
   sync_id TEXT NOT NULL,
-  UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)
+  UNIQUE(session_id, source, event_index)
 );
 
 CREATE TABLE IF NOT EXISTS scanner_file_watermarks (

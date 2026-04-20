@@ -20,6 +20,7 @@ import type {
 } from "../targets/types.js";
 import { clearScannerStatus, writeScannerStatus } from "./status.js";
 import {
+  getEventCount,
   getMaxOrdinal,
   getTurnCount,
   insertMessages,
@@ -372,6 +373,13 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             reindexMessages(result, maxOrd + 1);
           }
         }
+        if (result.meta?.sessionId && result.events.length > 0) {
+          const eventStart =
+            offset > 0 && !result.absoluteIndices
+              ? getEventCount(result.meta.sessionId, source)
+              : 0;
+          reindexEvents(result, eventStart);
+        }
 
         if (!result.meta?.sessionId) {
           writeFileWatermark(filePath, result.newByteOffset);
@@ -421,6 +429,9 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         if (result.forks) {
           for (const fork of result.forks) {
             if (!fork.meta?.sessionId) continue;
+            if (fork.events.length > 0) {
+              reindexEvents(fork, 0);
+            }
             const forkSessionId = fork.meta.sessionId;
             const forkMeta = fork.meta;
             const forkWriteStartedAt = performance.now();
@@ -636,6 +647,12 @@ function reindexTurns(result: ParseResult, startIndex: number): void {
 function reindexMessages(result: ParseResult, startOrdinal: number): void {
   for (let i = 0; i < result.messages.length; i++) {
     result.messages[i].ordinal = startOrdinal + i;
+  }
+}
+
+function reindexEvents(result: ParseResult, startIndex: number): void {
+  for (let i = 0; i < result.events.length; i++) {
+    result.events[i].eventIndex = startIndex + i;
   }
 }
 
