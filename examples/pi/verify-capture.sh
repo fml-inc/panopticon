@@ -28,13 +28,13 @@ ensure_container
 
 fail=0
 
-# 1. Check for Pi source events
+# 1. Check for Pi target events
 echo "Pi events (hook_events by event_type):"
-counts="$(query "SELECT event_type, COUNT(*) AS n FROM hook_events WHERE source = 'pi' GROUP BY event_type")"
+counts="$(query "SELECT event_type, COUNT(*) AS n FROM hook_events WHERE target = 'pi' GROUP BY event_type")"
 echo "$counts"
 
 if [ -z "$counts" ]; then
-  echo "  MISSING: no hook_events rows for source='pi'"
+  echo "  MISSING: no hook_events rows for target='pi'"
   fail=1
 else
   # Check for expected event types
@@ -47,7 +47,7 @@ fi
 echo ""
 
 # 2. Total event count
-total="$(query "SELECT COUNT(*) AS n FROM hook_events WHERE source = 'pi'" | grep -oE '"n":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
+total="$(query "SELECT COUNT(*) AS n FROM hook_events WHERE target = 'pi'" | grep -oE '"n":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
 if [ -n "$total" ] && [ "$total" -gt 0 ]; then
   echo "Total Pi events: $total"
 else
@@ -58,7 +58,7 @@ echo ""
 
 # 3. Recent events (informational)
 echo "Recent Pi events (last 5):"
-query "SELECT id, event_type, tool_name, datetime(timestamp_ms/1000, 'unixepoch') AS ts FROM hook_events WHERE source = 'pi' ORDER BY id DESC LIMIT 5" || true
+query "SELECT id, event_type, tool_name, datetime(timestamp_ms/1000, 'unixepoch') AS ts FROM hook_events WHERE target = 'pi' ORDER BY id DESC LIMIT 5" || true
 echo ""
 
 if [ "$fail" -eq 0 ]; then
