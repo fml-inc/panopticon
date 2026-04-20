@@ -3,7 +3,7 @@
 # Run after sending at least one prompt through Pi.
 #
 # Exits non-zero if:
-#   - no hook_events rows for source='pi' (extension capture missing)
+#   - no hook_events rows for target='pi' (extension capture missing)
 
 set -euo pipefail
 
