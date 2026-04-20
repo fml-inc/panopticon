@@ -1,3 +1,8 @@
+import { config } from "../config.js";
+import {
+  ensureSessionSummaryProjections,
+  sessionSummaryKeyForSession,
+} from "../session_summaries/query.js";
 import { allTargets } from "../targets/index.js";
 import type {
   ActivitySessionDetail,
@@ -7,6 +12,7 @@ import type {
   SearchResult,
   Session,
   SessionListResult,
+  SessionSummary,
   SessionTimelineResult,
   SpendingGroup,
   SpendingResult,
@@ -101,6 +107,8 @@ export function listSessions(
   opts: { limit?: number; since?: string } = {},
 ): SessionListResult {
   const db = getDb();
+  const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
 
@@ -166,34 +174,145 @@ export function listSessions(
     reposBySession.set(r.session_id, list);
   }
 
-  const sessions: Session[] = rows.map((row) => ({
-    sessionId: row.session_id,
-    target: row.target,
-    model: row.model,
-    project: row.project,
-    startedAt: row.started_at_ms ? toIso(row.started_at_ms) : null,
-    endedAt: row.ended_at_ms ? toIso(row.ended_at_ms) : null,
-    firstPrompt: row.first_prompt,
-    turnCount: row.turn_count,
-    messageCount: row.message_count,
-    totalInputTokens: row.total_input_tokens,
-    totalOutputTokens: row.total_output_tokens,
-    totalCost: row.total_cost,
-    repositories: (reposBySession.get(row.session_id) ?? []).map((r) => ({
-      name: r.repository,
-      gitUserName: r.git_user_name,
-      gitUserEmail: r.git_user_email,
-    })),
-    parentSessionId: row.parent_session_id,
-    relationshipType: row.relationship_type,
-    summary: row.summary,
-  }));
+  const sessionSummaryKeys = sessionSummariesEnabled
+    ? sessionIds.map(sessionSummaryKeyForSession)
+    : [];
+  const sessionSummaryRows =
+    sessionSummariesEnabled && sessionSummaryKeys.length > 0
+      ? (db
+          .prepare(
+            `SELECT id,
+                    session_summary_key,
+                    title,
+                    status,
+                    repository,
+                    cwd,
+                    branch,
+                    first_intent_ts_ms,
+                    last_intent_ts_ms,
+                    intent_count,
+                    edit_count,
+                    landed_edit_count,
+                    open_edit_count
+             FROM session_summaries
+             WHERE session_summary_key IN (${sessionSummaryKeys.map(() => "?").join(",")})`,
+          )
+          .all(...sessionSummaryKeys) as Array<{
+          id: number;
+          session_summary_key: string;
+          title: string;
+          status: SessionSummary["status"];
+          repository: string | null;
+          cwd: string | null;
+          branch: string | null;
+          first_intent_ts_ms: number | null;
+          last_intent_ts_ms: number | null;
+          intent_count: number;
+          edit_count: number;
+          landed_edit_count: number;
+          open_edit_count: number;
+        }>)
+      : [];
+
+  const topFileRows =
+    sessionSummariesEnabled && sessionSummaryRows.length > 0
+      ? (db
+          .prepare(
+            `SELECT w.session_summary_key,
+                    e.file_path,
+                    COUNT(*) AS edit_count
+             FROM session_summaries w
+             JOIN intent_session_summaries iw ON iw.session_summary_id = w.id
+             JOIN intent_edits e ON e.intent_unit_id = iw.intent_unit_id
+             WHERE w.id IN (${sessionSummaryRows.map(() => "?").join(",")})
+             GROUP BY w.session_summary_key, e.file_path
+             ORDER BY w.session_summary_key ASC, edit_count DESC, e.file_path ASC`,
+          )
+          .all(...sessionSummaryRows.map((row) => row.id)) as Array<{
+          session_summary_key: string;
+          file_path: string;
+          edit_count: number;
+        }>)
+      : [];
+
+  const topFilesBySessionSummary = new Map<string, string[]>();
+  for (const row of topFileRows) {
+    const files = topFilesBySessionSummary.get(row.session_summary_key) ?? [];
+    if (files.length < 3) files.push(row.file_path);
+    topFilesBySessionSummary.set(row.session_summary_key, files);
+  }
+
+  const summariesBySession = new Map<string, SessionSummary>();
+  for (const row of sessionSummaryRows) {
+    const sessionId = parseSessionIdFromSummaryKey(row.session_summary_key);
+    if (!sessionId) continue;
+    summariesBySession.set(sessionId, {
+      sessionId,
+      title: row.title,
+      status: row.status,
+      repository: row.repository,
+      cwd: row.cwd,
+      branch: row.branch,
+      firstIntentAt: row.first_intent_ts_ms
+        ? toIso(row.first_intent_ts_ms)
+        : null,
+      lastIntentAt: row.last_intent_ts_ms ? toIso(row.last_intent_ts_ms) : null,
+      intentCount: row.intent_count,
+      editCount: row.edit_count,
+      landedEditCount: row.landed_edit_count,
+      openEditCount: row.open_edit_count,
+      topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
+    });
+  }
+
+  const sessions: Session[] = rows.map((row) => {
+    const sessionSummary = summariesBySession.get(row.session_id) ?? null;
+    return {
+      sessionId: row.session_id,
+      target: row.target,
+      model: row.model,
+      project: row.project,
+      startedAt: row.started_at_ms ? toIso(row.started_at_ms) : null,
+      endedAt: row.ended_at_ms ? toIso(row.ended_at_ms) : null,
+      firstPrompt: row.first_prompt,
+      turnCount: row.turn_count,
+      messageCount: row.message_count,
+      totalInputTokens: row.total_input_tokens,
+      totalOutputTokens: row.total_output_tokens,
+      totalCost: row.total_cost,
+      repositories: (reposBySession.get(row.session_id) ?? []).map((r) => ({
+        name: r.repository,
+        gitUserName: r.git_user_name,
+        gitUserEmail: r.git_user_email,
+      })),
+      parentSessionId: row.parent_session_id,
+      relationshipType: row.relationship_type,
+      summary: formatExplicitSessionSummary(sessionSummary, row.summary),
+      sessionSummary,
+    };
+  });
 
   return {
     sessions,
     totalCount: sessions.length,
     source: "local",
   };
+}
+
+function parseSessionIdFromSummaryKey(key: string): string | null {
+  return key.startsWith("ss:local:") ? key.slice("ss:local:".length) : null;
+}
+
+function formatExplicitSessionSummary(
+  sessionSummary: SessionSummary | null,
+  fallback: string | null,
+): string | null {
+  if (!sessionSummary) return fallback;
+  const files =
+    sessionSummary.topFiles.length > 0
+      ? ` Top files: ${sessionSummary.topFiles.join(", ")}.`
+      : "";
+  return `${sessionSummary.title}. Status: ${sessionSummary.status}. ${sessionSummary.intentCount} intents, ${sessionSummary.editCount} edits, ${sessionSummary.landedEditCount} landed, ${sessionSummary.openEditCount} open.${files}`;
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────────

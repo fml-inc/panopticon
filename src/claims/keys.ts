@@ -32,11 +32,16 @@ export function editKey(args: {
   toolUseId?: string | null;
   multiEditIndex?: number;
   hookEventId?: number;
+  semanticIdentity?: string;
+  semanticOccurrence?: number;
 }): string {
   const suffix =
     args.multiEditIndex !== undefined ? `:${args.multiEditIndex}` : "";
   if (args.toolUseId && args.toolUseId.length > 0) {
     return `edit:${args.toolUseId}${suffix}`;
+  }
+  if (args.intentKey && args.semanticIdentity) {
+    return `edit:${args.intentKey}:sem:${sha256Hex(args.semanticIdentity)}:${args.semanticOccurrence ?? 0}${suffix}`;
   }
   if (args.intentKey && typeof args.toolCallIndex === "number") {
     return `edit:${args.intentKey}:tool:${args.toolCallIndex}${suffix}`;
@@ -61,6 +66,20 @@ export function toolLocalEvidenceKey(
   toolCallIndex: number,
 ): string {
   return `tool_local:${sessionId}:${messageOrdinal}:${toolCallIndex}`;
+}
+
+export function semanticEditIdentity(args: {
+  filePath: string;
+  newString: string;
+  oldStrings: string[];
+  deletedFile: boolean;
+}): string {
+  return [
+    args.filePath,
+    args.deletedFile ? "1" : "0",
+    sha256Hex(args.newString),
+    sha256Hex(args.oldStrings.join("\u0000")),
+  ].join("|");
 }
 
 export function hookEvidenceKey(id: number): string {

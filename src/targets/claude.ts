@@ -117,6 +117,62 @@ function extractToolResultTextLength(content: unknown): number {
   return 0;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function excerpt(value: unknown, max = 500): string | undefined {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, max)
+    : undefined;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.filter(
+    (entry): entry is string => typeof entry === "string",
+  );
+  return values.length > 0 ? values : undefined;
+}
+
+function summarizeAttachment(attachment: Record<string, unknown> | undefined): {
+  content?: string;
+  metadata: Record<string, unknown>;
+} {
+  const metadata: Record<string, unknown> = {};
+  const attachmentType =
+    typeof attachment?.type === "string" ? attachment.type : undefined;
+  if (attachmentType) metadata.attachmentType = attachmentType;
+
+  const addedNames = stringArray(attachment?.addedNames);
+  const removedNames = stringArray(attachment?.removedNames);
+  const addedLines = stringArray(attachment?.addedLines);
+
+  if (addedNames) {
+    metadata.addedNamesCount = addedNames.length;
+    metadata.addedNamesSample = addedNames.slice(0, 5);
+  }
+  if (removedNames) {
+    metadata.removedNamesCount = removedNames.length;
+    metadata.removedNamesSample = removedNames.slice(0, 5);
+  }
+  if (addedLines) {
+    metadata.addedLinesCount = addedLines.length;
+  }
+
+  const content =
+    excerpt(attachment?.message) ??
+    excerpt(attachment?.content) ??
+    excerpt(attachment?.text) ??
+    (attachmentType === "deferred_tools_delta"
+      ? `Deferred tools updated (+${addedNames?.length ?? 0}/-${removedNames?.length ?? 0})`
+      : attachmentType);
+
+  return { content, metadata };
+}
+
 // ── DAG fork detection ─────────────────────────────────────────────────────
 // Adapted from agentsview's parseDAG/walkBranch (internal/parser/claude.go).
 // Detects uuid/parentUuid branching in JSONL files and separates large-gap
@@ -470,9 +526,15 @@ const claude: TargetAdapter = {
         const type = obj.type as string;
         const sessionId = obj.sessionId as string | undefined;
         const agentId = obj.agentId as string | undefined;
-        const tsMs = obj.timestamp
-          ? new Date(obj.timestamp as string).getTime()
-          : Date.now();
+        const rawTimestampMs =
+          typeof obj.timestamp === "string"
+            ? new Date(obj.timestamp).getTime()
+            : undefined;
+        const hasTimestampMs =
+          typeof rawTimestampMs === "number" && Number.isFinite(rawTimestampMs);
+        const tsMs = hasTimestampMs
+          ? rawTimestampMs
+          : (meta?.startedAtMs ?? lineIdx);
 
         // Track uuid/parentUuid for DAG fork detection
         const uuid = obj.uuid as string | undefined;
@@ -491,7 +553,7 @@ const claude: TargetAdapter = {
           const common = {
             cliVersion: obj.version as string | undefined,
             cwd: obj.cwd as string | undefined,
-            startedAtMs: tsMs,
+            startedAtMs: hasTimestampMs ? rawTimestampMs : undefined,
           };
           if (agentId) {
             // Subagent files have agentId set and sessionId is the parent's ID.
@@ -519,6 +581,9 @@ const claude: TargetAdapter = {
           } else {
             meta = { sessionId, ...common };
           }
+        }
+        if (meta && !meta.startedAtMs && hasTimestampMs) {
+          meta.startedAtMs = rawTimestampMs;
         }
 
         const sid = meta?.sessionId ?? sessionId ?? "";
@@ -821,6 +886,50 @@ const claude: TargetAdapter = {
                 preventedContinuation: obj.preventedContinuation,
               },
             });
+          } else if (subtype === "turn_duration") {
+            events.push({
+              sessionId: sid,
+              eventType: "turn_duration",
+              timestampMs: tsMs,
+              metadata: {
+                durationMs: obj.durationMs,
+                messageCount: obj.messageCount,
+                parentUuid,
+              },
+            });
+          } else if (subtype === "local_command") {
+            events.push({
+              sessionId: sid,
+              eventType: "local_command",
+              timestampMs: tsMs,
+              content: excerpt(obj.content, 2_000),
+              metadata: {
+                level,
+                parentUuid,
+              },
+            });
+          } else if (subtype === "compact_boundary") {
+            events.push({
+              sessionId: sid,
+              eventType: "compact_boundary",
+              timestampMs: tsMs,
+              content: excerpt(obj.content),
+              metadata: {
+                level,
+                compactMetadata: obj.compactMetadata,
+                logicalParentUuid: obj.logicalParentUuid,
+              },
+            });
+          } else if (subtype === "away_summary") {
+            events.push({
+              sessionId: sid,
+              eventType: "away_summary",
+              timestampMs: tsMs,
+              content: excerpt(obj.content, 2_000),
+              metadata: {
+                parentUuid,
+              },
+            });
           }
         }
 
@@ -876,6 +985,27 @@ const claude: TargetAdapter = {
                 toolUseID: obj.toolUseID,
               },
             });
+          } else if (
+            progressType === "query_update" ||
+            progressType === "search_results_received" ||
+            progressType === "waiting_for_task"
+          ) {
+            events.push({
+              sessionId: sid,
+              eventType: `progress:${progressType}`,
+              timestampMs: tsMs,
+              content:
+                excerpt(data?.query) ??
+                excerpt(data?.taskDescription) ??
+                excerpt(obj.content),
+              metadata: {
+                parentToolUseID: obj.parentToolUseID,
+                toolUseID: obj.toolUseID,
+                resultCount: data?.resultCount,
+                taskDescription: data?.taskDescription,
+                taskType: data?.taskType,
+              },
+            });
           }
         }
 
@@ -925,6 +1055,92 @@ const claude: TargetAdapter = {
               typeof obj.lastPrompt === "string"
                 ? obj.lastPrompt.slice(0, 500)
                 : undefined,
+          });
+        }
+
+        if (type === "attachment") {
+          const { content, metadata } = summarizeAttachment(
+            asRecord(obj.attachment),
+          );
+          events.push({
+            sessionId: sid,
+            eventType: "attachment",
+            timestampMs: tsMs,
+            content,
+            metadata: {
+              parentUuid,
+              isSidechain: obj.isSidechain,
+              ...metadata,
+            },
+          });
+        }
+
+        if (type === "pr-link") {
+          const prRepository =
+            typeof obj.prRepository === "string" ? obj.prRepository : undefined;
+          const prNumber =
+            typeof obj.prNumber === "number" ? obj.prNumber : undefined;
+          events.push({
+            sessionId: sid,
+            eventType: "pr_link",
+            timestampMs: tsMs,
+            content:
+              prRepository && prNumber
+                ? `${prRepository}#${prNumber}`
+                : excerpt(obj.prUrl),
+            metadata: {
+              prNumber,
+              prUrl: obj.prUrl,
+              prRepository,
+            },
+          });
+        }
+
+        if (type === "permission-mode") {
+          events.push({
+            sessionId: sid,
+            eventType: "permission_mode",
+            timestampMs: tsMs,
+            content: excerpt(obj.permissionMode),
+            metadata: {
+              permissionMode: obj.permissionMode,
+            },
+          });
+        }
+
+        if (type === "custom-title") {
+          events.push({
+            sessionId: sid,
+            eventType: "custom_title",
+            timestampMs: tsMs,
+            content: excerpt(obj.customTitle),
+          });
+        }
+
+        if (type === "agent-name") {
+          events.push({
+            sessionId: sid,
+            eventType: "agent_name",
+            timestampMs: tsMs,
+            content: excerpt(obj.agentName),
+          });
+        }
+
+        if (type === "worktree-state") {
+          const worktree = asRecord(obj.worktreeSession);
+          events.push({
+            sessionId: sid,
+            eventType: "worktree_state",
+            timestampMs: tsMs,
+            content: excerpt(worktree?.worktreePath),
+            metadata: {
+              originalCwd: worktree?.originalCwd,
+              worktreePath: worktree?.worktreePath,
+              worktreeName: worktree?.worktreeName,
+              worktreeBranch: worktree?.worktreeBranch,
+              originalBranch: worktree?.originalBranch,
+              originalHeadCommit: worktree?.originalHeadCommit,
+            },
           });
         }
       }

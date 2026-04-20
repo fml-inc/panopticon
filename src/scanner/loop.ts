@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { rebuildActiveClaims } from "../claims/canonicalize.js";
+import { performance } from "node:perf_hooks";
 import { getDb, markResyncComplete, needsResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
@@ -35,39 +35,213 @@ import type { ScannerHandle, ScannerOptions } from "./types.js";
 
 const DEFAULT_IDLE_MS = 60_000;
 const DEFAULT_CATCHUP_MS = 5_000;
+const MAX_PROFILE_DETAILS = 5;
+const SLOW_SCAN_DETAIL_MS = 250;
 
-export function scanOnce(): {
+interface ScanTargetProfile {
+  source: string;
+  filesDiscovered: number;
+  filesScanned: number;
+  turns: number;
+  touchedSessions: number;
+  reparses: number;
+  parseMs: number;
+  dbWriteMs: number;
+  archiveMs: number;
+}
+
+interface ScanFileProfile {
+  source: string;
+  filePath: string;
+  parseMs: number;
+  dbWriteMs: number;
+  archiveMs: number;
+  totalMs: number;
+  turns: number;
+  messages: number;
+  events: number;
+  forks: number;
+  sessionsTouched: number;
+  reparsedFromStart: boolean;
+}
+
+interface ScanSessionProfile {
+  sessionId: string;
+  scannerMs: number;
+  scannerIntents: number;
+  scannerEdits: number;
+  reconcileMs: number;
+  reconciledEdits: number;
+  reconcileActiveLoadMs: number;
+  reconcileActiveIntentsLoaded: number;
+  reconcileActiveEditsLoaded: number;
+  projectionMs: number;
+  projectedIntents: number;
+  projectedEdits: number;
+  projectedSessionSummaries: number;
+  memberships: number;
+  provenance: number;
+  projectionActiveLoadMs: number;
+  projectionActiveIntentsLoaded: number;
+  projectionActiveEditsLoaded: number;
+  totalMs: number;
+}
+
+interface ScanProfile {
+  totalMs: number;
+  parseMs: number;
+  dbWriteMs: number;
+  archiveMs: number;
+  rebuildScannerMs: number;
+  reconcileMs: number;
+  projectionMs: number;
+  linkMs: number;
+  linkedSessions: number;
+  targets: ScanTargetProfile[];
+  files: ScanFileProfile[];
+  sessions: ScanSessionProfile[];
+}
+
+interface ScanOnceOptions {
+  profileLabel?: string;
+  logDetails?: boolean;
+}
+
+interface ScanOnceResult {
   filesScanned: number;
   newTurns: number;
   touchedSessions: string[];
-} {
+  profile: ScanProfile;
+}
+
+function formatMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  if (ms >= 100) return `${Math.round(ms)}ms`;
+  return `${ms.toFixed(1)}ms`;
+}
+
+function sortByDurationDesc<T extends { totalMs: number }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => b.totalMs - a.totalMs);
+}
+
+function logScanProfile(
+  result: ScanOnceResult,
+  opts: ScanOnceOptions | undefined,
+): void {
+  const label = opts?.profileLabel ?? "scan";
+  const prefix = `${label} profile`;
+  const { profile } = result;
+  log.scanner.info(
+    `${prefix}: total=${formatMs(profile.totalMs)} files=${result.filesScanned} turns=${result.newTurns} touched_sessions=${result.touchedSessions.length} phases(parse=${formatMs(profile.parseMs)} db=${formatMs(profile.dbWriteMs)} archive=${formatMs(profile.archiveMs)} claims=${formatMs(profile.rebuildScannerMs)} landed=${formatMs(profile.reconcileMs)} projection=${formatMs(profile.projectionMs)} link=${formatMs(profile.linkMs)})`,
+  );
+
+  const shouldLogDetails =
+    opts?.logDetails === true || profile.totalMs >= SLOW_SCAN_DETAIL_MS;
+  if (!shouldLogDetails) return;
+
+  for (const target of profile.targets) {
+    log.scanner.info(
+      `${prefix} target: source=${target.source} discovered=${target.filesDiscovered} scanned=${target.filesScanned} turns=${target.turns} touched_sessions=${target.touchedSessions} reparses=${target.reparses} parse=${formatMs(target.parseMs)} db=${formatMs(target.dbWriteMs)} archive=${formatMs(target.archiveMs)}`,
+    );
+  }
+
+  for (const file of sortByDurationDesc(profile.files).slice(
+    0,
+    MAX_PROFILE_DETAILS,
+  )) {
+    log.scanner.info(
+      `${prefix} file: total=${formatMs(file.totalMs)} source=${file.source} turns=${file.turns} messages=${file.messages} events=${file.events} forks=${file.forks} touched_sessions=${file.sessionsTouched} parse=${formatMs(file.parseMs)} db=${formatMs(file.dbWriteMs)} archive=${formatMs(file.archiveMs)} reparsed=${file.reparsedFromStart ? "yes" : "no"} path=${file.filePath}`,
+    );
+  }
+
+  for (const session of sortByDurationDesc(profile.sessions).slice(
+    0,
+    MAX_PROFILE_DETAILS,
+  )) {
+    log.scanner.info(
+      `${prefix} session: total=${formatMs(session.totalMs)} session=${session.sessionId} claims=${formatMs(session.scannerMs)} intents=${session.scannerIntents} edits=${session.scannerEdits} landed=${formatMs(session.reconcileMs)} checked=${session.reconciledEdits} active_load=${formatMs(session.reconcileActiveLoadMs)} active_intents=${session.reconcileActiveIntentsLoaded} active_edits=${session.reconcileActiveEditsLoaded} projection=${formatMs(session.projectionMs)} projected_intents=${session.projectedIntents} projected_edits=${session.projectedEdits} summaries=${session.projectedSessionSummaries} memberships=${session.memberships} provenance=${session.provenance} projection_active_load=${formatMs(session.projectionActiveLoadMs)} projection_active_intents=${session.projectionActiveIntentsLoaded} projection_active_edits=${session.projectionActiveEditsLoaded}`,
+    );
+  }
+}
+
+export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
+  const startedAt = performance.now();
   getDb(); // ensure DB is accessible
 
   let filesScanned = 0;
   let newTurns = 0;
   const touchedSessions = new Set<string>();
+  const fileProfiles: ScanFileProfile[] = [];
+  const targetProfiles = new Map<string, ScanTargetProfile>();
+  const targetTouchedSessions = new Map<string, Set<string>>();
+  let parseMs = 0;
+  let dbWriteMs = 0;
+  let archiveMs = 0;
+  let rebuildScannerMs = 0;
+  let reconcileMs = 0;
+  let projectionMs = 0;
+  let linkMs = 0;
+  let linkedSessions = 0;
 
   for (const target of allTargets()) {
     if (!target.scanner) continue;
     const source = target.id;
+    const targetProfile = targetProfiles.get(source) ?? {
+      source,
+      filesDiscovered: 0,
+      filesScanned: 0,
+      turns: 0,
+      touchedSessions: 0,
+      reparses: 0,
+      parseMs: 0,
+      dbWriteMs: 0,
+      archiveMs: 0,
+    };
+    targetProfiles.set(source, targetProfile);
+    if (!targetTouchedSessions.has(source)) {
+      targetTouchedSessions.set(source, new Set<string>());
+    }
 
     for (const { filePath } of target.scanner.discover()) {
+      targetProfile.filesDiscovered += 1;
+      const fileStartedAt = performance.now();
+      let fileParseMs = 0;
+      let fileDbWriteMs = 0;
+      let fileArchiveMs = 0;
+      let reparsedFromStart = false;
       let offset = readFileWatermark(filePath);
+      let parseStartedAt = performance.now();
       let result = target.scanner.parseFile(filePath, offset);
-      if (!result) continue;
+      fileParseMs += performance.now() - parseStartedAt;
+      if (!result) {
+        parseMs += fileParseMs;
+        targetProfile.parseMs += fileParseMs;
+        continue;
+      }
 
       // If incremental parse detected a DAG fork, reset watermark
       // and reparse from byte 0 so fork detection runs on the full file.
       let savedSyncIds: SavedSyncIds | undefined;
       if (result.needsFullReparse && offset > 0) {
+        reparsedFromStart = true;
+        targetProfile.reparses += 1;
         savedSyncIds = resetFileForReparse(filePath, result.meta?.sessionId);
         offset = 0;
+        parseStartedAt = performance.now();
         result = target.scanner.parseFile(filePath, 0);
-        if (!result) continue;
+        fileParseMs += performance.now() - parseStartedAt;
+        if (!result) {
+          parseMs += fileParseMs;
+          targetProfile.parseMs += fileParseMs;
+          continue;
+        }
         log.scanner.info(`Reparsing ${filePath} from start (fork detected)`);
       }
 
       filesScanned++;
+      targetProfile.filesScanned += 1;
+      parseMs += fileParseMs;
+      targetProfile.parseMs += fileParseMs;
 
       // When reading from byte 0 (full file), turn indices start at 0 so
       // INSERT OR IGNORE deduplicates. When incremental (offset > 0),
@@ -97,6 +271,7 @@ export function scanOnce(): {
       const fileMeta = result.meta;
       const fileResult = result;
       const db = getDb();
+      const writeStartedAt = performance.now();
       db.transaction(() => {
         upsertSession(fileMeta, filePath, source);
 
@@ -119,9 +294,14 @@ export function scanOnce(): {
 
         writeFileWatermark(filePath, fileResult.newByteOffset);
       })();
+      fileDbWriteMs += performance.now() - writeStartedAt;
+      dbWriteMs += fileDbWriteMs;
+      targetProfile.dbWriteMs += fileDbWriteMs;
       touchedSessions.add(sessionId);
+      targetTouchedSessions.get(source)?.add(sessionId);
 
       newTurns += result.turns.length;
+      targetProfile.turns += result.turns.length;
 
       // Process fork results (additional sessions from DAG analysis)
       if (result.forks) {
@@ -129,6 +309,7 @@ export function scanOnce(): {
           if (!fork.meta?.sessionId) continue;
           const forkSessionId = fork.meta.sessionId;
           const forkMeta = fork.meta;
+          const forkWriteStartedAt = performance.now();
           db.transaction(() => {
             upsertSession(forkMeta, filePath, source);
             if (fork.turns.length > 0) {
@@ -144,8 +325,14 @@ export function scanOnce(): {
             }
             // No watermark — shared file, one watermark for the whole file
           })();
+          const forkWriteMs = performance.now() - forkWriteStartedAt;
+          fileDbWriteMs += forkWriteMs;
+          dbWriteMs += forkWriteMs;
+          targetProfile.dbWriteMs += forkWriteMs;
           touchedSessions.add(forkSessionId);
+          targetTouchedSessions.get(source)?.add(forkSessionId);
           newTurns += fork.turns.length;
+          targetProfile.turns += fork.turns.length;
         }
       }
 
@@ -155,6 +342,7 @@ export function scanOnce(): {
       }
 
       // Archive raw file for 100% recall
+      const archiveStartedAt = performance.now();
       try {
         const fileSize = fs.statSync(filePath).size;
         const archivedSize = readArchivedSize(filePath);
@@ -172,34 +360,148 @@ export function scanOnce(): {
         log.scanner.warn(
           `Archive error for ${filePath}: ${archiveErr instanceof Error ? archiveErr.message : archiveErr}`,
         );
+      } finally {
+        fileArchiveMs += performance.now() - archiveStartedAt;
+        archiveMs += fileArchiveMs;
+        targetProfile.archiveMs += fileArchiveMs;
       }
+
+      fileProfiles.push({
+        source,
+        filePath,
+        parseMs: fileParseMs,
+        dbWriteMs: fileDbWriteMs,
+        archiveMs: fileArchiveMs,
+        totalMs: performance.now() - fileStartedAt,
+        turns:
+          result.turns.length +
+          (result.forks?.reduce((sum, fork) => sum + fork.turns.length, 0) ??
+            0),
+        messages:
+          result.messages.length +
+          (result.forks?.reduce((sum, fork) => sum + fork.messages.length, 0) ??
+            0),
+        events:
+          result.events.length +
+          (result.forks?.reduce((sum, fork) => sum + fork.events.length, 0) ??
+            0),
+        forks: result.forks?.length ?? 0,
+        sessionsTouched: 1 + (result.forks?.length ?? 0),
+        reparsedFromStart,
+      });
     }
   }
+
+  for (const profile of targetProfiles.values()) {
+    profile.touchedSessions =
+      targetTouchedSessions.get(profile.source)?.size ?? 0;
+  }
+
+  const sessionProfiles: ScanSessionProfile[] = [];
 
   // Link subagent sessions to parents after all files are processed
   if (filesScanned > 0) {
     if (touchedSessions.size > 0) {
       for (const sessionId of touchedSessions) {
-        rebuildIntentClaimsFromScanner({ sessionId });
-      }
-      rebuildActiveClaims();
-      for (const sessionId of touchedSessions) {
-        reconcileLandedClaimsFromDisk({ sessionId });
-      }
-      for (const sessionId of touchedSessions) {
-        rebuildIntentProjection({ sessionId });
+        const sessionProfile: ScanSessionProfile = {
+          sessionId,
+          scannerMs: 0,
+          scannerIntents: 0,
+          scannerEdits: 0,
+          reconcileMs: 0,
+          reconciledEdits: 0,
+          reconcileActiveLoadMs: 0,
+          reconcileActiveIntentsLoaded: 0,
+          reconcileActiveEditsLoaded: 0,
+          projectionMs: 0,
+          projectedIntents: 0,
+          projectedEdits: 0,
+          projectedSessionSummaries: 0,
+          memberships: 0,
+          provenance: 0,
+          projectionActiveLoadMs: 0,
+          projectionActiveIntentsLoaded: 0,
+          projectionActiveEditsLoaded: 0,
+          totalMs: 0,
+        };
+
+        let phaseStartedAt = performance.now();
+        const scannerResult = rebuildIntentClaimsFromScanner({ sessionId });
+        sessionProfile.scannerMs = performance.now() - phaseStartedAt;
+        sessionProfile.scannerIntents = scannerResult.intents;
+        sessionProfile.scannerEdits = scannerResult.edits;
+        rebuildScannerMs += sessionProfile.scannerMs;
+
+        phaseStartedAt = performance.now();
+        const landedResult = reconcileLandedClaimsFromDisk({ sessionId });
+        sessionProfile.reconcileMs = performance.now() - phaseStartedAt;
+        sessionProfile.reconciledEdits = landedResult.checked;
+        sessionProfile.reconcileActiveLoadMs = landedResult.activeLoadMs;
+        sessionProfile.reconcileActiveIntentsLoaded =
+          landedResult.activeIntentsLoaded;
+        sessionProfile.reconcileActiveEditsLoaded =
+          landedResult.activeEditsLoaded;
+        reconcileMs += sessionProfile.reconcileMs;
+
+        phaseStartedAt = performance.now();
+        const projectionResult = rebuildIntentProjection({ sessionId });
+        sessionProfile.projectionMs = performance.now() - phaseStartedAt;
+        sessionProfile.projectedIntents = projectionResult.intents;
+        sessionProfile.projectedEdits = projectionResult.edits;
+        sessionProfile.projectedSessionSummaries =
+          projectionResult.sessionSummaries;
+        sessionProfile.memberships = projectionResult.memberships;
+        sessionProfile.provenance = projectionResult.provenance;
+        sessionProfile.projectionActiveLoadMs = projectionResult.activeLoadMs;
+        sessionProfile.projectionActiveIntentsLoaded =
+          projectionResult.activeIntentsLoaded;
+        sessionProfile.projectionActiveEditsLoaded =
+          projectionResult.activeEditsLoaded;
+        projectionMs += sessionProfile.projectionMs;
+
+        sessionProfile.totalMs =
+          sessionProfile.scannerMs +
+          sessionProfile.reconcileMs +
+          sessionProfile.projectionMs;
+        sessionProfiles.push(sessionProfile);
       }
     }
-    const linked = linkSubagentSessions();
-    if (linked > 0) {
+    const linkStartedAt = performance.now();
+    linkedSessions = linkSubagentSessions();
+    linkMs += performance.now() - linkStartedAt;
+    if (linkedSessions > 0) {
       log.scanner.info(
-        `Linked ${linked} subagent session${linked > 1 ? "s" : ""}`,
+        `Linked ${linkedSessions} subagent session${linkedSessions > 1 ? "s" : ""}`,
       );
     }
     log.scanner.info(`Scanned ${filesScanned} files, ${newTurns} new turns`);
   }
 
-  return { filesScanned, newTurns, touchedSessions: [...touchedSessions] };
+  const result: ScanOnceResult = {
+    filesScanned,
+    newTurns,
+    touchedSessions: [...touchedSessions],
+    profile: {
+      totalMs: performance.now() - startedAt,
+      parseMs,
+      dbWriteMs,
+      archiveMs,
+      rebuildScannerMs,
+      reconcileMs,
+      projectionMs,
+      linkMs,
+      linkedSessions,
+      targets: [...targetProfiles.values()],
+      files: fileProfiles,
+      sessions: sessionProfiles,
+    },
+  };
+
+  if (filesScanned > 0 || opts?.logDetails === true) {
+    logScanProfile(result, opts);
+  }
+
+  return result;
 }
 
 function reindexTurns(result: ParseResult, startIndex: number): void {
@@ -222,6 +524,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   let stopping = false;
   let reparseChecked = false;
   let ready = false;
+  let startedAt = 0;
 
   function scheduleNext(hadWork: boolean): void {
     if (stopping) return;
@@ -272,18 +575,29 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
     let hadWork = false;
     try {
-      const { newTurns } = scanOnce();
+      const isStartupScan = !ready;
+      const { newTurns } = scanOnce({
+        profileLabel: isStartupScan ? "startup scan" : "scan",
+        logDetails: isStartupScan,
+      });
       hadWork = newTurns > 0;
 
       if (!ready) {
         ready = true;
+        log.scanner.info(
+          `Scanner ready in ${formatMs(performance.now() - startedAt)}`,
+        );
         opts.onReady?.();
       }
 
       // Only generate summaries when idle and scanner is ready.
       if (!hadWork && ready) {
         try {
-          generateSummariesOnce((msg) => log.scanner.info(msg));
+          const summaryStartedAt = performance.now();
+          const result = generateSummariesOnce((msg) => log.scanner.info(msg));
+          log.scanner.info(
+            `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`,
+          );
         } catch (err) {
           log.scanner.error(
             `Session summary error: ${err instanceof Error ? err.message : err}`,
@@ -304,6 +618,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     start() {
       if (timer) return;
       stopping = false;
+      startedAt = performance.now();
       log.scanner.info("Starting scanner");
       tick();
     },

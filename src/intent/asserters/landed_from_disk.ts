@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { performance } from "node:perf_hooks";
 import { gunzipSync } from "node:zlib";
 import { fileSnapshotEvidenceKey } from "../../claims/keys.js";
 import {
@@ -13,6 +14,7 @@ import {
   loadActiveEdits,
   loadActiveIntents,
 } from "../claimViews.js";
+import { type ParsedEditEntry, parseEditEntries } from "../editParsing.js";
 
 const ASSERTER = "intent.landed_from_disk";
 const VERSION = "2";
@@ -24,16 +26,39 @@ type LandedReason =
   | "file_deleted"
   | "reverted_post_session";
 
+interface PreparedEdit {
+  edit: ActiveEdit;
+  closedAtMs: number;
+  parsedEntry: ParsedEditEntry | null;
+  fileOrderIndex: number;
+}
+
+interface LandedVerdict {
+  status: "landed" | "churned";
+  reason: LandedReason;
+  fileContent: string | null;
+}
+
+interface ParsedPayloadEvidence {
+  toolName: string | null;
+  parsedEntries: ParsedEditEntry[];
+}
+
 export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
   checked: number;
+  activeIntentsLoaded: number;
+  activeEditsLoaded: number;
+  activeLoadMs: number;
 } {
   if (opts?.sessionId) {
     deleteClaimsByAsserterForSession(ASSERTER, opts.sessionId);
   } else {
     deleteClaimsByAsserter(ASSERTER);
   }
-  const edits = loadActiveEdits();
-  const intents = loadActiveIntents();
+  const loadStartedAt = performance.now();
+  const edits = loadActiveEdits(opts);
+  const intents = loadActiveIntents(opts);
+  const activeLoadMs = performance.now() - loadStartedAt;
 
   const editsBySession = new Map<string, ActiveEdit[]>();
   for (const edit of edits.values()) {
@@ -47,28 +72,52 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
   }
 
   let checked = 0;
+  const payloadCache = new Map<string, ParsedPayloadEvidence | null>();
+  const fileContentCache = new Map<string, string | null>();
   for (const [_sessionId, sessionEdits] of editsBySession) {
     const ordered = [...sessionEdits].sort(
       (a, b) =>
         (a.timestampMs ?? 0) - (b.timestampMs ?? 0) ||
         a.editKey.localeCompare(b.editKey),
     );
+    const prepared: PreparedEdit[] = [];
+    const editsByFile = new Map<string, PreparedEdit[]>();
     for (const edit of ordered) {
       const intent = edit.intentKey ? intents.get(edit.intentKey) : undefined;
-      if (!intent?.closedAtMs) {
+      if (!intent?.closedAtMs || !edit.filePath) {
         continue;
       }
-      const verdict = decideForEdit(edit, ordered);
+      const fileEdits = editsByFile.get(edit.filePath) ?? [];
+      const preparedEdit: PreparedEdit = {
+        edit,
+        closedAtMs: intent.closedAtMs,
+        parsedEntry: getParsedEditEntry(edit, payloadCache),
+        fileOrderIndex: fileEdits.length,
+      };
+      fileEdits.push(preparedEdit);
+      editsByFile.set(edit.filePath, fileEdits);
+      prepared.push(preparedEdit);
+    }
+
+    for (const preparedEdit of prepared) {
+      const sameFileEdits = editsByFile.get(preparedEdit.edit.filePath!) ?? [];
+      const verdict = decideForEdit(
+        preparedEdit,
+        sameFileEdits,
+        fileContentCache,
+      );
       if (!verdict) {
         continue;
       }
-      const observedAtMs = edit.timestampMs ?? intent.closedAtMs ?? Date.now();
-      const content =
-        verdict.reason === "file_deleted" ? null : readFileSafe(edit.filePath!);
-      const evidence = content
+      const observedAtMs =
+        preparedEdit.edit.timestampMs ?? preparedEdit.closedAtMs ?? Date.now();
+      const evidence = verdict.fileContent
         ? [
             {
-              key: fileSnapshotEvidenceKey(edit.filePath!, content),
+              key: fileSnapshotEvidenceKey(
+                preparedEdit.edit.filePath!,
+                verdict.fileContent,
+              ),
               role: "origin" as const,
             },
           ]
@@ -76,7 +125,7 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
       assertClaim({
         predicate: "edit/landed-status",
         subjectKind: "edit",
-        subject: edit.editKey,
+        subject: preparedEdit.edit.editKey,
         value: verdict.status,
         observedAtMs,
         sourceType: "git_disk",
@@ -88,7 +137,7 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
       assertClaim({
         predicate: "edit/landed-reason",
         subjectKind: "edit",
-        subject: edit.editKey,
+        subject: preparedEdit.edit.editKey,
         value: verdict.reason,
         observedAtMs,
         sourceType: "git_disk",
@@ -101,35 +150,49 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
     }
   }
 
-  return { checked };
+  return {
+    checked,
+    activeIntentsLoaded: intents.size,
+    activeEditsLoaded: edits.size,
+    activeLoadMs,
+  };
 }
 
 function decideForEdit(
-  edit: ActiveEdit,
-  allEditsForSession: ActiveEdit[],
-): { status: "landed" | "churned"; reason: LandedReason } | null {
+  preparedEdit: PreparedEdit,
+  allEditsForFile: PreparedEdit[],
+  fileContentCache: Map<string, string | null>,
+): LandedVerdict | null {
+  const { edit, parsedEntry } = preparedEdit;
   const snippet = edit.newStringSnippet ?? "";
-  const later = allEditsForSession.filter(
-    (candidate) =>
-      candidate.filePath === edit.filePath &&
-      ((candidate.timestampMs ?? 0) > (edit.timestampMs ?? 0) ||
-        ((candidate.timestampMs ?? 0) === (edit.timestampMs ?? 0) &&
-          candidate.editKey > edit.editKey)),
-  );
+  const deletedFileEdit = parsedEntry?.deletedFile ?? false;
+  const later = allEditsForFile.slice(preparedEdit.fileOrderIndex + 1);
 
   for (const next of later) {
-    if (next.toolName === "Write") {
-      const writeContent = fetchEditNewString(next);
+    if (
+      next.edit.toolName === "Write" ||
+      next.edit.toolName === "write_file" ||
+      next.edit.toolName === "create_file"
+    ) {
+      const writeContent = next.parsedEntry?.newString ?? null;
       if (writeContent !== null && snippet && !writeContent.includes(snippet)) {
-        return { status: "churned", reason: "write_replaced" };
+        return {
+          status: "churned",
+          reason: "write_replaced",
+          fileContent: null,
+        };
       }
-    } else if (next.toolName === "Edit" || next.toolName === "MultiEdit") {
-      const oldStrings = fetchOldStrings(next);
+    } else if ((next.parsedEntry?.oldStrings.length ?? 0) > 0) {
+      const oldStrings = next.parsedEntry?.oldStrings ?? [];
       if (
         snippet &&
         oldStrings.some((oldString) => oldString.includes(snippet))
       ) {
-        return { status: "churned", reason: "overwritten_in_session" };
+        return {
+          status: "churned",
+          reason: "overwritten_in_session",
+          fileContent: null,
+        };
       }
     }
   }
@@ -138,72 +201,89 @@ function decideForEdit(
     return null;
   }
 
-  const fileContent = readFileSafe(edit.filePath!);
+  const fileContent = readFileSafe(edit.filePath!, fileContentCache);
   if (fileContent === null) {
-    return { status: "churned", reason: "file_deleted" };
+    return deletedFileEdit
+      ? { status: "landed", reason: "file_deleted", fileContent: null }
+      : { status: "churned", reason: "file_deleted", fileContent: null };
   }
-  if (!snippet || fileContent.includes(snippet)) {
-    return { status: "landed", reason: "present_in_file" };
+  if (deletedFileEdit) {
+    return {
+      status: "churned",
+      reason: "reverted_post_session",
+      fileContent,
+    };
   }
-  return { status: "churned", reason: "reverted_post_session" };
+  if (snippet && fileContent.includes(snippet)) {
+    return { status: "landed", reason: "present_in_file", fileContent };
+  }
+  if (!snippet) {
+    const oldStrings = parsedEntry?.oldStrings ?? [];
+    if (oldStrings.length > 0) {
+      return oldStrings.some(
+        (oldString) => oldString && fileContent.includes(oldString),
+      )
+        ? {
+            status: "churned",
+            reason: "reverted_post_session",
+            fileContent,
+          }
+        : { status: "landed", reason: "present_in_file", fileContent };
+    }
+    return { status: "landed", reason: "present_in_file", fileContent };
+  }
+  return { status: "churned", reason: "reverted_post_session", fileContent };
 }
 
-function readFileSafe(filePath: string): string | null {
+function readFileSafe(
+  filePath: string,
+  cache: Map<string, string | null>,
+): string | null {
+  if (cache.has(filePath)) {
+    return cache.get(filePath) ?? null;
+  }
   try {
-    return fs.readFileSync(filePath, "utf8");
+    const content = fs.readFileSync(filePath, "utf8");
+    cache.set(filePath, content);
+    return content;
   } catch {
+    cache.set(filePath, null);
     return null;
   }
 }
 
-function fetchEditNewString(edit: ActiveEdit): string | null {
-  const payload = decodePayloadEvidence(
-    edit.payloadEvidenceKey,
-    edit.hookEventId,
+function getParsedEditEntry(
+  edit: ActiveEdit,
+  payloadCache: Map<string, ParsedPayloadEvidence | null>,
+): ParsedEditEntry | null {
+  const payload = loadParsedPayloadEvidence(edit, payloadCache);
+  return (
+    payload?.parsedEntries.find(
+      (entry) => entry.multiEditIndex === (edit.multiEditIndex ?? 0),
+    ) ?? null
   );
-  const toolInput = payload?.toolInput;
-  if (!toolInput) return null;
-
-  if (edit.toolName === "Write") {
-    return typeof toolInput.content === "string" ? toolInput.content : null;
-  }
-  if (edit.toolName === "Edit") {
-    return typeof toolInput.new_string === "string"
-      ? toolInput.new_string
-      : null;
-  }
-  if (edit.toolName === "MultiEdit") {
-    const edits = toolInput.edits;
-    if (!Array.isArray(edits)) return null;
-    const sub = edits[edit.multiEditIndex ?? 0] as
-      | { new_string?: unknown }
-      | undefined;
-    return typeof sub?.new_string === "string" ? sub.new_string : null;
-  }
-  return null;
 }
 
-function fetchOldStrings(edit: ActiveEdit): string[] {
-  const payload = decodePayloadEvidence(
-    edit.payloadEvidenceKey,
-    edit.hookEventId,
-  );
-  const toolInput = payload?.toolInput;
-  if (!toolInput) return [];
-
-  if (edit.toolName === "Edit") {
-    return typeof toolInput.old_string === "string"
-      ? [toolInput.old_string]
-      : [];
+function loadParsedPayloadEvidence(
+  edit: ActiveEdit,
+  cache: Map<string, ParsedPayloadEvidence | null>,
+): ParsedPayloadEvidence | null {
+  const cacheKey =
+    edit.payloadEvidenceKey ?? `hook:${edit.hookEventId ?? "none"}`;
+  if (cache.has(cacheKey)) {
+    return cache.get(cacheKey) ?? null;
   }
-  if (edit.toolName === "MultiEdit") {
-    const edits = toolInput.edits;
-    if (!Array.isArray(edits)) return [];
-    return (edits as Array<{ old_string?: unknown }>)
-      .map((entry) => entry.old_string)
-      .filter((value): value is string => typeof value === "string");
-  }
-  return [];
+  const raw = decodePayloadEvidence(edit.payloadEvidenceKey, edit.hookEventId);
+  const toolName = edit.toolName ?? raw?.toolName;
+  const parsed =
+    toolName && raw?.toolInput
+      ? {
+          toolName,
+          parsedEntries: parseEditEntries(toolName, raw.toolInput),
+        }
+      : null;
+  cache.set(cacheKey, parsed);
+  return parsed;
 }
 
 function decodePayloadEvidence(

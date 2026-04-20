@@ -27,24 +27,161 @@ export interface ActiveEdit {
   landedReason?: string | null;
 }
 
-export function loadActiveIntents(): Map<string, ActiveIntent> {
+interface LoadActiveClaimOptions {
+  sessionId?: string;
+}
+
+interface ActiveClaimRow {
+  subject: string;
+  predicate: string;
+  value_kind: string;
+  value_text: string | null;
+  value_num: number | null;
+  value_json: string | null;
+  source_type: string;
+}
+
+function loadActiveIntentRows(sessionId?: string): ActiveClaimRow[] {
   const db = getDb();
-  const rows = db
+  if (!sessionId) {
+    return db
+      .prepare(
+        `SELECT c.subject, c.predicate, c.value_kind, c.value_text, c.value_num, c.value_json, c.source_type
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'intent'`,
+      )
+      .all() as ActiveClaimRow[];
+  }
+  return db
     .prepare(
-      `SELECT c.subject, c.predicate, c.value_kind, c.value_text, c.value_num, c.value_json, c.source_type
+      `WITH scoped_intents AS (
+         SELECT DISTINCT c.subject
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'intent'
+           AND c.predicate = 'intent/session'
+           AND c.value_text = ?
+       )
+       SELECT c.subject, c.predicate, c.value_kind, c.value_text, c.value_num, c.value_json, c.source_type
        FROM active_claims ac
        JOIN claims c ON c.id = ac.claim_id
-       WHERE c.subject_kind = 'intent'`,
+       WHERE c.subject_kind = 'intent'
+         AND c.subject IN (SELECT subject FROM scoped_intents)`,
     )
-    .all() as Array<{
-    subject: string;
-    predicate: string;
-    value_kind: string;
-    value_text: string | null;
-    value_num: number | null;
-    value_json: string | null;
-    source_type: string;
-  }>;
+    .all(sessionId) as ActiveClaimRow[];
+}
+
+function loadActiveEditRows(sessionId?: string): ActiveClaimRow[] {
+  const db = getDb();
+  if (!sessionId) {
+    return db
+      .prepare(
+        `SELECT c.subject, c.predicate, c.value_kind, c.value_text, c.value_num, c.value_json, c.source_type
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'edit'`,
+      )
+      .all() as ActiveClaimRow[];
+  }
+  return db
+    .prepare(
+      `WITH scoped_intents AS (
+         SELECT DISTINCT c.subject
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'intent'
+           AND c.predicate = 'intent/session'
+           AND c.value_text = ?
+       ),
+       scoped_edits AS (
+         SELECT DISTINCT c.subject
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'edit'
+           AND c.predicate = 'edit/part-of-intent'
+           AND c.value_text IN (SELECT subject FROM scoped_intents)
+       )
+       SELECT c.subject, c.predicate, c.value_kind, c.value_text, c.value_num, c.value_json, c.source_type
+       FROM active_claims ac
+       JOIN claims c ON c.id = ac.claim_id
+       WHERE c.subject_kind = 'edit'
+         AND c.subject IN (SELECT subject FROM scoped_edits)`,
+    )
+    .all(sessionId) as ActiveClaimRow[];
+}
+
+function loadActiveEditEvidenceRows(
+  sessionId?: string,
+): Array<{ subject: string; evidence_key: string }> {
+  const db = getDb();
+  if (!sessionId) {
+    return db
+      .prepare(
+        `SELECT c.subject, ce.evidence_key
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         JOIN claim_evidence ce ON ce.claim_id = c.id
+         WHERE c.subject_kind = 'edit'
+           AND (
+             ce.evidence_key LIKE 'hook:%'
+             OR ce.evidence_key LIKE 'tool:%'
+             OR ce.evidence_key LIKE 'tool_local:%'
+           )
+         ORDER BY
+           CASE
+             WHEN ce.evidence_key LIKE 'hook:%' THEN 0
+             WHEN ce.evidence_key LIKE 'tool:%' THEN 1
+             ELSE 2
+           END,
+           ce.id ASC`,
+      )
+      .all() as Array<{ subject: string; evidence_key: string }>;
+  }
+  return db
+    .prepare(
+      `WITH scoped_intents AS (
+         SELECT DISTINCT c.subject
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'intent'
+           AND c.predicate = 'intent/session'
+           AND c.value_text = ?
+       ),
+       scoped_edits AS (
+         SELECT DISTINCT c.subject
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.subject_kind = 'edit'
+           AND c.predicate = 'edit/part-of-intent'
+           AND c.value_text IN (SELECT subject FROM scoped_intents)
+       )
+       SELECT c.subject, ce.evidence_key
+       FROM active_claims ac
+       JOIN claims c ON c.id = ac.claim_id
+       JOIN claim_evidence ce ON ce.claim_id = c.id
+       WHERE c.subject_kind = 'edit'
+         AND c.subject IN (SELECT subject FROM scoped_edits)
+         AND (
+           ce.evidence_key LIKE 'hook:%'
+           OR ce.evidence_key LIKE 'tool:%'
+           OR ce.evidence_key LIKE 'tool_local:%'
+         )
+       ORDER BY
+         CASE
+           WHEN ce.evidence_key LIKE 'hook:%' THEN 0
+           WHEN ce.evidence_key LIKE 'tool:%' THEN 1
+           ELSE 2
+         END,
+         ce.id ASC`,
+    )
+    .all(sessionId) as Array<{ subject: string; evidence_key: string }>;
+}
+
+export function loadActiveIntents(
+  opts?: LoadActiveClaimOptions,
+): Map<string, ActiveIntent> {
+  const rows = loadActiveIntentRows(opts?.sessionId);
 
   const intents = new Map<string, ActiveIntent>();
   for (const row of rows) {
@@ -81,24 +218,10 @@ export function loadActiveIntents(): Map<string, ActiveIntent> {
   return intents;
 }
 
-export function loadActiveEdits(): Map<string, ActiveEdit> {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT c.subject, c.predicate, c.value_kind, c.value_text, c.value_num, c.value_json, c.source_type
-       FROM active_claims ac
-       JOIN claims c ON c.id = ac.claim_id
-       WHERE c.subject_kind = 'edit'`,
-    )
-    .all() as Array<{
-    subject: string;
-    predicate: string;
-    value_kind: string;
-    value_text: string | null;
-    value_num: number | null;
-    value_json: string | null;
-    source_type: string;
-  }>;
+export function loadActiveEdits(
+  opts?: LoadActiveClaimOptions,
+): Map<string, ActiveEdit> {
+  const rows = loadActiveEditRows(opts?.sessionId);
 
   const edits = new Map<string, ActiveEdit>();
   for (const row of rows) {
@@ -142,27 +265,7 @@ export function loadActiveEdits(): Map<string, ActiveEdit> {
     edits.set(row.subject, edit);
   }
 
-  const evidenceRows = db
-    .prepare(
-      `SELECT c.subject, ce.evidence_key
-       FROM active_claims ac
-       JOIN claims c ON c.id = ac.claim_id
-       JOIN claim_evidence ce ON ce.claim_id = c.id
-       WHERE c.subject_kind = 'edit'
-         AND (
-           ce.evidence_key LIKE 'hook:%'
-           OR ce.evidence_key LIKE 'tool:%'
-           OR ce.evidence_key LIKE 'tool_local:%'
-         )
-       ORDER BY
-         CASE
-           WHEN ce.evidence_key LIKE 'hook:%' THEN 0
-           WHEN ce.evidence_key LIKE 'tool:%' THEN 1
-           ELSE 2
-         END,
-         ce.id ASC`,
-    )
-    .all() as Array<{ subject: string; evidence_key: string }>;
+  const evidenceRows = loadActiveEditEvidenceRows(opts?.sessionId);
   for (const row of evidenceRows) {
     const edit = edits.get(row.subject);
     if (!edit) continue;

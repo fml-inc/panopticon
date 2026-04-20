@@ -1,7 +1,9 @@
+import { canonicalizeHeadKeys } from "../../claims/canonicalize.js";
 import {
   editKey,
   intentKey,
   messageEvidenceKey,
+  semanticEditIdentity,
   sha256Hex,
   toolEvidenceKey,
   toolLocalEvidenceKey,
@@ -12,10 +14,11 @@ import {
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
+import { resolveFilePathFromCwd } from "../../paths.js";
+import { parseEditEntriesFromJson } from "../editParsing.js";
 
 const ASSERTER = "intent.from_scanner";
 const VERSION = "1";
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
 const SNIPPET_LEN = 200;
 
 interface UserMessageRow {
@@ -44,16 +47,17 @@ interface ToolCallRow {
   assistant_ordinal: number;
 }
 
-interface EditEntry {
-  filePath: string;
-  newString: string;
-  multiEditIndex: number;
-}
-
 export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   intents: number;
   edits: number;
 } {
+  const affectedHeadKeys = new Set<string>();
+  const assertScannerClaim = (
+    input: Parameters<typeof assertClaim>[0],
+  ): void => {
+    const result = assertClaim({ ...input, canonicalize: false });
+    affectedHeadKeys.add(result.headKey);
+  };
   if (opts?.sessionId) {
     deleteClaimsByAsserterForSession(ASSERTER, opts.sessionId);
   } else {
@@ -115,7 +119,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           role: "origin" as const,
         },
       ];
-      assertClaim({
+      assertScannerClaim({
         predicate: "intent/prompt-text",
         subjectKind: "intent",
         subject: key,
@@ -125,10 +129,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
       if (msg.timestamp_ms !== null) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/prompt-ts-ms",
           subjectKind: "intent",
           subject: key,
@@ -138,10 +141,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
-      assertClaim({
+      assertScannerClaim({
         predicate: "intent/session",
         subjectKind: "intent",
         subject: key,
@@ -151,11 +153,10 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
       const repo = repoBySession.get(msg.session_id);
       if (repo) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/repository",
           subjectKind: "intent",
           subject: key,
@@ -165,11 +166,10 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       if (msg.cwd) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/cwd",
           subjectKind: "intent",
           subject: key,
@@ -179,13 +179,12 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       const next = msgs[index + 1];
       const closedAtMs = next?.timestamp_ms ?? msg.ended_at_ms ?? null;
       if (closedAtMs !== null) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/closed-at-ms",
           subjectKind: "intent",
           subject: key,
@@ -195,7 +194,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       intents += 1;
@@ -209,20 +207,20 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
        FROM tool_calls tc
        JOIN messages m ON m.id = tc.message_id
        ${opts?.sessionId ? "WHERE tc.session_id = ? AND " : "WHERE "}
-         tc.tool_name IN ('Edit', 'Write', 'MultiEdit')
+         tc.tool_name IN ('Edit', 'Write', 'MultiEdit', 'edit_file', 'write_file', 'create_file', 'apply_patch')
        ORDER BY tc.session_id ASC, m.ordinal ASC, tc.id ASC`,
     )
     .all(...(opts?.sessionId ? [opts.sessionId] : [])) as ToolCallRow[];
 
   let edits = 0;
   const perAssistantIndex = new Map<string, number>();
-  const perIntentIndex = new Map<string, number>();
+  const perIntentSemanticIndex = new Map<string, number>();
   for (const row of toolRows) {
     const userMsgs = intentsBySession.get(row.session_id) ?? [];
     const intentMsg = findIntentMessage(userMsgs, row.assistant_ordinal);
     if (!intentMsg) continue;
 
-    const parsed = parseEditEntries(row.tool_name, row.input_json);
+    const parsed = parseEditEntriesFromJson(row.tool_name, row.input_json);
     if (parsed.length === 0) continue;
 
     const intentSubject = intentKey({
@@ -233,13 +231,23 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     });
     const assistantKey = `${row.session_id}:${row.assistant_ordinal}`;
     const localToolCallIndex = perAssistantIndex.get(assistantKey) ?? 0;
-    const subjectToolCallIndex = perIntentIndex.get(intentSubject) ?? 0;
     for (const entry of parsed) {
+      const resolvedFilePath = resolveFilePathFromCwd(
+        entry.filePath,
+        intentMsg.cwd ?? null,
+      );
+      const semanticIdentity = semanticEditIdentity({
+        filePath: resolvedFilePath,
+        newString: entry.newString,
+        oldStrings: entry.oldStrings,
+        deletedFile: entry.deletedFile,
+      });
+      const semanticKey = `${intentSubject}|${semanticIdentity}`;
+      const semanticOccurrence = perIntentSemanticIndex.get(semanticKey) ?? 0;
       const subject = editKey({
         intentKey: intentSubject,
-        sessionId: row.session_id,
-        toolCallIndex: subjectToolCallIndex,
-        toolUseId: row.tool_use_id,
+        semanticIdentity,
+        semanticOccurrence,
         multiEditIndex: entry.multiEditIndex,
       });
       const evidenceKey = row.tool_use_id
@@ -251,7 +259,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           );
       const evidence = [{ key: evidenceKey, role: "origin" as const }];
       const observedAtMs = row.timestamp_ms ?? intentMsg.timestamp_ms ?? 0;
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/part-of-intent",
         subjectKind: "edit",
         subject,
@@ -261,21 +269,19 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/file",
         subjectKind: "edit",
         subject,
-        value: entry.filePath,
+        value: resolvedFilePath,
         observedAtMs,
         sourceType: "scanner",
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/tool-name",
         subjectKind: "edit",
         subject,
@@ -285,9 +291,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/multi-edit-index",
         subjectKind: "edit",
         subject,
@@ -297,9 +302,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/new-string-hash",
         subjectKind: "edit",
         subject,
@@ -309,9 +313,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/new-string-snippet",
         subjectKind: "edit",
         subject,
@@ -321,10 +324,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
       if (row.timestamp_ms !== null) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "edit/timestamp-ms",
           subjectKind: "edit",
           subject,
@@ -334,15 +336,15 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       edits += 1;
+      perIntentSemanticIndex.set(semanticKey, semanticOccurrence + 1);
     }
     perAssistantIndex.set(assistantKey, localToolCallIndex + 1);
-    perIntentIndex.set(intentSubject, subjectToolCallIndex + 1);
   }
 
+  canonicalizeHeadKeys(affectedHeadKeys);
   return { intents, edits };
 }
 
@@ -356,61 +358,4 @@ function findIntentMessage(
     }
   }
   return undefined;
-}
-
-function parseEditEntries(
-  toolName: string,
-  inputJson: string | null,
-): EditEntry[] {
-  if (!inputJson || !EDIT_TOOLS.has(toolName)) return [];
-  let input: Record<string, unknown>;
-  try {
-    input = JSON.parse(inputJson) as Record<string, unknown>;
-  } catch {
-    return [];
-  }
-  const filePath = input.file_path;
-  if (typeof filePath !== "string" || filePath.length === 0) return [];
-
-  if (toolName === "Edit") {
-    return typeof input.new_string === "string"
-      ? [
-          {
-            filePath,
-            newString: input.new_string,
-            multiEditIndex: 0,
-          },
-        ]
-      : [];
-  }
-  if (toolName === "Write") {
-    return typeof input.content === "string"
-      ? [
-          {
-            filePath,
-            newString: input.content,
-            multiEditIndex: 0,
-          },
-        ]
-      : [];
-  }
-  if (toolName === "MultiEdit" && Array.isArray(input.edits)) {
-    return input.edits.flatMap((entry, index) => {
-      if (
-        entry &&
-        typeof entry === "object" &&
-        typeof (entry as { new_string?: unknown }).new_string === "string"
-      ) {
-        return [
-          {
-            filePath,
-            newString: (entry as { new_string: string }).new_string,
-            multiEditIndex: index,
-          },
-        ];
-      }
-      return [];
-    });
-  }
-  return [];
 }

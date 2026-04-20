@@ -19,6 +19,22 @@ export interface Repository {
   gitUserEmail: string | null;
 }
 
+export interface SessionSummary {
+  sessionId: string;
+  title: string;
+  status: "active" | "landed" | "mixed" | "abandoned";
+  repository: string | null;
+  cwd: string | null;
+  branch: string | null;
+  firstIntentAt: string | null;
+  lastIntentAt: string | null;
+  intentCount: number;
+  editCount: number;
+  landedEditCount: number;
+  openEditCount: number;
+  topFiles: string[];
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 export interface Session {
@@ -38,6 +54,7 @@ export interface Session {
   parentSessionId: string | null;
   relationshipType: string | null;
   summary: string | null;
+  sessionSummary: SessionSummary | null;
 }
 
 export interface SessionListResult {

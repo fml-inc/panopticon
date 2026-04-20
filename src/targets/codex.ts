@@ -16,10 +16,12 @@ const CODEX_TOOL_CATEGORIES: Record<string, string> = {
   write_file: "Write",
   create_file: "Write",
   edit_file: "Edit",
+  apply_patch: "Edit",
   list_dir: "Glob",
   grep_search: "Grep",
   finder: "Grep",
   spawn_agent: "Task",
+  web_search: "Web",
 };
 
 function codexToolCategory(toolName: string): string {
@@ -61,6 +63,147 @@ function readHooksJson(): Record<string, unknown> {
 function writeHooksJson(data: Record<string, unknown>): void {
   fs.mkdirSync(CODEX_DIR, { recursive: true });
   fs.writeFileSync(CODEX_HOOKS_JSON, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringifyValue(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractTextParts(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (!Array.isArray(value)) return [];
+
+  const parts: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string") {
+      parts.push(item);
+      continue;
+    }
+    const record = asRecord(item);
+    if (!record) continue;
+    if (typeof record.text === "string" && record.text.length > 0) {
+      parts.push(record.text);
+    }
+  }
+  return parts;
+}
+
+function joinTextParts(parts: string[]): string | undefined {
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+function extractResponseItemText(
+  payload: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!payload) return undefined;
+
+  const parts: string[] = [];
+  if (typeof payload.text === "string" && payload.text.length > 0) {
+    parts.push(payload.text);
+  }
+  if (
+    typeof payload.output_text === "string" &&
+    payload.output_text.length > 0
+  ) {
+    parts.push(payload.output_text);
+  }
+  parts.push(...extractTextParts(payload.content));
+  return joinTextParts(parts);
+}
+
+function extractReasoningDetails(
+  payload: Record<string, unknown> | undefined,
+): {
+  content: string | undefined;
+  hasEncryptedContent: boolean;
+  summaryCount: number;
+  contentCount: number;
+} {
+  if (!payload) {
+    return {
+      content: undefined,
+      hasEncryptedContent: false,
+      summaryCount: 0,
+      contentCount: 0,
+    };
+  }
+
+  const summaryParts = extractTextParts(payload.summary);
+  const contentParts = extractTextParts(payload.content);
+  const visibleContent = joinTextParts(
+    contentParts.length > 0 ? contentParts : summaryParts,
+  );
+
+  return {
+    content: visibleContent,
+    hasEncryptedContent:
+      typeof payload.encrypted_content === "string" &&
+      payload.encrypted_content.trim().length > 0,
+    summaryCount: summaryParts.length,
+    contentCount: contentParts.length,
+  };
+}
+
+function extractToolOutput(
+  payload: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!payload) return undefined;
+  if (typeof payload.output === "string") return payload.output;
+  if (typeof payload.result === "string") return payload.result;
+  if (payload.output !== undefined) return stringifyValue(payload.output);
+  if (payload.result !== undefined) return stringifyValue(payload.result);
+  return undefined;
+}
+
+function extractMcpResultText(result: unknown): string | undefined {
+  const ok = asRecord(asRecord(result)?.Ok);
+  const text = joinTextParts(extractTextParts(ok?.content));
+  return text ?? stringifyValue(result);
+}
+
+function durationToMs(value: unknown): number | undefined {
+  const record = asRecord(value);
+  const secs = typeof record?.secs === "number" ? record.secs : undefined;
+  const nanos = typeof record?.nanos === "number" ? record.nanos : undefined;
+  if (secs === undefined && nanos === undefined) return undefined;
+  return (secs ?? 0) * 1000 + (nanos ?? 0) / 1_000_000;
+}
+
+function takePendingWebSearch(
+  queue: Array<{
+    callId?: string;
+    query?: string;
+    action?: Record<string, unknown>;
+  }>,
+  responseAction: Record<string, unknown> | undefined,
+):
+  | { callId?: string; query?: string; action?: Record<string, unknown> }
+  | undefined {
+  if (queue.length === 0) return undefined;
+
+  const query =
+    typeof responseAction?.query === "string"
+      ? responseAction.query
+      : undefined;
+  const idx = queue.findIndex((entry) => {
+    if (!query) return true;
+    return entry.query === query;
+  });
+  const matchIdx = idx >= 0 ? idx : 0;
+  const [match] = queue.splice(matchIdx, 1);
+  return match;
 }
 
 const codex: TargetAdapter = {
@@ -334,10 +477,18 @@ const codex: TargetAdapter = {
       // Collect tool calls and results keyed by call_id to match them up
       let pendingToolCalls: ParsedToolCall[] = [];
       let pendingAssistantContent = "";
+      let pendingAssistantHasThinking = false;
       const toolResultsByCallId = new Map<
         string,
-        { contentLength: number; contentRaw: string }
+        { contentLength: number; contentRaw: string; timestampMs?: number }
       >();
+      const toolNamesByCallId = new Map<string, string>();
+      const pendingWebSearchEnds: Array<{
+        callId?: string;
+        query?: string;
+        action?: Record<string, unknown>;
+      }> = [];
+      let syntheticToolCallIndex = 0;
 
       for (const line of lines) {
         let obj: Record<string, unknown>;
@@ -350,7 +501,7 @@ const codex: TargetAdapter = {
         const type = obj.type as string;
         const timestamp = obj.timestamp as string | undefined;
         const tsMs = timestamp ? new Date(timestamp).getTime() : Date.now();
-        const payload = obj.payload as Record<string, unknown> | undefined;
+        const payload = asRecord(obj.payload);
 
         if (type === "session_meta" && payload) {
           meta = {
@@ -369,6 +520,23 @@ const codex: TargetAdapter = {
         }
 
         const sid = meta?.sessionId ?? "";
+
+        if (type === "compacted" && payload) {
+          const message =
+            typeof payload.message === "string" ? payload.message : undefined;
+          const replacementHistory = Array.isArray(payload.replacement_history)
+            ? payload.replacement_history
+            : [];
+          events.push({
+            sessionId: sid,
+            eventType: "compacted",
+            timestampMs: tsMs,
+            content: message?.slice(0, 500),
+            metadata: {
+              replacement_history_length: replacementHistory.length,
+            },
+          });
+        }
 
         if (type === "event_msg" && payload) {
           const eventType = payload.type as string;
@@ -441,7 +609,11 @@ const codex: TargetAdapter = {
             // Flush accumulated tool calls into an assistant message
             const toolResults = new Map<
               string,
-              { contentLength: number; contentRaw: string }
+              {
+                contentLength: number;
+                contentRaw: string;
+                timestampMs?: number;
+              }
             >();
             for (const tc of pendingToolCalls) {
               const result = toolResultsByCallId.get(tc.toolUseId);
@@ -454,7 +626,7 @@ const codex: TargetAdapter = {
               role: "assistant",
               content: pendingAssistantContent,
               timestampMs: tsMs,
-              hasThinking: false,
+              hasThinking: pendingAssistantHasThinking,
               hasToolUse: pendingToolCalls.length > 0,
               isSystem: false,
               contentLength: pendingAssistantContent.length,
@@ -469,6 +641,7 @@ const codex: TargetAdapter = {
             });
             pendingToolCalls = [];
             pendingAssistantContent = "";
+            pendingAssistantHasThinking = false;
           }
 
           if (eventType === "agent_message") {
@@ -480,38 +653,270 @@ const codex: TargetAdapter = {
               metadata: { phase: payload.phase },
             });
           }
+
+          if (eventType === "task_started") {
+            events.push({
+              sessionId: sid,
+              eventType: "task_started",
+              timestampMs: tsMs,
+              metadata: {
+                turn_id: payload.turn_id,
+                started_at: payload.started_at,
+                model_context_window: payload.model_context_window,
+                collaboration_mode_kind: payload.collaboration_mode_kind,
+              },
+            });
+          }
+
+          if (eventType === "task_complete") {
+            events.push({
+              sessionId: sid,
+              eventType: "task_complete",
+              timestampMs: tsMs,
+              content:
+                typeof payload.last_agent_message === "string"
+                  ? payload.last_agent_message.slice(0, 500)
+                  : undefined,
+              metadata: {
+                turn_id: payload.turn_id,
+                completed_at: payload.completed_at,
+                duration_ms: payload.duration_ms,
+              },
+            });
+          }
+
+          if (eventType === "turn_aborted") {
+            events.push({
+              sessionId: sid,
+              eventType: "turn_aborted",
+              timestampMs: tsMs,
+              content:
+                typeof payload.reason === "string"
+                  ? payload.reason.slice(0, 500)
+                  : undefined,
+              metadata: {
+                turn_id: payload.turn_id,
+                reason: payload.reason,
+              },
+            });
+          }
+
+          if (eventType === "context_compacted") {
+            events.push({
+              sessionId: sid,
+              eventType: "context_compacted",
+              timestampMs: tsMs,
+            });
+          }
+
+          if (eventType === "web_search_end") {
+            const action = asRecord(payload.action);
+            const query =
+              typeof payload.query === "string" ? payload.query : undefined;
+            pendingWebSearchEnds.push({
+              callId:
+                typeof payload.call_id === "string"
+                  ? payload.call_id
+                  : undefined,
+              query,
+              action,
+            });
+            events.push({
+              sessionId: sid,
+              eventType: "web_search_end",
+              timestampMs: tsMs,
+              toolName: "web_search",
+              toolInput: stringifyValue(action)?.slice(0, 1000),
+              content: query?.slice(0, 500),
+              metadata: {
+                call_id: payload.call_id,
+                action,
+              },
+            });
+          }
+
+          if (eventType === "patch_apply_end") {
+            const callId =
+              typeof payload.call_id === "string" ? payload.call_id : "";
+            const toolName = toolNamesByCallId.get(callId) ?? "apply_patch";
+            const structuredOutput = stringifyValue({
+              stdout: payload.stdout,
+              stderr: payload.stderr,
+              success: payload.success,
+              changes: payload.changes,
+            });
+            if (
+              callId &&
+              structuredOutput &&
+              !toolResultsByCallId.has(callId)
+            ) {
+              toolResultsByCallId.set(callId, {
+                contentLength: structuredOutput.length,
+                contentRaw: structuredOutput,
+                timestampMs: tsMs,
+              });
+            }
+            events.push({
+              sessionId: sid,
+              eventType: "patch_apply_end",
+              timestampMs: tsMs,
+              toolName,
+              toolOutput:
+                typeof payload.stdout === "string"
+                  ? payload.stdout.slice(0, 1000)
+                  : undefined,
+              metadata: {
+                call_id: payload.call_id,
+                turn_id: payload.turn_id,
+                success: payload.success,
+                stderr: payload.stderr,
+                changes: payload.changes,
+              },
+            });
+          }
+
+          if (eventType === "exec_command_end") {
+            const callId =
+              typeof payload.call_id === "string" ? payload.call_id : "";
+            const toolName = toolNamesByCallId.get(callId) ?? "exec_command";
+            const toolOutput =
+              typeof payload.formatted_output === "string" &&
+              payload.formatted_output.length > 0
+                ? payload.formatted_output
+                : typeof payload.aggregated_output === "string" &&
+                    payload.aggregated_output.length > 0
+                  ? payload.aggregated_output
+                  : typeof payload.stdout === "string" &&
+                      payload.stdout.length > 0
+                    ? payload.stdout
+                    : typeof payload.stderr === "string" &&
+                        payload.stderr.length > 0
+                      ? payload.stderr
+                      : undefined;
+            if (callId && toolOutput && !toolResultsByCallId.has(callId)) {
+              toolResultsByCallId.set(callId, {
+                contentLength: toolOutput.length,
+                contentRaw: toolOutput,
+                timestampMs: tsMs,
+              });
+            }
+            events.push({
+              sessionId: sid,
+              eventType: "exec_command_end",
+              timestampMs: tsMs,
+              toolName,
+              toolInput: stringifyValue(payload.command)?.slice(0, 1000),
+              toolOutput: toolOutput?.slice(0, 1000),
+              metadata: {
+                call_id: payload.call_id,
+                process_id: payload.process_id,
+                turn_id: payload.turn_id,
+                cwd: payload.cwd,
+                source: payload.source,
+                parsed_cmd: payload.parsed_cmd,
+                exit_code: payload.exit_code,
+                status: payload.status,
+                duration_ms: durationToMs(payload.duration),
+              },
+            });
+          }
+
+          if (eventType === "mcp_tool_call_end") {
+            const callId =
+              typeof payload.call_id === "string" ? payload.call_id : "";
+            const invocation = asRecord(payload.invocation);
+            const toolName =
+              toolNamesByCallId.get(callId) ??
+              (typeof invocation?.tool === "string"
+                ? invocation.tool
+                : undefined);
+            const toolOutput = extractMcpResultText(payload.result);
+            if (callId && toolOutput && !toolResultsByCallId.has(callId)) {
+              toolResultsByCallId.set(callId, {
+                contentLength: toolOutput.length,
+                contentRaw: toolOutput,
+                timestampMs: tsMs,
+              });
+            }
+            events.push({
+              sessionId: sid,
+              eventType: "mcp_tool_call_end",
+              timestampMs: tsMs,
+              toolName,
+              toolInput: stringifyValue(invocation?.arguments)?.slice(0, 1000),
+              toolOutput: toolOutput?.slice(0, 1000),
+              metadata: {
+                call_id: payload.call_id,
+                server: invocation?.server,
+                tool: invocation?.tool,
+                duration: payload.duration,
+                result: payload.result,
+              },
+            });
+          }
         }
 
         // Tool calls and content from response_item
         if (type === "response_item") {
-          const p = obj.payload as Record<string, unknown> | undefined;
+          const p = payload;
           const itemType = p?.type as string | undefined;
 
           // Capture assistant text content from message/text items
           if (itemType === "message" || itemType === "text") {
             const text =
-              (p?.text as string) ??
-              (p?.content as string) ??
-              (p?.output_text as string);
+              itemType === "message" && p?.role === "user"
+                ? undefined
+                : extractResponseItemText(p);
             if (text) {
               pendingAssistantContent +=
                 (pendingAssistantContent ? "\n" : "") + text;
             }
           }
 
-          if (itemType === "function_call") {
+          if (itemType === "reasoning") {
+            const reasoning = extractReasoningDetails(p);
+            pendingAssistantHasThinking =
+              pendingAssistantHasThinking || reasoning.hasEncryptedContent;
+            if (reasoning.content) {
+              pendingAssistantHasThinking = true;
+              pendingAssistantContent +=
+                (pendingAssistantContent ? "\n" : "") +
+                `[Thinking]\n${reasoning.content}\n[/Thinking]`;
+            }
+            if (reasoning.content || reasoning.hasEncryptedContent) {
+              events.push({
+                sessionId: sid,
+                eventType: "reasoning",
+                timestampMs: tsMs,
+                content: reasoning.content?.slice(0, 500),
+                metadata: {
+                  has_encrypted_content: reasoning.hasEncryptedContent,
+                  summary_count: reasoning.summaryCount,
+                  content_count: reasoning.contentCount,
+                },
+              });
+            }
+          }
+
+          if (itemType === "function_call" || itemType === "custom_tool_call") {
             const toolName = (p?.name as string) ?? "";
-            const callId = (p?.call_id as string) ?? "";
+            const callId =
+              (p?.call_id as string) ??
+              `${toolName || "tool"}-${++syntheticToolCallIndex}`;
             const inputJson =
-              typeof p?.arguments === "string"
-                ? p.arguments
-                : JSON.stringify(p?.arguments);
+              itemType === "custom_tool_call"
+                ? JSON.stringify({ input: p?.input })
+                : typeof p?.arguments === "string"
+                  ? p.arguments
+                  : JSON.stringify(p?.arguments);
+            toolNamesByCallId.set(callId, toolName);
 
             pendingToolCalls.push({
               toolUseId: callId,
               toolName,
               category: codexToolCategory(toolName),
               inputJson,
+              timestampMs: tsMs,
             });
 
             events.push({
@@ -520,18 +925,65 @@ const codex: TargetAdapter = {
               timestampMs: tsMs,
               toolName,
               toolInput: inputJson?.slice(0, 1000),
-              metadata: { call_id: callId },
+              metadata: {
+                call_id: callId,
+                namespace: p?.namespace,
+              },
             });
           }
 
-          if (itemType === "function_call_output") {
+          if (itemType === "web_search_call") {
+            const responseAction = asRecord(p?.action);
+            const pendingWebSearch = takePendingWebSearch(
+              pendingWebSearchEnds,
+              responseAction,
+            );
+            const action = responseAction ?? pendingWebSearch?.action;
+            const query =
+              typeof action?.query === "string"
+                ? action.query
+                : pendingWebSearch?.query;
+            const toolUseId =
+              pendingWebSearch?.callId ??
+              `web_search-${++syntheticToolCallIndex}`;
+            const inputJson =
+              stringifyValue(action) ??
+              (query ? JSON.stringify({ query }) : undefined);
+
+            pendingToolCalls.push({
+              toolUseId,
+              toolName: "web_search",
+              category: codexToolCategory("web_search"),
+              inputJson,
+              timestampMs: tsMs,
+            });
+
+            events.push({
+              sessionId: sid,
+              eventType: "tool_call",
+              timestampMs: tsMs,
+              toolName: "web_search",
+              toolInput: inputJson?.slice(0, 1000),
+              metadata: {
+                call_id: pendingWebSearch?.callId,
+                query,
+                status: p?.status,
+              },
+            });
+          }
+
+          if (
+            itemType === "function_call_output" ||
+            itemType === "custom_tool_call_output"
+          ) {
             const callId = (p?.call_id as string) ?? "";
-            const output = typeof p?.output === "string" ? p.output : undefined;
+            const output = extractToolOutput(p);
 
             if (output) {
               toolResultsByCallId.set(callId, {
                 contentLength: output.length,
                 contentRaw: output,
+                timestampMs: tsMs,
               });
             }
 
@@ -539,8 +991,12 @@ const codex: TargetAdapter = {
               sessionId: sid,
               eventType: "tool_result",
               timestampMs: tsMs,
+              toolName: toolNamesByCallId.get(callId),
               toolOutput: output?.slice(0, 1000),
-              metadata: { call_id: callId },
+              metadata: {
+                call_id: callId,
+                name: p?.name,
+              },
             });
           }
         }

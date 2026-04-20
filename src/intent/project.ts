@@ -1,10 +1,19 @@
+import { performance } from "node:perf_hooks";
+import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { resolveFilePathFromCwd } from "../paths.js";
+import { rebuildSessionSummaryProjections } from "../session_summaries/project.js";
 import { loadActiveEdits, loadActiveIntents } from "./claimViews.js";
 
 export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   intents: number;
   edits: number;
+  sessionSummaries: number;
+  memberships: number;
+  provenance: number;
+  activeIntentsLoaded: number;
+  activeEditsLoaded: number;
+  activeLoadMs: number;
 } {
   const db = getDb();
   const hookBackedSessions = new Set(
@@ -21,8 +30,12 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
       }>
     ).map((row) => row.session_id),
   );
+  const loadStartedAt = performance.now();
+  const activeIntents = loadActiveIntents(opts);
+  const activeEdits = loadActiveEdits(opts);
+  const activeLoadMs = performance.now() - loadStartedAt;
   const intents = new Map(
-    [...loadActiveIntents()].filter(([, intent]) => {
+    [...activeIntents].filter(([, intent]) => {
       if (!intent.sessionId) return false;
       if (opts?.sessionId && intent.sessionId !== opts.sessionId) return false;
       // For hook-backed sessions, trust hook-sourced prompt boundaries.
@@ -31,12 +44,15 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
     }),
   );
   const edits = new Map(
-    [...loadActiveEdits()].filter(([, edit]) => {
+    [...activeEdits].filter(([, edit]) => {
       if (!edit.intentKey) return false;
       const intent = intents.get(edit.intentKey);
       if (!intent?.sessionId) return false;
-      if (!hookBackedSessions.has(intent.sessionId)) return true;
-      return edit.timestampSource === "hook";
+      // For hook-backed sessions, trust hook prompt boundaries, but keep
+      // scanner-backed edits that attach to those surviving intents. This is
+      // required for targets like Codex where hooks may only observe Bash
+      // while the scanner sees structured file edits such as apply_patch.
+      return true;
     }),
   );
 
@@ -185,9 +201,21 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   });
   tx();
 
+  const local = config.enableSessionSummaryProjections
+    ? rebuildSessionSummaryProjections(opts)
+    : {
+        sessionSummaries: 0,
+        memberships: 0,
+        provenance: 0,
+      };
+
   return {
     intents: intents.size,
     edits: edits.size,
+    activeIntentsLoaded: activeIntents.size,
+    activeEditsLoaded: activeEdits.size,
+    activeLoadMs,
+    ...local,
   };
 }
 

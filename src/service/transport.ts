@@ -1,16 +1,21 @@
+import { config } from "../config.js";
 import type {
   ActivitySummaryInput,
   CostBreakdownInput,
   IntentForCodeInput,
   ListPlansInput,
+  ListSessionSummariesInput,
   ListSessionsInput,
   OutcomesForIntentInput,
   PanopticonService,
   PrintInput,
+  RecentWorkOnPathInput,
   SearchInput,
   SearchIntentInput,
+  SessionSummaryDetailInput,
   SessionTimelineInput,
   SyncTargetAddInput,
+  WhyCodeInput,
 } from "./types.js";
 
 type TransportHandler = (
@@ -22,7 +27,7 @@ function asType<T>(params: Record<string, unknown>): T {
   return params as unknown as T;
 }
 
-export const TOOL_HANDLERS = {
+const BASE_TOOL_HANDLERS = {
   sessions: (service, params) =>
     service.listSessions(asType<ListSessionsInput>(params)),
   timeline: (service, params) =>
@@ -42,6 +47,23 @@ export const TOOL_HANDLERS = {
     service.searchIntent(asType<SearchIntentInput>(params)),
   outcomes_for_intent: (service, params) =>
     service.outcomesForIntent(asType<OutcomesForIntentInput>(params)),
+} satisfies Record<string, TransportHandler>;
+
+const SESSION_SUMMARY_TOOL_HANDLERS = {
+  session_summaries: (service, params) =>
+    service.listSessionSummaries(asType<ListSessionSummariesInput>(params)),
+  session_summary_detail: (service, params) =>
+    service.sessionSummaryDetail(asType<SessionSummaryDetailInput>(params)),
+  why_code: (service, params) => service.whyCode(asType<WhyCodeInput>(params)),
+  recent_work_on_path: (service, params) =>
+    service.recentWorkOnPath(asType<RecentWorkOnPathInput>(params)),
+} satisfies Record<string, TransportHandler>;
+
+export const TOOL_HANDLERS = {
+  ...BASE_TOOL_HANDLERS,
+  ...(config.enableSessionSummaryProjections
+    ? SESSION_SUMMARY_TOOL_HANDLERS
+    : {}),
 } satisfies Record<string, TransportHandler>;
 
 export type ToolName = keyof typeof TOOL_HANDLERS;
@@ -149,7 +171,11 @@ export function dispatchTool(
   name: ToolName,
   params: Record<string, unknown> = {},
 ): Promise<unknown> {
-  return TOOL_HANDLERS[name](service, params);
+  const handler = TOOL_HANDLERS[name];
+  if (!handler) {
+    throw new Error(`Unknown tool: ${name}`);
+  }
+  return handler(service, params);
 }
 
 export function dispatchExec(

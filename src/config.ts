@@ -26,6 +26,12 @@ function resolveDataDir(): string {
   return defaultDataDir();
 }
 
+function envBool(name: string, defaultValue = false): boolean {
+  const raw = process.env[name];
+  if (raw == null) return defaultValue;
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
 const DATA_DIR = resolveDataDir();
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
@@ -71,6 +77,9 @@ export const config = {
   proxyHost: process.env.PANOPTICON_PROXY_HOST ?? "127.0.0.1",
   proxyPidFile: path.join(DATA_DIR, "proxy.pid"),
   proxyIdleSessionMs: 30 * 60 * 1000,
+  enableSessionSummaryProjections: envBool(
+    "PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS",
+  ),
 } as const;
 
 export function ensureDataDir(): void {

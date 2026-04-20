@@ -385,6 +385,65 @@ CREATE TABLE IF NOT EXISTS intent_edits (
   landed_reason TEXT
 );
 
+-- ── Local session-summary projections ──────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS session_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_summary_key TEXT NOT NULL UNIQUE,
+  repository TEXT,
+  cwd TEXT,
+  branch TEXT,
+  worktree TEXT,
+  actor TEXT,
+  machine TEXT NOT NULL DEFAULT 'local',
+  origin_scope TEXT NOT NULL DEFAULT 'local',
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  first_intent_ts_ms INTEGER,
+  last_intent_ts_ms INTEGER,
+  intent_count INTEGER NOT NULL DEFAULT 0,
+  edit_count INTEGER NOT NULL DEFAULT 0,
+  landed_edit_count INTEGER NOT NULL DEFAULT 0,
+  open_edit_count INTEGER NOT NULL DEFAULT 0,
+  reconciled_at_ms INTEGER,
+  reason_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS intent_session_summaries (
+  intent_unit_id INTEGER NOT NULL,
+  session_summary_id INTEGER NOT NULL,
+  membership_kind TEXT NOT NULL,
+  source TEXT NOT NULL,
+  score REAL NOT NULL DEFAULT 1.0,
+  reason_json TEXT,
+  UNIQUE(intent_unit_id, session_summary_id)
+);
+
+CREATE TABLE IF NOT EXISTS code_provenance (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository TEXT NOT NULL DEFAULT '',
+  file_path TEXT NOT NULL,
+  binding_level TEXT NOT NULL,
+  start_line INTEGER,
+  end_line INTEGER,
+  snippet_hash TEXT,
+  snippet_preview TEXT,
+  language TEXT,
+  symbol_kind TEXT,
+  symbol_name TEXT,
+  actor TEXT,
+  machine TEXT NOT NULL DEFAULT 'local',
+  origin_scope TEXT NOT NULL DEFAULT 'local',
+  intent_unit_id INTEGER NOT NULL,
+  intent_edit_id INTEGER,
+  session_summary_id INTEGER,
+  status TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  file_hash TEXT,
+  established_at_ms INTEGER NOT NULL,
+  verified_at_ms INTEGER NOT NULL
+);
+
 -- ── Sync watermarks ─────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS watermarks (
@@ -510,6 +569,27 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id)
 CREATE INDEX IF NOT EXISTS idx_intent_edits_session ON intent_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 
+-- session_summaries
+CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
+
+-- intent_session_summaries
+CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
+  ON intent_session_summaries(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_session_summary
+  ON intent_session_summaries(session_summary_id);
+
+-- code_provenance
+CREATE INDEX IF NOT EXISTS idx_code_provenance_repo_file
+  ON code_provenance(repository, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_session_summary
+  ON code_provenance(session_summary_id);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
+  ON code_provenance(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_status
+  ON code_provenance(status);
+
 `;
 
 /**
@@ -518,7 +598,7 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
  * fork detection improvements, etc.). On startup, if the DB's user_version
  * is lower than this, a full resync is triggered automatically.
  */
-export const SCANNER_DATA_VERSION = 1;
+export const SCANNER_DATA_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Database initialization
@@ -575,6 +655,9 @@ export function getDb(): Database {
 
 /** True when the DB was opened with a stale data version. */
 export function needsResync(): boolean {
+  if (!_db) {
+    getDb();
+  }
   return _needsResync;
 }
 

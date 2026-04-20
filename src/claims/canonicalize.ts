@@ -52,12 +52,32 @@ export function rebuildActiveClaims(): number {
   const headKeys = db
     .prepare(`SELECT DISTINCT head_key FROM claims ORDER BY head_key ASC`)
     .all() as Array<{ head_key: string }>;
+  return canonicalizeHeadKeys(
+    headKeys.map((row) => row.head_key),
+    true,
+  );
+}
+
+export function canonicalizeHeadKeys(
+  headKeys: Iterable<string>,
+  clearFirst = false,
+): number {
+  const uniqueHeadKeys = [...new Set(headKeys)];
+  if (uniqueHeadKeys.length === 0) {
+    if (clearFirst) {
+      getDb().prepare(`DELETE FROM active_claims`).run();
+    }
+    return 0;
+  }
+  const db = getDb();
   const tx = db.transaction(() => {
-    db.prepare(`DELETE FROM active_claims`).run();
-    for (const row of headKeys) {
-      selectActiveClaimForHeadKey(row.head_key);
+    if (clearFirst) {
+      db.prepare(`DELETE FROM active_claims`).run();
+    }
+    for (const headKey of uniqueHeadKeys) {
+      selectActiveClaimForHeadKey(headKey);
     }
   });
   tx();
-  return headKeys.length;
+  return uniqueHeadKeys.length;
 }

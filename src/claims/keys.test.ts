@@ -3,6 +3,7 @@ import {
   editKey,
   intentKey,
   messageEvidenceKey,
+  semanticEditIdentity,
   toolEvidenceKey,
   toolLocalEvidenceKey,
 } from "./keys.js";
@@ -58,6 +59,23 @@ describe("editKey", () => {
         toolCallIndex: 2,
       }),
     ).toBe("edit:intent:session-1:user:3:tool:2");
+  });
+
+  it("supports semantic fallback keys for mixed-source edit convergence", () => {
+    const semanticIdentity = semanticEditIdentity({
+      filePath: "/tmp/example.ts",
+      newString: "NEXT",
+      oldStrings: ["PREV"],
+      deletedFile: false,
+    });
+
+    expect(
+      editKey({
+        intentKey: "intent:session-1:user:3",
+        semanticIdentity,
+        semanticOccurrence: 1,
+      }),
+    ).toMatch(/^edit:intent:session-1:user:3:sem:[0-9a-f]{64}:1$/);
   });
 
   it("falls back to hook event id when no stronger key exists", () => {

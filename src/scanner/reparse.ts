@@ -10,7 +10,9 @@
  * that remote sync targets can deduplicate correctly.
  */
 import fs from "node:fs";
+import { performance } from "node:perf_hooks";
 import { gunzipSync } from "node:zlib";
+import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
 import { Database } from "../db/driver.js";
 import {
@@ -20,6 +22,9 @@ import {
   SCANNER_DATA_VERSION,
   SCHEMA_SQL,
 } from "../db/schema.js";
+import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
+import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
+import { rebuildIntentProjection } from "../intent/project.js";
 import { scanOnce } from "./loop.js";
 
 /**
@@ -63,6 +68,26 @@ export interface ReparseResult {
   error?: string;
 }
 
+export interface ReparseDerivedStateResult {
+  hookPrompts: number;
+  hookEdits: number;
+  activeHeadsAfterClaims: number;
+  landedChecked: number;
+  activeHeadsAfterLanded: number;
+  projectedIntents: number;
+  projectedEdits: number;
+  projectedSessionSummaries: number;
+  projectedMemberships: number;
+  projectedProvenance: number;
+  totalMs: number;
+}
+
+function formatMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  if (ms >= 100) return `${Math.round(ms)}ms`;
+  return `${ms.toFixed(1)}ms`;
+}
+
 function removeTempFiles(tempPath: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
@@ -91,6 +116,36 @@ function initTempDb(tempPath: string): Database {
   return db;
 }
 
+export function rebuildDerivedStateFromRaw(
+  log: (msg: string) => void = () => {},
+): ReparseDerivedStateResult {
+  const startedAt = performance.now();
+  const hooks = rebuildIntentClaimsFromHooks();
+  const activeHeadsAfterClaims = rebuildActiveClaims();
+  const landed = reconcileLandedClaimsFromDisk();
+  const activeHeadsAfterLanded = rebuildActiveClaims();
+  const projection = rebuildIntentProjection();
+  const totalMs = performance.now() - startedAt;
+
+  log(
+    `Derived-state rebuild finished in ${formatMs(totalMs)} (hook_prompts=${hooks.prompts} hook_edits=${hooks.edits} active_heads_claims=${activeHeadsAfterClaims} landed_checked=${landed.checked} active_heads_landed=${activeHeadsAfterLanded} projected_intents=${projection.intents} projected_edits=${projection.edits} projected_summaries=${projection.sessionSummaries})`,
+  );
+
+  return {
+    hookPrompts: hooks.prompts,
+    hookEdits: hooks.edits,
+    activeHeadsAfterClaims,
+    landedChecked: landed.checked,
+    activeHeadsAfterLanded,
+    projectedIntents: projection.intents,
+    projectedEdits: projection.edits,
+    projectedSessionSummaries: projection.sessionSummaries,
+    projectedMemberships: projection.memberships,
+    projectedProvenance: projection.provenance,
+    totalMs,
+  };
+}
+
 /**
  * Perform an atomic reparse:
  * 1. Close current DB
@@ -105,6 +160,7 @@ function initTempDb(tempPath: string): Database {
 export function reparseAll(
   log: (msg: string) => void = () => {},
 ): ReparseResult {
+  const startedAt = performance.now();
   const origPath = config.dbPath;
   const tempPath = `${origPath}-reparse`;
 
@@ -115,9 +171,13 @@ export function reparseAll(
 
   // 1. Create fresh temp DB and verify schema
   let tempDb: Database;
+  let initTempDbMs = 0;
   try {
+    const initStartedAt = performance.now();
     tempDb = initTempDb(tempPath);
     tempDb.close();
+    initTempDbMs = performance.now() - initStartedAt;
+    log(`Temp DB initialized in ${formatMs(initTempDbMs)}`);
   } catch (err) {
     removeTempFiles(tempPath);
     return {
@@ -147,10 +207,16 @@ export function reparseAll(
 
   let filesScanned = 0;
   let newTurns = 0;
+  let scanMs = 0;
   try {
-    const result = scanOnce();
+    const scanStartedAt = performance.now();
+    const result = scanOnce({ profileLabel: "reparse scan", logDetails: true });
+    scanMs = performance.now() - scanStartedAt;
     filesScanned = result.filesScanned;
     newTurns = result.newTurns;
+    log(
+      `Temp DB scan finished in ${formatMs(scanMs)} (${filesScanned} files, ${newTurns} turns, ${result.touchedSessions.length} touched sessions)`,
+    );
   } catch (err) {
     (config as { dbPath: string }).dbPath = savedDbPath;
     closeDb();
@@ -191,7 +257,10 @@ export function reparseAll(
 
   // 3. Copy preserved data from old DB into temp DB
   log("Copying preserved data from old database...");
+  let copyMs = 0;
+  let deriveMs = 0;
   try {
+    const copyStartedAt = performance.now();
     tempDb = new Database(tempPath);
     tempDb.pragma("journal_mode = WAL");
     tempDb.function("decompress", (blob: unknown) =>
@@ -298,7 +367,18 @@ export function reparseAll(
     tempDb.exec("DETACH DATABASE old_db");
     tempDb.pragma(`user_version = ${SCANNER_DATA_VERSION}`);
     tempDb.close();
+    copyMs = performance.now() - copyStartedAt;
+    log(`Preserved-data copy finished in ${formatMs(copyMs)}`);
+
+    log("Rebuilding derived state from copied raw data...");
+    (config as { dbPath: string }).dbPath = tempPath;
+    closeDb();
+    deriveMs = rebuildDerivedStateFromRaw(log).totalMs;
+    closeDb();
+    (config as { dbPath: string }).dbPath = savedDbPath;
   } catch (err) {
+    (config as { dbPath: string }).dbPath = savedDbPath;
+    closeDb();
     log(`Failed to copy preserved data: ${err}`);
     getDb(); // reopen original
     removeTempFiles(tempPath);
@@ -312,10 +392,14 @@ export function reparseAll(
 
   // 4. Atomic file swap
   log("Swapping database files...");
+  let swapMs = 0;
   try {
+    const swapStartedAt = performance.now();
     removeWAL(origPath);
     fs.renameSync(tempPath, origPath);
     removeWAL(tempPath);
+    swapMs = performance.now() - swapStartedAt;
+    log(`Database swap finished in ${formatMs(swapMs)}`);
   } catch (err) {
     log(`File swap failed: ${err}`);
     getDb();
@@ -332,7 +416,7 @@ export function reparseAll(
   getDb();
 
   log(
-    `Reparse complete: ${filesScanned} files, ${newTurns} turns, ${tempSessionCount} sessions`,
+    `Reparse complete: ${filesScanned} files, ${newTurns} turns, ${tempSessionCount} sessions in ${formatMs(performance.now() - startedAt)} (init=${formatMs(initTempDbMs)} scan=${formatMs(scanMs)} copy=${formatMs(copyMs)} derive=${formatMs(deriveMs)} swap=${formatMs(swapMs)})`,
   );
 
   return { success: true, filesScanned, newTurns };
