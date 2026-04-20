@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
 
@@ -46,6 +47,13 @@ export function rebuildSessionSummaryProjections(opts?: {
   memberships: number;
   provenance: number;
 } {
+  if (!config.enableSessionSummaryProjections) {
+    return {
+      sessionSummaries: 0,
+      memberships: 0,
+      provenance: 0,
+    };
+  }
   const db = getDb();
   const tx = db.transaction(() => {
     if (opts?.sessionId) {
@@ -56,9 +64,9 @@ export function rebuildSessionSummaryProjections(opts?: {
         )
         .get(key) as { id: number } | undefined;
       if (row) {
-        db.prepare(`DELETE FROM code_provenance WHERE session_summary_id = ?`).run(
-          row.id,
-        );
+        db.prepare(
+          `DELETE FROM code_provenance WHERE session_summary_id = ?`,
+        ).run(row.id);
         db.prepare(
           `DELETE FROM intent_session_summaries WHERE session_summary_id = ?`,
         ).run(row.id);

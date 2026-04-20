@@ -1,7 +1,9 @@
+import { canonicalizeHeadKeys } from "../../claims/canonicalize.js";
 import {
   editKey,
   intentKey,
   messageEvidenceKey,
+  semanticEditIdentity,
   sha256Hex,
   toolEvidenceKey,
   toolLocalEvidenceKey,
@@ -11,12 +13,12 @@ import {
   deleteClaimsByAsserter,
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
-import { canonicalizeHeadKeys } from "../../claims/canonicalize.js";
 import { getDb } from "../../db/schema.js";
+import { resolveFilePathFromCwd } from "../../paths.js";
+import { parseEditEntriesFromJson } from "../editParsing.js";
 
 const ASSERTER = "intent.from_scanner";
 const VERSION = "1";
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
 const SNIPPET_LEN = 200;
 
 interface UserMessageRow {
@@ -43,12 +45,6 @@ interface ToolCallRow {
   input_json: string | null;
   timestamp_ms: number | null;
   assistant_ordinal: number;
-}
-
-interface EditEntry {
-  filePath: string;
-  newString: string;
-  multiEditIndex: number;
 }
 
 export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
@@ -211,20 +207,20 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
        FROM tool_calls tc
        JOIN messages m ON m.id = tc.message_id
        ${opts?.sessionId ? "WHERE tc.session_id = ? AND " : "WHERE "}
-         tc.tool_name IN ('Edit', 'Write', 'MultiEdit')
+         tc.tool_name IN ('Edit', 'Write', 'MultiEdit', 'edit_file', 'write_file', 'create_file', 'apply_patch')
        ORDER BY tc.session_id ASC, m.ordinal ASC, tc.id ASC`,
     )
     .all(...(opts?.sessionId ? [opts.sessionId] : [])) as ToolCallRow[];
 
   let edits = 0;
   const perAssistantIndex = new Map<string, number>();
-  const perIntentIndex = new Map<string, number>();
+  const perIntentSemanticIndex = new Map<string, number>();
   for (const row of toolRows) {
     const userMsgs = intentsBySession.get(row.session_id) ?? [];
     const intentMsg = findIntentMessage(userMsgs, row.assistant_ordinal);
     if (!intentMsg) continue;
 
-    const parsed = parseEditEntries(row.tool_name, row.input_json);
+    const parsed = parseEditEntriesFromJson(row.tool_name, row.input_json);
     if (parsed.length === 0) continue;
 
     const intentSubject = intentKey({
@@ -235,13 +231,23 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     });
     const assistantKey = `${row.session_id}:${row.assistant_ordinal}`;
     const localToolCallIndex = perAssistantIndex.get(assistantKey) ?? 0;
-    const subjectToolCallIndex = perIntentIndex.get(intentSubject) ?? 0;
     for (const entry of parsed) {
+      const resolvedFilePath = resolveFilePathFromCwd(
+        entry.filePath,
+        intentMsg.cwd ?? null,
+      );
+      const semanticIdentity = semanticEditIdentity({
+        filePath: resolvedFilePath,
+        newString: entry.newString,
+        oldStrings: entry.oldStrings,
+        deletedFile: entry.deletedFile,
+      });
+      const semanticKey = `${intentSubject}|${semanticIdentity}`;
+      const semanticOccurrence = perIntentSemanticIndex.get(semanticKey) ?? 0;
       const subject = editKey({
         intentKey: intentSubject,
-        sessionId: row.session_id,
-        toolCallIndex: subjectToolCallIndex,
-        toolUseId: row.tool_use_id,
+        semanticIdentity,
+        semanticOccurrence,
         multiEditIndex: entry.multiEditIndex,
       });
       const evidenceKey = row.tool_use_id
@@ -268,7 +274,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         predicate: "edit/file",
         subjectKind: "edit",
         subject,
-        value: entry.filePath,
+        value: resolvedFilePath,
         observedAtMs,
         sourceType: "scanner",
         asserter: ASSERTER,
@@ -333,9 +339,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         });
       }
       edits += 1;
+      perIntentSemanticIndex.set(semanticKey, semanticOccurrence + 1);
     }
     perAssistantIndex.set(assistantKey, localToolCallIndex + 1);
-    perIntentIndex.set(intentSubject, subjectToolCallIndex + 1);
   }
 
   canonicalizeHeadKeys(affectedHeadKeys);
@@ -352,61 +358,4 @@ function findIntentMessage(
     }
   }
   return undefined;
-}
-
-function parseEditEntries(
-  toolName: string,
-  inputJson: string | null,
-): EditEntry[] {
-  if (!inputJson || !EDIT_TOOLS.has(toolName)) return [];
-  let input: Record<string, unknown>;
-  try {
-    input = JSON.parse(inputJson) as Record<string, unknown>;
-  } catch {
-    return [];
-  }
-  const filePath = input.file_path;
-  if (typeof filePath !== "string" || filePath.length === 0) return [];
-
-  if (toolName === "Edit") {
-    return typeof input.new_string === "string"
-      ? [
-          {
-            filePath,
-            newString: input.new_string,
-            multiEditIndex: 0,
-          },
-        ]
-      : [];
-  }
-  if (toolName === "Write") {
-    return typeof input.content === "string"
-      ? [
-          {
-            filePath,
-            newString: input.content,
-            multiEditIndex: 0,
-          },
-        ]
-      : [];
-  }
-  if (toolName === "MultiEdit" && Array.isArray(input.edits)) {
-    return input.edits.flatMap((entry, index) => {
-      if (
-        entry &&
-        typeof entry === "object" &&
-        typeof (entry as { new_string?: unknown }).new_string === "string"
-      ) {
-        return [
-          {
-            filePath,
-            newString: (entry as { new_string: string }).new_string,
-            multiEditIndex: index,
-          },
-        ];
-      }
-      return [];
-    });
-  }
-  return [];
 }

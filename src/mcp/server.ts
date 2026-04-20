@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { config } from "../config.js";
 import { log, openLogFd } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
 import {
@@ -356,119 +357,125 @@ server.tool(
   },
 );
 
-server.tool(
-  "session_summaries",
-  "List session-derived summaries with provenance metadata. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
-  {
-    repository: z
-      .string()
-      .optional()
-      .describe("Filter to a repository path or identifier"),
-    cwd: z.string().optional().describe("Filter to a working directory"),
-    status: z
-      .enum(["active", "landed", "mixed", "abandoned"])
-      .optional()
-      .describe("Filter by derived session-summary status"),
-    path: z
-      .string()
-      .optional()
-      .describe("Only return session summaries touching this file path"),
-    since: z
-      .string()
-      .optional()
-      .describe('Time filter: ISO date or relative like "24h", "7d"'),
-    limit: z.number().optional().describe("Max results (default 20)"),
-    offset: z.number().optional().describe("Skip N results for pagination"),
-  },
-  async ({ repository, cwd, status, path, since, limit, offset }) => {
-    const result = await service.listSessionSummaries({
-      repository,
-      cwd,
-      status,
-      path,
-      since,
-      limit,
-      offset,
-    });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
-  },
-);
-
-server.tool(
-  "session_summary_detail",
-  "Get the explicit session-derived summary for a single session, including member intents and touched files.",
-  {
-    session_id: z.string().describe("ID of the session"),
-  },
-  async ({ session_id }) => {
-    const result = await service.sessionSummaryDetail({ session_id });
-    if (!result) {
+if (config.enableSessionSummaryProjections) {
+  server.tool(
+    "session_summaries",
+    "List session-derived summaries with provenance metadata. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
+    {
+      repository: z
+        .string()
+        .optional()
+        .describe("Filter to a repository path or identifier"),
+      cwd: z.string().optional().describe("Filter to a working directory"),
+      status: z
+        .enum(["active", "landed", "mixed", "abandoned"])
+        .optional()
+        .describe("Filter by derived session-summary status"),
+      path: z
+        .string()
+        .optional()
+        .describe("Only return session summaries touching this file path"),
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d"'),
+      limit: z.number().optional().describe("Max results (default 20)"),
+      offset: z.number().optional().describe("Skip N results for pagination"),
+    },
+    async ({ repository, cwd, status, path, since, limit, offset }) => {
+      const result = await service.listSessionSummaries({
+        repository,
+        cwd,
+        status,
+        path,
+        since,
+        limit,
+        offset,
+      });
       return {
         content: [
-          {
-            type: "text" as const,
-            text: `No session summary found for session ${session_id}`,
-          },
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
         ],
-        isError: true,
       };
-    }
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
-  },
-);
+    },
+  );
 
-server.tool(
-  "why_code",
-  "Explain the best current local provenance for a file path and optional line: which intent/session-summary most likely established the code and what evidence supports it.",
-  {
-    path: z.string().describe("File path to explain"),
-    line: z
-      .number()
-      .optional()
-      .describe("Optional 1-based line number for a more specific answer"),
-    repository: z
-      .string()
-      .optional()
-      .describe("Optional repository root used to resolve relative paths"),
-  },
-  async ({ path, line, repository }) => {
-    const result = await service.whyCode({ path, line, repository });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
-  },
-);
+  server.tool(
+    "session_summary_detail",
+    "Get the explicit session-derived summary for a single session, including member intents and touched files.",
+    {
+      session_id: z.string().describe("ID of the session"),
+    },
+    async ({ session_id }) => {
+      const result = await service.sessionSummaryDetail({ session_id });
+      if (!result) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No session summary found for session ${session_id}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    },
+  );
 
-server.tool(
-  "recent_work_on_path",
-  "Show recent local intents, edits, and session summaries that touched a file path.",
-  {
-    path: z.string().describe("File path to inspect"),
-    repository: z
-      .string()
-      .optional()
-      .describe("Optional repository root used to resolve relative paths"),
-    limit: z.number().optional().describe("Max results (default 20)"),
-  },
-  async ({ path, repository, limit }) => {
-    const result = await service.recentWorkOnPath({ path, repository, limit });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
-  },
-);
+  server.tool(
+    "why_code",
+    "Explain the best current local provenance for a file path and optional line: which intent/session-summary most likely established the code and what evidence supports it.",
+    {
+      path: z.string().describe("File path to explain"),
+      line: z
+        .number()
+        .optional()
+        .describe("Optional 1-based line number for a more specific answer"),
+      repository: z
+        .string()
+        .optional()
+        .describe("Optional repository root used to resolve relative paths"),
+    },
+    async ({ path, line, repository }) => {
+      const result = await service.whyCode({ path, line, repository });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "recent_work_on_path",
+    "Show recent local intents, edits, and session summaries that touched a file path.",
+    {
+      path: z.string().describe("File path to inspect"),
+      repository: z
+        .string()
+        .optional()
+        .describe("Optional repository root used to resolve relative paths"),
+      limit: z.number().optional().describe("Max results (default 20)"),
+    },
+    async ({ path, repository, limit }) => {
+      const result = await service.recentWorkOnPath({
+        path,
+        repository,
+        limit,
+      });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    },
+  );
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Permissions tools — read/preview/apply the panopticon hook allowlist.

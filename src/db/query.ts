@@ -1,3 +1,8 @@
+import { config } from "../config.js";
+import {
+  ensureSessionSummaryProjections,
+  sessionSummaryKeyForSession,
+} from "../session_summaries/query.js";
 import { allTargets } from "../targets/index.js";
 import type {
   ActivitySessionDetail,
@@ -6,8 +11,8 @@ import type {
   SearchMatch,
   SearchResult,
   Session,
-  SessionSummary,
   SessionListResult,
+  SessionSummary,
   SessionTimelineResult,
   SpendingGroup,
   SpendingResult,
@@ -15,10 +20,6 @@ import type {
   TimelineToolCall,
 } from "../types.js";
 import { getDb } from "./schema.js";
-import {
-  ensureSessionSummaryProjections,
-  sessionSummaryKeyForSession,
-} from "../session_summaries/query.js";
 
 function parseSince(since?: string): number | null {
   if (!since) return null;
@@ -106,7 +107,8 @@ export function listSessions(
   opts: { limit?: number; since?: string } = {},
 ): SessionListResult {
   const db = getDb();
-  ensureSessionSummaryProjections();
+  const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
 
@@ -172,9 +174,11 @@ export function listSessions(
     reposBySession.set(r.session_id, list);
   }
 
-  const sessionSummaryKeys = sessionIds.map(sessionSummaryKeyForSession);
+  const sessionSummaryKeys = sessionSummariesEnabled
+    ? sessionIds.map(sessionSummaryKeyForSession)
+    : [];
   const sessionSummaryRows =
-    sessionSummaryKeys.length > 0
+    sessionSummariesEnabled && sessionSummaryKeys.length > 0
       ? (db
           .prepare(
             `SELECT id,
@@ -211,7 +215,7 @@ export function listSessions(
       : [];
 
   const topFileRows =
-    sessionSummaryRows.length > 0
+    sessionSummariesEnabled && sessionSummaryRows.length > 0
       ? (db
           .prepare(
             `SELECT w.session_summary_key,
@@ -249,7 +253,9 @@ export function listSessions(
       repository: row.repository,
       cwd: row.cwd,
       branch: row.branch,
-      firstIntentAt: row.first_intent_ts_ms ? toIso(row.first_intent_ts_ms) : null,
+      firstIntentAt: row.first_intent_ts_ms
+        ? toIso(row.first_intent_ts_ms)
+        : null,
       lastIntentAt: row.last_intent_ts_ms ? toIso(row.last_intent_ts_ms) : null,
       intentCount: row.intent_count,
       editCount: row.edit_count,

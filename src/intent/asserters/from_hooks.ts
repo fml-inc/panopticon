@@ -3,6 +3,7 @@ import {
   editKey,
   hookEvidenceKey,
   intentKey,
+  semanticEditIdentity,
   sha256Hex,
 } from "../../claims/keys.js";
 import {
@@ -12,10 +13,14 @@ import {
 } from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
 import { resolveFilePathFromCwd } from "../../paths.js";
+import {
+  EDIT_TOOL_NAMES,
+  type ParsedEditEntry,
+  parseEditEntries as parseToolEditEntries,
+} from "../editParsing.js";
 
 const ASSERTER = "intent.from_hooks";
 const VERSION = "1";
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
 const SNIPPET_LEN = 200;
 
 interface HookPromptRow {
@@ -35,12 +40,6 @@ interface UserMessageRow {
   ordinal: number;
   uuid: string | null;
   content: string;
-}
-
-interface EditEntry {
-  filePath: string;
-  newString: string;
-  multiEditIndex: number;
 }
 
 export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
@@ -93,7 +92,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
     let promptIndex = 0;
     let lastSubject: string | null = null;
     let currentClosed = false;
-    let currentToolCallIndex = 0;
+    const semanticOccurrences = new Map<string, number>();
     for (const event of events) {
       if (event.event_type === "UserPromptSubmit") {
         const resolved = resolveIntentSubject({
@@ -125,42 +124,49 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
         });
         lastSubject = subject;
         currentClosed = false;
-        currentToolCallIndex = 0;
         promptIndex += 1;
         prompts += 1;
       } else if (event.event_type === "PostToolUse") {
         if (
           !lastSubject ||
           !event.tool_name ||
-          !EDIT_TOOLS.has(event.tool_name)
+          !EDIT_TOOL_NAMES.has(event.tool_name)
         ) {
           continue;
         }
         const parsedPayload = JSON.parse(
           gunzipSync(event.payload).toString("utf8"),
         ) as Record<string, unknown>;
-        const editEntries = parseEditEntries(
+        const editEntries = parseToolEditEntries(
           event.tool_name,
           parsedPayload.tool_input as Record<string, unknown> | undefined,
         );
-        const toolCallIndex = currentToolCallIndex;
         for (const entry of editEntries) {
+          const resolvedFilePath = resolveFilePath(
+            entry.filePath,
+            resolveSessionCwd(sessionId, event.cwd),
+          );
+          const semanticIdentity = semanticEditIdentity({
+            filePath: resolvedFilePath,
+            newString: entry.newString,
+            oldStrings: entry.oldStrings,
+            deletedFile: entry.deletedFile,
+          });
+          const semanticKey = `${lastSubject}|${semanticIdentity}`;
+          const semanticOccurrence = semanticOccurrences.get(semanticKey) ?? 0;
           assertHookEditClaims({
             intentSubject: lastSubject,
             sessionId,
             hookEventId: event.id,
-            toolCallIndex,
             toolName: event.tool_name,
-            payload: parsedPayload,
             entry,
             cwd: event.cwd,
             timestampMs: event.timestamp_ms,
+            semanticOccurrence,
             canonicalize: false,
           });
+          semanticOccurrences.set(semanticKey, semanticOccurrence + 1);
           edits += 1;
-        }
-        if (editEntries.length > 0) {
-          currentToolCallIndex += 1;
         }
       } else if (lastSubject && !currentClosed) {
         assertClosedAtClaim({
@@ -269,26 +275,35 @@ export function recordIntentClaimsFromHookEvent(args: {
       typeof args.payload.tool_name === "string"
         ? args.payload.tool_name
         : null;
-    if (!toolName || !EDIT_TOOLS.has(toolName)) return;
-    const entries = parseEditEntries(
+    if (!toolName || !EDIT_TOOL_NAMES.has(toolName)) return;
+    const entries = parseToolEditEntries(
       toolName,
       args.payload.tool_input as Record<string, unknown> | undefined,
     );
-    const toolCallIndex = resolveLiveToolCallIndex(
-      args.sessionId,
-      args.hookEventId,
-    );
     for (const entry of entries) {
+      const resolvedFilePath = resolveFilePath(
+        entry.filePath,
+        resolveSessionCwd(args.sessionId, args.cwd ?? null),
+      );
+      const semanticIdentity = semanticEditIdentity({
+        filePath: resolvedFilePath,
+        newString: entry.newString,
+        oldStrings: entry.oldStrings,
+        deletedFile: entry.deletedFile,
+      });
+      const semanticOccurrence = resolveLiveSemanticOccurrence(
+        subject,
+        semanticIdentity,
+      );
       assertHookEditClaims({
         intentSubject: subject,
         sessionId: args.sessionId,
         hookEventId: args.hookEventId,
-        toolCallIndex,
         toolName,
-        payload: args.payload,
         entry,
         cwd: args.cwd ?? null,
         timestampMs: args.timestampMs,
+        semanticOccurrence,
       });
     }
     return;
@@ -385,21 +400,27 @@ function assertHookEditClaims(args: {
   intentSubject: string;
   sessionId: string;
   hookEventId: number;
-  toolCallIndex: number;
   toolName: string;
-  payload: Record<string, unknown>;
-  entry: EditEntry;
+  entry: ParsedEditEntry;
   cwd: string | null;
   timestampMs: number;
+  semanticOccurrence: number;
   canonicalize?: boolean;
 }): void {
-  const toolUseId = readToolUseId(args.payload);
+  const resolvedFilePath = resolveFilePath(
+    args.entry.filePath,
+    resolveSessionCwd(args.sessionId, args.cwd),
+  );
+  const semanticIdentity = semanticEditIdentity({
+    filePath: resolvedFilePath,
+    newString: args.entry.newString,
+    oldStrings: args.entry.oldStrings,
+    deletedFile: args.entry.deletedFile,
+  });
   const subject = editKey({
     intentKey: args.intentSubject,
-    sessionId: args.sessionId,
-    toolCallIndex: args.toolCallIndex,
-    hookEventId: args.hookEventId,
-    toolUseId,
+    semanticIdentity,
+    semanticOccurrence: args.semanticOccurrence,
     multiEditIndex: args.entry.multiEditIndex,
   });
   const evidence = [
@@ -421,7 +442,7 @@ function assertHookEditClaims(args: {
     predicate: "edit/file",
     subjectKind: "edit",
     subject,
-    value: resolveFilePath(args.entry.filePath, args.cwd),
+    value: resolvedFilePath,
     observedAtMs: args.timestampMs,
     sourceType: "hook",
     asserter: ASSERTER,
@@ -575,75 +596,35 @@ function hasHookClosedAtClaim(subject: string): boolean {
   );
 }
 
-function resolveLiveToolCallIndex(
-  sessionId: string,
-  hookEventId: number,
+function resolveLiveSemanticOccurrence(
+  intentSubject: string,
+  semanticIdentity: string,
 ): number {
   const db = getDb();
+  const subjectPrefix = `edit:${intentSubject}:sem:${sha256Hex(semanticIdentity)}:`;
   const row = db
     .prepare(
-      `SELECT COUNT(*) AS c
-       FROM hook_events
-       WHERE session_id = ?
-         AND event_type = 'PostToolUse'
-         AND tool_name IN ('Edit', 'Write', 'MultiEdit')
-         AND id < ?
-         AND id > COALESCE((
-           SELECT MAX(id)
-           FROM hook_events
-           WHERE session_id = ?
-             AND event_type = 'UserPromptSubmit'
-             AND id < ?
-         ), 0)`,
+      `SELECT COUNT(DISTINCT subject) AS c
+       FROM claims
+       WHERE asserter = ?
+         AND subject_kind = 'edit'
+         AND predicate = 'edit/part-of-intent'
+         AND subject LIKE ?`,
     )
-    .get(sessionId, hookEventId, sessionId, hookEventId) as { c: number };
+    .get(ASSERTER, `${subjectPrefix}%`) as { c: number };
   return row.c;
 }
 
-function parseEditEntries(
-  toolName: string,
-  toolInput: Record<string, unknown> | undefined,
-): EditEntry[] {
-  if (!toolInput || !EDIT_TOOLS.has(toolName)) return [];
-  const filePath = toolInput.file_path;
-  if (typeof filePath !== "string" || filePath.length === 0) return [];
-
-  if (toolName === "Edit") {
-    return typeof toolInput.new_string === "string"
-      ? [{ filePath, newString: toolInput.new_string, multiEditIndex: 0 }]
-      : [];
-  }
-  if (toolName === "Write") {
-    return typeof toolInput.content === "string"
-      ? [{ filePath, newString: toolInput.content, multiEditIndex: 0 }]
-      : [];
-  }
-  if (toolName === "MultiEdit" && Array.isArray(toolInput.edits)) {
-    return toolInput.edits.flatMap((entry, index) => {
-      if (
-        entry &&
-        typeof entry === "object" &&
-        typeof (entry as { new_string?: unknown }).new_string === "string"
-      ) {
-        return [
-          {
-            filePath,
-            newString: (entry as { new_string: string }).new_string,
-            multiEditIndex: index,
-          },
-        ];
-      }
-      return [];
-    });
-  }
-  return [];
-}
-
-function readToolUseId(payload: Record<string, unknown>): string | null {
-  const toolUseId = payload.tool_use_id;
-  return typeof toolUseId === "string" && toolUseId.length > 0
-    ? toolUseId
-    : null;
+function resolveSessionCwd(
+  sessionId: string,
+  cwd: string | null,
+): string | null {
+  if (cwd) return cwd;
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT cwd FROM sessions WHERE session_id = ?`)
+    .get(sessionId) as { cwd: string | null } | undefined;
+  return row?.cwd ?? null;
 }
 
 function resolveFilePath(filePath: string, cwd: string | null): string {

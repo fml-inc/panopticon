@@ -156,6 +156,15 @@ function insertSession(args: {
     );
 }
 
+function rebuildMixedProjection(sessionId: string): void {
+  rebuildIntentClaimsFromHooks({ sessionId });
+  rebuildIntentClaimsFromScanner({ sessionId });
+  rebuildActiveClaims();
+  reconcileLandedClaimsFromDisk({ sessionId });
+  rebuildActiveClaims();
+  rebuildIntentProjection({ sessionId });
+}
+
 describe("live hook claims", () => {
   it("keeps the same intent subject when scanner messages arrive later", () => {
     const promptId = insertHookEvent({
@@ -312,6 +321,364 @@ describe("session-scoped rebuilds", () => {
   });
 });
 
+describe("mixed hook/scanner edit convergence", () => {
+  it("projects one intent edit when hook and scanner see the same structured edit", () => {
+    const sessionId = "mixed-shared-edit";
+    const filePath = path.join(scratchDir, "mixed-shared-edit.ts");
+    fs.writeFileSync(filePath, "NEXT");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "make the shared edit",
+      timestampMs: 1000,
+      uuid: "mixed-shared-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "Edit",
+      toolUseId: "tool-shared-edit",
+      inputJson: {
+        file_path: "mixed-shared-edit.ts",
+        old_string: "PREV",
+        new_string: "NEXT",
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "make the shared edit" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1100,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "mixed-shared-edit.ts",
+          old_string: "PREV",
+          new_string: "NEXT",
+        },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "Stop",
+      timestamp_ms: 2000,
+      payload: { session_id: sessionId },
+    });
+
+    rebuildMixedProjection(sessionId);
+
+    const distinctSubjects = (
+      getDb()
+        .prepare(
+          `SELECT COUNT(DISTINCT subject) AS c
+           FROM claims
+           WHERE subject_kind = 'edit'
+             AND predicate = 'edit/part-of-intent'
+             AND value_text = ?`,
+        )
+        .get(`intent:${sessionId}:user:0`) as { c: number }
+    ).c;
+    const projected = getDb()
+      .prepare(
+        `SELECT file_path, tool_name
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .all(sessionId) as Array<{ file_path: string; tool_name: string }>;
+
+    expect(distinctSubjects).toBe(1);
+    expect(projected).toEqual([{ file_path: filePath, tool_name: "Edit" }]);
+  });
+
+  it("keeps a later shared edit distinct from an earlier scanner-only apply_patch edit", () => {
+    const sessionId = "mixed-scanner-first";
+    const patchFilePath = path.join(scratchDir, "mixed-scanner-first-patch.ts");
+    const sharedFilePath = path.join(
+      scratchDir,
+      "mixed-scanner-first-shared.ts",
+    );
+    fs.writeFileSync(patchFilePath, "export const patchValue = 1;\n");
+    fs.writeFileSync(sharedFilePath, "SHARED");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "apply a patch and then a shared edit",
+      timestampMs: 1000,
+      uuid: "mixed-scanner-first-user",
+    });
+    const assistant1 = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant1,
+      sessionId,
+      toolName: "apply_patch",
+      toolUseId: "tool-scanner-only-patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          "*** Update File: mixed-scanner-first-patch.ts",
+          "@@",
+          "-export const patchValue = 0;",
+          "+export const patchValue = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+    const assistant2 = insertAssistantMessage({
+      sessionId,
+      ordinal: 3,
+      timestampMs: 1200,
+    });
+    insertToolCall({
+      messageId: assistant2,
+      sessionId,
+      toolName: "Edit",
+      toolUseId: "tool-shared-later-edit",
+      inputJson: {
+        file_path: "mixed-scanner-first-shared.ts",
+        old_string: "PREV",
+        new_string: "SHARED",
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "apply a patch and then a shared edit" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1150,
+      tool_name: "Bash",
+      payload: {
+        tool_name: "Bash",
+        tool_input: { command: "apply_patch ..." },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1200,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "mixed-scanner-first-shared.ts",
+          old_string: "PREV",
+          new_string: "SHARED",
+        },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "Stop",
+      timestamp_ms: 2000,
+      payload: { session_id: sessionId },
+    });
+
+    rebuildMixedProjection(sessionId);
+
+    const projected = getDb()
+      .prepare(
+        `SELECT file_path, tool_name
+         FROM intent_edits
+         WHERE session_id = ?
+         ORDER BY file_path ASC, id ASC`,
+      )
+      .all(sessionId) as Array<{ file_path: string; tool_name: string }>;
+
+    expect(projected).toEqual([
+      { file_path: patchFilePath, tool_name: "apply_patch" },
+      { file_path: sharedFilePath, tool_name: "Edit" },
+    ]);
+  });
+
+  it("keeps multiple mixed-visibility edits in one intent without collisions or duplicates", () => {
+    const sessionId = "mixed-multi-step";
+    const firstFilePath = path.join(scratchDir, "mixed-multi-step-first.ts");
+    const patchFilePath = path.join(scratchDir, "mixed-multi-step-patch.ts");
+    const lastFilePath = path.join(scratchDir, "mixed-multi-step-last.ts");
+    fs.writeFileSync(firstFilePath, "FIRST");
+    fs.writeFileSync(patchFilePath, "export const patchValue = 1;\n");
+    fs.writeFileSync(lastFilePath, "LAST");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "do several edits",
+      timestampMs: 1000,
+      uuid: "mixed-multi-step-user",
+    });
+    const assistant1 = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant1,
+      sessionId,
+      toolName: "Edit",
+      toolUseId: "tool-first-shared-edit",
+      inputJson: {
+        file_path: "mixed-multi-step-first.ts",
+        old_string: "PREV",
+        new_string: "FIRST",
+      },
+    });
+    const assistant2 = insertAssistantMessage({
+      sessionId,
+      ordinal: 3,
+      timestampMs: 1200,
+    });
+    insertToolCall({
+      messageId: assistant2,
+      sessionId,
+      toolName: "apply_patch",
+      toolUseId: "tool-middle-scanner-patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          "*** Update File: mixed-multi-step-patch.ts",
+          "@@",
+          "-export const patchValue = 0;",
+          "+export const patchValue = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+    const assistant3 = insertAssistantMessage({
+      sessionId,
+      ordinal: 4,
+      timestampMs: 1300,
+    });
+    insertToolCall({
+      messageId: assistant3,
+      sessionId,
+      toolName: "Edit",
+      toolUseId: "tool-last-shared-edit",
+      inputJson: {
+        file_path: "mixed-multi-step-last.ts",
+        old_string: "PREV",
+        new_string: "LAST",
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "do several edits" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1100,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "mixed-multi-step-first.ts",
+          old_string: "PREV",
+          new_string: "FIRST",
+        },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1250,
+      tool_name: "Bash",
+      payload: {
+        tool_name: "Bash",
+        tool_input: { command: "apply_patch ..." },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1300,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "mixed-multi-step-last.ts",
+          old_string: "PREV",
+          new_string: "LAST",
+        },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "Stop",
+      timestamp_ms: 2000,
+      payload: { session_id: sessionId },
+    });
+
+    rebuildMixedProjection(sessionId);
+
+    const distinctSubjects = (
+      getDb()
+        .prepare(
+          `SELECT COUNT(DISTINCT subject) AS c
+           FROM claims
+           WHERE subject_kind = 'edit'
+             AND predicate = 'edit/part-of-intent'
+             AND value_text = ?`,
+        )
+        .get(`intent:${sessionId}:user:0`) as { c: number }
+    ).c;
+    const projected = getDb()
+      .prepare(
+        `SELECT file_path, tool_name
+         FROM intent_edits
+         WHERE session_id = ?
+         ORDER BY timestamp_ms ASC, id ASC`,
+      )
+      .all(sessionId) as Array<{ file_path: string; tool_name: string }>;
+
+    expect(distinctSubjects).toBe(3);
+    expect(projected).toEqual([
+      { file_path: firstFilePath, tool_name: "Edit" },
+      { file_path: patchFilePath, tool_name: "apply_patch" },
+      { file_path: lastFilePath, tool_name: "Edit" },
+    ]);
+  });
+});
+
 describe("scanner-only landed reconciliation", () => {
   it("classifies in-session overwrite as superseded without hook evidence", () => {
     const sessionId = "scanner-only";
@@ -441,5 +808,209 @@ describe("scanner-only landed reconciliation", () => {
     }>;
 
     expect(edits).toEqual([{ landed: null, landed_reason: null }]);
+  });
+
+  it("loads only the touched session active set when rebuilding one session", () => {
+    const sessionCount = 24;
+    const targetSessionId = "session-00";
+
+    for (let i = 0; i < sessionCount; i += 1) {
+      const sessionId = `session-${String(i).padStart(2, "0")}`;
+      const filePath = path.join(scratchDir, `${sessionId}.ts`);
+      fs.writeFileSync(filePath, `value-${i}`);
+
+      insertSession({
+        sessionId,
+        cwd: scratchDir,
+        endedAtMs: 2000 + i,
+        hasScanner: true,
+      });
+      insertUserMessage({
+        sessionId,
+        ordinal: 1,
+        content: `prompt ${i}`,
+        timestampMs: 1000 + i,
+        uuid: `msg-${i}`,
+      });
+      const assistant = insertAssistantMessage({
+        sessionId,
+        ordinal: 2,
+        timestampMs: 1100 + i,
+      });
+      insertToolCall({
+        messageId: assistant,
+        sessionId,
+        toolName: "Edit",
+        inputJson: {
+          file_path: filePath,
+          old_string: "OLD",
+          new_string: `value-${i}`,
+        },
+      });
+    }
+
+    rebuildIntentClaimsFromScanner();
+
+    const landed = reconcileLandedClaimsFromDisk({
+      sessionId: targetSessionId,
+    });
+    const projection = rebuildIntentProjection({ sessionId: targetSessionId });
+
+    expect(landed.checked).toBe(1);
+    expect(landed.activeIntentsLoaded).toBe(1);
+    expect(landed.activeEditsLoaded).toBe(1);
+
+    expect(projection.intents).toBe(1);
+    expect(projection.edits).toBe(1);
+    expect(projection.activeIntentsLoaded).toBe(1);
+    expect(projection.activeEditsLoaded).toBe(1);
+  });
+
+  it("projects scanner-backed apply_patch edits into intent_edits", () => {
+    const sessionId = "scanner-apply-patch";
+    const filePath = path.join(scratchDir, "scanner-apply-patch.ts");
+    fs.writeFileSync(filePath, "export const value = 1;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "patch the file",
+      timestampMs: 1000,
+      uuid: "scanner-apply-patch-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "apply_patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          `*** Update File: ${filePath}`,
+          "@@",
+          "-export const value = 0;",
+          "+export const value = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    reconcileLandedClaimsFromDisk({ sessionId });
+    rebuildIntentProjection({ sessionId });
+
+    const row = getDb()
+      .prepare(
+        `SELECT file_path, tool_name, landed
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | { file_path: string; tool_name: string; landed: number | null }
+      | undefined;
+
+    expect(row).toEqual({
+      file_path: filePath,
+      tool_name: "apply_patch",
+      landed: 1,
+    });
+  });
+
+  it("keeps scanner-backed apply_patch edits for hook-backed sessions", () => {
+    const sessionId = "hook-backed-scanner-apply-patch";
+    const filePath = path.join(
+      scratchDir,
+      "hook-backed-scanner-apply-patch.ts",
+    );
+    fs.writeFileSync(filePath, "export const value = 1;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "patch the file",
+      timestampMs: 1000,
+      uuid: "hook-backed-scanner-apply-patch-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "apply_patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          `*** Update File: ${filePath}`,
+          "@@",
+          "-export const value = 0;",
+          "+export const value = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "patch the file" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1150,
+      tool_name: "Bash",
+      payload: {
+        tool_name: "Bash",
+        tool_input: { command: "apply_patch ..." },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "Stop",
+      timestamp_ms: 2000,
+      payload: { session_id: sessionId },
+    });
+
+    rebuildIntentClaimsFromHooks({ sessionId });
+    rebuildIntentClaimsFromScanner({ sessionId });
+    rebuildActiveClaims();
+    reconcileLandedClaimsFromDisk({ sessionId });
+    rebuildActiveClaims();
+    rebuildIntentProjection({ sessionId });
+
+    const row = getDb()
+      .prepare(
+        `SELECT file_path, tool_name, landed
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | { file_path: string; tool_name: string; landed: number | null }
+      | undefined;
+
+    expect(row).toEqual({
+      file_path: filePath,
+      tool_name: "apply_patch",
+      landed: 1,
+    });
   });
 });

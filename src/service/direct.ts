@@ -1,5 +1,6 @@
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
+import { config } from "../config.js";
 import { refreshPricing as refreshPricingDirect } from "../db/pricing.js";
 import { pruneEstimate, pruneExecute } from "../db/prune.js";
 import {
@@ -25,6 +26,12 @@ import {
 } from "../intent/query.js";
 import { log } from "../log.js";
 import { scanOnce } from "../scanner/index.js";
+import {
+  listSessionSummaries,
+  recentWorkOnPath,
+  sessionSummaryDetail,
+  whyCode,
+} from "../session_summaries/query.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { addTarget, listTargets, removeTarget } from "../sync/config.js";
 import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
@@ -35,12 +42,6 @@ import {
   watermarkKey,
   writeWatermark,
 } from "../sync/watermark.js";
-import {
-  listSessionSummaries,
-  recentWorkOnPath,
-  sessionSummaryDetail,
-  whyCode,
-} from "../session_summaries/query.js";
 import type {
   PanopticonService,
   PruneExecuteInput,
@@ -52,6 +53,11 @@ import type {
   SyncPendingResult,
   SyncTargetAddInput,
 } from "./types.js";
+
+function assertSessionSummaryProjectionsEnabled(): void {
+  if (config.enableSessionSummaryProjections) return;
+  throw new Error("Session summary projections are disabled");
+}
 
 export function createDirectPanopticonService(): PanopticonService {
   return {
@@ -92,15 +98,19 @@ export function createDirectPanopticonService(): PanopticonService {
       return outcomesForIntent(opts);
     },
     async listSessionSummaries(opts) {
+      assertSessionSummaryProjectionsEnabled();
       return listSessionSummaries(opts);
     },
     async sessionSummaryDetail(opts) {
+      assertSessionSummaryProjectionsEnabled();
       return sessionSummaryDetail(opts);
     },
     async whyCode(opts) {
+      assertSessionSummaryProjectionsEnabled();
       return whyCode(opts);
     },
     async recentWorkOnPath(opts) {
+      assertSessionSummaryProjectionsEnabled();
       return recentWorkOnPath(opts);
     },
     async pruneEstimate(cutoffMs) {
@@ -119,7 +129,10 @@ export function createDirectPanopticonService(): PanopticonService {
       return refreshPricingDirect();
     },
     async scan(opts?: ScanInput): Promise<ScanResult> {
-      const result = scanOnce();
+      const result = scanOnce({
+        profileLabel: "manual scan",
+        logDetails: true,
+      });
       let summariesUpdated = 0;
       if (opts?.summaries !== false) {
         try {

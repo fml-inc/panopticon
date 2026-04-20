@@ -88,6 +88,18 @@ describe("data version", () => {
     expect(needsResync()).toBe(true);
   });
 
+  it("needsResync opens the DB before checking version", () => {
+    getDb();
+    markResyncComplete();
+    closeDb();
+
+    const raw = new Database(config.dbPath);
+    raw.pragma("user_version = 0");
+    raw.close();
+
+    expect(needsResync()).toBe(true);
+  });
+
   it("higher user_version does not trigger resync", () => {
     getDb();
     markResyncComplete();

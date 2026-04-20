@@ -1,3 +1,4 @@
+import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import { resolveFilePathFromCwd } from "../paths.js";
@@ -146,6 +147,7 @@ export function listSessionSummaries(opts?: {
 export function sessionSummaryDetail(opts: {
   session_id: string;
 }): SessionSummaryDetailResult | null {
+  if (!config.enableSessionSummaryProjections) return null;
   ensureSessionSummaryProjections();
   const db = getDb();
   const row = db
@@ -175,10 +177,29 @@ export function whyCode(opts: {
   line?: number;
   repository?: string;
 }): WhyCodeResult {
-  ensureSessionSummaryProjections();
-  const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const line = typeof opts.line === "number" ? opts.line : null;
+  const history = intentForCode({ file_path: normalizedPath, limit: 10 });
+
+  if (!config.enableSessionSummaryProjections) {
+    return {
+      path: normalizedPath,
+      line,
+      match_level: "none",
+      status: history.length > 0 ? "stale" : "none",
+      confidence: 0,
+      repository: opts.repository ?? history[0]?.repository ?? null,
+      session_summary: null,
+      intent: null,
+      edit: null,
+      binding: null,
+      evidence: { intent_for_code: history },
+      related_candidates: [],
+    };
+  }
+
+  ensureSessionSummaryProjections();
+  const db = getDb();
   const candidates = db
     .prepare(
       `SELECT cp.repository,
@@ -242,7 +263,6 @@ export function whyCode(opts: {
     session_summary_status: string | null;
   }>;
 
-  const history = intentForCode({ file_path: normalizedPath, limit: 10 });
   const preferred =
     (line !== null
       ? candidates.find(
@@ -310,8 +330,7 @@ export function whyCode(opts: {
     session_summary: preferred.session_summary_id
       ? {
           session_summary_id: preferred.session_summary_id,
-          title:
-            preferred.session_summary_title ?? "untitled session summary",
+          title: preferred.session_summary_title ?? "untitled session summary",
           status: preferred.session_summary_status ?? "unknown",
         }
       : null,
@@ -349,30 +368,10 @@ export function recentWorkOnPath(opts: {
   repository?: string;
   limit?: number;
 }): RecentWorkOnPathResult {
-  ensureSessionSummaryProjections();
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
-  const rows = db
-    .prepare(
-      `SELECT e.id AS intent_edit_id,
-              e.timestamp_ms,
-              e.landed,
-              e.landed_reason,
-              u.id AS intent_unit_id,
-              u.prompt_text,
-              s.id AS session_summary_id,
-              s.title AS session_summary_title
-       FROM intent_edits e
-       JOIN intent_units u ON u.id = e.intent_unit_id
-       LEFT JOIN intent_session_summaries iss
-         ON iss.intent_unit_id = u.id
-       LEFT JOIN session_summaries s ON s.id = iss.session_summary_id
-       WHERE e.file_path = ?
-       ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
-       LIMIT ?`,
-    )
-    .all(normalizedPath, limit) as Array<{
+  let rows: Array<{
     intent_edit_id: number;
     timestamp_ms: number | null;
     landed: number | null;
@@ -382,6 +381,48 @@ export function recentWorkOnPath(opts: {
     session_summary_id: number | null;
     session_summary_title: string | null;
   }>;
+
+  if (config.enableSessionSummaryProjections) {
+    ensureSessionSummaryProjections();
+    rows = db
+      .prepare(
+        `SELECT e.id AS intent_edit_id,
+                e.timestamp_ms,
+                e.landed,
+                e.landed_reason,
+                u.id AS intent_unit_id,
+                u.prompt_text,
+                s.id AS session_summary_id,
+                s.title AS session_summary_title
+         FROM intent_edits e
+         JOIN intent_units u ON u.id = e.intent_unit_id
+         LEFT JOIN intent_session_summaries iss
+           ON iss.intent_unit_id = u.id
+         LEFT JOIN session_summaries s ON s.id = iss.session_summary_id
+         WHERE e.file_path = ?
+         ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
+         LIMIT ?`,
+      )
+      .all(normalizedPath, limit) as typeof rows;
+  } else {
+    rows = db
+      .prepare(
+        `SELECT e.id AS intent_edit_id,
+                e.timestamp_ms,
+                e.landed,
+                e.landed_reason,
+                u.id AS intent_unit_id,
+                u.prompt_text,
+                NULL AS session_summary_id,
+                NULL AS session_summary_title
+         FROM intent_edits e
+         JOIN intent_units u ON u.id = e.intent_unit_id
+         WHERE e.file_path = ?
+         ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
+         LIMIT ?`,
+      )
+      .all(normalizedPath, limit) as typeof rows;
+  }
 
   return {
     path: normalizedPath,
@@ -400,6 +441,7 @@ export function recentWorkOnPath(opts: {
 }
 
 export function ensureSessionSummaryProjections(): void {
+  if (!config.enableSessionSummaryProjections) return;
   const db = getDb();
   const intentCount = (
     db.prepare(`SELECT COUNT(*) AS c FROM intent_units`).get() as { c: number }
@@ -430,6 +472,7 @@ function listSessionSummaryProjections(opts?: {
   limit?: number;
   offset?: number;
 }): SessionSummaryProjectionRow[] {
+  if (!config.enableSessionSummaryProjections) return [];
   ensureSessionSummaryProjections();
   const db = getDb();
   const params: unknown[] = [];
@@ -517,6 +560,7 @@ function listSessionSummaryProjections(opts?: {
 function getSessionSummaryProjectionDetail(opts: {
   session_summary_id: number;
 }): SessionSummaryProjectionDetailResult | null {
+  if (!config.enableSessionSummaryProjections) return null;
   ensureSessionSummaryProjections();
   const db = getDb();
   const sessionSummary = db

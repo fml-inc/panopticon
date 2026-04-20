@@ -24,6 +24,7 @@ vi.mock("../config.js", () => {
       port: 4318,
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
+      enableSessionSummaryProjections: true,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -61,6 +62,9 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  (
+    config as { enableSessionSummaryProjections: boolean }
+  ).enableSessionSummaryProjections = true;
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
@@ -108,6 +112,30 @@ function rebuildLocalReadModels(): void {
 }
 
 describe("listSessions session summaries", () => {
+  it("leaves the legacy summary untouched when session summary projections are disabled", () => {
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "draft implementation",
+      turn_count: 4,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    getDb()
+      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
+      .run("legacy weak summary", SESSION);
+
+    (
+      config as { enableSessionSummaryProjections: boolean }
+    ).enableSessionSummaryProjections = false;
+
+    const result = listSessions({ limit: 5 });
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].sessionSummary).toBeNull();
+    expect(result.sessions[0].summary).toBe("legacy weak summary");
+  });
+
   it("replaces the weak summary text with explicit session-derived provenance", () => {
     const repo = scratchDir;
     const cwd = scratchDir;

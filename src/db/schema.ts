@@ -598,7 +598,7 @@ CREATE INDEX IF NOT EXISTS idx_code_provenance_status
  * fork detection improvements, etc.). On startup, if the DB's user_version
  * is lower than this, a full resync is triggered automatically.
  */
-export const SCANNER_DATA_VERSION = 1;
+export const SCANNER_DATA_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Database initialization
@@ -655,6 +655,9 @@ export function getDb(): Database {
 
 /** True when the DB was opened with a stale data version. */
 export function needsResync(): boolean {
+  if (!_db) {
+    getDb();
+  }
   return _needsResync;
 }
 
