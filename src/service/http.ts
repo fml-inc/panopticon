@@ -121,8 +121,10 @@ export const httpPanopticonService: PanopticonService = {
   intentForCode: (opts) => callTool("intent_for_code", toParams(opts)),
   searchIntent: (opts) => callTool("search_intent", toParams(opts)),
   outcomesForIntent: (opts) => callTool("outcomes_for_intent", toParams(opts)),
-  listWorkstreams: (opts) => callTool("workstreams", toParams(opts)),
-  workstreamDetail: (opts) => callTool("workstream_detail", toParams(opts)),
+  listSessionSummaries: (opts) =>
+    callTool("session_summaries", toParams(opts)),
+  sessionSummaryDetail: (opts) =>
+    callTool("session_summary_detail", toParams(opts)),
   whyCode: (opts) => callTool("why_code", toParams(opts)),
   recentWorkOnPath: (opts) => callTool("recent_work_on_path", toParams(opts)),
   pruneEstimate: (cutoffMs) => callExec("prune", { cutoffMs, dryRun: true }),
@@ -160,8 +162,8 @@ export const dbStats = httpPanopticonService.dbStats;
 export const intentForCode = httpPanopticonService.intentForCode;
 export const searchIntent = httpPanopticonService.searchIntent;
 export const outcomesForIntent = httpPanopticonService.outcomesForIntent;
-export const listWorkstreams = httpPanopticonService.listWorkstreams;
-export const workstreamDetail = httpPanopticonService.workstreamDetail;
+export const listSessionSummaries = httpPanopticonService.listSessionSummaries;
+export const sessionSummaryDetail = httpPanopticonService.sessionSummaryDetail;
 export const whyCode = httpPanopticonService.whyCode;
 export const recentWorkOnPath = httpPanopticonService.recentWorkOnPath;
 export const pruneEstimate = httpPanopticonService.pruneEstimate;

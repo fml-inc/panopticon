@@ -1,12 +1,12 @@
 import { getDb } from "../db/schema.js";
 import { resolveFilePathFromCwd } from "../paths.js";
-import { rebuildLocalWorkProjections } from "../workstreams/project.js";
+import { rebuildSessionSummaryProjections } from "../session_summaries/project.js";
 import { loadActiveEdits, loadActiveIntents } from "./claimViews.js";
 
 export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   intents: number;
   edits: number;
-  workstreams: number;
+  sessionSummaries: number;
   memberships: number;
   provenance: number;
 } {
@@ -189,7 +189,7 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   });
   tx();
 
-  const local = rebuildLocalWorkProjections(opts);
+  const local = rebuildSessionSummaryProjections(opts);
 
   return {
     intents: intents.size,

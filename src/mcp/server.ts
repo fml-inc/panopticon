@@ -357,8 +357,8 @@ server.tool(
 );
 
 server.tool(
-  "workstreams",
-  "List local workstreams derived from intent history. Useful for browsing active, landed, mixed, or abandoned work on this machine.",
+  "session_summaries",
+  "List session-derived summaries with provenance metadata. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
   {
     repository: z
       .string()
@@ -368,11 +368,11 @@ server.tool(
     status: z
       .enum(["active", "landed", "mixed", "abandoned"])
       .optional()
-      .describe("Filter by derived workstream status"),
+      .describe("Filter by derived session-summary status"),
     path: z
       .string()
       .optional()
-      .describe("Only return workstreams touching this file path"),
+      .describe("Only return session summaries touching this file path"),
     since: z
       .string()
       .optional()
@@ -381,7 +381,7 @@ server.tool(
     offset: z.number().optional().describe("Skip N results for pagination"),
   },
   async ({ repository, cwd, status, path, since, limit, offset }) => {
-    const result = await service.listWorkstreams({
+    const result = await service.listSessionSummaries({
       repository,
       cwd,
       status,
@@ -399,19 +399,19 @@ server.tool(
 );
 
 server.tool(
-  "workstream_detail",
-  "Get a single local workstream with its member intents and touched files.",
+  "session_summary_detail",
+  "Get the explicit session-derived summary for a single session, including member intents and touched files.",
   {
-    workstream_id: z.number().describe("ID of the workstream"),
+    session_id: z.string().describe("ID of the session"),
   },
-  async ({ workstream_id }) => {
-    const result = await service.workstreamDetail({ workstream_id });
+  async ({ session_id }) => {
+    const result = await service.sessionSummaryDetail({ session_id });
     if (!result) {
       return {
         content: [
           {
             type: "text" as const,
-            text: `No workstream found with id ${workstream_id}`,
+            text: `No session summary found for session ${session_id}`,
           },
         ],
         isError: true,
@@ -427,7 +427,7 @@ server.tool(
 
 server.tool(
   "why_code",
-  "Explain the best current local provenance for a file path and optional line: which intent/workstream most likely established the code and what evidence supports it.",
+  "Explain the best current local provenance for a file path and optional line: which intent/session-summary most likely established the code and what evidence supports it.",
   {
     path: z.string().describe("File path to explain"),
     line: z
@@ -451,7 +451,7 @@ server.tool(
 
 server.tool(
   "recent_work_on_path",
-  "Show recent local intents, edits, and workstreams that touched a file path.",
+  "Show recent local intents, edits, and session summaries that touched a file path.",
   {
     path: z.string().describe("File path to inspect"),
     repository: z

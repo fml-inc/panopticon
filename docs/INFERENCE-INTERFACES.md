@@ -11,11 +11,11 @@ reliable enough in its current form:
 - it does not expose a reusable task interface
 - it does not make fallback behavior explicit enough for future features
 
-The goal here is not to fix session summarization right now. The goal is to set
-the shape we will reuse when we come back to:
+The goal here is to set the shape we will reuse as session summaries become
+more explicit and provenance-backed, and when we later come back to:
 
 - session summaries
-- workstream titles and summaries
+- cross-session workstream titles and summaries
 - "why_code" natural-language explanations
 - classification or ranking tasks where deterministic signals exist but are not
   sufficient for a good UX by themselves
@@ -124,7 +124,7 @@ When we come back to session summaries, the right refactor order is:
 - Do not make LLM availability a correctness requirement
 - Do not hide whether a result was deterministic or inferred
 
-## How This Relates To Local Workstreams V1
+## How This Relates To Session Summaries And Code Provenance V1
 
 For the local-only workstream/code-provenance slice, LLM inference should be
 strictly optional and limited to presentation-grade enrichments:
@@ -135,8 +135,8 @@ strictly optional and limited to presentation-grade enrichments:
 
 The underlying projections should still be fully usable without any LLM:
 
-- `workstreams`
-- `intent_workstreams`
+- `session_summaries`
+- `intent_session_summaries`
 - `code_provenance`
 
 That keeps the system useful when no headless agent is installed and preserves a

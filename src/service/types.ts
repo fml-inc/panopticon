@@ -64,7 +64,7 @@ export interface OutcomesForIntentInput {
   intent_unit_id: number;
 }
 
-export interface ListWorkstreamsInput {
+export interface ListSessionSummariesInput {
   repository?: string;
   cwd?: string;
   status?: "active" | "landed" | "mixed" | "abandoned";
@@ -74,8 +74,8 @@ export interface ListWorkstreamsInput {
   offset?: number;
 }
 
-export interface WorkstreamDetailInput {
-  workstream_id: number;
+export interface SessionSummaryDetailInput {
+  session_id: string;
 }
 
 export interface WhyCodeInput {
@@ -142,8 +142,8 @@ export interface PanopticonService {
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;
   searchIntent(opts: SearchIntentInput): Promise<unknown>;
   outcomesForIntent(opts: OutcomesForIntentInput): Promise<unknown>;
-  listWorkstreams(opts?: ListWorkstreamsInput): Promise<unknown>;
-  workstreamDetail(opts: WorkstreamDetailInput): Promise<unknown>;
+  listSessionSummaries(opts?: ListSessionSummariesInput): Promise<unknown>;
+  sessionSummaryDetail(opts: SessionSummaryDetailInput): Promise<unknown>;
   whyCode(opts: WhyCodeInput): Promise<unknown>;
   recentWorkOnPath(opts: RecentWorkOnPathInput): Promise<unknown>;
   pruneEstimate(cutoffMs: number): Promise<unknown>;

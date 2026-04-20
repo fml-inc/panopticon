@@ -1,11 +1,11 @@
 import { getDb } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import { resolveFilePathFromCwd } from "../paths.js";
-import { rebuildLocalWorkProjections } from "./project.js";
+import { rebuildSessionSummaryProjections } from "./project.js";
 
-export interface WorkstreamRow {
-  workstream_id: number;
-  workstream_key: string;
+export interface SessionSummaryProjectionRow {
+  session_summary_id: number;
+  session_summary_key: string;
   title: string;
   status: "active" | "landed" | "mixed" | "abandoned";
   repository: string | null;
@@ -23,21 +23,50 @@ export interface WorkstreamRow {
   open_edit_count: number;
 }
 
-export interface WorkstreamDetailResult {
-  workstream: WorkstreamRow | null;
-  intents: Array<{
-    intent_unit_id: number;
-    prompt_text: string;
-    prompt_ts_ms: number | null;
-    session_id: string;
-    membership_kind: string;
-    score: number;
-  }>;
-  files: Array<{
-    file_path: string;
-    edit_count: number;
-    landed_count: number;
-  }>;
+export interface SessionSummaryRow {
+  session_id: string;
+  title: string;
+  status: "active" | "landed" | "mixed" | "abandoned";
+  repository: string | null;
+  cwd: string | null;
+  branch: string | null;
+  worktree: string | null;
+  actor: string | null;
+  machine: string;
+  origin_scope: string;
+  first_intent_ts_ms: number | null;
+  last_intent_ts_ms: number | null;
+  intent_count: number;
+  edit_count: number;
+  landed_edit_count: number;
+  open_edit_count: number;
+}
+
+type SessionSummaryIntentRow = {
+  intent_unit_id: number;
+  prompt_text: string;
+  prompt_ts_ms: number | null;
+  session_id: string;
+  membership_kind: string;
+  score: number;
+};
+
+type SessionSummaryFileRow = {
+  file_path: string;
+  edit_count: number;
+  landed_count: number;
+};
+
+interface SessionSummaryProjectionDetailResult {
+  session_summary: SessionSummaryProjectionRow | null;
+  intents: SessionSummaryIntentRow[];
+  files: SessionSummaryFileRow[];
+}
+
+export interface SessionSummaryDetailResult {
+  session_summary: SessionSummaryRow | null;
+  intents: SessionSummaryIntentRow[];
+  files: SessionSummaryFileRow[];
 }
 
 export interface WhyCodeResult {
@@ -47,8 +76,8 @@ export interface WhyCodeResult {
   status: "current" | "ambiguous" | "stale" | "none";
   confidence: number;
   repository: string | null;
-  workstream: {
-    workstream_id: number;
+  session_summary: {
+    session_summary_id: number;
     title: string;
     status: string;
   } | null;
@@ -79,7 +108,7 @@ export interface WhyCodeResult {
   };
   related_candidates: Array<{
     intent_unit_id: number;
-    workstream_id: number | null;
+    session_summary_id: number | null;
     reason: string;
     confidence: number;
     status: string;
@@ -90,8 +119,8 @@ export interface RecentWorkOnPathResult {
   path: string;
   repository: string | null;
   recent: Array<{
-    workstream_id: number | null;
-    workstream_title: string | null;
+    session_summary_id: number | null;
+    session_summary_title: string | null;
     intent_unit_id: number;
     prompt_text: string;
     intent_edit_id: number;
@@ -100,7 +129,7 @@ export interface RecentWorkOnPathResult {
   }>;
 }
 
-export function listWorkstreams(opts?: {
+export function listSessionSummaries(opts?: {
   repository?: string;
   cwd?: string;
   status?: "active" | "landed" | "mixed" | "abandoned";
@@ -108,157 +137,36 @@ export function listWorkstreams(opts?: {
   since?: string;
   limit?: number;
   offset?: number;
-}): WorkstreamRow[] {
-  ensureLocalWorkProjections();
-  const db = getDb();
-  const params: unknown[] = [];
-  let sql = `
-    SELECT DISTINCT w.id AS workstream_id,
-           w.workstream_key,
-           w.title,
-           w.status,
-           w.repository,
-           w.cwd,
-           w.branch,
-           w.worktree,
-           w.actor,
-           w.machine,
-           w.origin_scope,
-           w.first_intent_ts_ms,
-           w.last_intent_ts_ms,
-           w.intent_count,
-           w.edit_count,
-           w.landed_edit_count,
-           w.open_edit_count
-    FROM workstreams w`;
-
-  if (opts?.path) {
-    sql += `
-      INNER JOIN code_provenance cp
-        ON cp.workstream_id = w.id AND cp.file_path = ?`;
-    params.push(normalizeLookupPath(opts.path, opts.repository));
-  }
-
-  const where: string[] = [];
-  if (opts?.repository) {
-    where.push("w.repository = ?");
-    params.push(opts.repository);
-  }
-  if (opts?.cwd) {
-    where.push("w.cwd = ?");
-    params.push(opts.cwd);
-  }
-  if (opts?.status) {
-    where.push("w.status = ?");
-    params.push(opts.status);
-  }
-  if (opts?.since) {
-    const sinceMs = parseSince(opts.since);
-    if (sinceMs !== null) {
-      where.push("COALESCE(w.last_intent_ts_ms, 0) >= ?");
-      params.push(sinceMs);
-    }
-  }
-  if (where.length > 0) {
-    sql += ` WHERE ${where.join(" AND ")}`;
-  }
-  sql += ` ORDER BY COALESCE(w.last_intent_ts_ms, 0) DESC, w.id DESC`;
-  sql += ` LIMIT ? OFFSET ?`;
-  params.push(opts?.limit ?? 20, opts?.offset ?? 0);
-
-  return (
-    db.prepare(sql).all(...params) as Array<{
-      workstream_id: number;
-      workstream_key: string;
-      title: string;
-      status: WorkstreamRow["status"];
-      repository: string | null;
-      cwd: string | null;
-      branch: string | null;
-      worktree: string | null;
-      actor: string | null;
-      machine: string;
-      origin_scope: string;
-      first_intent_ts_ms: number | null;
-      last_intent_ts_ms: number | null;
-      intent_count: number;
-      edit_count: number;
-      landed_edit_count: number;
-      open_edit_count: number;
-    }>
-  ).map((row) => ({
-    ...row,
-    repository: emptyToNull(row.repository),
-  }));
+}): SessionSummaryRow[] {
+  return listSessionSummaryProjections(opts)
+    .map((row) => toSessionSummaryRow(row))
+    .filter((row): row is SessionSummaryRow => row !== null);
 }
 
-export function workstreamDetail(opts: {
-  workstream_id: number;
-}): WorkstreamDetailResult | null {
-  ensureLocalWorkProjections();
+export function sessionSummaryDetail(opts: {
+  session_id: string;
+}): SessionSummaryDetailResult | null {
+  ensureSessionSummaryProjections();
   const db = getDb();
   const row = db
     .prepare(
-      `SELECT id AS workstream_id,
-              workstream_key,
-              title,
-              status,
-              repository,
-              cwd,
-              branch,
-              worktree,
-              actor,
-              machine,
-              origin_scope,
-              first_intent_ts_ms,
-              last_intent_ts_ms,
-              intent_count,
-              edit_count,
-              landed_edit_count,
-              open_edit_count
-       FROM workstreams
-       WHERE id = ?`,
+      `SELECT id
+       FROM session_summaries
+       WHERE session_summary_key = ?`,
     )
-    .get(opts.workstream_id) as
-    | (Omit<WorkstreamRow, "repository"> & { repository: string | null })
+    .get(sessionSummaryKeyForSession(opts.session_id)) as
+    | { id: number }
     | undefined;
   if (!row) return null;
 
-  const intents = db
-    .prepare(
-      `SELECT u.id AS intent_unit_id,
-              u.prompt_text,
-              u.prompt_ts_ms,
-              u.session_id,
-              iw.membership_kind,
-              iw.score
-       FROM intent_workstreams iw
-       JOIN intent_units u ON u.id = iw.intent_unit_id
-       WHERE iw.workstream_id = ?
-       ORDER BY COALESCE(u.prompt_ts_ms, 0) ASC, u.id ASC`,
-    )
-    .all(opts.workstream_id) as WorkstreamDetailResult["intents"];
-
-  const files = db
-    .prepare(
-      `SELECT e.file_path,
-              COUNT(*) AS edit_count,
-              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS landed_count
-       FROM intent_workstreams iw
-       JOIN intent_edits e ON e.intent_unit_id = iw.intent_unit_id
-       WHERE iw.workstream_id = ?
-       GROUP BY e.file_path
-       ORDER BY edit_count DESC, e.file_path ASC`,
-    )
-    .all(opts.workstream_id) as WorkstreamDetailResult["files"];
-
+  const detail = getSessionSummaryProjectionDetail({
+    session_summary_id: row.id,
+  });
+  if (!detail?.session_summary) return null;
   return {
-    workstream: {
-      ...row,
-      repository: emptyToNull(row.repository),
-    },
-    intents,
-    files,
+    session_summary: toSessionSummaryRow(detail.session_summary),
+    intents: detail.intents,
+    files: detail.files,
   };
 }
 
@@ -267,7 +175,7 @@ export function whyCode(opts: {
   line?: number;
   repository?: string;
 }): WhyCodeResult {
-  ensureLocalWorkProjections();
+  ensureSessionSummaryProjections();
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const line = typeof opts.line === "number" ? opts.line : null;
@@ -282,7 +190,7 @@ export function whyCode(opts: {
               cp.symbol_name,
               cp.intent_unit_id,
               cp.intent_edit_id,
-              cp.workstream_id,
+              cp.session_summary_id,
               cp.status,
               cp.confidence,
               cp.snippet_preview,
@@ -293,12 +201,12 @@ export function whyCode(opts: {
               u.prompt_text,
               u.session_id,
               u.prompt_ts_ms,
-              w.title AS workstream_title,
-              w.status AS workstream_status
+              s.title AS session_summary_title,
+              s.status AS session_summary_status
        FROM code_provenance cp
        LEFT JOIN intent_edits e ON e.id = cp.intent_edit_id
        LEFT JOIN intent_units u ON u.id = cp.intent_unit_id
-       LEFT JOIN workstreams w ON w.id = cp.workstream_id
+       LEFT JOIN session_summaries s ON s.id = cp.session_summary_id
        WHERE cp.file_path = ?
        ORDER BY CASE cp.status
                   WHEN 'current' THEN 0
@@ -319,7 +227,7 @@ export function whyCode(opts: {
     symbol_name: string | null;
     intent_unit_id: number;
     intent_edit_id: number | null;
-    workstream_id: number | null;
+    session_summary_id: number | null;
     status: "current" | "ambiguous" | "stale";
     confidence: number;
     snippet_preview: string | null;
@@ -330,8 +238,8 @@ export function whyCode(opts: {
     prompt_text: string;
     session_id: string;
     prompt_ts_ms: number | null;
-    workstream_title: string | null;
-    workstream_status: string | null;
+    session_summary_title: string | null;
+    session_summary_status: string | null;
   }>;
 
   const history = intentForCode({ file_path: normalizedPath, limit: 10 });
@@ -357,7 +265,7 @@ export function whyCode(opts: {
       status: history.length > 0 ? "stale" : "none",
       confidence: 0,
       repository: opts.repository ?? history[0]?.repository ?? null,
-      workstream: null,
+      session_summary: null,
       intent: null,
       edit: null,
       binding: null,
@@ -375,7 +283,7 @@ export function whyCode(opts: {
     .slice(0, 5)
     .map((candidate) => ({
       intent_unit_id: candidate.intent_unit_id,
-      workstream_id: candidate.workstream_id,
+      session_summary_id: candidate.session_summary_id,
       reason:
         candidate.status === "ambiguous"
           ? "same file with ambiguous binding"
@@ -399,11 +307,12 @@ export function whyCode(opts: {
     status: preferred.status,
     confidence: preferred.confidence,
     repository: emptyToNull(preferred.repository) ?? opts.repository ?? null,
-    workstream: preferred.workstream_id
+    session_summary: preferred.session_summary_id
       ? {
-          workstream_id: preferred.workstream_id,
-          title: preferred.workstream_title ?? "untitled workstream",
-          status: preferred.workstream_status ?? "unknown",
+          session_summary_id: preferred.session_summary_id,
+          title:
+            preferred.session_summary_title ?? "untitled session summary",
+          status: preferred.session_summary_status ?? "unknown",
         }
       : null,
     intent: {
@@ -440,7 +349,7 @@ export function recentWorkOnPath(opts: {
   repository?: string;
   limit?: number;
 }): RecentWorkOnPathResult {
-  ensureLocalWorkProjections();
+  ensureSessionSummaryProjections();
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
@@ -452,12 +361,13 @@ export function recentWorkOnPath(opts: {
               e.landed_reason,
               u.id AS intent_unit_id,
               u.prompt_text,
-              w.id AS workstream_id,
-              w.title AS workstream_title
+              s.id AS session_summary_id,
+              s.title AS session_summary_title
        FROM intent_edits e
        JOIN intent_units u ON u.id = e.intent_unit_id
-       LEFT JOIN intent_workstreams iw ON iw.intent_unit_id = u.id
-       LEFT JOIN workstreams w ON w.id = iw.workstream_id
+       LEFT JOIN intent_session_summaries iss
+         ON iss.intent_unit_id = u.id
+       LEFT JOIN session_summaries s ON s.id = iss.session_summary_id
        WHERE e.file_path = ?
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
        LIMIT ?`,
@@ -469,8 +379,8 @@ export function recentWorkOnPath(opts: {
     landed_reason: string | null;
     intent_unit_id: number;
     prompt_text: string;
-    workstream_id: number | null;
-    workstream_title: string | null;
+    session_summary_id: number | null;
+    session_summary_title: string | null;
   }>;
 
   return {
@@ -478,8 +388,8 @@ export function recentWorkOnPath(opts: {
     repository:
       opts.repository ?? lookupRepositoryForPath(normalizedPath) ?? null,
     recent: rows.map((row) => ({
-      workstream_id: row.workstream_id,
-      workstream_title: row.workstream_title,
+      session_summary_id: row.session_summary_id,
+      session_summary_title: row.session_summary_title,
       intent_unit_id: row.intent_unit_id,
       prompt_text: row.prompt_text,
       intent_edit_id: row.intent_edit_id,
@@ -489,27 +399,231 @@ export function recentWorkOnPath(opts: {
   };
 }
 
-function ensureLocalWorkProjections(): void {
+export function ensureSessionSummaryProjections(): void {
   const db = getDb();
   const intentCount = (
     db.prepare(`SELECT COUNT(*) AS c FROM intent_units`).get() as { c: number }
   ).c;
   if (intentCount === 0) return;
-  const workstreamCount = (
-    db.prepare(`SELECT COUNT(*) AS c FROM workstreams`).get() as { c: number }
+
+  const sessionSummaryCount = (
+    db.prepare(`SELECT COUNT(*) AS c FROM session_summaries`).get() as {
+      c: number;
+    }
   ).c;
   const provenanceCount = (
     db.prepare(`SELECT COUNT(*) AS c FROM code_provenance`).get() as {
       c: number;
     }
   ).c;
-  if (workstreamCount === 0 || provenanceCount === 0) {
-    rebuildLocalWorkProjections();
+  if (sessionSummaryCount === 0 || provenanceCount === 0) {
+    rebuildSessionSummaryProjections();
   }
+}
+
+function listSessionSummaryProjections(opts?: {
+  repository?: string;
+  cwd?: string;
+  status?: "active" | "landed" | "mixed" | "abandoned";
+  path?: string;
+  since?: string;
+  limit?: number;
+  offset?: number;
+}): SessionSummaryProjectionRow[] {
+  ensureSessionSummaryProjections();
+  const db = getDb();
+  const params: unknown[] = [];
+  let sql = `
+    SELECT DISTINCT s.id AS session_summary_id,
+           s.session_summary_key,
+           s.title,
+           s.status,
+           s.repository,
+           s.cwd,
+           s.branch,
+           s.worktree,
+           s.actor,
+           s.machine,
+           s.origin_scope,
+           s.first_intent_ts_ms,
+           s.last_intent_ts_ms,
+           s.intent_count,
+           s.edit_count,
+           s.landed_edit_count,
+           s.open_edit_count
+    FROM session_summaries s`;
+
+  if (opts?.path) {
+    sql += `
+      INNER JOIN code_provenance cp
+        ON cp.session_summary_id = s.id AND cp.file_path = ?`;
+    params.push(normalizeLookupPath(opts.path, opts.repository));
+  }
+
+  const where: string[] = [];
+  if (opts?.repository) {
+    where.push("s.repository = ?");
+    params.push(opts.repository);
+  }
+  if (opts?.cwd) {
+    where.push("s.cwd = ?");
+    params.push(opts.cwd);
+  }
+  if (opts?.status) {
+    where.push("s.status = ?");
+    params.push(opts.status);
+  }
+  if (opts?.since) {
+    const sinceMs = parseSince(opts.since);
+    if (sinceMs !== null) {
+      where.push("COALESCE(s.last_intent_ts_ms, 0) >= ?");
+      params.push(sinceMs);
+    }
+  }
+  if (where.length > 0) {
+    sql += ` WHERE ${where.join(" AND ")}`;
+  }
+
+  sql += ` ORDER BY COALESCE(s.last_intent_ts_ms, 0) DESC, s.id DESC`;
+  sql += ` LIMIT ? OFFSET ?`;
+  params.push(opts?.limit ?? 20, opts?.offset ?? 0);
+
+  return (
+    db.prepare(sql).all(...params) as Array<{
+      session_summary_id: number;
+      session_summary_key: string;
+      title: string;
+      status: SessionSummaryProjectionRow["status"];
+      repository: string | null;
+      cwd: string | null;
+      branch: string | null;
+      worktree: string | null;
+      actor: string | null;
+      machine: string;
+      origin_scope: string;
+      first_intent_ts_ms: number | null;
+      last_intent_ts_ms: number | null;
+      intent_count: number;
+      edit_count: number;
+      landed_edit_count: number;
+      open_edit_count: number;
+    }>
+  ).map((row) => ({
+    ...row,
+    repository: emptyToNull(row.repository),
+  }));
+}
+
+function getSessionSummaryProjectionDetail(opts: {
+  session_summary_id: number;
+}): SessionSummaryProjectionDetailResult | null {
+  ensureSessionSummaryProjections();
+  const db = getDb();
+  const sessionSummary = db
+    .prepare(
+      `SELECT id AS session_summary_id,
+              session_summary_key,
+              title,
+              status,
+              repository,
+              cwd,
+              branch,
+              worktree,
+              actor,
+              machine,
+              origin_scope,
+              first_intent_ts_ms,
+              last_intent_ts_ms,
+              intent_count,
+              edit_count,
+              landed_edit_count,
+              open_edit_count
+       FROM session_summaries
+       WHERE id = ?`,
+    )
+    .get(opts.session_summary_id) as
+    | (Omit<SessionSummaryProjectionRow, "repository"> & {
+        repository: string | null;
+      })
+    | undefined;
+  if (!sessionSummary) return null;
+
+  const intents = db
+    .prepare(
+      `SELECT u.id AS intent_unit_id,
+              u.prompt_text,
+              u.prompt_ts_ms,
+              u.session_id,
+              iss.membership_kind,
+              iss.score
+       FROM intent_session_summaries iss
+       JOIN intent_units u ON u.id = iss.intent_unit_id
+       WHERE iss.session_summary_id = ?
+       ORDER BY COALESCE(u.prompt_ts_ms, 0) ASC, u.id ASC`,
+    )
+    .all(opts.session_summary_id) as SessionSummaryIntentRow[];
+
+  const files = db
+    .prepare(
+      `SELECT e.file_path,
+              COUNT(*) AS edit_count,
+              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS landed_count
+       FROM intent_session_summaries iss
+       JOIN intent_edits e ON e.intent_unit_id = iss.intent_unit_id
+       WHERE iss.session_summary_id = ?
+       GROUP BY e.file_path
+       ORDER BY edit_count DESC, e.file_path ASC`,
+    )
+    .all(opts.session_summary_id) as SessionSummaryFileRow[];
+
+  return {
+    session_summary: {
+      ...sessionSummary,
+      repository: emptyToNull(sessionSummary.repository),
+    },
+    intents,
+    files,
+  };
 }
 
 function normalizeLookupPath(filePath: string, repository?: string): string {
   return resolveFilePathFromCwd(filePath, repository ?? null);
+}
+
+function toSessionSummaryRow(
+  row: SessionSummaryProjectionRow,
+): SessionSummaryRow | null {
+  const sessionId = parseSessionIdFromSummaryKey(row.session_summary_key);
+  if (!sessionId) return null;
+  return {
+    session_id: sessionId,
+    title: row.title,
+    status: row.status,
+    repository: row.repository,
+    cwd: row.cwd,
+    branch: row.branch,
+    worktree: row.worktree,
+    actor: row.actor,
+    machine: row.machine,
+    origin_scope: row.origin_scope,
+    first_intent_ts_ms: row.first_intent_ts_ms,
+    last_intent_ts_ms: row.last_intent_ts_ms,
+    intent_count: row.intent_count,
+    edit_count: row.edit_count,
+    landed_edit_count: row.landed_edit_count,
+    open_edit_count: row.open_edit_count,
+  };
+}
+
+export function sessionSummaryKeyForSession(sessionId: string): string {
+  return `ss:local:${sessionId}`;
+}
+
+function parseSessionIdFromSummaryKey(key: string): string | null {
+  const prefix = "ss:local:";
+  if (!key.startsWith(prefix)) return null;
+  const sessionId = key.slice(prefix.length);
+  return sessionId.length > 0 ? sessionId : null;
 }
 
 function lookupRepositoryForPath(filePath: string): string | null {

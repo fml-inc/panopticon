@@ -385,11 +385,11 @@ CREATE TABLE IF NOT EXISTS intent_edits (
   landed_reason TEXT
 );
 
--- ── Local workstream projections ───────────────────────────────────────────
+-- ── Local session-summary projections ──────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS workstreams (
+CREATE TABLE IF NOT EXISTS session_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  workstream_key TEXT NOT NULL UNIQUE,
+  session_summary_key TEXT NOT NULL UNIQUE,
   repository TEXT,
   cwd TEXT,
   branch TEXT,
@@ -409,14 +409,14 @@ CREATE TABLE IF NOT EXISTS workstreams (
   reason_json TEXT
 );
 
-CREATE TABLE IF NOT EXISTS intent_workstreams (
+CREATE TABLE IF NOT EXISTS intent_session_summaries (
   intent_unit_id INTEGER NOT NULL,
-  workstream_id INTEGER NOT NULL,
+  session_summary_id INTEGER NOT NULL,
   membership_kind TEXT NOT NULL,
   source TEXT NOT NULL,
   score REAL NOT NULL DEFAULT 1.0,
   reason_json TEXT,
-  UNIQUE(intent_unit_id, workstream_id)
+  UNIQUE(intent_unit_id, session_summary_id)
 );
 
 CREATE TABLE IF NOT EXISTS code_provenance (
@@ -436,7 +436,7 @@ CREATE TABLE IF NOT EXISTS code_provenance (
   origin_scope TEXT NOT NULL DEFAULT 'local',
   intent_unit_id INTEGER NOT NULL,
   intent_edit_id INTEGER,
-  workstream_id INTEGER,
+  session_summary_id INTEGER,
   status TEXT NOT NULL,
   confidence REAL NOT NULL DEFAULT 1.0,
   file_hash TEXT,
@@ -569,22 +569,22 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_unit ON intent_edits(intent_unit_id)
 CREATE INDEX IF NOT EXISTS idx_intent_edits_session ON intent_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 
--- workstreams
-CREATE INDEX IF NOT EXISTS idx_workstreams_repo ON workstreams(repository);
-CREATE INDEX IF NOT EXISTS idx_workstreams_status ON workstreams(status);
-CREATE INDEX IF NOT EXISTS idx_workstreams_last_ts ON workstreams(last_intent_ts_ms);
+-- session_summaries
+CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
 
--- intent_workstreams
-CREATE INDEX IF NOT EXISTS idx_intent_workstreams_intent
-  ON intent_workstreams(intent_unit_id);
-CREATE INDEX IF NOT EXISTS idx_intent_workstreams_workstream
-  ON intent_workstreams(workstream_id);
+-- intent_session_summaries
+CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
+  ON intent_session_summaries(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_session_summary
+  ON intent_session_summaries(session_summary_id);
 
 -- code_provenance
 CREATE INDEX IF NOT EXISTS idx_code_provenance_repo_file
   ON code_provenance(repository, file_path);
-CREATE INDEX IF NOT EXISTS idx_code_provenance_workstream
-  ON code_provenance(workstream_id);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_session_summary
+  ON code_provenance(session_summary_id);
 CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
   ON code_provenance(intent_unit_id);
 CREATE INDEX IF NOT EXISTS idx_code_provenance_status

@@ -1,17 +1,18 @@
-# Local Workstreams And Code Provenance V1
+# Session Summaries And Code Provenance V1
 
 This document proposes the next read-model layer on top of panopticon's
 existing `claims -> intent_units / intent_edits` pipeline.
 
-The goal of this slice is deliberately narrow:
+The current implementation scope is deliberately narrow:
 
 - answer "why is this code here?" for local work
-- answer "what larger local workstream was this intent part of?"
+- replace weak per-session summary text with an explicit session-derived summary
 - preserve the historical trail needed to later support real-time coordination
 - avoid committing to a team-wide or lease-based coordination model yet
 
-This is a local-first proposal. It should still carry enough identity to widen
-later to multi-agent shared-workspace coordination and multi-machine/team scope.
+This is a local-first proposal. The current branch does not yet implement
+cross-session workstream grouping. It uses one derived summary row per session
+and leaves true multi-session session_summaries as a follow-on layer.
 
 ## Non-goals
 
@@ -41,9 +42,9 @@ existing data plus current file state on disk.
 V1 is meant to answer:
 
 1. Why is this code here?
-2. What local workstream does this intent belong to?
+2. What explicit session summary does this intent belong to?
 3. What recently touched this path?
-4. What workstreams are active, landed, mixed, or abandoned on this machine?
+4. What session summaries are active, landed, mixed, or abandoned on this machine?
 
 ## Addressability Model
 
@@ -60,14 +61,14 @@ file-level explanations when not.
 
 Suggested migration name:
 
-- `add_local_workstreams_and_code_provenance`
+- `add_local_session_summaries_and_code_provenance`
 
 Suggested SQL:
 
 ```sql
-CREATE TABLE IF NOT EXISTS workstreams (
+CREATE TABLE IF NOT EXISTS session_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  workstream_key TEXT NOT NULL UNIQUE,
+  session_summary_key TEXT NOT NULL UNIQUE,
   repository TEXT,
   cwd TEXT,
   branch TEXT,
@@ -87,14 +88,14 @@ CREATE TABLE IF NOT EXISTS workstreams (
   reason_json TEXT
 );
 
-CREATE TABLE IF NOT EXISTS intent_workstreams (
+CREATE TABLE IF NOT EXISTS intent_session_summaries (
   intent_unit_id INTEGER NOT NULL,
-  workstream_id INTEGER NOT NULL,
+  session_summary_id INTEGER NOT NULL,
   membership_kind TEXT NOT NULL, -- primary | related
   source TEXT NOT NULL,          -- heuristic | claim
   score REAL NOT NULL DEFAULT 1.0,
   reason_json TEXT,
-  UNIQUE(intent_unit_id, workstream_id)
+  UNIQUE(intent_unit_id, session_summary_id)
 );
 
 CREATE TABLE IF NOT EXISTS code_provenance (
@@ -114,7 +115,7 @@ CREATE TABLE IF NOT EXISTS code_provenance (
   origin_scope TEXT NOT NULL DEFAULT 'local',
   intent_unit_id INTEGER NOT NULL,
   intent_edit_id INTEGER,
-  workstream_id INTEGER,
+  session_summary_id INTEGER,
   status TEXT NOT NULL, -- current | ambiguous | stale
   confidence REAL NOT NULL DEFAULT 1.0,
   file_hash TEXT,
@@ -122,22 +123,22 @@ CREATE TABLE IF NOT EXISTS code_provenance (
   verified_at_ms INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_workstreams_repo
-  ON workstreams(repository);
-CREATE INDEX IF NOT EXISTS idx_workstreams_status
-  ON workstreams(status);
-CREATE INDEX IF NOT EXISTS idx_workstreams_last_ts
-  ON workstreams(last_intent_ts_ms);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_repo
+  ON session_summaries(repository);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_status
+  ON session_summaries(status);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts
+  ON session_summaries(last_intent_ts_ms);
 
-CREATE INDEX IF NOT EXISTS idx_intent_workstreams_intent
-  ON intent_workstreams(intent_unit_id);
-CREATE INDEX IF NOT EXISTS idx_intent_workstreams_workstream
-  ON intent_workstreams(workstream_id);
+CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
+  ON intent_session_summaries(intent_unit_id);
+CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_session_summary
+  ON intent_session_summaries(session_summary_id);
 
 CREATE INDEX IF NOT EXISTS idx_code_provenance_repo_file
   ON code_provenance(repository, file_path);
-CREATE INDEX IF NOT EXISTS idx_code_provenance_workstream
-  ON code_provenance(workstream_id);
+CREATE INDEX IF NOT EXISTS idx_code_provenance_session_summary
+  ON code_provenance(session_summary_id);
 CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
   ON code_provenance(intent_unit_id);
 CREATE INDEX IF NOT EXISTS idx_code_provenance_status
@@ -146,9 +147,9 @@ CREATE INDEX IF NOT EXISTS idx_code_provenance_status
 
 ## Projection Semantics
 
-### `workstreams`
+### `session_summaries`
 
-`workstreams` groups prompt-level intents into a larger local work object.
+`session_summaries` groups prompt-level intents into a larger local work object.
 
 V1 grouping should be heuristic and conservative:
 
@@ -177,9 +178,9 @@ V1 status derivation:
 - `mixed`: some landed, some churned/reverted, no open edits remain
 - `abandoned`: no landed edits and no open edits remain
 
-### `intent_workstreams`
+### `intent_session_summaries`
 
-`intent_workstreams` keeps workstream grouping explorable and auditable.
+`intent_session_summaries` keeps workstream grouping explorable and auditable.
 
 It should preserve:
 
@@ -205,7 +206,7 @@ V1 binding rules:
 - if a once-valid row no longer binds cleanly, mark it `stale`
 
 `code_provenance` is not a history table. It is the current best explanation
-layer. Historical browsing still comes from `intent_edits` and `workstreams`.
+layer. Historical browsing still comes from `intent_edits` and `session_summaries`.
 
 ## Proposed Service Types
 
@@ -223,7 +224,7 @@ export interface ListWorkstreamsInput {
 }
 
 export interface WorkstreamDetailInput {
-  workstream_id: number;
+  session_summary_id: number;
 }
 
 export interface WhyCodeInput {
@@ -253,7 +254,7 @@ Add to `PanopticonService`:
 Add to `src/service/transport.ts`:
 
 ```ts
-  workstreams: (service, params) =>
+  session_summaries: (service, params) =>
     service.listWorkstreams(asType<ListWorkstreamsInput>(params)),
   workstream_detail: (service, params) =>
     service.workstreamDetail(asType<WorkstreamDetailInput>(params)),
@@ -273,13 +274,13 @@ Panopticon's current HTTP surface is transport-based:
 
 V1 should fit that shape directly.
 
-### `workstreams`
+### `session_summaries`
 
 Request:
 
 ```json
 {
-  "name": "workstreams",
+  "name": "session_summaries",
   "params": {
     "repository": "/Users/gus/workspace/panopticon",
     "status": "active",
@@ -293,8 +294,8 @@ Response:
 ```json
 [
   {
-    "workstream_id": 17,
-    "workstream_key": "ws:local:/Users/gus/workspace/panopticon:17",
+    "session_summary_id": 17,
+    "session_summary_key": "ws:local:/Users/gus/workspace/panopticon:17",
     "title": "service layer and path hardening",
     "status": "landed",
     "repository": "/Users/gus/workspace/panopticon",
@@ -322,7 +323,7 @@ Request:
 {
   "name": "workstream_detail",
   "params": {
-    "workstream_id": 17
+    "session_summary_id": 17
   }
 }
 ```
@@ -332,7 +333,7 @@ Response:
 ```json
 {
   "workstream": {
-    "workstream_id": 17,
+    "session_summary_id": 17,
     "title": "service layer and path hardening",
     "status": "landed",
     "repository": "/Users/gus/workspace/panopticon",
@@ -393,7 +394,7 @@ Response:
   "confidence": 0.91,
   "repository": "/Users/gus/workspace/panopticon",
   "workstream": {
-    "workstream_id": 17,
+    "session_summary_id": 17,
     "title": "service layer and path hardening",
     "status": "landed"
   },
@@ -475,7 +476,7 @@ Response:
   "repository": "/Users/gus/workspace/panopticon",
   "recent": [
     {
-      "workstream_id": 17,
+      "session_summary_id": 17,
       "workstream_title": "service layer and path hardening",
       "intent_unit_id": 301,
       "prompt_text": "move tool dispatch into shared transport",
@@ -484,7 +485,7 @@ Response:
       "status": "current"
     },
     {
-      "workstream_id": 16,
+      "session_summary_id": 16,
       "workstream_title": "claims-backed intent projection clean cutover",
       "intent_unit_id": 288,
       "intent_edit_id": 790,
@@ -499,7 +500,7 @@ Response:
 
 ### `listWorkstreams`
 
-Backed by direct reads from `workstreams`, optionally filtered by:
+Backed by direct reads from `session_summaries`, optionally filtered by:
 
 - `repository`
 - `cwd`
@@ -509,14 +510,14 @@ Backed by direct reads from `workstreams`, optionally filtered by:
 When `path` is provided:
 
 - join through `code_provenance` or, before that projection is complete,
-  derive from `intent_edits -> intent_workstreams`
+  derive from `intent_edits -> intent_session_summaries`
 
 ### `workstreamDetail`
 
 Return:
 
-- one row from `workstreams`
-- member intents from `intent_workstreams + intent_units`
+- one row from `session_summaries`
+- member intents from `intent_session_summaries + intent_units`
 - touched files aggregated from `intent_edits`
 
 ### `whyCode`
@@ -534,8 +535,8 @@ This fallback allows the tool to ship before span binding is perfect.
 Return chronological local history for a file using:
 
 - `intent_edits`
-- joined `intent_workstreams`
-- joined `workstreams`
+- joined `intent_session_summaries`
+- joined `session_summaries`
 
 This is historical, not only current-state provenance.
 
@@ -547,8 +548,8 @@ Suggested exec command later:
 
 It should:
 
-1. rebuild `workstreams`
-2. rebuild `intent_workstreams`
+1. rebuild `session_summaries`
+2. rebuild `intent_session_summaries`
 3. rebuild `code_provenance`
 
 Session-scoped rebuild support can wait until the grouping logic is stable.
@@ -559,7 +560,7 @@ Implementation should not be considered ready until these pass:
 
 1. single local intent with one landed edit
 2. multiple intents grouped into one workstream by shared files and time
-3. two workstreams touching the same file at different times
+3. two session_summaries touching the same file at different times
 4. overwritten edit in the same session
 5. reverted edit after session close
 6. duplicate snippet causing an `ambiguous` answer

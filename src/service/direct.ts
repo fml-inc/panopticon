@@ -36,11 +36,11 @@ import {
   writeWatermark,
 } from "../sync/watermark.js";
 import {
-  listWorkstreams,
+  listSessionSummaries,
   recentWorkOnPath,
+  sessionSummaryDetail,
   whyCode,
-  workstreamDetail,
-} from "../workstreams/query.js";
+} from "../session_summaries/query.js";
 import type {
   PanopticonService,
   PruneExecuteInput,
@@ -91,11 +91,11 @@ export function createDirectPanopticonService(): PanopticonService {
     async outcomesForIntent(opts) {
       return outcomesForIntent(opts);
     },
-    async listWorkstreams(opts) {
-      return listWorkstreams(opts);
+    async listSessionSummaries(opts) {
+      return listSessionSummaries(opts);
     },
-    async workstreamDetail(opts) {
-      return workstreamDetail(opts);
+    async sessionSummaryDetail(opts) {
+      return sessionSummaryDetail(opts);
     },
     async whyCode(opts) {
       return whyCode(opts);

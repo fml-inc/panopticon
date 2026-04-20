@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
 
-const WORKSTREAM_SOURCE = "heuristic";
+const MEMBERSHIP_SOURCE = "heuristic";
 const ORIGIN_SCOPE = "local";
 const STATUS_ACTIVE = "active";
 const STATUS_LANDED = "landed";
@@ -39,31 +39,35 @@ interface FileSnapshot {
   hash: string;
 }
 
-export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
-  workstreams: number;
+export function rebuildSessionSummaryProjections(opts?: {
+  sessionId?: string;
+}): {
+  sessionSummaries: number;
   memberships: number;
   provenance: number;
 } {
   const db = getDb();
   const tx = db.transaction(() => {
     if (opts?.sessionId) {
-      const key = workstreamKey(opts.sessionId);
+      const key = sessionSummaryKey(opts.sessionId);
       const row = db
-        .prepare(`SELECT id FROM workstreams WHERE workstream_key = ?`)
+        .prepare(
+          `SELECT id FROM session_summaries WHERE session_summary_key = ?`,
+        )
         .get(key) as { id: number } | undefined;
       if (row) {
-        db.prepare(`DELETE FROM code_provenance WHERE workstream_id = ?`).run(
+        db.prepare(`DELETE FROM code_provenance WHERE session_summary_id = ?`).run(
           row.id,
         );
         db.prepare(
-          `DELETE FROM intent_workstreams WHERE workstream_id = ?`,
+          `DELETE FROM intent_session_summaries WHERE session_summary_id = ?`,
         ).run(row.id);
-        db.prepare(`DELETE FROM workstreams WHERE id = ?`).run(row.id);
+        db.prepare(`DELETE FROM session_summaries WHERE id = ?`).run(row.id);
       }
     } else {
       db.prepare(`DELETE FROM code_provenance`).run();
-      db.prepare(`DELETE FROM intent_workstreams`).run();
-      db.prepare(`DELETE FROM workstreams`).run();
+      db.prepare(`DELETE FROM intent_session_summaries`).run();
+      db.prepare(`DELETE FROM session_summaries`).run();
     }
 
     const sessionRows = db
@@ -77,17 +81,17 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
       session_id: string;
     }>;
 
-    const workstreamStmt = db.prepare(
-      `INSERT INTO workstreams
-       (workstream_key, repository, cwd, branch, worktree, actor, machine,
+    const sessionSummaryStmt = db.prepare(
+      `INSERT INTO session_summaries
+       (session_summary_key, repository, cwd, branch, worktree, actor, machine,
         origin_scope, title, status, first_intent_ts_ms, last_intent_ts_ms,
         intent_count, edit_count, landed_edit_count, open_edit_count,
         reconciled_at_ms, reason_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const membershipStmt = db.prepare(
-      `INSERT INTO intent_workstreams
-       (intent_unit_id, workstream_id, membership_kind, source, score, reason_json)
+      `INSERT INTO intent_session_summaries
+       (intent_unit_id, session_summary_id, membership_kind, source, score, reason_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const provenanceStmt = db.prepare(
@@ -95,12 +99,12 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
        (repository, file_path, binding_level, start_line, end_line,
         snippet_hash, snippet_preview, language, symbol_kind, symbol_name,
         actor, machine, origin_scope, intent_unit_id, intent_edit_id,
-        workstream_id, status, confidence, file_hash, established_at_ms,
+        session_summary_id, status, confidence, file_hash, established_at_ms,
         verified_at_ms)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    let workstreams = 0;
+    let sessionSummaries = 0;
     let memberships = 0;
     let provenance = 0;
 
@@ -188,8 +192,8 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
         null;
       const title = buildTitle(intents[0]?.prompt_text ?? "");
 
-      workstreamStmt.run(
-        workstreamKey(session.session_id),
+      sessionSummaryStmt.run(
+        sessionSummaryKey(session.session_id),
         repository,
         cwd,
         repoMeta?.branch ?? null,
@@ -208,19 +212,17 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
         reconciledAtMs,
         JSON.stringify({ strategy: "session_id" }),
       );
-      const workstreamRow = db
+      const sessionSummaryRow = db
         .prepare(`SELECT last_insert_rowid() AS id`)
-        .get() as {
-        id: number;
-      };
-      workstreams += 1;
+        .get() as { id: number };
+      sessionSummaries += 1;
 
       for (const intent of intents) {
         membershipStmt.run(
           intent.intent_unit_id,
-          workstreamRow.id,
+          sessionSummaryRow.id,
           "primary",
-          WORKSTREAM_SOURCE,
+          MEMBERSHIP_SOURCE,
           1,
           JSON.stringify({ strategy: "session_id" }),
         );
@@ -230,9 +232,7 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
       const fileCache = new Map<string, FileSnapshot | null>();
       for (const edit of edits) {
         const snapshot = readFileSnapshot(edit.file_path, fileCache);
-        if (!snapshot) {
-          if (edit.landed !== 0) continue;
-        }
+        if (!snapshot && edit.landed !== 0) continue;
 
         const snippet = cleanSnippet(edit.new_string_snippet);
         let bindingLevel: "file" | "span" = "file";
@@ -282,7 +282,7 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
           ORIGIN_SCOPE,
           edit.intent_unit_id,
           edit.intent_edit_id,
-          workstreamRow.id,
+          sessionSummaryRow.id,
           statusValue,
           confidence,
           snapshot?.hash ?? null,
@@ -293,14 +293,14 @@ export function rebuildLocalWorkProjections(opts?: { sessionId?: string }): {
       }
     }
 
-    return { workstreams, memberships, provenance };
+    return { sessionSummaries, memberships, provenance };
   });
 
   return tx();
 }
 
-function workstreamKey(sessionId: string): string {
-  return `ws:local:${sessionId}`;
+export function sessionSummaryKey(sessionId: string): string {
+  return `ss:local:${sessionId}`;
 }
 
 function minTs(values: Array<number | null | undefined>): number | null {
@@ -319,7 +319,7 @@ function maxTs(values: Array<number | null | undefined>): number | null {
 
 function buildTitle(promptText: string): string {
   const compact = promptText.replace(/\s+/g, " ").trim();
-  if (!compact) return "untitled workstream";
+  if (!compact) return "untitled session summary";
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
 }
 
@@ -346,29 +346,28 @@ function readFileSnapshot(
 
 function cleanSnippet(snippet: string | null): string | null {
   if (!snippet) return null;
-  const trimmed = snippet.trim();
+  const trimmed = snippet.replace(/\r\n/g, "\n").trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
 function findMatches(
   haystack: string,
   needle: string,
-  maxMatches: number,
+  limit: number,
 ): Array<{ startIndex: number }> {
   const matches: Array<{ startIndex: number }> = [];
-  let start = 0;
-  while (start <= haystack.length) {
-    const idx = haystack.indexOf(needle, start);
-    if (idx === -1) break;
-    matches.push({ startIndex: idx });
-    if (matches.length >= maxMatches) break;
-    start = idx + needle.length;
+  let from = 0;
+  while (matches.length < limit) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) break;
+    matches.push({ startIndex: index });
+    from = index + Math.max(needle.length, 1);
   }
   return matches;
 }
 
-function lineNumberAt(text: string, byteOffset: number): number {
-  return text.slice(0, byteOffset).split("\n").length;
+function lineNumberAt(text: string, offset: number): number {
+  return text.slice(0, offset).split("\n").length;
 }
 
 function countNewlines(text: string): number {
@@ -386,17 +385,28 @@ function inferLanguage(filePath: string): string | null {
       return "javascript";
     case "py":
       return "python";
+    case "rb":
+      return "ruby";
     case "go":
       return "go";
     case "rs":
       return "rust";
-    case "json":
-      return "json";
+    case "java":
+      return "java";
+    case "kt":
+      return "kotlin";
+    case "swift":
+      return "swift";
+    case "sh":
+      return "shell";
     case "md":
       return "markdown";
-    case "sql":
-      return "sql";
+    case "json":
+      return "json";
+    case "yml":
+    case "yaml":
+      return "yaml";
     default:
-      return null;
+      return ext ?? null;
   }
 }

@@ -15,7 +15,7 @@ vi.mock("../config.js", () => {
   const _os = require("node:os");
   const _path = require("node:path");
   const _fs = require("node:fs");
-  const tmpDir = _path.join(_os.tmpdir(), "pano-workstreams-test");
+  const tmpDir = _path.join(_os.tmpdir(), "pano-session_summaries-test");
   _fs.mkdirSync(tmpDir, { recursive: true });
   return {
     config: {
@@ -41,20 +41,20 @@ import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js"
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import {
-  listWorkstreams,
+  listSessionSummaries,
   recentWorkOnPath,
+  sessionSummaryDetail,
   whyCode,
-  workstreamDetail,
 } from "./query.js";
 
-const SESSION = "test-session-workstream";
+const SESSION = "test-session-summary";
 let scratchDir: string;
 
 beforeAll(() => {
   fs.rmSync(config.dataDir, { recursive: true, force: true });
   fs.mkdirSync(config.dataDir, { recursive: true });
   getDb();
-  scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-workstreams-"));
+  scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-session_summaries-"));
 });
 
 afterAll(() => {
@@ -65,8 +65,8 @@ afterAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
-  db.prepare("DELETE FROM intent_workstreams").run();
-  db.prepare("DELETE FROM workstreams").run();
+  db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM active_claims").run();
   db.prepare("DELETE FROM claims").run();
@@ -109,11 +109,11 @@ function rebuildLocalReadModels(): void {
   rebuildIntentProjection({ sessionId: SESSION });
 }
 
-describe("workstreams", () => {
-  it("groups intents from one session into a single local workstream", () => {
+describe("session_summaries", () => {
+  it("groups intents from one session into a single session summary", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
-    const file = path.join(scratchDir, "workstream.ts");
+    const file = path.join(scratchDir, "session-summary.ts");
     fs.writeFileSync(file, "latest implementation");
 
     upsertSessionRepository(
@@ -179,20 +179,21 @@ describe("workstreams", () => {
 
     rebuildLocalReadModels();
 
-    const rows = listWorkstreams({ repository: repo });
+    const rows = listSessionSummaries({ repository: repo });
     expect(rows).toHaveLength(1);
+    expect(rows[0].session_id).toBe(SESSION);
     expect(rows[0].title).toContain("draft implementation");
     expect(rows[0].intent_count).toBe(2);
     expect(rows[0].status).toBe("mixed");
 
-    const detail = workstreamDetail({ workstream_id: rows[0].workstream_id });
+    const detail = sessionSummaryDetail({ session_id: SESSION });
     expect(detail?.intents).toHaveLength(2);
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
   });
 
-  it("deduplicates path-filtered workstream results", () => {
+  it("deduplicates path-filtered session summary results", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
     const file = path.join(scratchDir, "dedupe.ts");
@@ -261,9 +262,90 @@ describe("workstreams", () => {
 
     rebuildLocalReadModels();
 
-    const rows = listWorkstreams({ path: file });
+    const rows = listSessionSummaries({ path: file });
     expect(rows).toHaveLength(1);
     expect(rows[0].repository).toBe(repo);
+  });
+
+  it("exposes explicit session summary detail by session id", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "session-summary.ts");
+    fs.writeFileSync(file, "final implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "draft implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "finish implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "final implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const summaries = listSessionSummaries({ repository: repo });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].session_id).toBe(SESSION);
+    expect(summaries[0].title).toContain("draft implementation");
+
+    const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.session_id).toBe(SESSION);
+    expect(detail?.files).toEqual([
+      { file_path: file, edit_count: 2, landed_count: 1 },
+    ]);
   });
 });
 
@@ -322,7 +404,7 @@ describe("why_code", () => {
 });
 
 describe("recent_work_on_path", () => {
-  it("returns recent local history with workstream context", () => {
+  it("returns recent local history with session summary context", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
     const file = path.join(scratchDir, "history.ts");
@@ -388,7 +470,7 @@ describe("recent_work_on_path", () => {
     expect(result.recent[0].status).toBe("current");
     expect(result.recent[1].prompt_text).toBe("old state");
     expect(result.recent[1].status).toBe("reverted");
-    expect(result.recent[0].workstream_title).toBeTruthy();
+    expect(result.recent[0].session_summary_title).toBeTruthy();
     expect(result.repository).toBe(repo);
   });
 });
