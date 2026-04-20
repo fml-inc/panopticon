@@ -108,8 +108,11 @@ jobs:
         run: |
           docker compose -f examples/pi/docker-compose.yml exec -T pi bash -c '
             npm install -g @mariozechner/pi-coding-agent || true
-            mkdir -p /app/extensions || true
-            ls /opt/panopticon/dist/targets/pi/ 2>/dev/null || echo "Extension not found in container"
+            # Pi discovers extensions from <cwd>/.pi/extensions/ (project-local)
+            # and ~/.pi/agent/extensions/ (global)
+            mkdir -p /workspace/.pi/extensions
+            cp /opt/panopticon/dist/targets/pi/extension.js /workspace/.pi/extensions/panopticon.js
+            ls -la /workspace/.pi/extensions/ || echo "Extension not found"
           '
 
       - name: Run test prompt
@@ -119,7 +122,7 @@ jobs:
         run: |
           # Run a simple test prompt non-interactively
           docker compose -f examples/pi/docker-compose.yml exec -T -e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" pi bash -c '
-            PI_EXTENSIONS_DIR=/app/extensions \
+            PANOPTICON_HOST=panopticon \
               timeout 60 pi --mode print "Say hello and list files" 2>&1 || true
             sleep 2
           ' || true
