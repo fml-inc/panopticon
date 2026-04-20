@@ -27,6 +27,7 @@ import {
   permissionsPreview,
   permissionsShow,
 } from "./mcp/permissions.js";
+import { readScannerStatus } from "./scanner/status.js";
 import { httpPanopticonService } from "./service/http.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
@@ -178,6 +179,41 @@ function tailLines(filePath: string, n: number): string[] {
     return lines.slice(-n);
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+function formatElapsedMs(ms: number): string {
+  if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+function describeScannerPhase(phase: string): string {
+  switch (phase) {
+    case "startup_scan":
+      return "running startup scan";
+    case "startup_process":
+      return "processing startup updates";
+    case "incremental_scan":
+      return "scanning session files";
+    case "incremental_process":
+      return "processing touched sessions";
+    case "reparse_init":
+      return "initializing reparse";
+    case "reparse_scan":
+      return "scanning raw files";
+    case "reparse_process":
+      return "processing touched sessions";
+    case "reparse_copy":
+      return "copying preserved data";
+    case "reparse_derive":
+      return "rebuilding derived state";
+    case "reparse_finalize":
+      return "finalizing reparse";
+    case "reparse_error":
+      return "reparse error";
+    default:
+      return phase;
   }
 }
 
@@ -901,6 +937,13 @@ program
   .description("Show server status and database stats")
   .action(async () => {
     const server = isProcessRunning(config.serverPidFile);
+    const activeScannerStatus =
+      server.running && server.pid != null
+        ? (() => {
+            const status = readScannerStatus();
+            return status && status.pid === server.pid ? status : null;
+          })()
+        : null;
 
     console.log("Panopticon Status");
     console.log("=================");
@@ -909,6 +952,54 @@ program
       `Server: ${server.running ? `running (PID ${server.pid}, port ${config.port})` : "stopped"}`,
     );
     console.log(`Database: ${config.dbPath}`);
+
+    if (activeScannerStatus) {
+      console.log();
+      console.log("Scanner:");
+      console.log(
+        `  phase:   ${describeScannerPhase(activeScannerStatus.phase)}`,
+      );
+      console.log(`  detail:  ${activeScannerStatus.message}`);
+      console.log(
+        `  elapsed: ${formatElapsedMs(activeScannerStatus.elapsedMs)}`,
+      );
+      if (
+        activeScannerStatus.discoveredFiles != null &&
+        activeScannerStatus.processedFiles != null &&
+        activeScannerStatus.discoveredFiles > 0
+      ) {
+        const percent =
+          (activeScannerStatus.processedFiles /
+            activeScannerStatus.discoveredFiles) *
+          100;
+        let progressLine =
+          `  progress: ${activeScannerStatus.processedFiles}/${activeScannerStatus.discoveredFiles} files (${percent.toFixed(1)}%)` +
+          `, scanned=${activeScannerStatus.filesScanned ?? 0}` +
+          `, turns=${activeScannerStatus.newTurns ?? 0}` +
+          `, touched_sessions=${activeScannerStatus.touchedSessions ?? 0}`;
+        if (activeScannerStatus.currentSource) {
+          progressLine += `, source=${activeScannerStatus.currentSource}`;
+        }
+        console.log(progressLine);
+      }
+      if (
+        activeScannerStatus.totalSessions != null &&
+        activeScannerStatus.processedSessions != null &&
+        activeScannerStatus.totalSessions > 0
+      ) {
+        const percent =
+          (activeScannerStatus.processedSessions /
+            activeScannerStatus.totalSessions) *
+          100;
+        let progressLine =
+          `  sessions: ${activeScannerStatus.processedSessions}/${activeScannerStatus.totalSessions} (${percent.toFixed(1)}%)` +
+          `, touched_sessions=${activeScannerStatus.touchedSessions ?? 0}`;
+        if (activeScannerStatus.currentSessionId) {
+          progressLine += `, current_session=${activeScannerStatus.currentSessionId}`;
+        }
+        console.log(progressLine);
+      }
+    }
 
     console.log();
     console.log("Log files:");
@@ -929,7 +1020,7 @@ program
       const stat = fs.statSync(config.dbPath);
       console.log(`Database size: ${(stat.size / 1024).toFixed(1)} KB`);
 
-      if (server.running) {
+      if (server.running && !activeScannerStatus) {
         try {
           const stats = (await service.dbStats()) as Record<string, number>;
           console.log();
@@ -945,6 +1036,8 @@ program
         } catch {
           console.log("  (could not read database)");
         }
+      } else if (activeScannerStatus) {
+        console.log("Database stats: unavailable during active scanner work");
       }
     } else {
       console.log("Database: not initialized (run 'panopticon install')");
@@ -960,7 +1053,7 @@ program
         for (const t of targets) {
           console.log(`  ${t.name} → ${t.url}`);
 
-          if (server.running) {
+          if (server.running && !activeScannerStatus) {
             try {
               const result = await service.syncPending(t.name);
               if (result.totalPending === 0) {
@@ -974,6 +1067,8 @@ program
                 }
               }
             } catch {}
+          } else if (activeScannerStatus) {
+            console.log("    status: unavailable during active scanner work");
           }
         }
       }

@@ -14,6 +14,7 @@ vi.mock("../config.js", () => {
     config: {
       dataDir: dir,
       dbPath: _path.join(dir, "panopticon.db"),
+      scannerStatusFile: _path.join(dir, "scanner-status.json"),
       port: 14318,
       host: "127.0.0.1",
       serverPidFile: "",

@@ -56,6 +56,7 @@ export const config = {
   ),
   host: process.env.PANOPTICON_HOST ?? "127.0.0.1",
   serverPidFile: path.join(DATA_DIR, "panopticon.pid"),
+  scannerStatusFile: path.join(DATA_DIR, "scanner-status.json"),
   // Legacy — kept for backward compat during transition
   pidFile: path.join(DATA_DIR, "otlp-receiver.pid"),
   otlpPort: parseInt(process.env.PANOPTICON_OTLP_PORT ?? "4318", 10),
