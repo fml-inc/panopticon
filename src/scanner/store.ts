@@ -157,16 +157,17 @@ export function insertScannerEvents(
   const db = getDb();
   const stmt = db.prepare(INSERT_EVENT_SQL);
   const tx = db.transaction(() => {
-    const nextEventIndexBySession = new Map<string, number>();
+    const nextEventIndexBySessionSource = new Map<string, number>();
     for (const e of events) {
       let eventIndex = e.eventIndex;
       if (eventIndex == null) {
-        let next = nextEventIndexBySession.get(e.sessionId);
+        const eventStreamKey = `${e.sessionId}|${source}`;
+        let next = nextEventIndexBySessionSource.get(eventStreamKey);
         if (next == null) {
           next = getEventCount(e.sessionId, source);
         }
         eventIndex = next;
-        nextEventIndexBySession.set(e.sessionId, next + 1);
+        nextEventIndexBySessionSource.set(eventStreamKey, next + 1);
       }
 
       stmt.run(

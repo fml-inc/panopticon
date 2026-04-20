@@ -57,7 +57,8 @@ rescan.
 - `messages`: `session_id + (uuid || ordinal)`
 - `tool_calls`: durable message identity + `tool_use_id` or call ordinal/index
 - `scanner_turns`: `source + session_id + turn_index`
-- `scanner_events`: stable event key from `source + session_id + event shape`
+- `scanner_events`: stable per-stream event ordinal from
+  `source + session_id + event_index`
 
 ### Acceptance Criteria
 
@@ -88,6 +89,14 @@ the first semantic subjects that already have strong evidence support.
    - `file`
 3. Stable identity rules for repository and file subjects.
 4. Initial git-derived provenance/facts for repo/file subjects.
+
+### Tracked Follow-Up
+
+- Revisit the `messages` ordinal fallback for rows without source UUIDs.
+  Phase 1 accepts `session_id + ordinal` as the durable key input, but a future
+  parser that re-numbers legacy UUID-less streams would change those message
+  identities after reparse. Evaluate a stronger fallback before later
+  provenance layers depend on those rows as stable evidence.
 
 ## Phase 3: Claims and Provenance Expansion
 

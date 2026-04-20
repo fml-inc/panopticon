@@ -42,7 +42,7 @@ decisions, or claims. Those come later.
 | `messages` | `messages.id` | `UNIQUE(session_id, ordinal)` plus optional `uuid` | none | `msg|<session_id>|uuid|<uuid>` if `uuid` present, else `msg|<session_id>|ord|<ordinal>` | Add `messages.sync_id`; emit it in sync payload; keep `id` only as local surrogate |
 | `tool_calls` | `tool_calls.id` | currently implicit: local `message_id` + `tool_use_id`/`tool_name` | random `sync_id` | `tc|<message_sync_id>|tuid|<tool_use_id>` if present, else `tc|<message_sync_id>|idx|<call_index>` | Make `sync_id` deterministic; add `call_index`; emit `messageSyncId`; stop relying on local `message_id` across sync |
 | `scanner_turns` | `scanner_turns.id` | `UNIQUE(session_id, source, turn_index)` | random `sync_id` | `turn|<session_id>|<source>|<turn_index>` | Replace random `sync_id` with deterministic value derived from natural key |
-| `scanner_events` | `scanner_events.id` | `UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)` | random `sync_id` | `event|<session_id>|<source>|<event_type>|<timestamp_ms>|<tool_name>` | Replace random `sync_id` with deterministic value derived from natural key |
+| `scanner_events` | `scanner_events.id` | `UNIQUE(session_id, source, event_index)` | random `sync_id` | `evt|<session_id>|<source>|idx|<event_index>` | Add `event_index`; derive deterministic `sync_id` from the per-session/source event ordinal |
 
 ## Table-by-Table Notes
 
@@ -120,22 +120,25 @@ Phase 1 recommendation:
 
 Current behavior:
 
-- Storage already assumes a natural key:
-  `UNIQUE(session_id, source, event_type, timestamp_ms, tool_name)`.
+- Storage now uses `UNIQUE(session_id, source, event_index)`.
 - Sync identity is random and restored manually after reparse.
 
 Phase 1 recommendation:
 
-- Derive `sync_id` directly from the existing natural key.
+- Add a stable `event_index` per `session_id` / `source` event stream.
+- Derive `sync_id` from `session_id + source + event_index`.
 - Remove `scanner_events` from sync-id snapshot/restore logic once inserts are
   deterministic.
 
-Constraint:
+Why the event index exists:
 
-- This preserves the same uniqueness assumption the table already makes. If a
-  future source can emit multiple logically distinct events with the same
-  current key shape, the table will need an explicit event index or stronger
-  discriminator.
+- The original plan used `event_type + timestamp_ms + tool_name` as the durable
+  key input, mirroring the pre-existing uniqueness assumption.
+- That collapsed real scanner data: repeated same-timestamp metadata events such
+  as file snapshots, attachments, and reasoning rows produced duplicate
+  `sync_id` values and dropped rows remotely.
+- `event_index` is the minimal durable discriminator that matches how scanner
+  events actually behave in live transcripts.
 
 ## Canonical Encoding
 
@@ -151,7 +154,7 @@ Suggested format:
   - `msg|sess_123|uuid|abc`
   - `tc|<message_sync_id>|idx|1`
   - `turn|sess_123|claude|42`
-  - `event|sess_123|claude|tool_result|1710000000000|Write`
+  - `evt|sess_123|claude|idx|7`
 - stored `sync_id`:
   - hex-encoded SHA-256 of the canonical input string
 
