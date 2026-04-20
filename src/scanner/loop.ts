@@ -18,6 +18,7 @@ import type {
   ParseResult,
   TargetScannerSpec,
 } from "../targets/types.js";
+import { clearScannerStatus } from "./status.js";
 import type { SavedSyncIds } from "./store.js";
 import {
   getMaxOrdinal,
@@ -619,6 +620,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
           .then(({ reparseAll }) => {
             try {
               const result = reparseAll((msg) => log.scanner.info(msg));
+              clearScannerStatus();
               if (result.success) {
                 markResyncComplete();
               } else {
@@ -627,6 +629,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
                 );
               }
             } catch (err) {
+              clearScannerStatus();
               log.scanner.error(
                 `Reparse error: ${err instanceof Error ? err.message : err}`,
               );
@@ -634,6 +637,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
             scheduleNext(true);
           })
           .catch((err) => {
+            clearScannerStatus();
             log.scanner.error(
               `Reparse import error: ${err instanceof Error ? err.message : err}`,
             );
@@ -656,6 +660,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
       if (!ready) {
         ready = true;
+        clearScannerStatus();
         log.scanner.info(
           `Scanner ready in ${formatMs(performance.now() - startedAt)}`,
         );
@@ -691,11 +696,13 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       if (timer) return;
       stopping = false;
       startedAt = performance.now();
+      clearScannerStatus();
       log.scanner.info("Starting scanner");
       tick();
     },
     stop() {
       stopping = true;
+      clearScannerStatus();
       if (timer) {
         clearTimeout(timer);
         timer = null;

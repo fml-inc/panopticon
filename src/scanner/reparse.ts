@@ -26,6 +26,11 @@ import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js"
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import { scanOnce } from "./loop.js";
+import {
+  clearScannerStatus,
+  type ScannerRuntimePhase,
+  writeScannerStatus,
+} from "./status.js";
 
 /**
  * Tables whose data is independent of the scanner and must be
@@ -91,6 +96,35 @@ function formatMs(ms: number): string {
 function formatPercent(value: number, total: number): string {
   if (total <= 0) return "0.0%";
   return `${((value / total) * 100).toFixed(1)}%`;
+}
+
+function writeReparseStatus(
+  phase: ScannerRuntimePhase,
+  message: string,
+  startedAtMs: number,
+  progress: Partial<{
+    elapsedMs: number;
+    processedFiles: number;
+    discoveredFiles: number;
+    filesScanned: number;
+    newTurns: number;
+    touchedSessions: number;
+    currentSource: string;
+  }> = {},
+): void {
+  writeScannerStatus({
+    pid: process.pid,
+    phase,
+    message,
+    startedAtMs,
+    elapsedMs: progress.elapsedMs ?? Date.now() - startedAtMs,
+    processedFiles: progress.processedFiles,
+    discoveredFiles: progress.discoveredFiles,
+    filesScanned: progress.filesScanned,
+    newTurns: progress.newTurns,
+    touchedSessions: progress.touchedSessions,
+    currentSource: progress.currentSource,
+  });
 }
 
 function removeTempFiles(tempPath: string): void {
@@ -199,12 +233,18 @@ export function reparseAll(
   log: (msg: string) => void = () => {},
 ): ReparseResult {
   const startedAt = performance.now();
+  const statusStartedAtMs = Date.now();
   const origPath = config.dbPath;
   const tempPath = `${origPath}-reparse`;
 
   // Clean up stale temp DB from a prior crash
   removeTempFiles(tempPath);
 
+  writeReparseStatus(
+    "reparse_init",
+    "Starting atomic reparse...",
+    statusStartedAtMs,
+  );
   log("Starting atomic reparse...");
 
   // 1. Create fresh temp DB and verify schema
@@ -247,6 +287,11 @@ export function reparseAll(
   let newTurns = 0;
   let scanMs = 0;
   try {
+    writeReparseStatus(
+      "reparse_scan",
+      "Scanning raw session files into temp DB...",
+      statusStartedAtMs,
+    );
     log("Scanning raw session files into temp DB...");
     const scanStartedAt = performance.now();
     const result = scanOnce({
@@ -257,6 +302,12 @@ export function reparseAll(
         log(
           `Reparse scan progress: processed=${progress.processedFiles}/${progress.discoveredFiles} (${formatPercent(progress.processedFiles, progress.discoveredFiles)}) files_scanned=${progress.filesScanned} turns=${progress.newTurns} touched_sessions=${progress.touchedSessions} elapsed=${formatMs(progress.elapsedMs)}${progress.currentSource ? ` source=${progress.currentSource}` : ""}`,
         );
+        writeReparseStatus(
+          "reparse_scan",
+          "Scanning raw session files into temp DB...",
+          statusStartedAtMs,
+          progress,
+        );
       },
     });
     scanMs = performance.now() - scanStartedAt;
@@ -266,6 +317,12 @@ export function reparseAll(
       `Temp DB scan finished in ${formatMs(scanMs)} (${filesScanned} files, ${newTurns} turns, ${result.touchedSessions.length} touched sessions)`,
     );
   } catch (err) {
+    writeReparseStatus(
+      "reparse_error",
+      `Reparse scan failed: ${err}`,
+      statusStartedAtMs,
+    );
+    clearScannerStatus();
     (config as { dbPath: string }).dbPath = savedDbPath;
     closeDb();
     getDb(); // reopen original
@@ -290,6 +347,12 @@ export function reparseAll(
 
   // Abort if scan produced nothing but old DB had data
   if (tempSessionCount === 0 && oldSessionCount > 0) {
+    writeReparseStatus(
+      "reparse_error",
+      `Reparse aborted: 0 sessions in reparse vs ${oldSessionCount} in old DB`,
+      statusStartedAtMs,
+    );
+    clearScannerStatus();
     log(
       `Reparse aborted: temp DB has 0 sessions but old DB has ${oldSessionCount}`,
     );
@@ -304,6 +367,11 @@ export function reparseAll(
   }
 
   // 3. Copy preserved data from old DB into temp DB
+  writeReparseStatus(
+    "reparse_copy",
+    "Copying preserved data from old database...",
+    statusStartedAtMs,
+  );
   log("Copying preserved data from old database...");
   let copyMs = 0;
   let deriveMs = 0;
@@ -419,12 +487,23 @@ export function reparseAll(
     log(`Preserved-data copy finished in ${formatMs(copyMs)}`);
 
     log("Rebuilding derived state from copied raw data...");
+    writeReparseStatus(
+      "reparse_derive",
+      "Rebuilding derived state from raw data...",
+      statusStartedAtMs,
+    );
     (config as { dbPath: string }).dbPath = tempPath;
     closeDb();
     deriveMs = rebuildDerivedStateFromRaw(log).totalMs;
     closeDb();
     (config as { dbPath: string }).dbPath = savedDbPath;
   } catch (err) {
+    writeReparseStatus(
+      "reparse_error",
+      `Reparse copy/rebuild failed: ${err}`,
+      statusStartedAtMs,
+    );
+    clearScannerStatus();
     (config as { dbPath: string }).dbPath = savedDbPath;
     closeDb();
     log(`Failed to copy preserved data: ${err}`);
@@ -439,6 +518,11 @@ export function reparseAll(
   }
 
   // 4. Atomic file swap
+  writeReparseStatus(
+    "reparse_finalize",
+    "Swapping rebuilt database into place...",
+    statusStartedAtMs,
+  );
   log("Swapping database files...");
   let swapMs = 0;
   try {
@@ -449,6 +533,12 @@ export function reparseAll(
     swapMs = performance.now() - swapStartedAt;
     log(`Database swap finished in ${formatMs(swapMs)}`);
   } catch (err) {
+    writeReparseStatus(
+      "reparse_error",
+      `Reparse swap failed: ${err}`,
+      statusStartedAtMs,
+    );
+    clearScannerStatus();
     log(`File swap failed: ${err}`);
     getDb();
     removeTempFiles(tempPath);
@@ -466,6 +556,7 @@ export function reparseAll(
   log(
     `Reparse complete: ${filesScanned} files, ${newTurns} turns, ${tempSessionCount} sessions in ${formatMs(performance.now() - startedAt)} (init=${formatMs(initTempDbMs)} scan=${formatMs(scanMs)} copy=${formatMs(copyMs)} derive=${formatMs(deriveMs)} swap=${formatMs(swapMs)})`,
   );
+  clearScannerStatus();
 
   return { success: true, filesScanned, newTurns };
 }
