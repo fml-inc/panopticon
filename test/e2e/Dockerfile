@@ -59,14 +59,10 @@ WORKDIR /workspace
 FROM base AS test-sync-validation
 # Global npm install must happen before USER switch
 USER root
-RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+RUN npm install -g \
+      @anthropic-ai/claude-code \
+      @openai/codex \
+      @google/gemini-cli \
+      @mariozechner/pi-coding-agent
 USER testuser
 ENTRYPOINT ["/opt/e2e/scripts/test-sync-validation.sh"]
-
-# ─── Pi extension capture validation ──────────────────────────────────────────
-FROM base AS test-pi-extension
-# Global npm install must happen before USER switch
-USER root
-RUN npm install -g @mariozechner/pi-coding-agent
-USER testuser
-ENTRYPOINT ["/opt/e2e/scripts/test-pi-extension.sh"]

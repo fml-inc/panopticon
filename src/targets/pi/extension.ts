@@ -8,7 +8,6 @@
  *
  * Install:
  *   panopticon install --target pi
- *   # or: pi install npm:@panopticon/pi-extension
  *
  * Requires Panopticon server running on localhost:4318 (default).
  * Set PANOPTICON_HOST and PANOPTICON_PORT to override the connection target.

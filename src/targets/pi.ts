@@ -7,7 +7,6 @@
  *
  * Install:
  *   panopticon install --target pi
- *   # or: pi install npm:@panopticon/pi-extension
  */
 
 import fs from "node:fs";
@@ -25,25 +24,27 @@ const EXTENSION_DEST = path.join(
 );
 
 /**
- * Read the bundled extension source from dist/targets/pi/extension.js.
- * The compiled TargetAdapter lives in dist/targets/pi.js, and the extension
- * lives in the sibling directory dist/targets/pi/extension.js.
- * Returns null if the bundle hasn't been built yet.
+ * Read the bundled extension source produced by scripts/bundle-pi-extension.js.
+ * The file lives at <pluginRoot>/dist/targets/pi/extension.js.
+ *
+ * We resolve it from `pluginRoot` (passed in at install time) rather than
+ * `__dirname`, because tsup's ESM `__dirname` shim is exported from a shared
+ * chunk — at runtime it resolves to the shim's own location (dist/), not to
+ * wherever this file's code got hoisted. Using pluginRoot is deterministic.
  */
-function getExtensionSource(): string | null {
-  // __dirname at runtime is dist/targets/ (where pi.js is compiled to)
-  // The extension is at dist/targets/pi/extension.js
-  const extensionPath = path.join(__dirname, "pi", "extension.js");
-
+function getExtensionSource(pluginRoot: string): string | null {
+  const extensionPath = path.join(
+    pluginRoot,
+    "dist",
+    "targets",
+    "pi",
+    "extension.js",
+  );
   try {
-    if (fs.existsSync(extensionPath)) {
-      return fs.readFileSync(extensionPath, "utf-8");
-    }
+    return fs.readFileSync(extensionPath, "utf-8");
   } catch {
-    // Fall through to return null
+    return null;
   }
-
-  return null;
 }
 
 const pi: TargetAdapter = {
@@ -64,53 +65,41 @@ const pi: TargetAdapter = {
       "session_shutdown",
     ],
 
-    applyInstallConfig(existing, _opts) {
-      const extension = getExtensionSource();
+    applyInstallConfig(existing, opts) {
+      const extension = getExtensionSource(opts.pluginRoot);
       if (!extension) {
-        console.warn(
-          "panopticon: Pi extension not found. Run 'panopticon build' first, or install manually:\n" +
-            "  panopticon install --target pi\n" +
-            "  # or: pi install npm:@panopticon/pi-extension",
+        throw new Error(
+          `panopticon: Pi extension bundle not found at ${path.join(opts.pluginRoot, "dist", "targets", "pi", "extension.js")}. ` +
+            "Run 'pnpm build' first.",
         );
-        return existing;
       }
 
-      // Copy extension to Pi's extensions directory
+      // Copy the bundled extension into Pi's global extensions dir. Pi
+      // auto-discovers files here — no settings.json entry is required
+      // (see @mariozechner/pi-coding-agent loader.js).
       const extDir = path.dirname(EXTENSION_DEST);
-      if (!fs.existsSync(extDir)) {
-        fs.mkdirSync(extDir, { recursive: true });
-      }
+      fs.mkdirSync(extDir, { recursive: true });
       fs.writeFileSync(EXTENSION_DEST, extension);
 
-      // Optionally add extension to settings.json if using explicit extension list
-      const settings = { ...existing };
-      const existingExtensions = (settings.extensions as string[]) ?? [];
-
-      // Only add if not already present
-      if (!existingExtensions.some((e) => e.includes("panopticon"))) {
-        settings.extensions = [...existingExtensions, EXTENSION_DEST];
-      }
-
-      return settings;
+      return existing;
     },
 
     removeInstallConfig(existing) {
-      // Remove extension file
       if (fs.existsSync(EXTENSION_DEST)) {
         fs.unlinkSync(EXTENSION_DEST);
       }
-
-      // Remove from settings.json extensions list if present
+      // Filter out any stale settings.json entry a previous install may have
+      // added. Exact-match on EXTENSION_DEST so we only touch what we own.
       const settings = { ...existing };
-      const existingExtensions = (settings.extensions as string[]) ?? [];
-      const filtered = existingExtensions.filter(
-        (e) => !e.includes("panopticon"),
-      );
-
-      if (filtered.length !== existingExtensions.length) {
-        settings.extensions = filtered.length > 0 ? filtered : undefined;
+      const existingExtensions = settings.extensions;
+      if (Array.isArray(existingExtensions)) {
+        const filtered = existingExtensions.filter(
+          (e) => typeof e !== "string" || e !== EXTENSION_DEST,
+        );
+        if (filtered.length !== existingExtensions.length) {
+          settings.extensions = filtered.length > 0 ? filtered : undefined;
+        }
       }
-
       return settings;
     },
   },
