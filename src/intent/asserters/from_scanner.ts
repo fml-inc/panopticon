@@ -11,6 +11,7 @@ import {
   deleteClaimsByAsserter,
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
+import { canonicalizeHeadKeys } from "../../claims/canonicalize.js";
 import { getDb } from "../../db/schema.js";
 
 const ASSERTER = "intent.from_scanner";
@@ -54,6 +55,13 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   intents: number;
   edits: number;
 } {
+  const affectedHeadKeys = new Set<string>();
+  const assertScannerClaim = (
+    input: Parameters<typeof assertClaim>[0],
+  ): void => {
+    const result = assertClaim({ ...input, canonicalize: false });
+    affectedHeadKeys.add(result.headKey);
+  };
   if (opts?.sessionId) {
     deleteClaimsByAsserterForSession(ASSERTER, opts.sessionId);
   } else {
@@ -115,7 +123,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           role: "origin" as const,
         },
       ];
-      assertClaim({
+      assertScannerClaim({
         predicate: "intent/prompt-text",
         subjectKind: "intent",
         subject: key,
@@ -125,10 +133,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
       if (msg.timestamp_ms !== null) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/prompt-ts-ms",
           subjectKind: "intent",
           subject: key,
@@ -138,10 +145,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
-      assertClaim({
+      assertScannerClaim({
         predicate: "intent/session",
         subjectKind: "intent",
         subject: key,
@@ -151,11 +157,10 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
       const repo = repoBySession.get(msg.session_id);
       if (repo) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/repository",
           subjectKind: "intent",
           subject: key,
@@ -165,11 +170,10 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       if (msg.cwd) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/cwd",
           subjectKind: "intent",
           subject: key,
@@ -179,13 +183,12 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       const next = msgs[index + 1];
       const closedAtMs = next?.timestamp_ms ?? msg.ended_at_ms ?? null;
       if (closedAtMs !== null) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "intent/closed-at-ms",
           subjectKind: "intent",
           subject: key,
@@ -195,7 +198,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       intents += 1;
@@ -251,7 +253,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           );
       const evidence = [{ key: evidenceKey, role: "origin" as const }];
       const observedAtMs = row.timestamp_ms ?? intentMsg.timestamp_ms ?? 0;
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/part-of-intent",
         subjectKind: "edit",
         subject,
@@ -261,9 +263,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/file",
         subjectKind: "edit",
         subject,
@@ -273,9 +274,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/tool-name",
         subjectKind: "edit",
         subject,
@@ -285,9 +285,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/multi-edit-index",
         subjectKind: "edit",
         subject,
@@ -297,9 +296,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/new-string-hash",
         subjectKind: "edit",
         subject,
@@ -309,9 +307,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
-      assertClaim({
+      assertScannerClaim({
         predicate: "edit/new-string-snippet",
         subjectKind: "edit",
         subject,
@@ -321,10 +318,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserter: ASSERTER,
         asserterVersion: VERSION,
         evidence,
-        canonicalize: false,
       });
       if (row.timestamp_ms !== null) {
-        assertClaim({
+        assertScannerClaim({
           predicate: "edit/timestamp-ms",
           subjectKind: "edit",
           subject,
@@ -334,7 +330,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
-          canonicalize: false,
         });
       }
       edits += 1;
@@ -343,6 +338,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     perIntentIndex.set(intentSubject, subjectToolCallIndex + 1);
   }
 
+  canonicalizeHeadKeys(affectedHeadKeys);
   return { intents, edits };
 }
 
