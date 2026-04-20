@@ -363,7 +363,15 @@ describe("scanner-only landed reconciliation", () => {
     });
 
     rebuildIntentClaimsFromScanner({ sessionId });
-    rebuildActiveClaims();
+    const activePrompt = getDb()
+      .prepare(
+        `SELECT c.value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.predicate = 'intent/prompt-text' AND c.subject = ?`,
+      )
+      .get("intent:scanner-only:user:0") as { value_text: string };
+    expect(activePrompt.value_text).toBe("refine file");
     reconcileLandedClaimsFromDisk({ sessionId });
     rebuildIntentProjection({ sessionId });
 
@@ -418,7 +426,6 @@ describe("scanner-only landed reconciliation", () => {
     });
 
     rebuildIntentClaimsFromScanner({ sessionId });
-    rebuildActiveClaims();
     reconcileLandedClaimsFromDisk({ sessionId });
     rebuildIntentProjection({ sessionId });
 

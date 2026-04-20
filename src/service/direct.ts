@@ -35,6 +35,12 @@ import {
   watermarkKey,
   writeWatermark,
 } from "../sync/watermark.js";
+import {
+  listSessionSummaries,
+  recentWorkOnPath,
+  sessionSummaryDetail,
+  whyCode,
+} from "../session_summaries/query.js";
 import type {
   PanopticonService,
   PruneExecuteInput,
@@ -84,6 +90,18 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async outcomesForIntent(opts) {
       return outcomesForIntent(opts);
+    },
+    async listSessionSummaries(opts) {
+      return listSessionSummaries(opts);
+    },
+    async sessionSummaryDetail(opts) {
+      return sessionSummaryDetail(opts);
+    },
+    async whyCode(opts) {
+      return whyCode(opts);
+    },
+    async recentWorkOnPath(opts) {
+      return recentWorkOnPath(opts);
     },
     async pruneEstimate(cutoffMs) {
       return pruneEstimate(cutoffMs);

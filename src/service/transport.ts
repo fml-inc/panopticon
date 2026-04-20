@@ -3,14 +3,18 @@ import type {
   CostBreakdownInput,
   IntentForCodeInput,
   ListPlansInput,
+  ListSessionSummariesInput,
   ListSessionsInput,
   OutcomesForIntentInput,
   PanopticonService,
   PrintInput,
+  RecentWorkOnPathInput,
   SearchInput,
   SearchIntentInput,
+  SessionSummaryDetailInput,
   SessionTimelineInput,
   SyncTargetAddInput,
+  WhyCodeInput,
 } from "./types.js";
 
 type TransportHandler = (
@@ -42,6 +46,13 @@ export const TOOL_HANDLERS = {
     service.searchIntent(asType<SearchIntentInput>(params)),
   outcomes_for_intent: (service, params) =>
     service.outcomesForIntent(asType<OutcomesForIntentInput>(params)),
+  session_summaries: (service, params) =>
+    service.listSessionSummaries(asType<ListSessionSummariesInput>(params)),
+  session_summary_detail: (service, params) =>
+    service.sessionSummaryDetail(asType<SessionSummaryDetailInput>(params)),
+  why_code: (service, params) => service.whyCode(asType<WhyCodeInput>(params)),
+  recent_work_on_path: (service, params) =>
+    service.recentWorkOnPath(asType<RecentWorkOnPathInput>(params)),
 } satisfies Record<string, TransportHandler>;
 
 export type ToolName = keyof typeof TOOL_HANDLERS;

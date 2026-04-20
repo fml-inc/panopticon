@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { getDb, markResyncComplete, needsResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
@@ -182,7 +181,6 @@ export function scanOnce(): {
       for (const sessionId of touchedSessions) {
         rebuildIntentClaimsFromScanner({ sessionId });
       }
-      rebuildActiveClaims();
       for (const sessionId of touchedSessions) {
         reconcileLandedClaimsFromDisk({ sessionId });
       }

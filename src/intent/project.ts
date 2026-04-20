@@ -1,10 +1,14 @@
 import { getDb } from "../db/schema.js";
 import { resolveFilePathFromCwd } from "../paths.js";
+import { rebuildSessionSummaryProjections } from "../session_summaries/project.js";
 import { loadActiveEdits, loadActiveIntents } from "./claimViews.js";
 
 export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   intents: number;
   edits: number;
+  sessionSummaries: number;
+  memberships: number;
+  provenance: number;
 } {
   const db = getDb();
   const hookBackedSessions = new Set(
@@ -185,9 +189,12 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   });
   tx();
 
+  const local = rebuildSessionSummaryProjections(opts);
+
   return {
     intents: intents.size,
     edits: edits.size,
+    ...local,
   };
 }
 
