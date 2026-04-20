@@ -34,8 +34,6 @@ services:
   pi:
     image: node:24-slim
     container_name: pi
-    ports:
-      - "3000:3000"    # Pi TUI (if running interactively)
     volumes:
       - pi-workspace:/workspace
     environment:
