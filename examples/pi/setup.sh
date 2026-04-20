@@ -62,11 +62,16 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T pi bash -c '
   npm install -g @mariozechner/pi-coding-agent
 
   # Create extensions directory and copy the bundled extension
-  mkdir -p /app/extensions
-  cp /opt/panopticon/dist/targets/pi/extension.js /app/extensions/panopticon.js
+  # Pi discovers extensions from <cwd>/.pi/extensions/ (project-local)
+  # and ~/.pi/agent/extensions/ (global)
+  mkdir -p /workspace/.pi/extensions
+  cp /opt/panopticon/dist/targets/pi/extension.js /workspace/.pi/extensions/panopticon.js
 
   # Verify the extension exists
-  ls -la /app/extensions/
+  echo "Extension at project-local dir:"
+  ls -la /workspace/.pi/extensions/
+  echo "\nExtension at global dir (if present):"
+  ls -la ~/.pi/agent/extensions/ 2>/dev/null || echo "  (none)"
 ' 2>/dev/null || {
   echo "  Could not exec into pi container — install pi manually"
   exit 1
@@ -82,7 +87,7 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T -e "ANTHROPIC_API_KEY
   # Run a non-interactive pi session with a simple prompt
   # Using --mode print captures output without the TUI
   echo "Hello, say hi and list the files in this directory" | \
-    PI_EXTENSIONS_DIR=/app/extensions \
+    PANOPTICON_HOST=panopticon \
     pi --mode print "List the files in /workspace" 2>&1 || true
 
   # Give events time to POST to panopticon

@@ -11,6 +11,7 @@
  *   # or: pi install npm:@panopticon/pi-extension
  *
  * Requires Panopticon server running on localhost:4318 (default).
+ * Set PANOPTICON_HOST and PANOPTICON_PORT to override the connection target.
  * Start with: panopticon start
  */
 
@@ -22,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
+const HOST = process.env.PANOPTICON_HOST ?? "127.0.0.1";
 const PORT = parseInt(process.env.PANOPTICON_PORT ?? "4318", 10);
 
 // Read the panopticon bearer token (mirrors src/auth.ts readAuthToken).
@@ -72,7 +74,7 @@ function post(event: HookEvent): void {
   if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
   const req = http.request(
     {
-      hostname: "127.0.0.1",
+      hostname: HOST,
       port: PORT,
       path: "/hooks",
       method: "POST",

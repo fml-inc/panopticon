@@ -117,8 +117,17 @@ const pi: TargetAdapter = {
 
   shellEnv: {
     envVars() {
-      // Pi uses its own configuration system; no env vars needed
-      return [];
+      // Expose PANOPTICON_HOST and PANOPTICON_PORT so the extension
+      // can connect to panopticon even when running in a different
+      // container or host.
+      const vars: Array<[string, string]> = [];
+      if (process.env.PANOPTICON_HOST) {
+        vars.push(["PANOPTICON_HOST", process.env.PANOPTICON_HOST]);
+      }
+      if (process.env.PANOPTICON_PORT) {
+        vars.push(["PANOPTICON_PORT", process.env.PANOPTICON_PORT]);
+      }
+      return vars;
     },
   },
 
