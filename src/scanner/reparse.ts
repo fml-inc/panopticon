@@ -110,6 +110,9 @@ function writeReparseStatus(
     newTurns: number;
     touchedSessions: number;
     currentSource: string;
+    processedSessions: number;
+    totalSessions: number;
+    currentSessionId: string;
   }> = {},
 ): void {
   writeScannerStatus({
@@ -124,6 +127,9 @@ function writeReparseStatus(
     newTurns: progress.newTurns,
     touchedSessions: progress.touchedSessions,
     currentSource: progress.currentSource,
+    processedSessions: progress.processedSessions,
+    totalSessions: progress.totalSessions,
+    currentSessionId: progress.currentSessionId,
   });
 }
 
@@ -299,6 +305,19 @@ export function reparseAll(
       logDetails: true,
       progressEveryMs: 15_000,
       onProgress: (progress) => {
+        if (progress.phase === "sessions") {
+          log(
+            `Reparse session processing progress: processed=${progress.processedSessions ?? 0}/${progress.totalSessions ?? 0} touched_sessions=${progress.touchedSessions} elapsed=${formatMs(progress.elapsedMs)}${progress.currentSessionId ? ` session=${progress.currentSessionId}` : ""}`,
+          );
+          writeReparseStatus(
+            "reparse_process",
+            "Processing touched sessions from temp DB scan...",
+            statusStartedAtMs,
+            progress,
+          );
+          return;
+        }
+
         log(
           `Reparse scan progress: processed=${progress.processedFiles}/${progress.discoveredFiles} (${formatPercent(progress.processedFiles, progress.discoveredFiles)}) files_scanned=${progress.filesScanned} turns=${progress.newTurns} touched_sessions=${progress.touchedSessions} elapsed=${formatMs(progress.elapsedMs)}${progress.currentSource ? ` source=${progress.currentSource}` : ""}`,
         );

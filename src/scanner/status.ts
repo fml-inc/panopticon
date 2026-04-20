@@ -2,8 +2,13 @@ import fs from "node:fs";
 import { config, ensureDataDir } from "../config.js";
 
 export type ScannerRuntimePhase =
+  | "startup_scan"
+  | "startup_process"
+  | "incremental_scan"
+  | "incremental_process"
   | "reparse_init"
   | "reparse_scan"
+  | "reparse_process"
   | "reparse_copy"
   | "reparse_derive"
   | "reparse_finalize"
@@ -22,6 +27,9 @@ export interface ScannerRuntimeStatus {
   newTurns?: number;
   touchedSessions?: number;
   currentSource?: string;
+  processedSessions?: number;
+  totalSessions?: number;
+  currentSessionId?: string;
 }
 
 export function writeScannerStatus(

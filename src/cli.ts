@@ -190,10 +190,20 @@ function formatElapsedMs(ms: number): string {
 
 function describeScannerPhase(phase: string): string {
   switch (phase) {
+    case "startup_scan":
+      return "running startup scan";
+    case "startup_process":
+      return "processing startup updates";
+    case "incremental_scan":
+      return "scanning session files";
+    case "incremental_process":
+      return "processing touched sessions";
     case "reparse_init":
       return "initializing reparse";
     case "reparse_scan":
       return "scanning raw files";
+    case "reparse_process":
+      return "processing touched sessions";
     case "reparse_copy":
       return "copying preserved data";
     case "reparse_derive":
@@ -972,6 +982,23 @@ program
         }
         console.log(progressLine);
       }
+      if (
+        activeScannerStatus.totalSessions != null &&
+        activeScannerStatus.processedSessions != null &&
+        activeScannerStatus.totalSessions > 0
+      ) {
+        const percent =
+          (activeScannerStatus.processedSessions /
+            activeScannerStatus.totalSessions) *
+          100;
+        let progressLine =
+          `  sessions: ${activeScannerStatus.processedSessions}/${activeScannerStatus.totalSessions} (${percent.toFixed(1)}%)` +
+          `, touched_sessions=${activeScannerStatus.touchedSessions ?? 0}`;
+        if (activeScannerStatus.currentSessionId) {
+          progressLine += `, current_session=${activeScannerStatus.currentSessionId}`;
+        }
+        console.log(progressLine);
+      }
     }
 
     console.log();
@@ -1010,9 +1037,7 @@ program
           console.log("  (could not read database)");
         }
       } else if (activeScannerStatus) {
-        console.log(
-          "Database stats: unavailable during active scanner reparse",
-        );
+        console.log("Database stats: unavailable during active scanner work");
       }
     } else {
       console.log("Database: not initialized (run 'panopticon install')");
@@ -1043,9 +1068,7 @@ program
               }
             } catch {}
           } else if (activeScannerStatus) {
-            console.log(
-              "    status: unavailable during active scanner reparse",
-            );
+            console.log("    status: unavailable during active scanner work");
           }
         }
       }

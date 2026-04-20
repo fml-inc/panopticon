@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const discoverMock = vi.fn();
@@ -91,6 +94,11 @@ vi.mock("./store.js", () => ({
   writeFileWatermark: vi.fn(),
 }));
 
+vi.mock("./status.js", () => ({
+  clearScannerStatus: vi.fn(),
+  writeScannerStatus: vi.fn(),
+}));
+
 import { scanOnce } from "./loop.js";
 
 describe("scanOnce progress", () => {
@@ -129,9 +137,43 @@ describe("scanOnce progress", () => {
       currentSource: "fake",
     });
     expect(onProgress.mock.calls[2]?.[0]).toMatchObject({
+      phase: "files",
       processedFiles: 2,
       discoveredFiles: 2,
       currentSource: "fake",
+    });
+  });
+
+  it("reports touched-session processing after file scanning", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-loop-test-"));
+    const filePath = path.join(tempDir, "session.jsonl");
+    fs.writeFileSync(filePath, "fixture");
+
+    discoverMock.mockReturnValue([{ filePath }]);
+    parseFileMock.mockReturnValue({
+      meta: { sessionId: "session-1" },
+      turns: [],
+      events: [],
+      messages: [],
+      newByteOffset: 7,
+    });
+    const onProgress = vi.fn();
+
+    const result = scanOnce({
+      profileLabel: "scan",
+      progressEveryMs: 0,
+      onProgress,
+    });
+
+    expect(result.filesScanned).toBe(1);
+    expect(onProgress.mock.calls.at(-1)?.[0]).toMatchObject({
+      label: "scan",
+      phase: "sessions",
+      processedFiles: 1,
+      discoveredFiles: 1,
+      processedSessions: 1,
+      totalSessions: 1,
+      currentSessionId: "session-1",
     });
   });
 });

@@ -18,7 +18,7 @@ import type {
   ParseResult,
   TargetScannerSpec,
 } from "../targets/types.js";
-import { clearScannerStatus } from "./status.js";
+import { clearScannerStatus, writeScannerStatus } from "./status.js";
 import type { SavedSyncIds } from "./store.js";
 import {
   getMaxOrdinal,
@@ -40,6 +40,7 @@ import type { ScannerHandle, ScannerOptions } from "./types.js";
 
 const DEFAULT_IDLE_MS = 60_000;
 const DEFAULT_CATCHUP_MS = 5_000;
+const SCAN_STATUS_EVERY_MS = 5_000;
 const MAX_PROFILE_DETAILS = 5;
 const SLOW_SCAN_DETAIL_MS = 250;
 
@@ -124,12 +125,16 @@ interface ScanOnceResult {
 interface ScanProgress {
   label: string;
   elapsedMs: number;
+  phase: "files" | "sessions";
   processedFiles: number;
   discoveredFiles: number;
   filesScanned: number;
   newTurns: number;
   touchedSessions: number;
   currentSource?: string;
+  processedSessions?: number;
+  totalSessions?: number;
+  currentSessionId?: string;
 }
 
 function formatMs(ms: number): string {
@@ -182,6 +187,43 @@ function logScanProfile(
   }
 }
 
+function writeActiveScanStatus(
+  startedAtMs: number,
+  isStartupScan: boolean,
+  progress?: ScanProgress,
+): void {
+  const filesPhase = isStartupScan ? "startup_scan" : "incremental_scan";
+  const sessionsPhase = isStartupScan
+    ? "startup_process"
+    : "incremental_process";
+  const phase = progress?.phase === "sessions" ? sessionsPhase : filesPhase;
+  const message =
+    progress?.phase === "sessions"
+      ? isStartupScan
+        ? "Processing touched sessions from startup scan..."
+        : "Processing touched sessions..."
+      : isStartupScan
+        ? "Running startup scan..."
+        : "Scanning session files...";
+
+  writeScannerStatus({
+    pid: process.pid,
+    phase,
+    message,
+    startedAtMs,
+    elapsedMs: progress?.elapsedMs ?? Date.now() - startedAtMs,
+    processedFiles: progress?.processedFiles,
+    discoveredFiles: progress?.discoveredFiles,
+    filesScanned: progress?.filesScanned,
+    newTurns: progress?.newTurns,
+    touchedSessions: progress?.touchedSessions,
+    currentSource: progress?.currentSource,
+    processedSessions: progress?.processedSessions,
+    totalSessions: progress?.totalSessions,
+    currentSessionId: progress?.currentSessionId,
+  });
+}
+
 export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
   const startedAt = performance.now();
   getDb(); // ensure DB is accessible
@@ -204,24 +246,36 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
   let linkedSessions = 0;
   let processedFiles = 0;
   let discoveredFiles = 0;
+  let processedSessions = 0;
   let lastProgressAt = startedAt;
-  let lastProgressProcessedFiles = -1;
+  let lastProgressKey = "";
 
-  const emitProgress = (force = false, currentSource?: string) => {
+  const emitProgress = (
+    phase: "files" | "sessions",
+    force = false,
+    currentSource?: string,
+    currentSessionId?: string,
+  ) => {
     if (!opts?.onProgress) return;
     const now = performance.now();
+    const progressKey = `${phase}:${processedFiles}:${processedSessions}`;
     if (!force && now - lastProgressAt < progressEveryMs) return;
+    if (force && lastProgressKey === progressKey) return;
     lastProgressAt = now;
-    lastProgressProcessedFiles = processedFiles;
+    lastProgressKey = progressKey;
     opts.onProgress({
       label,
       elapsedMs: now - startedAt,
+      phase,
       processedFiles,
       discoveredFiles,
       filesScanned,
       newTurns,
       touchedSessions: touchedSessions.size,
       currentSource,
+      processedSessions: phase === "sessions" ? processedSessions : undefined,
+      totalSessions: phase === "sessions" ? touchedSessions.size : undefined,
+      currentSessionId,
     });
   };
 
@@ -241,8 +295,8 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
     });
   }
 
-  if (discoveredFiles > 0 && lastProgressProcessedFiles !== processedFiles) {
-    emitProgress(true);
+  if (discoveredFiles > 0) {
+    emitProgress("files", true);
   }
 
   for (const target of discoveredTargets) {
@@ -456,13 +510,13 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         });
       } finally {
         processedFiles += 1;
-        emitProgress(false, source);
+        emitProgress("files", false, source);
       }
     }
   }
 
-  if (discoveredFiles > 0 && lastProgressProcessedFiles !== processedFiles) {
-    emitProgress(true);
+  if (discoveredFiles > 0) {
+    emitProgress("files", true);
   }
 
   for (const profile of targetProfiles.values()) {
@@ -475,6 +529,7 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
   // Link subagent sessions to parents after all files are processed
   if (filesScanned > 0) {
     if (touchedSessions.size > 0) {
+      emitProgress("sessions", true);
       for (const sessionId of touchedSessions) {
         const sessionProfile: ScanSessionProfile = {
           sessionId,
@@ -537,7 +592,10 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
           sessionProfile.reconcileMs +
           sessionProfile.projectionMs;
         sessionProfiles.push(sessionProfile);
+        processedSessions += 1;
+        emitProgress("sessions", false, undefined, sessionId);
       }
+      emitProgress("sessions", true);
     }
     const linkStartedAt = performance.now();
     linkedSessions = linkSubagentSessions();
@@ -652,11 +710,18 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     let hadWork = false;
     try {
       const isStartupScan = !ready;
+      const scanStatusStartedAtMs = Date.now();
+      writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan);
       const { newTurns } = scanOnce({
         profileLabel: isStartupScan ? "startup scan" : "scan",
         logDetails: isStartupScan,
+        progressEveryMs: SCAN_STATUS_EVERY_MS,
+        onProgress: (progress) => {
+          writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan, progress);
+        },
       });
       hadWork = newTurns > 0;
+      clearScannerStatus();
 
       if (!ready) {
         ready = true;
@@ -682,6 +747,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
         }
       }
     } catch (err) {
+      clearScannerStatus();
       log.scanner.error(
         `Scan error: ${err instanceof Error ? err.message : err}`,
       );
