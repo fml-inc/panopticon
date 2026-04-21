@@ -115,6 +115,18 @@ function insertHookEvent(sessionId: string): number {
   return Number(result.lastInsertRowid);
 }
 
+function insertOtelLog(sessionId: string, index: number): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `INSERT INTO otel_logs
+         (session_id, timestamp_ns, body, attributes, resource_attributes)
+       VALUES (?, ?, ?, '{}', '{}')`,
+    )
+    .run(sessionId, index + 1, `otel-${index}`);
+  return Number(result.lastInsertRowid);
+}
+
 function getTss(sessionId: string, target: string) {
   const db = getDb();
   return db
@@ -163,6 +175,9 @@ beforeEach(() => {
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM tool_calls").run();
   db.prepare("DELETE FROM hook_events").run();
+  db.prepare("DELETE FROM otel_logs").run();
+  db.prepare("DELETE FROM otel_metrics").run();
+  db.prepare("DELETE FROM otel_spans").run();
   db.prepare("DELETE FROM watermarks").run();
   mockedPostSync.mockReset();
   ackEverything();
@@ -499,6 +514,107 @@ describe("createSyncLoop integration", () => {
         wm_otel_logs: 13,
         wm_otel_metrics: 14,
         wm_otel_spans: 15,
+      });
+    });
+
+    it("advances large session backlogs across ticks without marking synced_seq early", async () => {
+      insertSession("s1", 1);
+      insertSessionRepo("s1");
+      const messageIds = Array.from({ length: 5 }, (_, i) =>
+        insertMessage("s1", i),
+      );
+
+      const handle = createSyncLoop({
+        targets: [makeTarget()],
+        sessionTables: ["messages"],
+        nonSessionTables: [],
+        batchSize: 2,
+        sessionRowBudget: 2,
+      });
+
+      await handle.runOnce();
+      expect(getTss("s1", "fml")).toMatchObject({
+        wm_messages: messageIds[1],
+        synced_seq: 0,
+        sync_seq: 1,
+      });
+
+      mockedPostSync.mockClear();
+      await handle.runOnce();
+      const secondTickIds = mockedPostSync.mock.calls
+        .filter(([, body]) => body.table === "messages")
+        .flatMap(([, body]) => body.rows.map((r) => (r as { id: number }).id));
+      expect(secondTickIds).toEqual([messageIds[2], messageIds[3]]);
+      expect(getTss("s1", "fml")).toMatchObject({
+        wm_messages: messageIds[3],
+        synced_seq: 0,
+      });
+
+      mockedPostSync.mockClear();
+      await handle.runOnce();
+      const thirdTickIds = mockedPostSync.mock.calls
+        .filter(([, body]) => body.table === "messages")
+        .flatMap(([, body]) => body.rows.map((r) => (r as { id: number }).id));
+      expect(thirdTickIds).toEqual([messageIds[4]]);
+      expect(getTss("s1", "fml")).toMatchObject({
+        wm_messages: messageIds[4],
+        synced_seq: 1,
+      });
+    });
+
+    it("moves otel backlog onto a separate loop with independent watermarks", async () => {
+      insertSession("s1", 1);
+      insertSessionRepo("s1");
+      const messageId = insertMessage("s1", 0);
+      const otelIds = Array.from({ length: 5 }, (_, i) =>
+        insertOtelLog("s1", i),
+      );
+
+      const coreHandle = createSyncLoop({
+        targets: [makeTarget()],
+        sessionTables: ["messages"],
+        nonSessionTables: [],
+      });
+      await coreHandle.runOnce();
+
+      expect(getTss("s1", "fml")).toMatchObject({
+        wm_messages: messageId,
+        wm_otel_logs: 0,
+        synced_seq: 1,
+      });
+
+      mockedPostSync.mockClear();
+      const otelHandle = createSyncLoop({
+        targets: [makeTarget()],
+        syncSessions: false,
+        sessionTables: ["otel_logs"],
+        nonSessionTables: [],
+        sessionPendingMode: "watermark-gap",
+        batchSize: 2,
+        sessionRowBudget: 2,
+      });
+
+      await otelHandle.runOnce();
+
+      const firstOtelIds = mockedPostSync.mock.calls
+        .filter(([, body]) => body.table === "otel_logs")
+        .flatMap(([, body]) => body.rows.map((r) => (r as { id: number }).id));
+      expect(firstOtelIds).toEqual([otelIds[0], otelIds[1]]);
+      expect(getTss("s1", "fml")).toMatchObject({
+        wm_messages: messageId,
+        wm_otel_logs: otelIds[1],
+        synced_seq: 1,
+      });
+
+      mockedPostSync.mockClear();
+      await otelHandle.runOnce();
+      const secondOtelIds = mockedPostSync.mock.calls
+        .filter(([, body]) => body.table === "otel_logs")
+        .flatMap(([, body]) => body.rows.map((r) => (r as { id: number }).id));
+      expect(secondOtelIds).toEqual([otelIds[2], otelIds[3]]);
+      expect(getTss("s1", "fml")).toMatchObject({
+        wm_otel_logs: otelIds[3],
+        synced_seq: 1,
       });
     });
   });

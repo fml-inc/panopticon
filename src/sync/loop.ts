@@ -6,7 +6,11 @@ import { log } from "../log.js";
 import { captureException } from "../sentry.js";
 import { postSync } from "./post.js";
 import { readSessionsByIds, SESSION_READERS } from "./reader.js";
-import { TABLE_SYNC_REGISTRY } from "./registry.js";
+import {
+  DEFAULT_NON_SESSION_TABLES,
+  DEFAULT_SESSION_TABLES,
+  TABLE_SYNC_REGISTRY,
+} from "./registry.js";
 import type {
   SyncFilter,
   SyncHandle,
@@ -19,7 +23,7 @@ const DEFAULT_BATCH_SIZE = 2000;
 const DEFAULT_POST_BATCH_SIZE = 100;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 100;
-const MAX_SESSIONS_PER_TICK = 10;
+const DEFAULT_MAX_SESSIONS_PER_TICK = 10;
 
 /** Maps SESSION_READERS table name → target_session_sync column name. */
 const WM_COLUMNS = {
@@ -32,6 +36,18 @@ const WM_COLUMNS = {
   otel_metrics: "wm_otel_metrics",
   otel_spans: "wm_otel_spans",
 } as const;
+
+type SessionTableName = keyof typeof WM_COLUMNS;
+
+type PendingSessionRow = {
+  session_id: string;
+  sync_seq: number;
+  synced_seq: number;
+} & Record<(typeof WM_COLUMNS)[SessionTableName], number>;
+
+function isSessionTableName(table: string): table is SessionTableName {
+  return table in WM_COLUMNS && table in SESSION_READERS;
+}
 
 function matchesGlob(value: string, pattern: string): boolean {
   if (pattern === "*/*") return true;
@@ -110,6 +126,32 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const postBatchSize = opts.postBatchSize ?? DEFAULT_POST_BATCH_SIZE;
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
+  const maxSessionsPerTick =
+    opts.maxSessionsPerTick ?? DEFAULT_MAX_SESSIONS_PER_TICK;
+  const sessionRowBudget = Math.max(1, opts.sessionRowBudget ?? batchSize);
+  const sessionPendingMode = opts.sessionPendingMode ?? "sync-seq";
+  const syncSessionsEnabled = opts.syncSessions ?? true;
+  const sessionTables = (
+    opts.sessionTables ?? [...DEFAULT_SESSION_TABLES]
+  ).filter(isSessionTableName);
+  const nonSessionTableSet = new Set(
+    opts.nonSessionTables ?? [...DEFAULT_NON_SESSION_TABLES],
+  );
+  const nonSessionTables = TABLE_SYNC_REGISTRY.filter(
+    (desc) => !desc.sessionLinked && nonSessionTableSet.has(desc.table),
+  );
+  const loopPrefix = opts.loopName ? `${opts.loopName}: ` : "";
+  const watermarkGapPredicate = sessionTables
+    .map(
+      (table) =>
+        `EXISTS (
+           SELECT 1
+           FROM ${table} t
+           WHERE t.session_id = target_session_sync.session_id
+             AND t.id > target_session_sync.${WM_COLUMNS[table]}
+         )`,
+    )
+    .join(" OR ");
 
   const panopticonVersion =
     typeof __PANOPTICON_VERSION__ !== "undefined"
@@ -130,6 +172,10 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   let syncing = false;
   let stopping = false;
 
+  function formatLog(message: string): string {
+    return `${loopPrefix}${message}`;
+  }
+
   function scheduleNext(hadWork: boolean): void {
     if (stopping) return;
     const delay = hadWork ? catchUpMs : idleMs;
@@ -147,6 +193,8 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     target: SyncTarget,
     syncableSessionIds: Set<string> | null,
   ): Promise<boolean> {
+    if (!syncSessionsEnabled) return false;
+
     const db = getDb();
     const requireRepo = opts.filter?.requireRepo ?? true;
 
@@ -203,7 +251,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
     const rows = readSessionsByIds(sessionIds);
     if (rows.length > 0) {
-      log.sync.info(`sessions: ${rows.length} sessions to sync`);
+      log.sync.info(formatLog(`sessions: ${rows.length} sessions to sync`));
 
       for (let j = 0; j < rows.length; j += postBatchSize) {
         const batch = rows.slice(j, j + postBatchSize);
@@ -225,8 +273,85 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
   // ── Phase 2: Sync dependent data (per-session, gated by confirmed) ───────
 
+  function readPendingSessions(targetName: string): PendingSessionRow[] {
+    if (sessionTables.length === 0) return [];
+
+    const db = getDb();
+    const whereClause =
+      sessionPendingMode === "watermark-gap"
+        ? watermarkGapPredicate
+          ? `AND (${watermarkGapPredicate})`
+          : "AND 0"
+        : "AND sync_seq > synced_seq";
+
+    return db
+      .prepare(
+        `SELECT session_id, sync_seq, synced_seq,
+                wm_messages, wm_tool_calls, wm_scanner_turns,
+                wm_scanner_events, wm_hook_events, wm_otel_logs,
+                wm_otel_metrics, wm_otel_spans
+         FROM target_session_sync
+         WHERE target = ? AND confirmed = 1
+           ${whereClause}
+         ORDER BY rowid
+         LIMIT ?`,
+      )
+      .all(targetName, maxSessionsPerTick) as PendingSessionRow[];
+  }
+
+  function hasRemainingPendingSessions(targetName: string): boolean {
+    if (sessionTables.length === 0) return false;
+
+    const db = getDb();
+    const whereClause =
+      sessionPendingMode === "watermark-gap"
+        ? watermarkGapPredicate
+          ? `AND (${watermarkGapPredicate})`
+          : "AND 0"
+        : "AND sync_seq > synced_seq";
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) as cnt
+         FROM target_session_sync
+         WHERE target = ? AND confirmed = 1
+           ${whereClause}`,
+      )
+      .get(targetName) as { cnt: number };
+    return row.cnt > 0;
+  }
+
+  function writeSessionProgress(
+    sessionId: string,
+    targetName: string,
+    watermarks: Record<SessionTableName, number>,
+    syncedSeq: number,
+  ): void {
+    const db = getDb();
+    db.prepare(
+      `UPDATE target_session_sync
+       SET wm_messages = ?, wm_tool_calls = ?, wm_scanner_turns = ?,
+           wm_scanner_events = ?, wm_hook_events = ?, wm_otel_logs = ?,
+           wm_otel_metrics = ?, wm_otel_spans = ?, synced_seq = ?
+       WHERE session_id = ? AND target = ?`,
+    ).run(
+      watermarks.messages,
+      watermarks.tool_calls,
+      watermarks.scanner_turns,
+      watermarks.scanner_events,
+      watermarks.hook_events,
+      watermarks.otel_logs,
+      watermarks.otel_metrics,
+      watermarks.otel_spans,
+      syncedSeq,
+      sessionId,
+      targetName,
+    );
+  }
+
   async function syncSessionData(target: SyncTarget): Promise<boolean> {
     const db = getDb();
+
+    if (sessionTables.length === 0) return false;
 
     // Clean up orphaned entries (session deleted from local DB)
     db.prepare(
@@ -234,115 +359,94 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
        WHERE session_id NOT IN (SELECT session_id FROM sessions)`,
     ).run();
 
-    // Get confirmed sessions that have new data (sync_seq > synced_seq)
-    const pending = db
-      .prepare(
-        `SELECT session_id, sync_seq,
-                wm_messages, wm_tool_calls, wm_scanner_turns,
-                wm_scanner_events, wm_hook_events, wm_otel_logs,
-                wm_otel_metrics, wm_otel_spans
-         FROM target_session_sync
-         WHERE target = ? AND confirmed = 1
-           AND sync_seq > synced_seq
-         ORDER BY rowid
-         LIMIT ?`,
-      )
-      .all(target.name, MAX_SESSIONS_PER_TICK) as Array<{
-      session_id: string;
-      sync_seq: number;
-      wm_messages: number;
-      wm_tool_calls: number;
-      wm_scanner_turns: number;
-      wm_scanner_events: number;
-      wm_hook_events: number;
-      wm_otel_logs: number;
-      wm_otel_metrics: number;
-      wm_otel_spans: number;
-    }>;
-
+    const pending = readPendingSessions(target.name);
     if (pending.length === 0) return false;
 
     const headers = resolveHeaders(target);
     const url = `${target.url}/v1/sync`;
 
     for (const entry of pending) {
-      // Build watermarks from explicit columns
       const wmRow = entry as unknown as Record<string, number>;
-      const watermarks: Record<string, number> = {};
-      for (const [table, col] of Object.entries(WM_COLUMNS)) {
+      const watermarks = {} as Record<SessionTableName, number>;
+      for (const [table, col] of Object.entries(WM_COLUMNS) as Array<
+        [SessionTableName, (typeof WM_COLUMNS)[SessionTableName]]
+      >) {
         watermarks[table] = wmRow[col] ?? 0;
       }
-      let anyData = false;
 
-      for (const [table, reader] of Object.entries(SESSION_READERS)) {
-        // Read and POST in batches, draining until no more rows
-        let afterId = watermarks[table] ?? 0;
-        for (;;) {
-          const { rows, maxId } = reader(entry.session_id, afterId, batchSize);
-          if (rows.length === 0) break;
+      let anyData = false;
+      let remainingBudget = sessionRowBudget;
+      const activeTables = new Set(sessionTables);
+
+      while (remainingBudget > 0 && activeTables.size > 0) {
+        let progressedInPass = false;
+
+        for (const table of sessionTables) {
+          if (!activeTables.has(table) || remainingBudget <= 0) continue;
+
+          const limit = Math.min(batchSize, remainingBudget);
+          const { rows, maxId } = SESSION_READERS[table](
+            entry.session_id,
+            watermarks[table],
+            limit,
+          );
+          if (rows.length === 0) {
+            activeTables.delete(table);
+            continue;
+          }
 
           anyData = true;
+          progressedInPass = true;
 
           for (let i = 0; i < rows.length; i += postBatchSize) {
             const batch = rows.slice(i, i + postBatchSize);
             await postSync(url, { table, rows: batch }, headers);
           }
 
-          afterId = maxId;
           watermarks[table] = maxId;
+          remainingBudget -= rows.length;
 
-          if (rows.length < batchSize) break;
+          if (rows.length < limit) {
+            activeTables.delete(table);
+          }
         }
+
+        if (!progressedInPass) break;
       }
 
-      // Update watermarks and mark as synced up to cached sync_seq
-      db.prepare(
-        `UPDATE target_session_sync
-         SET wm_messages = ?, wm_tool_calls = ?, wm_scanner_turns = ?,
-             wm_scanner_events = ?, wm_hook_events = ?, wm_otel_logs = ?,
-             wm_otel_metrics = ?, wm_otel_spans = ?, synced_seq = ?
-         WHERE session_id = ? AND target = ?`,
-      ).run(
-        watermarks.messages,
-        watermarks.tool_calls,
-        watermarks.scanner_turns,
-        watermarks.scanner_events,
-        watermarks.hook_events,
-        watermarks.otel_logs,
-        watermarks.otel_metrics,
-        watermarks.otel_spans,
-        entry.sync_seq,
+      const fullyDrained = activeTables.size === 0;
+      const nextSyncedSeq =
+        sessionPendingMode === "sync-seq" && fullyDrained
+          ? entry.sync_seq
+          : entry.synced_seq;
+
+      writeSessionProgress(
         entry.session_id,
         target.name,
+        watermarks,
+        nextSyncedSeq,
       );
 
       if (anyData) {
         log.sync.info(
-          `session-sync: synced data for ${entry.session_id} to ${target.name}`,
+          formatLog(
+            `session-sync: ${fullyDrained ? "synced" : "advanced"} data for ${entry.session_id} to ${target.name}`,
+          ),
         );
       }
     }
 
-    // Check if more confirmed sessions with new data remain
-    const remaining = db
-      .prepare(
-        `SELECT COUNT(*) as cnt FROM target_session_sync
-         WHERE target = ? AND confirmed = 1
-           AND sync_seq > synced_seq`,
-      )
-      .get(target.name) as { cnt: number };
-
-    return remaining.cnt > 0;
+    return hasRemainingPendingSessions(target.name);
   }
 
   // ── Phase 3: Sync non-session tables (unchanged) ─────────────────────────
 
   async function syncNonSessionTables(target: SyncTarget): Promise<boolean> {
+    if (nonSessionTables.length === 0) return false;
+
     let hasMore = false;
 
-    for (const desc of TABLE_SYNC_REGISTRY) {
-      if (desc.sessionLinked) continue; // handled by Phase 1 and 2
-
+    for (const desc of nonSessionTables) {
       const wmKey = watermarkKey(desc.table, target.name);
       const wm = readWatermark(wmKey);
       const { rows, maxId } = desc.read(wm, batchSize);
@@ -359,7 +463,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
       if (filtered.length > 0) {
         log.sync.info(
-          `${desc.table}: ${filtered.length} ${desc.logNoun} (watermark ${wm} → ${maxId})`,
+          formatLog(
+            `${desc.table}: ${filtered.length} ${desc.logNoun} (watermark ${wm} → ${maxId})`,
+          ),
         );
 
         for (let j = 0; j < filtered.length; j += postBatchSize) {
@@ -404,7 +510,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   async function runOnce(): Promise<boolean> {
     let hasMore = false;
 
-    const syncableSessionIds = buildSyncableSessionIds(opts);
+    const syncableSessionIds = syncSessionsEnabled
+      ? buildSyncableSessionIds(opts)
+      : null;
 
     for (const target of opts.targets) {
       try {
@@ -455,7 +563,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     start() {
       if (timer || syncing) return;
       stopping = false;
-      log.sync.info("Starting sync");
+      log.sync.info(formatLog("Starting sync"));
       tick().catch((err) => log.sync.error(`Tick error: ${err}`));
     },
     stop() {
@@ -463,7 +571,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       if (timer) {
         clearTimeout(timer);
         timer = null;
-        log.sync.info("Stopped sync");
+        log.sync.info(formatLog("Stopped sync"));
       }
     },
     runOnce,

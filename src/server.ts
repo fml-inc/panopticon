@@ -18,6 +18,11 @@ import {
   setTag,
 } from "./sentry.js";
 import { createSyncLoop } from "./sync/loop.js";
+import {
+  CORE_SESSION_TABLES,
+  DEFAULT_NON_SESSION_TABLES,
+  OTEL_SESSION_TABLES,
+} from "./sync/registry.js";
 import type { SyncHandle } from "./sync/types.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
@@ -138,6 +143,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
 
   const server = createUnifiedServer();
   let syncHandle: SyncHandle | null = null;
+  let otelSyncHandle: SyncHandle | null = null;
   let scannerHandle: ScannerHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -188,8 +194,26 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
           syncHandle = createSyncLoop({
             targets: cfg.sync.targets,
             filter: cfg.sync.filter,
+            sessionTables: [...CORE_SESSION_TABLES],
+            nonSessionTables: [...DEFAULT_NON_SESSION_TABLES],
           });
           syncHandle.start();
+
+          otelSyncHandle = createSyncLoop({
+            targets: cfg.sync.targets,
+            filter: cfg.sync.filter,
+            loopName: "otel",
+            syncSessions: false,
+            sessionTables: [...OTEL_SESSION_TABLES],
+            nonSessionTables: [],
+            sessionPendingMode: "watermark-gap",
+            batchSize: 1000,
+            sessionRowBudget: 1000,
+            maxSessionsPerTick: 2,
+            idleIntervalMs: 60_000,
+            catchUpIntervalMs: 2_000,
+          });
+          otelSyncHandle.start();
         }
       },
     });
@@ -205,6 +229,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     if (pruneTimer) clearInterval(pruneTimer);
     scannerHandle?.stop();
     syncHandle?.stop();
+    otelSyncHandle?.stop();
     await flushSentry();
     server.close();
     process.exit(0);
