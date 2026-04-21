@@ -233,6 +233,9 @@ Target-specific env vars are declared by each target adapter in `src/targets/`.
 | `PANOPTICON_DATA_DIR` | Platform-specific (see below) | Data directory |
 | `PANOPTICON_PORT` | `4318` | Unified server port |
 | `PANOPTICON_HOST` | `127.0.0.1` | Server bind address |
+| `PANOPTICON_LOG_LEVEL` | `info` | Minimum log level for daemon logs and `hook-handler.log` (`silly`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`) |
+
+`hook-handler.log` now keeps server startup, warnings, and errors at the default `info` level. Per-event success-path lines are only written when `PANOPTICON_LOG_LEVEL=debug` (or lower).
 
 Data directory defaults:
 

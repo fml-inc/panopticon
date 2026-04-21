@@ -16,7 +16,12 @@ import { fileURLToPath } from "node:url";
 import { isServerRunning, waitForServer } from "../api/util.js";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
-import { logPaths, openLogFd } from "../log.js";
+import {
+  logPaths,
+  openLogFd,
+  type PanopticonLogLevelName,
+  shouldWriteLog,
+} from "../log.js";
 import { addBreadcrumb, captureException, initSentry } from "../sentry.js";
 import type { HookInput } from "./ingest.js";
 
@@ -30,13 +35,20 @@ function getAgentVersion(): string | undefined {
 // NOTE: ensureDataDir() here can recreate the data dir. This is safe because
 // logHook is only called inside runHandler(), which has an early-exit guard
 // when the data dir is missing (preventing resurrection after --purge).
-function logHook(message: string, meta?: Record<string, unknown>): void {
+function logHook(
+  level: PanopticonLogLevelName,
+  message: string,
+  meta?: Record<string, unknown>,
+): void {
+  if (!shouldWriteLog(level)) {
+    return;
+  }
   try {
     ensureDataDir();
     const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
     fs.appendFileSync(
       logPaths.hook,
-      `${new Date().toISOString()} ${message}${suffix}\n`,
+      `${new Date().toISOString()} ${level.toUpperCase()} ${message}${suffix}\n`,
     );
   } catch {}
 }
@@ -189,7 +201,7 @@ export async function runHandler(opts: {
   const { targetId, port, proxy } = opts;
 
   try {
-    logHook("hook-handler invoked", {
+    logHook("debug", "hook-handler invoked", {
       pid: process.pid,
       cwd: process.cwd(),
       pwd: process.env.PWD,
@@ -200,11 +212,11 @@ export async function runHandler(opts: {
 
     const input = await readStdin();
     if (!input.trim()) {
-      logHook("empty stdin");
+      logHook("debug", "empty stdin");
       process.exit(0);
     }
 
-    logHook("stdin received", { bytes: Buffer.byteLength(input) });
+    logHook("debug", "stdin received", { bytes: Buffer.byteLength(input) });
 
     const data: HookInput = JSON.parse(input);
 
@@ -217,7 +229,7 @@ export async function runHandler(opts: {
     }
 
     const eventType = data.hook_event_name ?? "Unknown";
-    logHook("event parsed", {
+    logHook("debug", "event parsed", {
       eventType,
       sessionId: data.session_id,
       toolName: data.tool_name,
@@ -238,22 +250,22 @@ export async function runHandler(opts: {
     // concurrent hook invocations from both spawning a server (TOCTOU race).
     if (eventType === "SessionStart" || eventType === "session_start") {
       const serverRunning = isServerRunning();
-      logHook("session start", { serverRunning });
+      logHook("debug", "session start", { serverRunning });
       if (!serverRunning) {
         if (acquireStartLock()) {
           try {
-            logHook("starting server (lock acquired)");
+            logHook("info", "starting server (lock acquired)");
             startServer();
             const ready = await waitForServer(port);
-            logHook("server readiness", { ready });
+            logHook("info", "server readiness", { ready });
           } finally {
             releaseStartLock();
           }
         } else {
           // Another hook handler is starting the server — wait for it
-          logHook("waiting for server (another handler starting)");
+          logHook("debug", "waiting for server (another handler starting)");
           const ready = await waitForServer(port);
-          logHook("server readiness (waited)", { ready });
+          logHook("debug", "server readiness (waited)", { ready });
         }
       }
       refreshIfStale().catch(() => {});
@@ -274,22 +286,24 @@ export async function runHandler(opts: {
     // misconfigured server. The server auto-starts on SessionStart above.
     let result: Record<string, unknown>;
     try {
-      logHook("posting to server", { port });
+      logHook("debug", "posting to server", { port });
       result = await postToServer(data, port);
-      logHook("server post succeeded", { resultKeys: Object.keys(result) });
+      logHook("debug", "server post succeeded", {
+        resultKeys: Object.keys(result),
+      });
     } catch {
-      logHook("server post failed, dropping event");
+      logHook("warn", "server post failed, dropping event");
       result = {};
     }
 
     process.stdout.write(JSON.stringify(result));
-    logHook("response written", {
+    logHook("debug", "response written", {
       bytes: Buffer.byteLength(JSON.stringify(result)),
     });
   } catch (err) {
     // Silently fail — hooks must not block the calling CLI
     const errorMessage = err instanceof Error ? err.message : String(err);
-    logHook("hook-handler failed", { error: errorMessage });
+    logHook("error", "hook-handler failed", { error: errorMessage });
     captureException(err, { component: "hook-handler", event_type: "unknown" });
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);

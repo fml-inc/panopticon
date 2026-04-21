@@ -203,7 +203,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
     const rows = readSessionsByIds(sessionIds);
     if (rows.length > 0) {
-      log.sync.info(`sessions: ${rows.length} sessions to sync`);
+      log.sync.debug(`sessions: ${rows.length} sessions to sync`);
 
       for (let j = 0; j < rows.length; j += postBatchSize) {
         const batch = rows.slice(j, j + postBatchSize);
@@ -317,7 +317,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       );
 
       if (anyData) {
-        log.sync.info(
+        log.sync.debug(
           `session-sync: synced data for ${entry.session_id} to ${target.name}`,
         );
       }
@@ -358,7 +358,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           : rows;
 
       if (filtered.length > 0) {
-        log.sync.info(
+        log.sync.debug(
           `${desc.table}: ${filtered.length} ${desc.logNoun} (watermark ${wm} → ${maxId})`,
         );
 

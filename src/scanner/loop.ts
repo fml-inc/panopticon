@@ -153,7 +153,7 @@ function logScanProfile(
   const label = opts?.profileLabel ?? "scan";
   const prefix = `${label} profile`;
   const { profile } = result;
-  log.scanner.info(
+  log.scanner.debug(
     `${prefix}: total=${formatMs(profile.totalMs)} files=${result.filesScanned} turns=${result.newTurns} touched_sessions=${result.touchedSessions.length} phases(parse=${formatMs(profile.parseMs)} db=${formatMs(profile.dbWriteMs)} archive=${formatMs(profile.archiveMs)} claims=${formatMs(profile.rebuildScannerMs)} landed=${formatMs(profile.reconcileMs)} projection=${formatMs(profile.projectionMs)} link=${formatMs(profile.linkMs)})`,
   );
 
@@ -162,7 +162,7 @@ function logScanProfile(
   if (!shouldLogDetails) return;
 
   for (const target of profile.targets) {
-    log.scanner.info(
+    log.scanner.debug(
       `${prefix} target: source=${target.source} discovered=${target.filesDiscovered} scanned=${target.filesScanned} turns=${target.turns} touched_sessions=${target.touchedSessions} reparses=${target.reparses} parse=${formatMs(target.parseMs)} db=${formatMs(target.dbWriteMs)} archive=${formatMs(target.archiveMs)}`,
     );
   }
@@ -171,7 +171,7 @@ function logScanProfile(
     0,
     MAX_PROFILE_DETAILS,
   )) {
-    log.scanner.info(
+    log.scanner.debug(
       `${prefix} file: total=${formatMs(file.totalMs)} source=${file.source} turns=${file.turns} messages=${file.messages} events=${file.events} forks=${file.forks} touched_sessions=${file.sessionsTouched} parse=${formatMs(file.parseMs)} db=${formatMs(file.dbWriteMs)} archive=${formatMs(file.archiveMs)} reparsed=${file.reparsedFromStart ? "yes" : "no"} path=${file.filePath}`,
     );
   }
@@ -180,7 +180,7 @@ function logScanProfile(
     0,
     MAX_PROFILE_DETAILS,
   )) {
-    log.scanner.info(
+    log.scanner.debug(
       `${prefix} session: total=${formatMs(session.totalMs)} session=${session.sessionId} claims=${formatMs(session.scannerMs)} intents=${session.scannerIntents} edits=${session.scannerEdits} landed=${formatMs(session.reconcileMs)} checked=${session.reconciledEdits} active_load=${formatMs(session.reconcileActiveLoadMs)} active_intents=${session.reconcileActiveIntentsLoaded} active_edits=${session.reconcileActiveEditsLoaded} projection=${formatMs(session.projectionMs)} projected_intents=${session.projectedIntents} projected_edits=${session.projectedEdits} summaries=${session.projectedSessionSummaries} memberships=${session.memberships} provenance=${session.provenance} projection_active_load=${formatMs(session.projectionActiveLoadMs)} projection_active_intents=${session.projectionActiveIntentsLoaded} projection_active_edits=${session.projectionActiveEditsLoaded}`,
     );
   }
@@ -350,7 +350,7 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             targetProfile.parseMs += fileParseMs;
             continue;
           }
-          log.scanner.info(`Reparsing ${filePath} from start (fork detected)`);
+          log.scanner.debug(`Reparsing ${filePath} from start (fork detected)`);
         }
 
         filesScanned++;
@@ -604,11 +604,16 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
     linkedSessions = linkSubagentSessions();
     linkMs += performance.now() - linkStartedAt;
     if (linkedSessions > 0) {
-      log.scanner.info(
+      log.scanner.debug(
         `Linked ${linkedSessions} subagent session${linkedSessions > 1 ? "s" : ""}`,
       );
     }
-    log.scanner.info(`Scanned ${filesScanned} files, ${newTurns} new turns`);
+    const scanSummary = `Scanned ${filesScanned} files, ${newTurns} new turns`;
+    if (newTurns > 0) {
+      log.scanner.info(scanSummary);
+    } else {
+      log.scanner.debug(scanSummary);
+    }
   }
 
   const result: ScanOnceResult = {
@@ -686,7 +691,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
         import("./reparse.js")
           .then(({ reparseAll }) => {
             try {
-              const result = reparseAll((msg) => log.scanner.info(msg));
+              const result = reparseAll((msg) => log.scanner.debug(msg));
               clearScannerStatus();
               if (result.success) {
                 markResyncComplete();
@@ -745,10 +750,13 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       if (!hadWork && ready) {
         try {
           const summaryStartedAt = performance.now();
-          const result = generateSummariesOnce((msg) => log.scanner.info(msg));
-          log.scanner.info(
-            `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`,
-          );
+          const result = generateSummariesOnce((msg) => log.scanner.debug(msg));
+          const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
+          if (result.updated > 0) {
+            log.scanner.info(summaryMessage);
+          } else {
+            log.scanner.debug(summaryMessage);
+          }
         } catch (err) {
           log.scanner.error(
             `Session summary error: ${err instanceof Error ? err.message : err}`,

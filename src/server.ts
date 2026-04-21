@@ -134,7 +134,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   }
 
   const sentryActive = await initSentry();
-  if (sentryActive) log.server.info("Sentry: enabled");
+  if (sentryActive) log.server.debug("Sentry: enabled");
 
   const server = createUnifiedServer();
   let syncHandle: SyncHandle | null = null;
@@ -181,7 +181,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     scannerHandle = createScannerLoop({
       onReady: () => {
         if (cfg.sync.targets.length > 0) {
-          log.sync.info(
+          log.sync.debug(
             `Targets: ${cfg.sync.targets.map((t) => t.name).join(", ")}`,
           );
           setTag("sync_targets", cfg.sync.targets.length);

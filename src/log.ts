@@ -38,6 +38,49 @@ export type DaemonName = keyof typeof logPaths;
 
 export const DAEMON_NAMES = Object.keys(logPaths) as DaemonName[];
 
+export const LOG_LEVEL_IDS = {
+  silly: 0,
+  trace: 1,
+  debug: 2,
+  info: 3,
+  warn: 4,
+  error: 5,
+  fatal: 6,
+} as const;
+
+export type PanopticonLogLevelName = keyof typeof LOG_LEVEL_IDS;
+
+const DEFAULT_LOG_LEVEL: PanopticonLogLevelName = "info";
+
+function isLogLevelName(value: string): value is PanopticonLogLevelName {
+  return Object.hasOwn(LOG_LEVEL_IDS, value);
+}
+
+export function parseLogLevelName(
+  raw: string | undefined,
+): PanopticonLogLevelName {
+  const normalizedLevel = raw?.trim().toLowerCase();
+  if (!normalizedLevel || !isLogLevelName(normalizedLevel)) {
+    return DEFAULT_LOG_LEVEL;
+  }
+  return normalizedLevel;
+}
+
+export const PANOPTICON_LOG_LEVEL = parseLogLevelName(
+  process.env.PANOPTICON_LOG_LEVEL,
+);
+
+export function shouldWriteLogAtLevel(
+  minimumLevel: PanopticonLogLevelName,
+  level: PanopticonLogLevelName,
+): boolean {
+  return LOG_LEVEL_IDS[level] >= LOG_LEVEL_IDS[minimumLevel];
+}
+
+export function shouldWriteLog(level: PanopticonLogLevelName): boolean {
+  return shouldWriteLogAtLevel(PANOPTICON_LOG_LEVEL, level);
+}
+
 /**
  * Open a log file in append mode, returning the fd.
  * Pass the fd to spawn's stdio array: ["ignore", fd, fd]
@@ -50,6 +93,7 @@ export function openLogFd(daemon: DaemonName): number {
 
 const root = new Logger({
   name: "panopticon",
+  minLevel: LOG_LEVEL_IDS[PANOPTICON_LOG_LEVEL],
   type: "pretty",
   prettyLogTimeZone: "UTC",
   stylePrettyLogs: false,
