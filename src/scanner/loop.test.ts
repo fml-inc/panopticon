@@ -49,6 +49,7 @@ vi.mock("../intent/project.js", () => ({
 vi.mock("../log.js", () => ({
   log: {
     scanner: {
+      debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
