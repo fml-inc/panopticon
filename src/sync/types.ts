@@ -23,6 +23,31 @@ export interface SyncFilter {
 export interface SyncOptions {
   targets: SyncTarget[];
   filter?: SyncFilter;
+  /** Optional label for log messages when multiple sync loops are active. */
+  loopName?: string;
+  /** Whether this loop should sync/confirm session rows. Default: true. */
+  syncSessions?: boolean;
+  /** Session-linked tables handled by this loop. Default: all session-linked tables. */
+  sessionTables?: string[];
+  /** Non-session tables handled by this loop. Default: all non-session tables. */
+  nonSessionTables?: string[];
+  /**
+   * How this loop decides which confirmed sessions still have session-linked
+   * work pending.
+   *
+   * - `sync-seq`: use `sessions.sync_seq > target_session_sync.synced_seq`
+   * - `watermark-gap`: use per-table watermark gaps only
+   *
+   * Default: `sync-seq`
+   */
+  sessionPendingMode?: "sync-seq" | "watermark-gap";
+  /** Max confirmed sessions to advance per tick. Default: 10. */
+  maxSessionsPerTick?: number;
+  /**
+   * Max session-linked rows to advance for one session in one tick. Watermarks
+   * are persisted even when the budget is exhausted. Default: batchSize.
+   */
+  sessionRowBudget?: number;
   /** Max rows read from SQLite per batch (default 2000) */
   batchSize?: number;
   /** Max records per HTTP POST (default 25) */
