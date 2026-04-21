@@ -40,6 +40,17 @@ export function decodeLogs(buf: Uint8Array): OtelLogRow[] {
             new Date(attrs["event.timestamp"] as string).getTime() * 1_000_000;
         }
 
+        const sessionId =
+          (attrs["session.id"] as string) ??
+          (attrs["conversation.id"] as string) ??
+          resourceSessionId;
+
+        // Drop empty records. A record with no body, no session_id, AND no
+        // timestamp carries no queryable signal — it only pollutes data-
+        // hygiene assertions (session_id/body NOT NULL, timestamp_ns reasonable).
+        // Clients occasionally emit these from probe requests or partial flushes.
+        if (!body && !sessionId && !timestamp_ns) continue;
+
         rows.push({
           timestamp_ns,
           observed_timestamp_ns:
@@ -50,10 +61,7 @@ export function decodeLogs(buf: Uint8Array): OtelLogRow[] {
           attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
           resource_attributes:
             Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
-          session_id:
-            (attrs["session.id"] as string) ??
-            (attrs["conversation.id"] as string) ??
-            resourceSessionId,
+          session_id: sessionId,
           prompt_id: (attrs["prompt.id"] ?? attrs.prompt_id) as
             | string
             | undefined,

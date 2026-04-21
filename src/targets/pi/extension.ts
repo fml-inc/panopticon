@@ -7,11 +7,10 @@
  * failures are silently swallowed so the agent is never blocked.
  *
  * Install:
- *   cp index.ts ~/.pi/agent/extensions/panopticon.ts
- *   # or add to ~/.pi/agent/settings.json:
- *   #   { "extensions": ["/path/to/panopticon/integrations/pi/index.ts"] }
+ *   panopticon install --target pi
  *
  * Requires Panopticon server running on localhost:4318 (default).
+ * Set PANOPTICON_HOST and PANOPTICON_PORT to override the connection target.
  * Start with: panopticon start
  */
 
@@ -20,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
+const HOST = process.env.PANOPTICON_HOST ?? "127.0.0.1";
 const PORT = parseInt(process.env.PANOPTICON_PORT ?? "4318", 10);
 
 interface HookEvent {
@@ -29,6 +29,7 @@ interface HookEvent {
   repository?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  tool_result?: Record<string, unknown>;
   prompt?: string;
   source: string;
   [key: string]: unknown;
@@ -38,7 +39,7 @@ function post(event: HookEvent): void {
   const body = JSON.stringify(event);
   const req = http.request(
     {
-      hostname: "127.0.0.1",
+      hostname: HOST,
       port: PORT,
       path: "/hooks",
       method: "POST",
@@ -94,28 +95,29 @@ export default function panopticon(pi: ExtensionAPI) {
     emit({ hook_event_name: "SessionStart" });
   });
 
+  // Pi's input event has event.text (not event.input)
   pi.on("input", async (event) => {
-    emit({ hook_event_name: "UserPromptSubmit", prompt: event.input });
+    emit({ hook_event_name: "UserPromptSubmit", prompt: event.text });
   });
 
+  // PreToolUse — capture the tool call
   pi.on("tool_call", async (event) => {
     emit({
       hook_event_name: "PreToolUse",
       tool_name: event.toolName,
-      tool_input: event.input,
+      tool_input: event.input as Record<string, unknown>,
     });
   });
 
+  // PostToolUse — preserve the original tool_input (so file_path/command
+  // columns populate) and carry the result separately in tool_result
+  // (which insertHookEvent reads for the tool_result column).
   pi.on("tool_result", async (event) => {
-    const result = event.result as Record<string, unknown> | undefined;
-    const failed =
-      result?.isError === true ||
-      (result?.exitCode !== undefined && result.exitCode !== 0);
-
     emit({
-      hook_event_name: failed ? "PostToolUseFailure" : "PostToolUse",
+      hook_event_name: event.isError ? "PostToolUseFailure" : "PostToolUse",
       tool_name: event.toolName,
-      tool_input: result,
+      tool_input: event.input,
+      tool_result: { content: event.content, details: event.details },
     });
   });
 
