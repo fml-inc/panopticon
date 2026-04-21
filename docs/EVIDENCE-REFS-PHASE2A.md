@@ -125,7 +125,10 @@ Notes:
 - `locator_json` stores family-specific fields without forcing every field into
   fixed columns immediately.
 - denormalized columns like `session_id`, `sync_id`, `trace_id`, `span_id`,
-  `repository`, and `file_path` exist only to make lookups and filtering cheap.
+  `repository`, and `file_path` are intended to make lookups and filtering
+  cheap once hydrated from raw rows. The core cutover implemented on this
+  branch only fills fields that are naturally available at write time, so
+  follow-up work should backfill/hydrate the rest where derivable.
 - local row IDs are intentionally not part of canonical identity.
 
 ## Canonical Ref Keys
@@ -153,6 +156,31 @@ Example locators:
 { "kind": "hook_event", "refKey": "hook_event:ef01...", "sessionId": "sess-1", "syncId": "ef01...", "locator": { "eventType": "PostToolUse", "timestampMs": 1710000 } }
 { "kind": "otel_span", "refKey": "otel_span:trace:span", "sessionId": "sess-1", "locator": { "traceId": "trace", "spanId": "span" } }
 ```
+
+## Current Branch Scope
+
+This branch lands the Phase 2A core cutover, not the full multi-family rollout.
+
+Implemented here:
+
+- `claim_evidence` now stores `evidence_ref_id` only.
+- migrations treat claims/projection state as disposable derived data and force
+  atomic reparse from raw scanner files plus preserved `hook_events` / `otel_*`
+  rows.
+- active claim producers now emit typed refs for:
+  - `message`
+  - `tool_call`
+  - `hook_event`
+  - `file_snapshot`
+
+Not fully delivered yet:
+
+- no current claim producer emits `scanner_turn`, `scanner_event`, `otel_*`,
+  `git_commit`, or `git_hunk` refs yet
+- some evidence consumers still branch on canonical ref-key prefixes instead of
+  loading an `evidence_ref` and dispatching by `kind`
+- most denormalized `evidence_refs` columns are still sparse and need a follow-up
+  hydration pass
 
 ## Recommendation for Hooks and OTel
 
@@ -217,21 +245,30 @@ So the recommended order is:
 ## Migration Approach
 
 1. Add `evidence_refs`.
-2. Add `claim_evidence.evidence_ref_id`.
-3. Backfill from legacy `evidence_key` strings:
-   - `message:<session>:<ordinal>` -> `msg:<messages.sync_id>`
-   - `tool:<tool_use_id>` -> `tc:<tool_calls.sync_id>`
-   - `tool_local:<session>:<ordinal>:<idx>` -> `tc:<tool_calls.sync_id>`
-   - `hook:<id>` -> `hook:<hook_events.sync_id>`
-   - `fs_snapshot:*` -> typed `file_snapshot`
-4. Update claim writers to create/read `evidence_refs`.
-5. Update integrity checks and provenance resolvers to use `kind + locator`.
-6. Rebuild `claim_evidence` to drop legacy `evidence_key` once all readers are migrated.
+2. Rebuild `claim_evidence` to the ref-only schema without copying legacy rows.
+3. Treat `claims`, `claim_evidence`, `active_claims`, `intent_*`,
+   `session_summaries`, and `code_provenance` as disposable derived state for
+   this cutover.
+4. Bump the scanner data version so startup runs atomic reparse:
+   - rescan session files into a fresh DB
+   - copy raw `hook_events` / `otel_*` rows forward
+   - derive claims, intent projection, and evidence refs fresh from raw data
+   - reset `PRAGMA user_version` during migration so upgrade always triggers
+     the reparse even on DBs already stamped by newer local builds
+5. Update claim writers to create/read `evidence_refs`.
+6. Start moving integrity checks and provenance resolvers to `evidence_refs`.
+   Finishing the move from key-prefix dispatch to `kind + locator` is follow-up
+   work after the core cutover.
 
-## Resolver Model
+## Target Resolver Model
 
 `resolveEvidenceRef(ref)` should dispatch by `kind`, not by parsing arbitrary
 strings.
+
+The current branch stores `kind` and canonical `ref_key`, but some read paths
+still branch on canonical prefixes like `tc:` and `hook_event:`. Follow-up
+work should replace those callers with a single resolver that loads the ref row
+and dispatches by `kind`.
 
 Examples:
 
@@ -248,12 +285,14 @@ Examples:
 ## Acceptance Criteria
 
 1. No claim evidence depends on local row IDs as canonical identity.
-2. Integrity resolution no longer parses family-specific freeform strings.
-3. `hook_events` evidence refs survive local reparse and normal sync flows.
-4. `otel_logs` / `otel_metrics` / `otel_spans` can participate in claims using
-   the same reference model as scanner/message data.
-5. `repository` / `file` normalization can build on evidence refs without
-   needing a second evidence migration.
+2. New writes for active claim producers no longer emit legacy freeform/local-id
+   evidence strings.
+3. Typed refs for `message`, `tool_call`, `hook_event`, and `file_snapshot`
+   survive local reparse and normal sync flows.
+4. Remaining families (`scanner_*`, `otel_*`, `git_*`) can be added without a
+   second schema migration.
+5. `repository` / `file` normalization can build on the evidence-ref layer once
+   denormalized-column hydration and resolver follow-up are complete.
 
 ## Open Questions
 
@@ -261,5 +300,7 @@ Examples:
    get a deterministic observation-level transport identity too?
 2. Should `evidence_refs` dedupe purely by `ref_key`, or also enforce kind
    consistency in the schema/index layer?
-3. If hook or OTel raw replay becomes first-class, which family should get
+3. Should denormalized `evidence_refs` columns be hydrated eagerly at write
+   time, or via a follow-up backfill / repair pass from raw rows?
+4. If hook or OTel raw replay becomes first-class, which family should get
    deterministic ingest identity first: `hook_events` or `otel_logs`?

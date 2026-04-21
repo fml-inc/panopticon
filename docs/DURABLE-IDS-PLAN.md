@@ -104,6 +104,11 @@ opaque ad hoc keys in the claim layer.
 4. Update claim integrity/provenance resolution to target typed evidence refs
    instead of string-parsing local identifiers.
 
+This phase-level list is still the desired end state. The current branch lands
+the core schema/migration cutover and actively emits typed refs for
+`message`, `tool_call`, `hook_event`, and `file_snapshot`; the remaining
+families stay in Phase 2A follow-up.
+
 ### Why Hooks/OTel Land Here
 
 - They did not need to block Phase 1 because the urgent correctness problem was
@@ -162,14 +167,22 @@ and typed references.
 
 ## Immediate Next Steps
 
-1. Land and monitor Phase 1 scanner-owned durable IDs.
-2. Define the typed evidence-ref shape for:
-   - hook events
-   - otel logs / metrics / spans
-   - scanner rows
-   - messages / tool calls
-3. Decide the durable/transport identity strategy for `hook_events`,
-   `otel_logs`, and `otel_metrics`.
-4. Update claim evidence storage and integrity resolution to use typed refs.
-5. Start `repository` / `file` normalization only after the evidence-ref layer
-   is in place.
+1. Land and monitor the Phase 2A core cutover:
+   - destructive derived-state reset
+   - forced atomic reparse from raw data
+   - typed refs for `message`, `tool_call`, `hook_event`, and `file_snapshot`
+2. Hydrate denormalized `evidence_refs` columns from raw rows where derivable:
+   - `session_id`
+   - `repository`
+   - `file_path`
+3. Finish moving evidence consumers from key-prefix parsing to resolver-by-kind.
+4. Add an end-to-end upgrade/startup regression test that exercises:
+   - old populated DB -> new build startup
+   - migration-triggered atomic reparse
+   - healthy post-upgrade `intent_*` projection and hydrated `evidence_refs`
+5. Decide which remaining families should emit next:
+   - `scanner_turn` / `scanner_event`
+   - `otel_logs` / `otel_metrics` / `otel_spans`
+   - `git_commit` / `git_hunk`
+6. Start `repository` / `file` normalization only after the evidence-ref layer
+   is in place and hydrated enough to support cheap provenance queries.

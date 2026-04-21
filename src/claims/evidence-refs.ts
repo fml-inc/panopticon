@@ -1,4 +1,10 @@
 import type { Database } from "../db/driver.js";
+import {
+  hookEventSyncEvidenceKey,
+  messageSyncEvidenceKey,
+  sha256Hex,
+  toolCallSyncEvidenceKey,
+} from "./keys.js";
 import type { EvidenceRefInput, EvidenceRefKind } from "./types.js";
 
 interface MessageEvidenceRow {
@@ -37,6 +43,90 @@ export interface EvidenceRefRow {
   trace_id: string | null;
   span_id: string | null;
   locator_json: string;
+}
+
+export function messageEvidenceRef(args: {
+  sessionId: string;
+  syncId: string;
+  ordinal: number;
+  uuid?: string | null;
+}): EvidenceRefInput {
+  return {
+    kind: "message",
+    refKey: messageSyncEvidenceKey(args.syncId),
+    sessionId: args.sessionId,
+    syncId: args.syncId,
+    locator: {
+      sessionId: args.sessionId,
+      syncId: args.syncId,
+      ordinal: args.ordinal,
+      uuid: args.uuid ?? null,
+    },
+  };
+}
+
+export function toolCallEvidenceRef(args: {
+  sessionId: string;
+  syncId: string;
+  toolName: string;
+  toolUseId?: string | null;
+  callIndex?: number;
+  messageSyncId?: string | null;
+  messageOrdinal?: number;
+}): EvidenceRefInput {
+  return {
+    kind: "tool_call",
+    refKey: toolCallSyncEvidenceKey(args.syncId),
+    sessionId: args.sessionId,
+    syncId: args.syncId,
+    locator: {
+      sessionId: args.sessionId,
+      syncId: args.syncId,
+      toolName: args.toolName,
+      toolUseId: args.toolUseId ?? null,
+      callIndex: args.callIndex,
+      messageSyncId: args.messageSyncId ?? null,
+      messageOrdinal: args.messageOrdinal,
+    },
+  };
+}
+
+export function hookEventEvidenceRef(args: {
+  sessionId: string;
+  syncId: string;
+  eventType: string;
+  timestampMs: number;
+  toolName?: string | null;
+}): EvidenceRefInput {
+  return {
+    kind: "hook_event",
+    refKey: hookEventSyncEvidenceKey(args.syncId),
+    sessionId: args.sessionId,
+    syncId: args.syncId,
+    locator: {
+      sessionId: args.sessionId,
+      syncId: args.syncId,
+      eventType: args.eventType,
+      timestampMs: args.timestampMs,
+      toolName: args.toolName ?? null,
+    },
+  };
+}
+
+export function fileSnapshotEvidenceRef(args: {
+  filePath: string;
+  content: string;
+}): EvidenceRefInput {
+  const contentHash = sha256Hex(args.content);
+  return {
+    kind: "file_snapshot",
+    refKey: `file_snapshot:${args.filePath}:${contentHash}`,
+    filePath: args.filePath,
+    locator: {
+      filePath: args.filePath,
+      contentHash,
+    },
+  };
 }
 
 function tableHasColumn(db: Database, table: string, column: string): boolean {

@@ -622,9 +622,9 @@ CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path);
  * Scanner data version. Increment when parser logic changes in ways that
  * affect stored data (new fields extracted, content formatting changes,
  * fork detection improvements, etc.). On startup, if the DB's user_version
- * is lower than this, a full resync is triggered automatically.
+ * is lower than this, a full atomic reparse is triggered automatically.
  */
-export const SCANNER_DATA_VERSION = 2;
+export const SCANNER_DATA_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // Database initialization

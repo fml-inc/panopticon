@@ -386,6 +386,102 @@ describe("session-scoped rebuilds", () => {
 });
 
 describe("mixed hook/scanner edit convergence", () => {
+  it("keeps scanner-only intents when a session later gains partial hook coverage", () => {
+    const sessionId = "partial-hook-coverage";
+    const filePath = path.join(scratchDir, "partial-hook-coverage.ts");
+    fs.writeFileSync(filePath, "NEW");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 3000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "first prompt",
+      timestampMs: 1000,
+      uuid: "partial-hook-user-1",
+    });
+    const firstAssistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: firstAssistant,
+      sessionId,
+      toolName: "Edit",
+      toolUseId: "tool-partial-hook-1",
+      inputJson: {
+        file_path: "partial-hook-coverage.ts",
+        old_string: "OLD",
+        new_string: "NEW",
+      },
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 3,
+      content: "second prompt",
+      timestampMs: 2000,
+      uuid: "partial-hook-user-2",
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 2000,
+      payload: { prompt: "second prompt" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "Stop",
+      timestamp_ms: 3000,
+      payload: { session_id: sessionId },
+    });
+
+    rebuildMixedProjection(sessionId);
+
+    const intents = getDb()
+      .prepare(
+        `SELECT intent_key, prompt_text
+         FROM intent_units
+         WHERE session_id = ?
+         ORDER BY prompt_ts_ms ASC, intent_key ASC`,
+      )
+      .all(sessionId) as Array<{ intent_key: string; prompt_text: string }>;
+    const edits = getDb()
+      .prepare(
+        `SELECT edit_key, session_id, file_path
+         FROM intent_edits
+         WHERE session_id = ?
+         ORDER BY edit_key ASC`,
+      )
+      .all(sessionId) as Array<{
+      edit_key: string;
+      session_id: string;
+      file_path: string;
+    }>;
+
+    expect(intents).toEqual([
+      {
+        intent_key: `intent:${sessionId}:user:0`,
+        prompt_text: "first prompt",
+      },
+      {
+        intent_key: `intent:${sessionId}:user:1`,
+        prompt_text: "second prompt",
+      },
+    ]);
+    expect(edits).toEqual([
+      {
+        edit_key: expect.stringContaining(`edit:intent:${sessionId}:user:0:`),
+        session_id: sessionId,
+        file_path: filePath,
+      },
+    ]);
+  });
+
   it("projects one intent edit when hook and scanner see the same structured edit", () => {
     const sessionId = "mixed-shared-edit";
     const filePath = path.join(scratchDir, "mixed-shared-edit.ts");

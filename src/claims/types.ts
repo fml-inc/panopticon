@@ -52,7 +52,7 @@ export interface EvidenceRefInput {
 }
 
 export interface ClaimEvidenceInput {
-  key: string;
+  ref: EvidenceRefInput;
   detail?: unknown;
   role?: "origin" | "supporting" | "refuting" | "context";
 }

@@ -159,7 +159,7 @@ export function observationKey(args: {
   observedAtMs: number;
 }): string {
   const evidenceFingerprint = args.evidence
-    .map((item) => item.key)
+    .map((item) => item.ref.refKey)
     .sort()
     .join("|");
   return `obs:${sha256Hex(

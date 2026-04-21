@@ -29,11 +29,6 @@
  *    upgrade forward. Rolling back means reinstalling.
  */
 
-import {
-  ensureEvidenceRef,
-  legacyEvidenceRefFromKey,
-  typedEvidenceRefFromKey,
-} from "../claims/evidence-refs.js";
 import type { Database } from "./driver.js";
 import {
   buildMessageSyncId,
@@ -185,7 +180,13 @@ function rebuildScannerEventsWithEventIndex(db: Database): void {
   );
 }
 
-function backfillClaimEvidenceRefs(db: Database): void {
+function tableExists(db: Database, table: string): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
+    .get(table);
+}
+
+function ensureEvidenceRefSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS evidence_refs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,30 +201,6 @@ function backfillClaimEvidenceRefs(db: Database): void {
       locator_json TEXT NOT NULL
     )
   `);
-
-  const claimEvidenceTableExists = db
-    .prepare(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claim_evidence'",
-    )
-    .get();
-  if (!claimEvidenceTableExists) return;
-
-  const claimEvidenceCols = db
-    .prepare("PRAGMA table_info(claim_evidence)")
-    .all() as Array<{ name: string }>;
-  const hasEvidenceRefId = claimEvidenceCols.some(
-    (col) => col.name === "evidence_ref_id",
-  );
-  const hasEvidenceKey = claimEvidenceCols.some(
-    (col) => col.name === "evidence_key",
-  );
-  if (!hasEvidenceRefId) {
-    db.exec("ALTER TABLE claim_evidence ADD COLUMN evidence_ref_id INTEGER");
-  }
-
-  db.exec(
-    "CREATE INDEX IF NOT EXISTS idx_claim_evidence_ref ON claim_evidence(evidence_ref_id)",
-  );
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_evidence_refs_session ON evidence_refs(session_id)",
   );
@@ -236,65 +213,14 @@ function backfillClaimEvidenceRefs(db: Database): void {
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path)",
   );
-
-  if (!hasEvidenceKey) return;
-
-  const rows = db
-    .prepare(
-      `SELECT id, evidence_key
-       FROM claim_evidence
-       WHERE evidence_ref_id IS NULL
-       ORDER BY id ASC`,
-    )
-    .all() as Array<{ id: number; evidence_key: string }>;
-  const update = db.prepare(
-    "UPDATE claim_evidence SET evidence_ref_id = ? WHERE id = ?",
-  );
-  for (const row of rows) {
-    const ref =
-      typedEvidenceRefFromKey(row.evidence_key) ??
-      legacyEvidenceRefFromKey(db, row.evidence_key);
-    if (!ref) continue;
-    const refId = ensureEvidenceRef(db, ref);
-    update.run(refId, row.id);
-  }
 }
 
 function rebuildClaimEvidenceWithRefsOnly(db: Database): void {
-  backfillClaimEvidenceRefs(db);
-
-  const claimEvidenceTableExists = db
-    .prepare(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claim_evidence'",
-    )
-    .get();
-  if (!claimEvidenceTableExists) return;
-
-  const unresolved = db
-    .prepare(
-      `SELECT id
-       FROM claim_evidence
-       WHERE evidence_ref_id IS NULL
-       ORDER BY id ASC
-       LIMIT 20`,
-    )
-    .all() as Array<{ id: number }>;
-  if (unresolved.length > 0) {
-    throw new Error(
-      `Cannot drop claim_evidence.evidence_key; unresolved evidence rows: ${unresolved.map((row) => row.id).join(", ")}`,
-    );
+  if (tableExists(db, "claim_evidence")) {
+    db.exec("DROP TABLE claim_evidence");
   }
-
-  const claimEvidenceCols = db
-    .prepare("PRAGMA table_info(claim_evidence)")
-    .all() as Array<{ name: string }>;
-  const hasLegacyEvidenceKey = claimEvidenceCols.some(
-    (col) => col.name === "evidence_key",
-  );
-  if (!hasLegacyEvidenceKey) return;
-
   db.exec(`
-    CREATE TABLE claim_evidence_new (
+    CREATE TABLE claim_evidence (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       claim_id INTEGER NOT NULL,
       evidence_ref_id INTEGER NOT NULL,
@@ -302,20 +228,40 @@ function rebuildClaimEvidenceWithRefsOnly(db: Database): void {
       role TEXT NOT NULL DEFAULT 'supporting'
     )
   `);
-  db.exec(`
-    INSERT INTO claim_evidence_new (id, claim_id, evidence_ref_id, detail, role)
-    SELECT id, claim_id, evidence_ref_id, detail, role
-    FROM claim_evidence
-    ORDER BY id ASC
-  `);
-  db.exec("DROP TABLE claim_evidence");
-  db.exec("ALTER TABLE claim_evidence_new RENAME TO claim_evidence");
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_id)",
   );
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_claim_evidence_ref ON claim_evidence(evidence_ref_id)",
   );
+}
+
+function deleteAllRowsIfTableExists(db: Database, table: string): void {
+  if (!tableExists(db, table)) return;
+  db.exec(`DELETE FROM ${table}`);
+}
+
+function resetDerivedStateForEvidenceRefCutover(db: Database): void {
+  ensureEvidenceRefSchema(db);
+  rebuildClaimEvidenceWithRefsOnly(db);
+
+  // Claim/projection tables are disposable derived state. Rebuild them from
+  // raw scanner session files plus preserved hook/OTel tables after reparse.
+  deleteAllRowsIfTableExists(db, "code_provenance");
+  deleteAllRowsIfTableExists(db, "intent_session_summaries");
+  deleteAllRowsIfTableExists(db, "session_summaries");
+  deleteAllRowsIfTableExists(db, "intent_edits");
+  deleteAllRowsIfTableExists(db, "intent_units_fts");
+  deleteAllRowsIfTableExists(db, "intent_units");
+  deleteAllRowsIfTableExists(db, "active_claims");
+  deleteAllRowsIfTableExists(db, "claims");
+  deleteAllRowsIfTableExists(db, "evidence_refs");
+  deleteAllRowsIfTableExists(db, "ingestion_cursors");
+  deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
+
+  // Force the startup scanner loop to run atomic reparse after upgrade,
+  // even on machines whose DB was already stamped with a newer data version.
+  db.pragma("user_version = 0");
 }
 
 // ---------------------------------------------------------------------------
@@ -681,16 +627,16 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 10,
-    name: "add_evidence_refs_and_backfill_claim_evidence",
+    name: "add_evidence_ref_schema",
     up: (db) => {
-      backfillClaimEvidenceRefs(db);
+      ensureEvidenceRefSchema(db);
     },
   },
   {
     id: 11,
-    name: "drop_legacy_claim_evidence_keys",
+    name: "reset_derived_state_for_evidence_ref_cutover",
     up: (db) => {
-      rebuildClaimEvidenceWithRefsOnly(db);
+      resetDerivedStateForEvidenceRefCutover(db);
     },
   },
 ];

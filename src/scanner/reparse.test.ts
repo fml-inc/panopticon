@@ -143,6 +143,27 @@ describe("rebuildDerivedStateFromRaw", () => {
       landed_edits: 1,
     });
 
+    const evidenceRows = db
+      .prepare(
+        `SELECT er.kind, er.ref_key, er.session_id
+         FROM claim_evidence ce
+         JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         ORDER BY er.ref_key ASC`,
+      )
+      .all() as Array<{
+      kind: string;
+      ref_key: string;
+      session_id: string | null;
+    }>;
+    expect(
+      evidenceRows.some(
+        (row) => row.kind === "hook_event" && row.session_id === sessionId,
+      ),
+    ).toBe(true);
+    expect(
+      evidenceRows.some((row) => row.ref_key.startsWith("file_snapshot:")),
+    ).toBe(true);
+
     const second = rebuildDerivedStateFromRaw();
     const countsAfterSecond = db
       .prepare(

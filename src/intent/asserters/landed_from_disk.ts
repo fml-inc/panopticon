@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { gunzipSync } from "node:zlib";
-import { fileSnapshotEvidenceKey } from "../../claims/keys.js";
+import { fileSnapshotEvidenceRef } from "../../claims/evidence-refs.js";
 import {
   assertClaim,
   deleteClaimsByAsserter,
@@ -114,10 +114,10 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
       const evidence = verdict.fileContent
         ? [
             {
-              key: fileSnapshotEvidenceKey(
-                preparedEdit.edit.filePath!,
-                verdict.fileContent,
-              ),
+              ref: fileSnapshotEvidenceRef({
+                filePath: preparedEdit.edit.filePath!,
+                content: verdict.fileContent,
+              }),
               role: "origin" as const,
             },
           ]

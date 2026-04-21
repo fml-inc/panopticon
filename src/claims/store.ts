@@ -1,10 +1,6 @@
 import { getDb } from "../db/schema.js";
 import { selectActiveClaimForHeadKey } from "./canonicalize.js";
-import {
-  ensureEvidenceRef,
-  legacyEvidenceRefFromKey,
-  typedEvidenceRefFromKey,
-} from "./evidence-refs.js";
+import { ensureEvidenceRef } from "./evidence-refs.js";
 import {
   claimHeadKey,
   encodeClaimValue,
@@ -39,24 +35,21 @@ export function assertClaim(input: AssertClaimInput): AssertClaimResult {
     normalizedValue,
   );
   const evidence = (input.evidence ?? []).map((item) => {
-    const evidenceRef =
-      typedEvidenceRefFromKey(item.key) ??
-      legacyEvidenceRefFromKey(db, item.key);
-    if (!evidenceRef) {
-      throw new Error(`Unsupported evidence key: ${item.key}`);
+    if (!item.ref.refKey) {
+      throw new Error("Claim evidence ref_key is required");
     }
     return {
-      key: evidenceRef.refKey,
+      key: item.ref.refKey,
       role: item.role,
       detail: item.detail,
-      evidenceRef,
+      evidenceRef: item.ref,
     } satisfies NormalizedEvidenceItem;
   });
   const obsKey = observationKey({
     predicate: input.predicate,
     subject: input.subject,
     normalizedValue,
-    evidence,
+    evidence: input.evidence ?? [],
     sourceType: input.sourceType,
     asserter: input.asserter,
     asserterVersion: input.asserterVersion,

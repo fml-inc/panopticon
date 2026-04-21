@@ -725,8 +725,9 @@ describe("runMigrations — existing DB", () => {
     expect(getApplied(db).map((r) => r.id)).toContain(9);
   });
 
-  it("migrations 10 and 11 backfill evidence refs and drop legacy evidence keys", () => {
+  it("migrations 10 and 11 reset derived state and rebuild claim_evidence schema", () => {
     const db = createExistingDb();
+    db.pragma("user_version = 7");
     db.exec(`
       CREATE TABLE messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -760,6 +761,136 @@ describe("runMigrations — existing DB", () => {
         evidence_key TEXT NOT NULL,
         detail JSON,
         role TEXT NOT NULL DEFAULT 'supporting'
+      );
+      CREATE TABLE claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_key TEXT NOT NULL UNIQUE,
+        head_key TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        subject_kind TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        value_kind TEXT NOT NULL,
+        value_text TEXT,
+        value_num REAL,
+        value_json TEXT,
+        source_type TEXT NOT NULL,
+        source_rank INTEGER NOT NULL DEFAULT 0,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        observed_at_ms INTEGER NOT NULL,
+        asserted_at_ms INTEGER NOT NULL,
+        asserter TEXT NOT NULL,
+        asserter_version TEXT NOT NULL,
+        machine TEXT NOT NULL DEFAULT 'local',
+        sync_id TEXT DEFAULT (hex(randomblob(8)))
+      );
+      CREATE TABLE active_claims (
+        head_key TEXT PRIMARY KEY,
+        claim_id INTEGER NOT NULL,
+        selected_at_ms INTEGER NOT NULL,
+        selection_reason TEXT NOT NULL
+      );
+      CREATE TABLE intent_units (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        intent_key TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        prompt_text TEXT NOT NULL,
+        prompt_ts_ms INTEGER,
+        next_prompt_ts_ms INTEGER,
+        edit_count INTEGER NOT NULL DEFAULT 0,
+        landed_count INTEGER,
+        reconciled_at_ms INTEGER,
+        cwd TEXT,
+        repository TEXT
+      );
+      CREATE VIRTUAL TABLE intent_units_fts USING fts5(
+        prompt_text,
+        content='',
+        contentless_delete=1,
+        tokenize='trigram'
+      );
+      CREATE TABLE intent_edits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        edit_key TEXT NOT NULL UNIQUE,
+        intent_unit_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        timestamp_ms INTEGER,
+        file_path TEXT NOT NULL,
+        tool_name TEXT,
+        multi_edit_index INTEGER NOT NULL DEFAULT 0,
+        new_string_hash TEXT,
+        new_string_snippet TEXT,
+        landed INTEGER,
+        landed_reason TEXT
+      );
+      CREATE TABLE session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_summary_key TEXT NOT NULL UNIQUE,
+        repository TEXT,
+        cwd TEXT,
+        branch TEXT,
+        worktree TEXT,
+        actor TEXT,
+        machine TEXT NOT NULL DEFAULT 'local',
+        origin_scope TEXT NOT NULL DEFAULT 'local',
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        first_intent_ts_ms INTEGER,
+        last_intent_ts_ms INTEGER,
+        intent_count INTEGER NOT NULL DEFAULT 0,
+        edit_count INTEGER NOT NULL DEFAULT 0,
+        landed_edit_count INTEGER NOT NULL DEFAULT 0,
+        open_edit_count INTEGER NOT NULL DEFAULT 0,
+        reconciled_at_ms INTEGER,
+        reason_json TEXT
+      );
+      CREATE TABLE intent_session_summaries (
+        intent_unit_id INTEGER NOT NULL,
+        session_summary_id INTEGER NOT NULL,
+        membership_kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        score REAL NOT NULL DEFAULT 1.0,
+        reason_json TEXT,
+        UNIQUE(intent_unit_id, session_summary_id)
+      );
+      CREATE TABLE code_provenance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repository TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        binding_level TEXT NOT NULL,
+        start_line INTEGER,
+        end_line INTEGER,
+        snippet_hash TEXT,
+        snippet_preview TEXT,
+        language TEXT,
+        symbol_kind TEXT,
+        symbol_name TEXT,
+        actor TEXT,
+        machine TEXT NOT NULL DEFAULT 'local',
+        origin_scope TEXT NOT NULL DEFAULT 'local',
+        intent_unit_id INTEGER NOT NULL,
+        intent_edit_id INTEGER,
+        session_summary_id INTEGER,
+        status TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        file_hash TEXT,
+        established_at_ms INTEGER NOT NULL,
+        verified_at_ms INTEGER NOT NULL
+      );
+      CREATE TABLE ingestion_cursors (
+        asserter TEXT NOT NULL,
+        source TEXT NOT NULL,
+        cursor_text TEXT NOT NULL DEFAULT '',
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (asserter, source)
+      );
+      CREATE TABLE claim_rebuild_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asserter TEXT NOT NULL,
+        asserter_version TEXT NOT NULL,
+        started_at_ms INTEGER NOT NULL,
+        finished_at_ms INTEGER,
+        rows_emitted INTEGER NOT NULL DEFAULT 0,
+        scope JSON
       );
     `);
     db.prepare(
@@ -801,18 +932,79 @@ describe("runMigrations — existing DB", () => {
        ) VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(1, "sess-1", "PostToolUse", 1000, "Edit", "hook-sync-1");
     db.prepare(
+      `INSERT INTO claims (
+         id, observation_key, head_key, predicate, subject_kind, subject,
+         value_kind, value_text, source_type, observed_at_ms, asserted_at_ms,
+         asserter, asserter_version
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "obs-1",
+      "head-1",
+      "edit/part-of-intent",
+      "edit",
+      "edit:test",
+      "text",
+      "intent:test",
+      "scanner",
+      1000,
+      1000,
+      "intent.from_scanner",
+      "1",
+    );
+    db.prepare(
+      `INSERT INTO active_claims (head_key, claim_id, selected_at_ms, selection_reason)
+       VALUES (?, ?, ?, ?)`,
+    ).run("head-1", 1, 1000, "test");
+    db.prepare(
       `INSERT INTO claim_evidence (claim_id, evidence_key)
        VALUES (?, ?), (?, ?), (?, ?), (?, ?)`,
     ).run(
       1,
       "message:sess-1:0",
-      2,
+      1,
       "tool:tool-123",
-      3,
+      1,
       "hook:1",
-      4,
+      1,
       "fs_snapshot:/tmp/file.txt:abc123",
     );
+    db.prepare(
+      `INSERT INTO intent_units (id, intent_key, session_id, prompt_text)
+       VALUES (?, ?, ?, ?)`,
+    ).run(1, "intent:test", "sess-1", "hi");
+    db.prepare(
+      `INSERT INTO intent_units_fts (rowid, prompt_text) VALUES (?, ?)`,
+    ).run(1, "hi");
+    db.prepare(
+      `INSERT INTO intent_edits (id, edit_key, intent_unit_id, session_id, file_path)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(1, "edit:test", 1, "sess-1", "/tmp/file.txt");
+    db.prepare(
+      `INSERT INTO session_summaries (
+         id, session_summary_key, title, status
+       ) VALUES (?, ?, ?, ?)`,
+    ).run(1, "summary:test", "Test summary", "active");
+    db.prepare(
+      `INSERT INTO intent_session_summaries (
+         intent_unit_id, session_summary_id, membership_kind, source
+       ) VALUES (?, ?, ?, ?)`,
+    ).run(1, 1, "primary", "heuristic");
+    db.prepare(
+      `INSERT INTO code_provenance (
+         repository, file_path, binding_level, intent_unit_id, status,
+         established_at_ms, verified_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("/tmp/repo", "/tmp/file.txt", "file", 1, "current", 1000, 1000);
+    db.prepare(
+      `INSERT INTO ingestion_cursors (asserter, source, updated_at_ms)
+       VALUES (?, ?, ?)`,
+    ).run("intent.from_scanner", "scanner", 1000);
+    db.prepare(
+      `INSERT INTO claim_rebuild_runs (
+         asserter, asserter_version, started_at_ms
+       ) VALUES (?, ?, ?)`,
+    ).run("intent.from_scanner", "1", 1000);
 
     runMigrations(db);
 
@@ -822,56 +1014,54 @@ describe("runMigrations — existing DB", () => {
     expect(cols.map((c) => c.name)).toContain("evidence_ref_id");
     expect(cols.map((c) => c.name)).not.toContain("evidence_key");
 
-    const refs = db
+    const derivedCounts = db
       .prepare(
-        `SELECT ce.claim_id, ce.evidence_ref_id, er.ref_key, er.kind, er.sync_id, er.file_path
-         FROM claim_evidence ce
-         LEFT JOIN evidence_refs er ON er.id = ce.evidence_ref_id
-         ORDER BY ce.id ASC`,
+        `SELECT
+           (SELECT COUNT(*) FROM claims) AS claims,
+           (SELECT COUNT(*) FROM active_claims) AS active_claims,
+           (SELECT COUNT(*) FROM claim_evidence) AS claim_evidence,
+           (SELECT COUNT(*) FROM evidence_refs) AS evidence_refs,
+           (SELECT COUNT(*) FROM intent_units) AS intent_units,
+           (SELECT COUNT(*) FROM intent_units_fts) AS intent_units_fts,
+           (SELECT COUNT(*) FROM intent_edits) AS intent_edits,
+           (SELECT COUNT(*) FROM session_summaries) AS session_summaries,
+           (SELECT COUNT(*) FROM intent_session_summaries) AS intent_session_summaries,
+           (SELECT COUNT(*) FROM code_provenance) AS code_provenance,
+           (SELECT COUNT(*) FROM ingestion_cursors) AS ingestion_cursors,
+           (SELECT COUNT(*) FROM claim_rebuild_runs) AS claim_rebuild_runs`,
       )
-      .all() as Array<{
-      claim_id: number;
-      evidence_ref_id: number | null;
-      ref_key: string | null;
-      kind: string | null;
-      sync_id: string | null;
-      file_path: string | null;
-    }>;
+      .get() as Record<string, number>;
+    expect(derivedCounts).toEqual({
+      claims: 0,
+      active_claims: 0,
+      claim_evidence: 0,
+      evidence_refs: 0,
+      intent_units: 0,
+      intent_units_fts: 0,
+      intent_edits: 0,
+      session_summaries: 0,
+      intent_session_summaries: 0,
+      code_provenance: 0,
+      ingestion_cursors: 0,
+      claim_rebuild_runs: 0,
+    });
 
-    expect(refs).toEqual([
-      {
-        claim_id: 1,
-        evidence_ref_id: expect.any(Number),
-        ref_key: "msg:msg-sync-1",
-        kind: "message",
-        sync_id: "msg-sync-1",
-        file_path: null,
-      },
-      {
-        claim_id: 2,
-        evidence_ref_id: expect.any(Number),
-        ref_key: "tc:tc-sync-1",
-        kind: "tool_call",
-        sync_id: "tc-sync-1",
-        file_path: null,
-      },
-      {
-        claim_id: 3,
-        evidence_ref_id: expect.any(Number),
-        ref_key: "hook_event:hook-sync-1",
-        kind: "hook_event",
-        sync_id: "hook-sync-1",
-        file_path: null,
-      },
-      {
-        claim_id: 4,
-        evidence_ref_id: expect.any(Number),
-        ref_key: "file_snapshot:/tmp/file.txt:abc123",
-        kind: "file_snapshot",
-        sync_id: null,
-        file_path: "/tmp/file.txt",
-      },
-    ]);
+    const rawCounts = db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM messages) AS messages,
+           (SELECT COUNT(*) FROM tool_calls) AS tool_calls,
+           (SELECT COUNT(*) FROM hook_events) AS hook_events`,
+      )
+      .get() as Record<string, number>;
+    expect(rawCounts).toEqual({
+      messages: 1,
+      tool_calls: 1,
+      hook_events: 1,
+    });
+
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    expect(userVersion).toBe(0);
 
     expect(getApplied(db).map((r) => r.id)).toContain(10);
     expect(getApplied(db).map((r) => r.id)).toContain(11);

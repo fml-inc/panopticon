@@ -27,6 +27,11 @@ vi.mock("../config.js", () => {
 });
 
 import { closeDb, getDb } from "../db/schema.js";
+import {
+  fileSnapshotEvidenceRef,
+  hookEventEvidenceRef,
+  messageEvidenceRef,
+} from "./evidence-refs.js";
 import { runIntegrityCheck } from "./integrity.js";
 import { assertClaim } from "./store.js";
 
@@ -57,7 +62,17 @@ describe("assertClaim", () => {
       sourceType: "hook" as const,
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "hook_event:hook-sync-1", role: "origin" as const }],
+      evidence: [
+        {
+          ref: hookEventEvidenceRef({
+            sessionId: "session-hook",
+            syncId: "hook-sync-1",
+            eventType: "UserPromptSubmit",
+            timestampMs: 1000,
+          }),
+          role: "origin" as const,
+        },
+      ],
     };
 
     const first = assertClaim(input);
@@ -89,7 +104,17 @@ describe("assertClaim", () => {
       sourceType: "hook",
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "hook_event:hook-sync-1", role: "origin" }],
+      evidence: [
+        {
+          ref: hookEventEvidenceRef({
+            sessionId: "session-hook",
+            syncId: "hook-sync-1",
+            eventType: "UserPromptSubmit",
+            timestampMs: 1000,
+          }),
+          role: "origin",
+        },
+      ],
     });
     assertClaim({
       predicate: "intent/prompt-ts-ms",
@@ -100,7 +125,16 @@ describe("assertClaim", () => {
       sourceType: "scanner",
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "msg:msg-sync-1", role: "origin" }],
+      evidence: [
+        {
+          ref: messageEvidenceRef({
+            sessionId: "session-msg",
+            syncId: "msg-sync-1",
+            ordinal: 3,
+          }),
+          role: "origin",
+        },
+      ],
     });
 
     const db = getDb();
@@ -129,7 +163,15 @@ describe("assertClaim", () => {
       sourceType: "git_disk",
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "fs_snapshot:/tmp/file:a", role: "origin" }],
+      evidence: [
+        {
+          ref: fileSnapshotEvidenceRef({
+            filePath: "/tmp/file",
+            content: "a",
+          }),
+          role: "origin",
+        },
+      ],
     });
     assertClaim({
       predicate: "edit/landed-status",
@@ -140,7 +182,15 @@ describe("assertClaim", () => {
       sourceType: "git_disk",
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "fs_snapshot:/tmp/file:b", role: "origin" }],
+      evidence: [
+        {
+          ref: fileSnapshotEvidenceRef({
+            filePath: "/tmp/file",
+            content: "b",
+          }),
+          role: "origin",
+        },
+      ],
     });
 
     const db = getDb();
@@ -162,26 +212,33 @@ describe("assertClaim", () => {
     });
   });
 
-  it("materializes canonical evidence_refs for legacy evidence keys", () => {
+  it("stores session_id for sync-backed evidence refs", () => {
     const result = assertClaim({
-      predicate: "edit/landed-status",
-      subjectKind: "edit",
-      subject: "edit:test",
-      value: "landed",
+      predicate: "intent/prompt-text",
+      subjectKind: "intent",
+      subject: "intent:test",
+      value: "add retries",
       observedAtMs: 1000,
-      sourceType: "git_disk",
+      sourceType: "hook",
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "fs_snapshot:/tmp/file.txt:abc123", role: "origin" }],
+      evidence: [
+        {
+          ref: hookEventEvidenceRef({
+            sessionId: "session-hook",
+            syncId: "hook-sync-1",
+            eventType: "UserPromptSubmit",
+            timestampMs: 1000,
+          }),
+          role: "origin",
+        },
+      ],
     });
 
     const db = getDb();
-    const cols = db
-      .prepare("PRAGMA table_info(claim_evidence)")
-      .all() as Array<{ name: string }>;
     const row = db
       .prepare(
-        `SELECT ce.evidence_ref_id, er.ref_key, er.kind, er.file_path
+        `SELECT ce.evidence_ref_id, er.ref_key, er.kind, er.session_id, er.sync_id
          FROM claim_evidence ce
          JOIN evidence_refs er ON er.id = ce.evidence_ref_id
          WHERE ce.claim_id = ?`,
@@ -190,17 +247,18 @@ describe("assertClaim", () => {
       evidence_ref_id: number;
       ref_key: string;
       kind: string;
-      file_path: string | null;
+      session_id: string | null;
+      sync_id: string | null;
     };
 
-    expect(cols.map((col) => col.name)).not.toContain("evidence_key");
     expect(row.evidence_ref_id).toBeGreaterThan(0);
-    expect(row.ref_key).toBe("file_snapshot:/tmp/file.txt:abc123");
-    expect(row.kind).toBe("file_snapshot");
-    expect(row.file_path).toBe("/tmp/file.txt");
+    expect(row.ref_key).toBe("hook_event:hook-sync-1");
+    expect(row.kind).toBe("hook_event");
+    expect(row.session_id).toBe("session-hook");
+    expect(row.sync_id).toBe("hook-sync-1");
   });
 
-  it("canonicalizes legacy and typed evidence keys to the same observation", () => {
+  it("stores canonical file snapshot refs without a session binding", () => {
     const first = assertClaim({
       predicate: "edit/landed-status",
       subjectKind: "edit",
@@ -210,23 +268,48 @@ describe("assertClaim", () => {
       sourceType: "git_disk",
       asserter: "test",
       asserterVersion: "1",
-      evidence: [{ key: "fs_snapshot:/tmp/file.txt:abc123", role: "origin" }],
-    });
-    const second = assertClaim({
-      predicate: "edit/landed-status",
-      subjectKind: "edit",
-      subject: "edit:test",
-      value: "landed",
-      observedAtMs: 1000,
-      sourceType: "git_disk",
-      asserter: "test",
-      asserterVersion: "1",
-      evidence: [{ key: "file_snapshot:/tmp/file.txt:abc123", role: "origin" }],
+      evidence: [
+        {
+          ref: fileSnapshotEvidenceRef({
+            filePath: "/tmp/file.txt",
+            content: "abc123",
+          }),
+          role: "origin",
+        },
+      ],
     });
 
+    const db = getDb();
+    const cols = db
+      .prepare("PRAGMA table_info(claim_evidence)")
+      .all() as Array<{ name: string }>;
+    const row = db
+      .prepare(
+        `SELECT ce.evidence_ref_id, er.ref_key, er.kind, er.file_path, er.session_id
+         FROM claim_evidence ce
+         JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         WHERE ce.claim_id = ?`,
+      )
+      .get(first.claimId) as {
+      evidence_ref_id: number;
+      ref_key: string;
+      kind: string;
+      file_path: string | null;
+      session_id: string | null;
+    };
+
     expect(first.inserted).toBe(true);
-    expect(second.inserted).toBe(false);
-    expect(second.claimId).toBe(first.claimId);
+    expect(cols.map((col) => col.name)).not.toContain("evidence_key");
+    expect(row.evidence_ref_id).toBeGreaterThan(0);
+    expect(row.ref_key).toBe(
+      fileSnapshotEvidenceRef({
+        filePath: "/tmp/file.txt",
+        content: "abc123",
+      }).refKey,
+    );
+    expect(row.kind).toBe("file_snapshot");
+    expect(row.file_path).toBe("/tmp/file.txt");
+    expect(row.session_id).toBeNull();
     expect(runIntegrityCheck()).toEqual({
       total: 1,
       dangling: 0,
