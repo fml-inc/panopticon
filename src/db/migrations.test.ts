@@ -1079,6 +1079,115 @@ describe("runMigrations — existing DB", () => {
     expect(getApplied(db).map((r) => r.id)).toContain(12);
   });
 
+  it("tolerates rerunning migration 5 after claim_evidence was rebuilt", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE claim_evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claim_id INTEGER NOT NULL,
+        evidence_ref_id INTEGER NOT NULL,
+        detail JSON,
+        role TEXT NOT NULL DEFAULT 'supporting'
+      )
+    `);
+    db.prepare(
+      `INSERT INTO schema_migrations (id, name)
+       VALUES (?, ?), (?, ?), (?, ?), (?, ?)`,
+    ).run(1, "stamp1", 2, "stamp2", 3, "stamp3", 4, "stamp4");
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(claim_evidence)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((col) => col.name)).toContain("evidence_ref_id");
+    expect(cols.map((col) => col.name)).not.toContain("evidence_key");
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
+  it("replays pending migrations safely after latest-schema bootstrap", () => {
+    const db = createExistingDb();
+    db.exec(SCHEMA_SQL);
+
+    runMigrations(db);
+
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
+  it("upgrades a 0.2.4-style DB after SCHEMA_SQL creates latest claim tables", () => {
+    const db = createExistingDb();
+    db.prepare(
+      `INSERT INTO schema_migrations (id, name)
+       VALUES (?, ?), (?, ?), (?, ?), (?, ?)`,
+    ).run(1, "stamp1", 2, "stamp2", 3, "stamp3", 4, "stamp4");
+
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(claim_evidence)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((col) => col.name)).toContain("evidence_ref_id");
+    expect(cols.map((col) => col.name)).not.toContain("evidence_key");
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
+  it("upgrades a 0.1.9-style DB with old user_config schema and no claim tables", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE user_config_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_name TEXT NOT NULL,
+        snapshot_at_ms INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        permissions JSON NOT NULL DEFAULT '{}',
+        enabled_plugins JSON NOT NULL DEFAULT '[]',
+        hooks JSON NOT NULL DEFAULT '[]',
+        commands JSON NOT NULL DEFAULT '[]',
+        rules JSON NOT NULL DEFAULT '[]',
+        skills JSON NOT NULL DEFAULT '[]',
+        plugin_hooks JSON NOT NULL DEFAULT '[]'
+      )
+    `);
+    db.prepare(
+      `INSERT INTO schema_migrations (id, name)
+       VALUES (?, ?), (?, ?)`,
+    ).run(1, "stamp1", 2, "stamp2");
+
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const userConfigCols = db
+      .prepare("PRAGMA table_info(user_config_snapshots)")
+      .all() as Array<{ name: string }>;
+    expect(userConfigCols.map((col) => col.name)).toContain(
+      "panopticon_allowed",
+    );
+    expect(userConfigCols.map((col) => col.name)).toContain(
+      "panopticon_approvals",
+    );
+    expect(userConfigCols.map((col) => col.name)).toContain("memory_files");
+
+    const claimEvidenceCols = db
+      .prepare("PRAGMA table_info(claim_evidence)")
+      .all() as Array<{ name: string }>;
+    expect(claimEvidenceCols.map((col) => col.name)).toContain(
+      "evidence_ref_id",
+    );
+    expect(claimEvidenceCols.map((col) => col.name)).not.toContain(
+      "evidence_key",
+    );
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
   it("runs up() function migration", () => {
     const db = createExistingDb();
     db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)");
