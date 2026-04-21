@@ -613,9 +613,9 @@ if (
   });
   server.listen(config.proxyPort, config.proxyHost, () => {
     log.proxy.info(`Listening on ${config.proxyHost}:${config.proxyPort}`);
-    log.proxy.info("Routes:");
+    log.proxy.debug("Routes:");
     for (const [prefix, host] of Object.entries(UPSTREAM_ROUTES)) {
-      log.proxy.info(`  /${prefix}/* → https://${host}/*`);
+      log.proxy.debug(`  /${prefix}/* → https://${host}/*`);
     }
     // Show dynamic-routed targets not in the static table
     for (const v of allTargets()) {
@@ -624,7 +624,7 @@ if (
         typeof v.proxy.upstreamHost === "function" &&
         !UPSTREAM_ROUTES[v.id]
       ) {
-        log.proxy.info(`  /${v.id}/* → (dynamic)`);
+        log.proxy.debug(`  /${v.id}/* → (dynamic)`);
       }
     }
   });

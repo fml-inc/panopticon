@@ -122,7 +122,12 @@ export function invokeLlm(
     log.llm.error(`killed by signal: ${result.signal}`);
     return null;
   }
-  log.llm.info(`exit=${result.status} stdout=${text?.length ?? 0} chars`);
+  const summary = `exit=${result.status} stdout=${text?.length ?? 0} chars`;
+  if (result.status !== 0 && !text) {
+    log.llm.warn(summary);
+  } else {
+    log.llm.debug(summary);
+  }
 
   // Accept output even with non-zero exit (hooks may cause exit code 1
   // after successful response)

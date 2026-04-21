@@ -76,7 +76,7 @@ function isReparseInProgress(): boolean {
 
 function runSummaryGeneration(): number {
   try {
-    return generateSummariesOnce((msg) => log.scanner.info(msg)).updated;
+    return generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
   } catch (err) {
     log.scanner.error(
       `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
@@ -159,7 +159,7 @@ export function createDirectPanopticonService(): PanopticonService {
         if (isReparseInProgress()) {
           throw new Error("Scanner resync already in progress");
         }
-        const result = reparseAll((msg) => log.scanner.info(msg));
+        const result = reparseAll((msg) => log.scanner.debug(msg));
         if (!result.success) {
           throw new Error(result.error ?? "Atomic reparse failed");
         }
