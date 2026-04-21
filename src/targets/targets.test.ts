@@ -917,12 +917,12 @@ describe("pi target adapter", () => {
 
   it("formatPermissionResponse returns allow/deny structure", () => {
     const pi = getTarget("pi")!;
-    const allow = pi.events.formatPermissionResponse({
+    const allow = pi.events.formatPermissionResponse("PreToolUse", {
       allow: true,
       reason: "ok",
     });
     expect(allow).toEqual({ decision: "allow", reason: "ok" });
-    const deny = pi.events.formatPermissionResponse({
+    const deny = pi.events.formatPermissionResponse("PreToolUse", {
       allow: false,
       reason: "blocked",
     });

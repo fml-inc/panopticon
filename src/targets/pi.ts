@@ -128,7 +128,7 @@ const pi: TargetAdapter = {
     // eventMap lacks a key, so no translation is needed.
     eventMap: {},
 
-    formatPermissionResponse({ allow, reason }) {
+    formatPermissionResponse(_eventName, { allow, reason }) {
       // Pi extensions cannot block tool calls — return structure is
       // informational only. Pi's philosophy is no permission popups.
       return { decision: allow ? "allow" : "deny", reason };
