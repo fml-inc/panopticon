@@ -16,20 +16,6 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   activeLoadMs: number;
 } {
   const db = getDb();
-  const hookBackedSessions = new Set(
-    (
-      db
-        .prepare(
-          `SELECT DISTINCT session_id
-           FROM hook_events
-           WHERE event_type = 'UserPromptSubmit'
-           ${opts?.sessionId ? "AND session_id = ?" : ""}`,
-        )
-        .all(...(opts?.sessionId ? [opts.sessionId] : [])) as Array<{
-        session_id: string;
-      }>
-    ).map((row) => row.session_id),
-  );
   const loadStartedAt = performance.now();
   const activeIntents = loadActiveIntents(opts);
   const activeEdits = loadActiveEdits(opts);
@@ -38,9 +24,10 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
     [...activeIntents].filter(([, intent]) => {
       if (!intent.sessionId) return false;
       if (opts?.sessionId && intent.sessionId !== opts.sessionId) return false;
-      // For hook-backed sessions, trust hook-sourced prompt boundaries.
-      if (!hookBackedSessions.has(intent.sessionId)) return true;
-      return intent.promptTsSource === "hook";
+      // Active claims already encode source precedence per subject. The
+      // projector should not discard scanner-only intents just because the
+      // session later gained some hook coverage.
+      return true;
     }),
   );
   const edits = new Map(

@@ -26,8 +26,33 @@ export type ClaimSourceType = "scanner" | "hook" | "git_disk";
 
 export type ClaimCardinality = "singleton" | "set" | "timeline";
 
+export type EvidenceRefKind =
+  | "message"
+  | "tool_call"
+  | "scanner_turn"
+  | "scanner_event"
+  | "hook_event"
+  | "otel_log"
+  | "otel_metric"
+  | "otel_span"
+  | "git_commit"
+  | "git_hunk"
+  | "file_snapshot";
+
+export interface EvidenceRefInput {
+  kind: EvidenceRefKind;
+  refKey: string;
+  sessionId?: string | null;
+  syncId?: string | null;
+  repository?: string | null;
+  filePath?: string | null;
+  traceId?: string | null;
+  spanId?: string | null;
+  locator: Record<string, unknown>;
+}
+
 export interface ClaimEvidenceInput {
-  key: string;
+  ref: EvidenceRefInput;
   detail?: unknown;
   role?: "origin" | "supporting" | "refuting" | "context";
 }

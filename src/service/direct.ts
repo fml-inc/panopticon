@@ -14,7 +14,7 @@ import {
   search,
   sessionTimeline,
 } from "../db/query.js";
-import { getDb } from "../db/schema.js";
+import { getDb, needsResync } from "../db/schema.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
@@ -25,7 +25,8 @@ import {
   searchIntent,
 } from "../intent/query.js";
 import { log } from "../log.js";
-import { scanOnce } from "../scanner/index.js";
+import { reparseAll, scanOnce } from "../scanner/index.js";
+import { readScannerStatus } from "../scanner/status.js";
 import {
   listSessionSummaries,
   recentWorkOnPath,
@@ -57,6 +58,31 @@ import type {
 function assertSessionSummaryProjectionsEnabled(): void {
   if (config.enableSessionSummaryProjections) return;
   throw new Error("Session summary projections are disabled");
+}
+
+const ACTIVE_REPARSE_PHASES = new Set([
+  "reparse_init",
+  "reparse_scan",
+  "reparse_process",
+  "reparse_copy",
+  "reparse_derive",
+  "reparse_finalize",
+]);
+
+function isReparseInProgress(): boolean {
+  const phase = readScannerStatus()?.phase;
+  return phase ? ACTIVE_REPARSE_PHASES.has(phase) : false;
+}
+
+function runSummaryGeneration(): number {
+  try {
+    return generateSummariesOnce((msg) => log.scanner.info(msg)).updated;
+  } catch (err) {
+    log.scanner.error(
+      `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
+    );
+    return 0;
+  }
 }
 
 export function createDirectPanopticonService(): PanopticonService {
@@ -129,26 +155,31 @@ export function createDirectPanopticonService(): PanopticonService {
       return refreshPricingDirect();
     },
     async scan(opts?: ScanInput): Promise<ScanResult> {
+      if (needsResync()) {
+        if (isReparseInProgress()) {
+          throw new Error("Scanner resync already in progress");
+        }
+        const result = reparseAll((msg) => log.scanner.info(msg));
+        if (!result.success) {
+          throw new Error(result.error ?? "Atomic reparse failed");
+        }
+        return {
+          filesScanned: result.filesScanned,
+          newTurns: result.newTurns,
+          summariesUpdated:
+            opts?.summaries === false ? 0 : runSummaryGeneration(),
+        };
+      }
+
       const result = scanOnce({
         profileLabel: "manual scan",
         logDetails: true,
       });
-      let summariesUpdated = 0;
-      if (opts?.summaries !== false) {
-        try {
-          summariesUpdated = generateSummariesOnce((msg) =>
-            log.scanner.info(msg),
-          ).updated;
-        } catch (err) {
-          log.scanner.error(
-            `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
-          );
-        }
-      }
       return {
         filesScanned: result.filesScanned,
         newTurns: result.newTurns,
-        summariesUpdated,
+        summariesUpdated:
+          opts?.summaries === false ? 0 : runSummaryGeneration(),
       };
     },
     async syncReset(target?: string) {

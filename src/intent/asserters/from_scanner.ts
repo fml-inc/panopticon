@@ -1,12 +1,13 @@
 import { canonicalizeHeadKeys } from "../../claims/canonicalize.js";
 import {
+  messageEvidenceRef,
+  toolCallEvidenceRef,
+} from "../../claims/evidence-refs.js";
+import {
   editKey,
   intentKey,
-  messageEvidenceKey,
   semanticEditIdentity,
   sha256Hex,
-  toolEvidenceKey,
-  toolLocalEvidenceKey,
 } from "../../claims/keys.js";
 import {
   assertClaim,
@@ -27,6 +28,7 @@ interface UserMessageRow {
   timestamp_ms: number | null;
   content: string;
   uuid: string | null;
+  sync_id: string;
   cwd: string | null;
   ended_at_ms: number | null;
   user_index?: number;
@@ -40,10 +42,13 @@ interface RepoRow {
 interface ToolCallRow {
   id: number;
   session_id: string;
+  call_index: number;
   tool_name: string;
   tool_use_id: string | null;
   input_json: string | null;
+  sync_id: string;
   timestamp_ms: number | null;
+  message_sync_id: string;
   assistant_ordinal: number;
 }
 
@@ -73,7 +78,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   const userMessages = db
     .prepare(
       `SELECT m.session_id, m.ordinal, m.timestamp_ms, m.content, m.uuid,
-              s.cwd, s.ended_at_ms
+              m.sync_id, s.cwd, s.ended_at_ms
        FROM messages m
        JOIN sessions s ON s.session_id = m.session_id
        WHERE ${userFilters.join(" AND ")}
@@ -115,7 +120,12 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       });
       const evidence = [
         {
-          key: messageEvidenceKey(msg.session_id, msg.ordinal),
+          ref: messageEvidenceRef({
+            sessionId: msg.session_id,
+            syncId: msg.sync_id,
+            ordinal: msg.ordinal,
+            uuid: msg.uuid,
+          }),
           role: "origin" as const,
         },
       ];
@@ -202,8 +212,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
 
   const toolRows = db
     .prepare(
-      `SELECT tc.id, tc.session_id, tc.tool_name, tc.tool_use_id, tc.input_json,
-              m.timestamp_ms, m.ordinal AS assistant_ordinal
+      `SELECT tc.id, tc.session_id, tc.call_index, tc.tool_name, tc.tool_use_id,
+              tc.input_json, tc.sync_id, m.timestamp_ms, m.sync_id AS message_sync_id,
+              m.ordinal AS assistant_ordinal
        FROM tool_calls tc
        JOIN messages m ON m.id = tc.message_id
        ${opts?.sessionId ? "WHERE tc.session_id = ? AND " : "WHERE "}
@@ -213,7 +224,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     .all(...(opts?.sessionId ? [opts.sessionId] : [])) as ToolCallRow[];
 
   let edits = 0;
-  const perAssistantIndex = new Map<string, number>();
   const perIntentSemanticIndex = new Map<string, number>();
   for (const row of toolRows) {
     const userMsgs = intentsBySession.get(row.session_id) ?? [];
@@ -229,8 +239,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       userIndex: intentMsg.user_index,
       uuid: intentMsg.uuid,
     });
-    const assistantKey = `${row.session_id}:${row.assistant_ordinal}`;
-    const localToolCallIndex = perAssistantIndex.get(assistantKey) ?? 0;
     for (const entry of parsed) {
       const resolvedFilePath = resolveFilePathFromCwd(
         entry.filePath,
@@ -250,14 +258,20 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         semanticOccurrence,
         multiEditIndex: entry.multiEditIndex,
       });
-      const evidenceKey = row.tool_use_id
-        ? toolEvidenceKey(row.tool_use_id)
-        : toolLocalEvidenceKey(
-            row.session_id,
-            row.assistant_ordinal,
-            localToolCallIndex,
-          );
-      const evidence = [{ key: evidenceKey, role: "origin" as const }];
+      const evidence = [
+        {
+          ref: toolCallEvidenceRef({
+            sessionId: row.session_id,
+            syncId: row.sync_id,
+            toolName: row.tool_name,
+            toolUseId: row.tool_use_id,
+            callIndex: row.call_index,
+            messageSyncId: row.message_sync_id,
+            messageOrdinal: row.assistant_ordinal,
+          }),
+          role: "origin" as const,
+        },
+      ];
       const observedAtMs = row.timestamp_ms ?? intentMsg.timestamp_ms ?? 0;
       assertScannerClaim({
         predicate: "edit/part-of-intent",
@@ -341,7 +355,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       edits += 1;
       perIntentSemanticIndex.set(semanticKey, semanticOccurrence + 1);
     }
-    perAssistantIndex.set(assistantKey, localToolCallIndex + 1);
   }
 
   canonicalizeHeadKeys(affectedHeadKeys);

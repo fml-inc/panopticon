@@ -6,7 +6,9 @@
  *   POST /api/exec  — write command dispatch (CLI only)
  */
 import type http from "node:http";
+import { needsResync } from "../db/schema.js";
 import { log } from "../log.js";
+import { readScannerStatus } from "../scanner/status.js";
 import {
   directPanopticonService,
   dispatchExec,
@@ -16,6 +18,16 @@ import {
   isToolName,
   TOOL_NAMES,
 } from "../service/index.js";
+
+const TOOLS_REQUIRING_DERIVED_STATE = new Set([
+  "intent_for_code",
+  "search_intent",
+  "outcomes_for_intent",
+  "session_summaries",
+  "session_summary_detail",
+  "why_code",
+  "recent_work_on_path",
+]);
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -33,6 +45,16 @@ function jsonResponse(
 ): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
+}
+
+function writeResyncPendingResponse(res: http.ServerResponse): void {
+  const status = readScannerStatus();
+  jsonResponse(res, 503, {
+    error:
+      "Panopticon is rebuilding derived state after upgrade. Retry when scanner resync completes.",
+    phase: status?.phase ?? null,
+    message: status?.message ?? "Derived-state resync pending",
+  });
 }
 
 export async function handleApiRequest(
@@ -57,6 +79,10 @@ export async function handleApiRequest(
         error: `Unknown tool: ${name}`,
         available: TOOL_NAMES,
       });
+      return;
+    }
+    if (TOOLS_REQUIRING_DERIVED_STATE.has(name) && needsResync()) {
+      writeResyncPendingResponse(res);
       return;
     }
     try {

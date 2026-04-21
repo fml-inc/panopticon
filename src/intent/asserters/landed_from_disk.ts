@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { gunzipSync } from "node:zlib";
-import { fileSnapshotEvidenceKey } from "../../claims/keys.js";
+import { fileSnapshotEvidenceRef } from "../../claims/evidence-refs.js";
 import {
   assertClaim,
   deleteClaimsByAsserter,
@@ -114,10 +114,10 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
       const evidence = verdict.fileContent
         ? [
             {
-              key: fileSnapshotEvidenceKey(
-                preparedEdit.edit.filePath!,
-                verdict.fileContent,
-              ),
+              ref: fileSnapshotEvidenceRef({
+                filePath: preparedEdit.edit.filePath!,
+                content: verdict.fileContent,
+              }),
               role: "origin" as const,
             },
           ]
@@ -269,7 +269,7 @@ function loadParsedPayloadEvidence(
   cache: Map<string, ParsedPayloadEvidence | null>,
 ): ParsedPayloadEvidence | null {
   const cacheKey =
-    edit.payloadEvidenceKey ?? `hook:${edit.hookEventId ?? "none"}`;
+    edit.payloadEvidenceKey ?? `hook_event_id:${edit.hookEventId ?? "none"}`;
   if (cache.has(cacheKey)) {
     return cache.get(cacheKey) ?? null;
   }
@@ -293,16 +293,16 @@ function decodePayloadEvidence(
   toolName: string | null;
   toolInput: Record<string, unknown> | undefined;
 } | null {
-  if (evidenceKey?.startsWith("tool:")) {
-    const toolUseId = evidenceKey.slice("tool:".length);
+  if (evidenceKey?.startsWith("tc:")) {
+    const toolCallSyncId = evidenceKey.slice("tc:".length);
     const db = getDb();
     const row = db
       .prepare(
         `SELECT tool_name, input_json
          FROM tool_calls
-         WHERE tool_use_id = ?`,
+         WHERE sync_id = ?`,
       )
-      .get(toolUseId) as
+      .get(toolCallSyncId) as
       | { tool_name: string; input_json: string | null }
       | undefined;
     if (!row?.input_json) return null;
@@ -315,27 +315,21 @@ function decodePayloadEvidence(
       return null;
     }
   }
-  if (evidenceKey?.startsWith("tool_local:")) {
-    const parsed = parseToolLocalEvidenceKey(evidenceKey);
-    if (!parsed) return null;
+  if (evidenceKey?.startsWith("hook_event:")) {
+    const hookEventSyncId = evidenceKey.slice("hook_event:".length);
     const db = getDb();
     const row = db
-      .prepare(
-        `SELECT tc.tool_name, tc.input_json
-         FROM tool_calls tc
-         JOIN messages m ON m.id = tc.message_id
-         WHERE tc.session_id = ? AND m.ordinal = ?
-         ORDER BY tc.id ASC
-         LIMIT 1 OFFSET ?`,
-      )
-      .get(parsed.sessionId, parsed.messageOrdinal, parsed.toolCallIndex) as
-      | { tool_name: string; input_json: string | null }
-      | undefined;
-    if (!row?.input_json) return null;
+      .prepare(`SELECT payload FROM hook_events WHERE sync_id = ?`)
+      .get(hookEventSyncId) as { payload: Uint8Array } | undefined;
+    if (!row) return null;
     try {
+      const payload = JSON.parse(
+        gunzipSync(row.payload).toString("utf8"),
+      ) as Record<string, unknown>;
       return {
-        toolName: row.tool_name,
-        toolInput: JSON.parse(row.input_json) as Record<string, unknown>,
+        toolName:
+          typeof payload.tool_name === "string" ? payload.tool_name : null,
+        toolInput: payload.tool_input as Record<string, unknown> | undefined,
       };
     } catch {
       return null;
@@ -359,21 +353,4 @@ function decodePayloadEvidence(
   } catch {
     return null;
   }
-}
-
-function parseToolLocalEvidenceKey(key: string): {
-  sessionId: string;
-  messageOrdinal: number;
-  toolCallIndex: number;
-} | null {
-  const remainder = key.slice("tool_local:".length);
-  const last = remainder.lastIndexOf(":");
-  if (last <= 0) return null;
-  const secondLast = remainder.lastIndexOf(":", last - 1);
-  if (secondLast <= 0) return null;
-  return {
-    sessionId: remainder.slice(0, secondLast),
-    messageOrdinal: Number(remainder.slice(secondLast + 1, last)),
-    toolCallIndex: Number(remainder.slice(last + 1)),
-  };
 }

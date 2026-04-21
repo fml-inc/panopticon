@@ -39,6 +39,9 @@ rescan.
 - claims/schema expansion beyond what is required for durable evidence IDs
 - human-readable/wiki artifacts
 
+These are out of scope for Phase 1 only. They move into the immediately
+following evidence-normalization phase; they are not indefinite backlog.
+
 ### Deliverables
 
 1. Identity matrix for scanner-owned tables:
@@ -67,16 +70,21 @@ rescan.
 - `messages` no longer rely on local numeric row IDs for remote idempotency.
 - `restoreSyncIds` is no longer needed for scanner-owned rows.
 
-## Phase 2: Typed Evidence Refs and Repo/File Normalization
+## Phase 2A: Evidence Ref Normalization
 
 ### Objective
 
-Once evidence rows are stable, make provenance references structured and add
-the first semantic subjects that already have strong evidence support.
+Once scanner-owned evidence rows are stable, normalize provenance references
+across all raw evidence families and remove dependence on local row IDs or
+opaque ad hoc keys in the claim layer.
 
 ### Deliverables
 
 1. Typed evidence references for:
+   - hook event
+   - otel log
+   - otel metric
+   - otel span
    - message
    - tool call
    - scanner turn
@@ -84,11 +92,50 @@ the first semantic subjects that already have strong evidence support.
    - git commit
    - git hunk
    - file snapshot
-2. First-class subject kinds for:
+2. Replace freeform/local-id evidence keys in claims with typed references.
+3. Adopt a canonical locator strategy for append-only evidence that still uses
+   stored random `sync_id` values today:
+   - `hook_events`
+   - `otel_logs`
+   - `otel_metrics`
+   - keep `otel_spans` aligned with their existing `(trace_id, span_id)` key
+   - explicitly decide whether any of those families need deterministic ingest
+     identity beyond typed refs in a follow-up slice
+4. Update claim integrity/provenance resolution to target typed evidence refs
+   instead of string-parsing local identifiers.
+
+This phase-level list is still the desired end state. The current branch lands
+the core schema/migration cutover and actively emits typed refs for
+`message`, `tool_call`, `hook_event`, and `file_snapshot`; the remaining
+families stay in Phase 2A follow-up.
+
+### Why Hooks/OTel Land Here
+
+- They did not need to block Phase 1 because the urgent correctness problem was
+  scanner reparse/rescan duplication.
+- They should not wait until later semantic work, because claims already cite
+  hook/message/tool evidence and need a stable, typed reference substrate
+  before we broaden provenance further.
+- `hook_events` are highest priority in this phase because they already back
+  active claim generation directly.
+
+See [EVIDENCE-REFS-PHASE2A.md](./EVIDENCE-REFS-PHASE2A.md) for the concrete
+typed-ref shape, migration sketch, and the hook/OTel identity recommendation.
+
+## Phase 2B: Repo/File Normalization
+
+### Objective
+
+Once evidence references are structured, add the first semantic subjects that
+already have strong evidence support.
+
+### Deliverables
+
+1. First-class subject kinds for:
    - `repository`
    - `file`
-3. Stable identity rules for repository and file subjects.
-4. Initial git-derived provenance/facts for repo/file subjects.
+2. Stable identity rules for repository and file subjects.
+3. Initial git-derived provenance/facts for repo/file subjects.
 
 ### Tracked Follow-Up
 
@@ -120,10 +167,22 @@ and typed references.
 
 ## Immediate Next Steps
 
-1. Write the Phase 1 identity matrix against current tables and sync paths.
-2. Fix `messages` first, since they are currently the least reparse-safe.
-3. Make `tool_calls` deterministic off durable message identity.
-4. Make `scanner_turns` and `scanner_events` deterministic.
-5. Update sync tests to prove reparse/rescan idempotency.
-6. Rebase higher-level provenance work on top of the durable-ID branch once
-   Phase 1 lands.
+1. Land and monitor the Phase 2A core cutover:
+   - destructive derived-state reset
+   - forced atomic reparse from raw data
+   - typed refs for `message`, `tool_call`, `hook_event`, and `file_snapshot`
+2. Hydrate denormalized `evidence_refs` columns from raw rows where derivable:
+   - `session_id`
+   - `repository`
+   - `file_path`
+3. Finish moving evidence consumers from key-prefix parsing to resolver-by-kind.
+4. Add an end-to-end upgrade/startup regression test that exercises:
+   - old populated DB -> new build startup
+   - migration-triggered atomic reparse
+   - healthy post-upgrade `intent_*` projection and hydrated `evidence_refs`
+5. Decide which remaining families should emit next:
+   - `scanner_turn` / `scanner_event`
+   - `otel_logs` / `otel_metrics` / `otel_spans`
+   - `git_commit` / `git_hunk`
+6. Start `repository` / `file` normalization only after the evidence-ref layer
+   is in place and hydrated enough to support cheap provenance queries.

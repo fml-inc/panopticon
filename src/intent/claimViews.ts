@@ -111,32 +111,39 @@ function loadActiveEditRows(sessionId?: string): ActiveClaimRow[] {
     .all(sessionId) as ActiveClaimRow[];
 }
 
+interface ActiveEditEvidenceRow {
+  subject: string;
+  evidence_ref_key: string;
+  hook_event_id: number | null;
+}
+
 function loadActiveEditEvidenceRows(
   sessionId?: string,
-): Array<{ subject: string; evidence_key: string }> {
+): ActiveEditEvidenceRow[] {
   const db = getDb();
   if (!sessionId) {
     return db
       .prepare(
-        `SELECT c.subject, ce.evidence_key
+        `SELECT c.subject,
+                er.ref_key AS evidence_ref_key,
+                he.id AS hook_event_id
          FROM active_claims ac
          JOIN claims c ON c.id = ac.claim_id
          JOIN claim_evidence ce ON ce.claim_id = c.id
+         JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         LEFT JOIN hook_events he
+           ON er.kind = 'hook_event'
+          AND he.sync_id = er.sync_id
          WHERE c.subject_kind = 'edit'
-           AND (
-             ce.evidence_key LIKE 'hook:%'
-             OR ce.evidence_key LIKE 'tool:%'
-             OR ce.evidence_key LIKE 'tool_local:%'
-           )
+           AND er.kind IN ('hook_event', 'tool_call')
          ORDER BY
            CASE
-             WHEN ce.evidence_key LIKE 'hook:%' THEN 0
-             WHEN ce.evidence_key LIKE 'tool:%' THEN 1
-             ELSE 2
+             WHEN er.kind = 'hook_event' THEN 0
+             ELSE 1
            END,
            ce.id ASC`,
       )
-      .all() as Array<{ subject: string; evidence_key: string }>;
+      .all() as ActiveEditEvidenceRow[];
   }
   return db
     .prepare(
@@ -156,26 +163,27 @@ function loadActiveEditEvidenceRows(
            AND c.predicate = 'edit/part-of-intent'
            AND c.value_text IN (SELECT subject FROM scoped_intents)
        )
-       SELECT c.subject, ce.evidence_key
+       SELECT c.subject,
+              er.ref_key AS evidence_ref_key,
+              he.id AS hook_event_id
        FROM active_claims ac
        JOIN claims c ON c.id = ac.claim_id
        JOIN claim_evidence ce ON ce.claim_id = c.id
+       JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+       LEFT JOIN hook_events he
+         ON er.kind = 'hook_event'
+        AND he.sync_id = er.sync_id
        WHERE c.subject_kind = 'edit'
          AND c.subject IN (SELECT subject FROM scoped_edits)
-         AND (
-           ce.evidence_key LIKE 'hook:%'
-           OR ce.evidence_key LIKE 'tool:%'
-           OR ce.evidence_key LIKE 'tool_local:%'
-         )
+         AND er.kind IN ('hook_event', 'tool_call')
        ORDER BY
          CASE
-           WHEN ce.evidence_key LIKE 'hook:%' THEN 0
-           WHEN ce.evidence_key LIKE 'tool:%' THEN 1
-           ELSE 2
+           WHEN er.kind = 'hook_event' THEN 0
+           ELSE 1
          END,
          ce.id ASC`,
     )
-    .all(sessionId) as Array<{ subject: string; evidence_key: string }>;
+    .all(sessionId) as ActiveEditEvidenceRow[];
 }
 
 export function loadActiveIntents(
@@ -270,13 +278,10 @@ export function loadActiveEdits(
     const edit = edits.get(row.subject);
     if (!edit) continue;
     if (!edit.payloadEvidenceKey) {
-      edit.payloadEvidenceKey = row.evidence_key;
+      edit.payloadEvidenceKey = row.evidence_ref_key;
     }
-    if (row.evidence_key.startsWith("hook:") && edit.hookEventId == null) {
-      const hookEventId = Number(row.evidence_key.slice("hook:".length));
-      if (!Number.isNaN(hookEventId)) {
-        edit.hookEventId = hookEventId;
-      }
+    if (row.hook_event_id != null && edit.hookEventId == null) {
+      edit.hookEventId = row.hook_event_id;
     }
     edits.set(row.subject, edit);
   }

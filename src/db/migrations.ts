@@ -180,6 +180,90 @@ function rebuildScannerEventsWithEventIndex(db: Database): void {
   );
 }
 
+function tableExists(db: Database, table: string): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
+    .get(table);
+}
+
+function ensureEvidenceRefSchema(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS evidence_refs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ref_key TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      session_id TEXT,
+      sync_id TEXT,
+      repository TEXT,
+      file_path TEXT,
+      trace_id TEXT,
+      span_id TEXT,
+      locator_json TEXT NOT NULL
+    )
+  `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_evidence_refs_session ON evidence_refs(session_id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_evidence_refs_kind_sync ON evidence_refs(kind, sync_id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_evidence_refs_trace_span ON evidence_refs(trace_id, span_id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path)",
+  );
+}
+
+function rebuildClaimEvidenceWithRefsOnly(db: Database): void {
+  if (tableExists(db, "claim_evidence")) {
+    db.exec("DROP TABLE claim_evidence");
+  }
+  db.exec(`
+    CREATE TABLE claim_evidence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      claim_id INTEGER NOT NULL,
+      evidence_ref_id INTEGER NOT NULL,
+      detail JSON,
+      role TEXT NOT NULL DEFAULT 'supporting'
+    )
+  `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_claim_evidence_ref ON claim_evidence(evidence_ref_id)",
+  );
+}
+
+function deleteAllRowsIfTableExists(db: Database, table: string): void {
+  if (!tableExists(db, table)) return;
+  db.exec(`DELETE FROM ${table}`);
+}
+
+function resetDerivedStateForEvidenceRefCutover(db: Database): void {
+  ensureEvidenceRefSchema(db);
+  rebuildClaimEvidenceWithRefsOnly(db);
+
+  // Claim/projection tables are disposable derived state. Rebuild them from
+  // raw scanner session files plus preserved hook/OTel tables after reparse.
+  deleteAllRowsIfTableExists(db, "code_provenance");
+  deleteAllRowsIfTableExists(db, "intent_session_summaries");
+  deleteAllRowsIfTableExists(db, "session_summaries");
+  deleteAllRowsIfTableExists(db, "intent_edits");
+  deleteAllRowsIfTableExists(db, "intent_units_fts");
+  deleteAllRowsIfTableExists(db, "intent_units");
+  deleteAllRowsIfTableExists(db, "active_claims");
+  deleteAllRowsIfTableExists(db, "claims");
+  deleteAllRowsIfTableExists(db, "evidence_refs");
+  deleteAllRowsIfTableExists(db, "ingestion_cursors");
+  deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
+
+  // Force the startup scanner loop to run atomic reparse after upgrade,
+  // even on machines whose DB was already stamped with a newer data version.
+  db.pragma("user_version = 0");
+}
+
 // ---------------------------------------------------------------------------
 // Migration registry — append only, never reorder or remove
 // ---------------------------------------------------------------------------
@@ -539,6 +623,20 @@ export const MIGRATIONS: Migration[] = [
     name: "rebuild_scanner_events_with_event_index",
     up: (db) => {
       rebuildScannerEventsWithEventIndex(db);
+    },
+  },
+  {
+    id: 10,
+    name: "add_evidence_ref_schema",
+    up: (db) => {
+      ensureEvidenceRefSchema(db);
+    },
+  },
+  {
+    id: 11,
+    name: "reset_derived_state_for_evidence_ref_cutover",
+    up: (db) => {
+      resetDerivedStateForEvidenceRefCutover(db);
     },
   },
 ];

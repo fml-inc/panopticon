@@ -317,10 +317,23 @@ CREATE TABLE IF NOT EXISTS claims (
   sync_id TEXT DEFAULT (hex(randomblob(8)))
 );
 
+CREATE TABLE IF NOT EXISTS evidence_refs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ref_key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  session_id TEXT,
+  sync_id TEXT,
+  repository TEXT,
+  file_path TEXT,
+  trace_id TEXT,
+  span_id TEXT,
+  locator_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS claim_evidence (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   claim_id INTEGER NOT NULL,
-  evidence_key TEXT NOT NULL,
+  evidence_ref_id INTEGER NOT NULL,
   detail JSON,
   role TEXT NOT NULL DEFAULT 'supporting'
 );
@@ -557,7 +570,6 @@ CREATE INDEX IF NOT EXISTS idx_claims_asserter ON claims(asserter, observed_at_m
 
 -- claim_evidence
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_id);
-CREATE INDEX IF NOT EXISTS idx_claim_evidence_key ON claim_evidence(evidence_key);
 
 -- active_claims
 CREATE INDEX IF NOT EXISTS idx_active_claims_claim ON active_claims(claim_id);
@@ -595,13 +607,24 @@ CREATE INDEX IF NOT EXISTS idx_code_provenance_status
 
 `;
 
+const POST_MIGRATION_INDEX_SQL = `
+-- claim_evidence
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_ref ON claim_evidence(evidence_ref_id);
+
+-- evidence_refs
+CREATE INDEX IF NOT EXISTS idx_evidence_refs_session ON evidence_refs(session_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_refs_kind_sync ON evidence_refs(kind, sync_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_refs_trace_span ON evidence_refs(trace_id, span_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path);
+`;
+
 /**
  * Scanner data version. Increment when parser logic changes in ways that
  * affect stored data (new fields extracted, content formatting changes,
  * fork detection improvements, etc.). On startup, if the DB's user_version
- * is lower than this, a full resync is triggered automatically.
+ * is lower than this, a full atomic reparse is triggered automatically.
  */
-export const SCANNER_DATA_VERSION = 2;
+export const SCANNER_DATA_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // Database initialization
@@ -643,6 +666,7 @@ export function getDb(): Database {
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);
   runMigrations(_db);
+  _db.exec(POST_MIGRATION_INDEX_SQL);
 
   // Check data version for resync
   const currentVersion = (_db.pragma("user_version", { simple: true }) ??
