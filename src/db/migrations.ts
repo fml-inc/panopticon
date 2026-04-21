@@ -21,6 +21,11 @@
  *    virtual table recreation): add an `up` function migration.
  *    Update SCHEMA_SQL to reflect the final state.
  *
+ * 5a. Because boot runs SCHEMA_SQL before runMigrations(), any migration
+ *    that touches a table which SCHEMA_SQL may already have created must be
+ *    safe against the latest schema shape. Guard ALTER TABLE and legacy
+ *    indexes with schema checks instead of assuming historical columns exist.
+ *
  * 6. Never reorder or remove migrations. Only append.
  *
  * 7. Migration IDs are sequential integers starting from 1.
@@ -186,6 +191,33 @@ function tableExists(db: Database, table: string): boolean {
     .get(table);
 }
 
+function tableHasColumn(db: Database, table: string, column: string): boolean {
+  if (!tableExists(db, table)) return false;
+  return (
+    db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  ).some((col) => col.name === column);
+}
+
+function addColumnIfMissing(
+  db: Database,
+  table: string,
+  column: string,
+  columnSql: string,
+): void {
+  if (tableHasColumn(db, table, column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnSql}`);
+}
+
+function createIndexIfColumnsExist(
+  db: Database,
+  table: string,
+  columns: string[],
+  sql: string,
+): void {
+  if (!columns.every((column) => tableHasColumn(db, table, column))) return;
+  db.exec(sql);
+}
+
 function ensureEvidenceRefSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS evidence_refs (
@@ -286,7 +318,14 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 1,
     name: "add_plugin_hooks_to_user_config",
-    sql: "ALTER TABLE user_config_snapshots ADD COLUMN plugin_hooks JSON NOT NULL DEFAULT '[]'",
+    up: (db) => {
+      addColumnIfMissing(
+        db,
+        "user_config_snapshots",
+        "plugin_hooks",
+        "plugin_hooks JSON NOT NULL DEFAULT '[]'",
+      );
+    },
   },
   {
     id: 2,
@@ -320,14 +359,23 @@ export const MIGRATIONS: Migration[] = [
     // Track panopticon's own allowlist/approvals and Claude Code memory files
     // inside user_config_snapshots so sync captures their history.
     up: (db) => {
-      db.exec(
-        "ALTER TABLE user_config_snapshots ADD COLUMN panopticon_allowed JSON NOT NULL DEFAULT 'null'",
+      addColumnIfMissing(
+        db,
+        "user_config_snapshots",
+        "panopticon_allowed",
+        "panopticon_allowed JSON NOT NULL DEFAULT 'null'",
       );
-      db.exec(
-        "ALTER TABLE user_config_snapshots ADD COLUMN panopticon_approvals JSON NOT NULL DEFAULT 'null'",
+      addColumnIfMissing(
+        db,
+        "user_config_snapshots",
+        "panopticon_approvals",
+        "panopticon_approvals JSON NOT NULL DEFAULT 'null'",
       );
-      db.exec(
-        "ALTER TABLE user_config_snapshots ADD COLUMN memory_files JSON NOT NULL DEFAULT '{}'",
+      addColumnIfMissing(
+        db,
+        "user_config_snapshots",
+        "memory_files",
+        "memory_files JSON NOT NULL DEFAULT '{}'",
       );
     },
   },
@@ -447,7 +495,10 @@ export const MIGRATIONS: Migration[] = [
       db.exec(
         "CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_id)",
       );
-      db.exec(
+      createIndexIfColumnsExist(
+        db,
+        "claim_evidence",
+        ["evidence_key"],
         "CREATE INDEX IF NOT EXISTS idx_claim_evidence_key ON claim_evidence(evidence_key)",
       );
       db.exec(
@@ -489,9 +540,8 @@ export const MIGRATIONS: Migration[] = [
           name: string;
         }>
       ).some((col) => col.name === "sync_id");
-      if (!hasSyncId) {
-        db.exec("ALTER TABLE messages ADD COLUMN sync_id TEXT");
-      }
+      if (!hasSyncId)
+        addColumnIfMissing(db, "messages", "sync_id", "sync_id TEXT");
 
       const rows = db
         .prepare("SELECT id, session_id, ordinal, uuid FROM messages")
@@ -530,11 +580,13 @@ export const MIGRATIONS: Migration[] = [
       const hasCallIndex = toolCallCols.some(
         (col) => col.name === "call_index",
       );
-      if (!hasCallIndex) {
-        db.exec(
-          "ALTER TABLE tool_calls ADD COLUMN call_index INTEGER NOT NULL DEFAULT 0",
+      if (!hasCallIndex)
+        addColumnIfMissing(
+          db,
+          "tool_calls",
+          "call_index",
+          "call_index INTEGER NOT NULL DEFAULT 0",
         );
-      }
 
       const rows = db
         .prepare(
@@ -587,9 +639,8 @@ export const MIGRATIONS: Migration[] = [
           name: string;
         }>;
         const hasTurnSyncId = turnCols.some((col) => col.name === "sync_id");
-        if (!hasTurnSyncId) {
-          db.exec("ALTER TABLE scanner_turns ADD COLUMN sync_id TEXT");
-        }
+        if (!hasTurnSyncId)
+          addColumnIfMissing(db, "scanner_turns", "sync_id", "sync_id TEXT");
 
         const turnRows = db
           .prepare(
@@ -626,9 +677,8 @@ export const MIGRATIONS: Migration[] = [
         name: string;
       }>;
       const hasEventSyncId = eventCols.some((col) => col.name === "sync_id");
-      if (!hasEventSyncId) {
-        db.exec("ALTER TABLE scanner_events ADD COLUMN sync_id TEXT");
-      }
+      if (!hasEventSyncId)
+        addColumnIfMissing(db, "scanner_events", "sync_id", "sync_id TEXT");
       backfillScannerEventSyncIds(db);
     },
   },
