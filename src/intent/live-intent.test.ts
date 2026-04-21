@@ -40,6 +40,7 @@ import {
 } from "./asserters/from_hooks.js";
 import { rebuildIntentClaimsFromScanner } from "./asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "./asserters/landed_from_disk.js";
+import { loadActiveEdits } from "./claimViews.js";
 import { rebuildIntentProjection } from "./project.js";
 
 const SESSION = "live-hook-session";
@@ -60,6 +61,7 @@ afterAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM evidence_refs").run();
   db.prepare("DELETE FROM active_claims").run();
   db.prepare("DELETE FROM claims").run();
   db.prepare("DELETE FROM intent_edits").run();
@@ -252,6 +254,56 @@ describe("live hook claims", () => {
 
     expect(intentSubjects).toEqual(["intent:live-hook-session:user:0"]);
     expect(editIntentRefs).toEqual(["intent:live-hook-session:user:0"]);
+  });
+
+  it("uses typed hook-event evidence refs for hook-backed edits", () => {
+    const sessionId = "hook-typed-evidence";
+    insertSession({
+      sessionId,
+      endedAtMs: 2000,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "make the hook edit",
+      timestampMs: 1000,
+      uuid: "hook-typed-evidence-user",
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "make the hook edit" },
+    });
+    const editId = insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1100,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "/tmp/hook-typed-evidence.ts",
+          old_string: "OLD",
+          new_string: "NEW",
+        },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "Stop",
+      timestamp_ms: 2000,
+      payload: { session_id: sessionId },
+    });
+
+    rebuildIntentClaimsFromHooks({ sessionId });
+    rebuildActiveClaims();
+
+    const [activeEdit] = [...loadActiveEdits({ sessionId }).values()];
+    expect(activeEdit?.payloadEvidenceKey?.startsWith("hook_event:")).toBe(
+      true,
+    );
+    expect(activeEdit?.hookEventId).toBe(editId);
   });
 
   it("keeps the first close boundary instead of stretching across later stops", () => {
@@ -918,6 +970,78 @@ describe("scanner-only landed reconciliation", () => {
     });
 
     rebuildIntentClaimsFromScanner({ sessionId });
+    reconcileLandedClaimsFromDisk({ sessionId });
+    rebuildIntentProjection({ sessionId });
+
+    const row = getDb()
+      .prepare(
+        `SELECT file_path, tool_name, landed
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | { file_path: string; tool_name: string; landed: number | null }
+      | undefined;
+
+    expect(row).toEqual({
+      file_path: filePath,
+      tool_name: "apply_patch",
+      landed: 1,
+    });
+  });
+
+  it("uses typed tool-call evidence refs without legacy payload columns", () => {
+    const sessionId = "scanner-typed-tool-evidence";
+    const filePath = path.join(scratchDir, "scanner-typed-tool-evidence.ts");
+    fs.writeFileSync(filePath, "export const value = 1;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "patch the file",
+      timestampMs: 1000,
+      uuid: "scanner-typed-tool-evidence-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "apply_patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          `*** Update File: ${filePath}`,
+          "@@",
+          "-export const value = 0;",
+          "+export const value = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    rebuildActiveClaims();
+
+    const claimEvidenceCols = getDb()
+      .prepare("PRAGMA table_info(claim_evidence)")
+      .all() as Array<{ name: string }>;
+    expect(claimEvidenceCols.map((col) => col.name)).not.toContain(
+      "evidence_key",
+    );
+
+    const [activeEdit] = [...loadActiveEdits({ sessionId }).values()];
+    expect(activeEdit?.payloadEvidenceKey?.startsWith("tc:")).toBe(true);
+
     reconcileLandedClaimsFromDisk({ sessionId });
     rebuildIntentProjection({ sessionId });
 

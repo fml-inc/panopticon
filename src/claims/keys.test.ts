@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   editKey,
+  hookEventSyncEvidenceKey,
   intentKey,
   messageEvidenceKey,
+  messageSyncEvidenceKey,
   semanticEditIdentity,
+  toolCallSyncEvidenceKey,
   toolEvidenceKey,
   toolLocalEvidenceKey,
 } from "./keys.js";
@@ -91,9 +94,14 @@ describe("editKey", () => {
 describe("evidence key helpers", () => {
   it("formats stable evidence keys", () => {
     expect(messageEvidenceKey("session-1", 5)).toBe("message:session-1:5");
+    expect(messageSyncEvidenceKey("msg-sync-1")).toBe("msg:msg-sync-1");
     expect(toolEvidenceKey("tool-123")).toBe("tool:tool-123");
+    expect(toolCallSyncEvidenceKey("tc-sync-1")).toBe("tc:tc-sync-1");
     expect(toolLocalEvidenceKey("session-1", 9, 2)).toBe(
       "tool_local:session-1:9:2",
+    );
+    expect(hookEventSyncEvidenceKey("hook-sync-1")).toBe(
+      "hook_event:hook-sync-1",
     );
   });
 });

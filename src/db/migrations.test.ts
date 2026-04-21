@@ -725,6 +725,158 @@ describe("runMigrations — existing DB", () => {
     expect(getApplied(db).map((r) => r.id)).toContain(9);
   });
 
+  it("migrations 10 and 11 backfill evidence refs and drop legacy evidence keys", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        sync_id TEXT NOT NULL,
+        UNIQUE(session_id, ordinal)
+      );
+      CREATE TABLE tool_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        call_index INTEGER NOT NULL DEFAULT 0,
+        tool_name TEXT NOT NULL,
+        tool_use_id TEXT,
+        sync_id TEXT NOT NULL
+      );
+      CREATE TABLE hook_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        tool_name TEXT,
+        sync_id TEXT
+      );
+      CREATE TABLE claim_evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claim_id INTEGER NOT NULL,
+        evidence_key TEXT NOT NULL,
+        detail JSON,
+        role TEXT NOT NULL DEFAULT 'supporting'
+      );
+    `);
+    db.prepare(
+      `INSERT INTO schema_migrations (id, name)
+       VALUES (?, ?), (?, ?), (?, ?), (?, ?), (?, ?),
+              (?, ?), (?, ?), (?, ?), (?, ?)`,
+    ).run(
+      1,
+      "stamp1",
+      2,
+      "stamp2",
+      3,
+      "stamp3",
+      4,
+      "stamp4",
+      5,
+      "stamp5",
+      6,
+      "stamp6",
+      7,
+      "stamp7",
+      8,
+      "stamp8",
+      9,
+      "stamp9",
+    );
+    db.prepare(
+      `INSERT INTO messages (id, session_id, ordinal, role, content, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(1, "sess-1", 0, "user", "hi", "msg-sync-1");
+    db.prepare(
+      `INSERT INTO tool_calls (
+         id, message_id, session_id, call_index, tool_name, tool_use_id, sync_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(1, 1, "sess-1", 0, "Edit", "tool-123", "tc-sync-1");
+    db.prepare(
+      `INSERT INTO hook_events (
+         id, session_id, event_type, timestamp_ms, tool_name, sync_id
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(1, "sess-1", "PostToolUse", 1000, "Edit", "hook-sync-1");
+    db.prepare(
+      `INSERT INTO claim_evidence (claim_id, evidence_key)
+       VALUES (?, ?), (?, ?), (?, ?), (?, ?)`,
+    ).run(
+      1,
+      "message:sess-1:0",
+      2,
+      "tool:tool-123",
+      3,
+      "hook:1",
+      4,
+      "fs_snapshot:/tmp/file.txt:abc123",
+    );
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(claim_evidence)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("evidence_ref_id");
+    expect(cols.map((c) => c.name)).not.toContain("evidence_key");
+
+    const refs = db
+      .prepare(
+        `SELECT ce.claim_id, ce.evidence_ref_id, er.ref_key, er.kind, er.sync_id, er.file_path
+         FROM claim_evidence ce
+         LEFT JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         ORDER BY ce.id ASC`,
+      )
+      .all() as Array<{
+      claim_id: number;
+      evidence_ref_id: number | null;
+      ref_key: string | null;
+      kind: string | null;
+      sync_id: string | null;
+      file_path: string | null;
+    }>;
+
+    expect(refs).toEqual([
+      {
+        claim_id: 1,
+        evidence_ref_id: expect.any(Number),
+        ref_key: "msg:msg-sync-1",
+        kind: "message",
+        sync_id: "msg-sync-1",
+        file_path: null,
+      },
+      {
+        claim_id: 2,
+        evidence_ref_id: expect.any(Number),
+        ref_key: "tc:tc-sync-1",
+        kind: "tool_call",
+        sync_id: "tc-sync-1",
+        file_path: null,
+      },
+      {
+        claim_id: 3,
+        evidence_ref_id: expect.any(Number),
+        ref_key: "hook_event:hook-sync-1",
+        kind: "hook_event",
+        sync_id: "hook-sync-1",
+        file_path: null,
+      },
+      {
+        claim_id: 4,
+        evidence_ref_id: expect.any(Number),
+        ref_key: "file_snapshot:/tmp/file.txt:abc123",
+        kind: "file_snapshot",
+        sync_id: null,
+        file_path: "/tmp/file.txt",
+      },
+    ]);
+
+    expect(getApplied(db).map((r) => r.id)).toContain(10);
+    expect(getApplied(db).map((r) => r.id)).toContain(11);
+  });
+
   it("runs up() function migration", () => {
     const db = createExistingDb();
     db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)");

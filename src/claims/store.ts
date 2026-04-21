@@ -1,18 +1,30 @@
 import { getDb } from "../db/schema.js";
 import { selectActiveClaimForHeadKey } from "./canonicalize.js";
 import {
+  ensureEvidenceRef,
+  legacyEvidenceRefFromKey,
+  typedEvidenceRefFromKey,
+} from "./evidence-refs.js";
+import {
   claimHeadKey,
   encodeClaimValue,
   normalizedValueForKey,
   observationKey,
 } from "./keys.js";
 import { getPredicateSpec, sourceRank } from "./predicates.js";
-import type { AssertClaimInput } from "./types.js";
+import type { AssertClaimInput, EvidenceRefInput } from "./types.js";
 
 export interface AssertClaimResult {
   claimId: number;
   inserted: boolean;
   headKey: string;
+}
+
+interface NormalizedEvidenceItem {
+  key: string;
+  role?: "origin" | "supporting" | "refuting" | "context";
+  detail?: unknown;
+  evidenceRef: EvidenceRefInput;
 }
 
 export function assertClaim(input: AssertClaimInput): AssertClaimResult {
@@ -26,7 +38,20 @@ export function assertClaim(input: AssertClaimInput): AssertClaimResult {
     spec.valueKind,
     normalizedValue,
   );
-  const evidence = input.evidence ?? [];
+  const evidence = (input.evidence ?? []).map((item) => {
+    const evidenceRef =
+      typedEvidenceRefFromKey(item.key) ??
+      legacyEvidenceRefFromKey(db, item.key);
+    if (!evidenceRef) {
+      throw new Error(`Unsupported evidence key: ${item.key}`);
+    }
+    return {
+      key: evidenceRef.refKey,
+      role: item.role,
+      detail: item.detail,
+      evidenceRef,
+    } satisfies NormalizedEvidenceItem;
+  });
   const obsKey = observationKey({
     predicate: input.predicate,
     subject: input.subject,
@@ -73,13 +98,14 @@ export function assertClaim(input: AssertClaimInput): AssertClaimResult {
       .get(obsKey) as { id: number };
     if (inserted && evidence.length > 0) {
       const stmt = db.prepare(
-        `INSERT INTO claim_evidence (claim_id, evidence_key, detail, role)
+        `INSERT INTO claim_evidence (claim_id, evidence_ref_id, detail, role)
          VALUES (?, ?, ?, ?)`,
       );
       for (const item of evidence) {
+        const evidenceRefId = ensureEvidenceRef(db, item.evidenceRef);
         stmt.run(
           row.id,
-          item.key,
+          evidenceRefId,
           item.detail ? JSON.stringify(item.detail) : null,
           item.role ?? "supporting",
         );

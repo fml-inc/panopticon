@@ -70,6 +70,7 @@ beforeEach(() => {
   db.prepare("DELETE FROM intent_session_summaries").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM evidence_refs").run();
   db.prepare("DELETE FROM active_claims").run();
   db.prepare("DELETE FROM claims").run();
   db.prepare("DELETE FROM intent_edits").run();

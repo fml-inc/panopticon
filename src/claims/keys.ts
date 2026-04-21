@@ -56,8 +56,16 @@ export function messageEvidenceKey(sessionId: string, ordinal: number): string {
   return `message:${sessionId}:${ordinal}`;
 }
 
+export function messageSyncEvidenceKey(syncId: string): string {
+  return `msg:${syncId}`;
+}
+
 export function toolEvidenceKey(toolUseId: string): string {
   return `tool:${toolUseId}`;
+}
+
+export function toolCallSyncEvidenceKey(syncId: string): string {
+  return `tc:${syncId}`;
 }
 
 export function toolLocalEvidenceKey(
@@ -86,11 +94,15 @@ export function hookEvidenceKey(id: number): string {
   return `hook:${id}`;
 }
 
+export function hookEventSyncEvidenceKey(syncId: string): string {
+  return `hook_event:${syncId}`;
+}
+
 export function fileSnapshotEvidenceKey(
   filePath: string,
   content: string,
 ): string {
-  return `fs_snapshot:${filePath}:${sha256Hex(content)}`;
+  return `file_snapshot:${filePath}:${sha256Hex(content)}`;
 }
 
 export function encodeClaimValue(value: unknown): EncodedClaimValue {

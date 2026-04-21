@@ -1,6 +1,7 @@
 import { gunzipSync } from "node:zlib";
 import {
   editKey,
+  hookEventSyncEvidenceKey,
   hookEvidenceKey,
   intentKey,
   semanticEditIdentity,
@@ -33,6 +34,7 @@ interface HookPromptRow {
   user_prompt: string | null;
   tool_name: string | null;
   payload: Uint8Array;
+  sync_id: string | null;
 }
 
 interface UserMessageRow {
@@ -54,7 +56,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
   const db = getDb();
   const hookRows = db
     .prepare(
-      `SELECT id, session_id, event_type, timestamp_ms, cwd, repository, user_prompt, tool_name, payload
+      `SELECT id, session_id, event_type, timestamp_ms, cwd, repository, user_prompt, tool_name, payload, sync_id
        FROM hook_events
        WHERE event_type IN ('UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd')
        ${opts?.sessionId ? "AND session_id = ?" : ""}
@@ -108,7 +110,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           assertClosedAtClaim({
             subject: lastSubject,
             timestampMs: event.timestamp_ms,
-            evidenceKey: hookEvidenceKey(event.id),
+            evidenceKey: hookEvidenceKeyForEvent(event.id, event.sync_id),
             canonicalize: false,
           });
         }
@@ -119,7 +121,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           repository: event.repository,
           cwd: event.cwd,
           timestampMs: event.timestamp_ms,
-          evidenceKey: hookEvidenceKey(event.id),
+          evidenceKey: hookEvidenceKeyForEvent(event.id, event.sync_id),
           canonicalize: false,
         });
         lastSubject = subject;
@@ -158,6 +160,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             intentSubject: lastSubject,
             sessionId,
             hookEventId: event.id,
+            hookEventSyncId: event.sync_id,
             toolName: event.tool_name,
             entry,
             cwd: event.cwd,
@@ -172,7 +175,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
         assertClosedAtClaim({
           subject: lastSubject,
           timestampMs: event.timestamp_ms,
-          evidenceKey: hookEvidenceKey(event.id),
+          evidenceKey: hookEvidenceKeyForEvent(event.id, event.sync_id),
           canonicalize: false,
         });
         currentClosed = true;
@@ -226,7 +229,11 @@ export function recordIntentClaimsFromHookEvent(args: {
     content: string;
   }>;
 
-  const evidenceKey = hookEvidenceKey(args.hookEventId);
+  const hookEventSyncId = resolveHookEventSyncId(args.hookEventId);
+  const canonicalEvidenceKey = hookEvidenceKeyForEvent(
+    args.hookEventId,
+    hookEventSyncId,
+  );
   if (args.eventType === "UserPromptSubmit") {
     const subject = resolveIntentSubject({
       sessionId: args.sessionId,
@@ -247,7 +254,7 @@ export function recordIntentClaimsFromHookEvent(args: {
         assertClosedAtClaim({
           subject: previousSubject,
           timestampMs: args.timestampMs,
-          evidenceKey,
+          evidenceKey: canonicalEvidenceKey,
         });
       }
     }
@@ -258,7 +265,7 @@ export function recordIntentClaimsFromHookEvent(args: {
       repository: args.repository ?? null,
       cwd: args.cwd ?? null,
       timestampMs: args.timestampMs,
-      evidenceKey,
+      evidenceKey: canonicalEvidenceKey,
     });
     return;
   }
@@ -299,6 +306,7 @@ export function recordIntentClaimsFromHookEvent(args: {
         intentSubject: subject,
         sessionId: args.sessionId,
         hookEventId: args.hookEventId,
+        hookEventSyncId,
         toolName,
         entry,
         cwd: args.cwd ?? null,
@@ -312,7 +320,7 @@ export function recordIntentClaimsFromHookEvent(args: {
     assertClosedAtClaim({
       subject,
       timestampMs: args.timestampMs,
-      evidenceKey,
+      evidenceKey: canonicalEvidenceKey,
     });
   }
 }
@@ -400,6 +408,7 @@ function assertHookEditClaims(args: {
   intentSubject: string;
   sessionId: string;
   hookEventId: number;
+  hookEventSyncId?: string | null;
   toolName: string;
   entry: ParsedEditEntry;
   cwd: string | null;
@@ -424,7 +433,10 @@ function assertHookEditClaims(args: {
     multiEditIndex: args.entry.multiEditIndex,
   });
   const evidence = [
-    { key: hookEvidenceKey(args.hookEventId), role: "origin" as const },
+    {
+      key: hookEvidenceKeyForEvent(args.hookEventId, args.hookEventSyncId),
+      role: "origin" as const,
+    },
   ];
   assertClaim({
     predicate: "edit/part-of-intent",
@@ -629,4 +641,21 @@ function resolveSessionCwd(
 
 function resolveFilePath(filePath: string, cwd: string | null): string {
   return resolveFilePathFromCwd(filePath, cwd);
+}
+
+function hookEvidenceKeyForEvent(
+  hookEventId: number,
+  hookEventSyncId: string | null | undefined,
+): string {
+  return hookEventSyncId
+    ? hookEventSyncEvidenceKey(hookEventSyncId)
+    : hookEvidenceKey(hookEventId);
+}
+
+function resolveHookEventSyncId(hookEventId: number): string | null {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT sync_id FROM hook_events WHERE id = ?`)
+    .get(hookEventId) as { sync_id: string | null } | undefined;
+  return row?.sync_id ?? null;
 }

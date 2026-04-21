@@ -3,8 +3,10 @@ import {
   editKey,
   intentKey,
   messageEvidenceKey,
+  messageSyncEvidenceKey,
   semanticEditIdentity,
   sha256Hex,
+  toolCallSyncEvidenceKey,
   toolEvidenceKey,
   toolLocalEvidenceKey,
 } from "../../claims/keys.js";
@@ -27,6 +29,7 @@ interface UserMessageRow {
   timestamp_ms: number | null;
   content: string;
   uuid: string | null;
+  sync_id: string | null;
   cwd: string | null;
   ended_at_ms: number | null;
   user_index?: number;
@@ -43,6 +46,7 @@ interface ToolCallRow {
   tool_name: string;
   tool_use_id: string | null;
   input_json: string | null;
+  sync_id: string | null;
   timestamp_ms: number | null;
   assistant_ordinal: number;
 }
@@ -73,7 +77,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   const userMessages = db
     .prepare(
       `SELECT m.session_id, m.ordinal, m.timestamp_ms, m.content, m.uuid,
-              s.cwd, s.ended_at_ms
+              m.sync_id, s.cwd, s.ended_at_ms
        FROM messages m
        JOIN sessions s ON s.session_id = m.session_id
        WHERE ${userFilters.join(" AND ")}
@@ -115,7 +119,9 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       });
       const evidence = [
         {
-          key: messageEvidenceKey(msg.session_id, msg.ordinal),
+          key: msg.sync_id
+            ? messageSyncEvidenceKey(msg.sync_id)
+            : messageEvidenceKey(msg.session_id, msg.ordinal),
           role: "origin" as const,
         },
       ];
@@ -202,7 +208,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
 
   const toolRows = db
     .prepare(
-      `SELECT tc.id, tc.session_id, tc.tool_name, tc.tool_use_id, tc.input_json,
+      `SELECT tc.id, tc.session_id, tc.tool_name, tc.tool_use_id, tc.input_json, tc.sync_id,
               m.timestamp_ms, m.ordinal AS assistant_ordinal
        FROM tool_calls tc
        JOIN messages m ON m.id = tc.message_id
@@ -250,13 +256,15 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         semanticOccurrence,
         multiEditIndex: entry.multiEditIndex,
       });
-      const evidenceKey = row.tool_use_id
-        ? toolEvidenceKey(row.tool_use_id)
-        : toolLocalEvidenceKey(
-            row.session_id,
-            row.assistant_ordinal,
-            localToolCallIndex,
-          );
+      const evidenceKey = row.sync_id
+        ? toolCallSyncEvidenceKey(row.sync_id)
+        : row.tool_use_id
+          ? toolEvidenceKey(row.tool_use_id)
+          : toolLocalEvidenceKey(
+              row.session_id,
+              row.assistant_ordinal,
+              localToolCallIndex,
+            );
       const evidence = [{ key: evidenceKey, role: "origin" as const }];
       const observedAtMs = row.timestamp_ms ?? intentMsg.timestamp_ms ?? 0;
       assertScannerClaim({
