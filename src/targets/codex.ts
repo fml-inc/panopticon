@@ -48,6 +48,7 @@ const HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
   "PreToolUse",
+  "PermissionRequest",
   "PostToolUse",
   "Stop",
 ];
@@ -368,12 +369,28 @@ const codex: TargetAdapter = {
     // Codex uses snake_case but the hook handler already accepts both cases;
     // no mapping needed since ingest.ts normalizes at storage time
     eventMap: {},
-    formatPermissionResponse({ allow, reason }) {
-      // Codex uses the same format as Claude Code
+    formatPermissionResponse(eventName, { allow, reason }) {
+      if (eventName === "PermissionRequest") {
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PermissionRequest",
+            decision: allow
+              ? { behavior: "allow" }
+              : { behavior: "deny", message: reason },
+          },
+        };
+      }
+
+      // Codex PreToolUse hooks can block, but approval must go through the
+      // separate PermissionRequest hook.
+      if (allow) {
+        return {};
+      }
+
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          permissionDecision: allow ? "allow" : "deny",
+          permissionDecision: "deny",
           permissionDecisionReason: reason,
         },
       };

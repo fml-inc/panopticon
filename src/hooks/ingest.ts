@@ -324,10 +324,12 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
  *   3. Resolve the git repository from cwd/file paths
  *   4. Store the event in hook_events table (full payload as gzipped blob)
  *   5. Upsert session metadata (started_at, first_prompt, ended_at, etc.)
- *   6. For PreToolUse: check allowed.json and return permission decision
+ *   6. For PreToolUse / PermissionRequest: check allowed.json and return a
+ *      target-specific permission decision
  *
- * Returns {} for most events. For PreToolUse, may return a permission
- * response that Claude Code uses to auto-approve/deny the tool call.
+ * Returns {} for most events. For PreToolUse / PermissionRequest, may return
+ * a permission response that the target uses to auto-approve/deny the tool
+ * call or approval prompt.
  */
 export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionId = data.session_id ?? "unknown";
@@ -362,12 +364,15 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   const targetId = target?.id ?? providerId ?? "unknown";
 
   // Check if this event type is enabled in the logging config.
-  // Permission enforcement still runs even for disabled events so that
-  // PreToolUse responses are not silently dropped.
+  // Permission enforcement still runs even for disabled events so that hook
+  // responses are not silently dropped.
   if (!isEventEnabled(eventType)) {
     // Skip storage but still handle permission enforcement below
-    if (eventType === "PreToolUse" && toolName) {
-      return buildPermissionResponse(toolName, data, target);
+    if (
+      (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
+      toolName
+    ) {
+      return buildPermissionResponse(eventType, toolName, data, target);
     }
     return {};
   }
@@ -494,7 +499,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
 
   // Increment event type + tool counts on the session
   incrementEventTypeCount(sessionId, eventType);
-  if (eventType === "PreToolUse" && toolName) {
+  if (
+    (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
+    toolName
+  ) {
     incrementToolCount(sessionId, toolName);
   }
 
@@ -564,18 +572,22 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   }
 
   // Permission enforcement via allowed.json
-  if (eventType === "PreToolUse" && toolName) {
-    return buildPermissionResponse(toolName, data, target);
+  if (
+    (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
+    toolName
+  ) {
+    return buildPermissionResponse(eventType, toolName, data, target);
   }
 
   return {};
 }
 
 /**
- * Evaluate PreToolUse permission for a tool call.
+ * Evaluate hook-time permission handling for a tool call / approval prompt.
  * Returns a formatted permission response if auto-allowed, otherwise {}.
  */
 function buildPermissionResponse(
+  eventType: "PreToolUse" | "PermissionRequest",
   toolName: string,
   data: HookInput,
   target: TargetAdapter | undefined,
@@ -601,12 +613,23 @@ function buildPermissionResponse(
 
   if (decision) {
     if (target) {
-      return target.events.formatPermissionResponse(decision);
+      return target.events.formatPermissionResponse(eventType, decision);
+    }
+    if (eventType === "PermissionRequest") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: {
+            behavior: decision.allow ? "allow" : "deny",
+            ...(decision.allow ? {} : { message: decision.reason }),
+          },
+        },
+      };
     }
     return {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "allow",
+        permissionDecision: decision.allow ? "allow" : "deny",
         permissionDecisionReason: decision.reason,
       },
     };

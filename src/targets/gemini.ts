@@ -184,7 +184,7 @@ const gemini: TargetAdapter = {
       return data;
     },
 
-    formatPermissionResponse({ allow, reason }) {
+    formatPermissionResponse(_eventName, { allow, reason }) {
       return { decision: allow ? "allow" : "deny", reason };
     },
   },
