@@ -171,15 +171,18 @@ and typed references.
    - destructive derived-state reset
    - forced atomic reparse from raw data
    - typed refs for `message`, `tool_call`, `hook_event`, and `file_snapshot`
-2. Hydrate denormalized `evidence_refs` columns from raw rows where derivable:
+2. Populate denormalized `evidence_refs` columns eagerly at claim-write time
+   where derivable:
    - `session_id`
    - `repository`
    - `file_path`
+   - normalized `evidence_ref_paths` rows for every known touched path
 3. Finish moving evidence consumers from key-prefix parsing to resolver-by-kind.
 4. Add an end-to-end upgrade/startup regression test that exercises:
    - old populated DB -> new build startup
    - migration-triggered atomic reparse
-   - healthy post-upgrade `intent_*` projection and hydrated `evidence_refs`
+   - healthy post-upgrade `intent_*` projection and eagerly populated
+     `evidence_refs`
 5. Decide which remaining families should emit next:
    - `scanner_turn` / `scanner_event`
    - `otel_logs` / `otel_metrics` / `otel_spans`

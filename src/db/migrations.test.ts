@@ -762,6 +762,11 @@ describe("runMigrations — existing DB", () => {
         detail JSON,
         role TEXT NOT NULL DEFAULT 'supporting'
       );
+      CREATE TABLE evidence_ref_paths (
+        evidence_ref_id INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        UNIQUE(evidence_ref_id, file_path)
+      );
       CREATE TABLE claims (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         observation_key TEXT NOT NULL UNIQUE,
@@ -970,6 +975,10 @@ describe("runMigrations — existing DB", () => {
       "fs_snapshot:/tmp/file.txt:abc123",
     );
     db.prepare(
+      `INSERT INTO evidence_ref_paths (evidence_ref_id, file_path)
+       VALUES (?, ?)`,
+    ).run(1, "/tmp/file.txt");
+    db.prepare(
       `INSERT INTO intent_units (id, intent_key, session_id, prompt_text)
        VALUES (?, ?, ?, ?)`,
     ).run(1, "intent:test", "sess-1", "hi");
@@ -1021,6 +1030,7 @@ describe("runMigrations — existing DB", () => {
            (SELECT COUNT(*) FROM active_claims) AS active_claims,
            (SELECT COUNT(*) FROM claim_evidence) AS claim_evidence,
            (SELECT COUNT(*) FROM evidence_refs) AS evidence_refs,
+           (SELECT COUNT(*) FROM evidence_ref_paths) AS evidence_ref_paths,
            (SELECT COUNT(*) FROM intent_units) AS intent_units,
            (SELECT COUNT(*) FROM intent_units_fts) AS intent_units_fts,
            (SELECT COUNT(*) FROM intent_edits) AS intent_edits,
@@ -1036,6 +1046,7 @@ describe("runMigrations — existing DB", () => {
       active_claims: 0,
       claim_evidence: 0,
       evidence_refs: 0,
+      evidence_ref_paths: 0,
       intent_units: 0,
       intent_units_fts: 0,
       intent_edits: 0,
@@ -1065,6 +1076,7 @@ describe("runMigrations — existing DB", () => {
 
     expect(getApplied(db).map((r) => r.id)).toContain(10);
     expect(getApplied(db).map((r) => r.id)).toContain(11);
+    expect(getApplied(db).map((r) => r.id)).toContain(12);
   });
 
   it("runs up() function migration", () => {

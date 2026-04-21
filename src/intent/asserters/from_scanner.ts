@@ -16,7 +16,10 @@ import {
 } from "../../claims/store.js";
 import { getDb } from "../../db/schema.js";
 import { resolveFilePathFromCwd } from "../../paths.js";
-import { parseEditEntriesFromJson } from "../editParsing.js";
+import {
+  type ParsedEditEntry,
+  parseEditEntriesFromJson,
+} from "../editParsing.js";
 
 const ASSERTER = "intent.from_scanner";
 const VERSION = "1";
@@ -112,6 +115,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   let intents = 0;
   for (const msgs of intentsBySession.values()) {
     msgs.forEach((msg, index) => {
+      const repository = repoBySession.get(msg.session_id) ?? null;
       const key = intentKey({
         sessionId: msg.session_id,
         ordinal: msg.ordinal,
@@ -125,6 +129,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
             syncId: msg.sync_id,
             ordinal: msg.ordinal,
             uuid: msg.uuid,
+            repository,
           }),
           role: "origin" as const,
         },
@@ -164,13 +169,12 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserterVersion: VERSION,
         evidence,
       });
-      const repo = repoBySession.get(msg.session_id);
-      if (repo) {
+      if (repository) {
         assertScannerClaim({
           predicate: "intent/repository",
           subjectKind: "intent",
           subject: key,
-          value: repo,
+          value: repository,
           observedAtMs: msg.timestamp_ms ?? 0,
           sourceType: "scanner",
           asserter: ASSERTER,
@@ -233,6 +237,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     const parsed = parseEditEntriesFromJson(row.tool_name, row.input_json);
     if (parsed.length === 0) continue;
 
+    const repository = repoBySession.get(row.session_id) ?? null;
+    const evidenceFilePaths = resolveEvidenceFilePaths(parsed, intentMsg.cwd);
     const intentSubject = intentKey({
       sessionId: intentMsg.session_id,
       ordinal: intentMsg.ordinal,
@@ -268,6 +274,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
             callIndex: row.call_index,
             messageSyncId: row.message_sync_id,
             messageOrdinal: row.assistant_ordinal,
+            repository,
+            filePaths: evidenceFilePaths,
           }),
           role: "origin" as const,
         },
@@ -371,4 +379,15 @@ function findIntentMessage(
     }
   }
   return undefined;
+}
+
+function resolveEvidenceFilePaths(
+  entries: ParsedEditEntry[],
+  cwd: string | null,
+): string[] {
+  return [
+    ...new Set(
+      entries.map((entry) => resolveFilePathFromCwd(entry.filePath, cwd)),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
 }

@@ -201,6 +201,13 @@ function ensureEvidenceRefSchema(db: Database): void {
       locator_json TEXT NOT NULL
     )
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS evidence_ref_paths (
+      evidence_ref_id INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      UNIQUE(evidence_ref_id, file_path)
+    )
+  `);
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_evidence_refs_session ON evidence_refs(session_id)",
   );
@@ -212,6 +219,12 @@ function ensureEvidenceRefSchema(db: Database): void {
   );
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_ref ON evidence_ref_paths(evidence_ref_id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_file ON evidence_ref_paths(file_path)",
   );
 }
 
@@ -255,6 +268,7 @@ function resetDerivedStateForEvidenceRefCutover(db: Database): void {
   deleteAllRowsIfTableExists(db, "intent_units");
   deleteAllRowsIfTableExists(db, "active_claims");
   deleteAllRowsIfTableExists(db, "claims");
+  deleteAllRowsIfTableExists(db, "evidence_ref_paths");
   deleteAllRowsIfTableExists(db, "evidence_refs");
   deleteAllRowsIfTableExists(db, "ingestion_cursors");
   deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
@@ -635,6 +649,13 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 11,
     name: "reset_derived_state_for_evidence_ref_cutover",
+    up: (db) => {
+      resetDerivedStateForEvidenceRefCutover(db);
+    },
+  },
+  {
+    id: 12,
+    name: "add_evidence_ref_paths_and_reset_derived_state",
     up: (db) => {
       resetDerivedStateForEvidenceRefCutover(db);
     },

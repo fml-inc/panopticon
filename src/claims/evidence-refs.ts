@@ -45,22 +45,36 @@ export interface EvidenceRefRow {
   locator_json: string;
 }
 
+function canonicalFilePaths(args: {
+  filePath?: string | null;
+  filePaths?: string[] | null;
+}): string[] {
+  return [
+    ...new Set([args.filePath, ...(args.filePaths ?? [])].filter(Boolean)),
+  ]
+    .map((value) => value as string)
+    .sort((a, b) => a.localeCompare(b));
+}
+
 export function messageEvidenceRef(args: {
   sessionId: string;
   syncId: string;
   ordinal: number;
   uuid?: string | null;
+  repository?: string | null;
 }): EvidenceRefInput {
   return {
     kind: "message",
     refKey: messageSyncEvidenceKey(args.syncId),
     sessionId: args.sessionId,
     syncId: args.syncId,
+    repository: args.repository ?? null,
     locator: {
       sessionId: args.sessionId,
       syncId: args.syncId,
       ordinal: args.ordinal,
       uuid: args.uuid ?? null,
+      repository: args.repository ?? null,
     },
   };
 }
@@ -73,12 +87,19 @@ export function toolCallEvidenceRef(args: {
   callIndex?: number;
   messageSyncId?: string | null;
   messageOrdinal?: number;
+  repository?: string | null;
+  filePath?: string | null;
+  filePaths?: string[] | null;
 }): EvidenceRefInput {
+  const filePaths = canonicalFilePaths(args);
   return {
     kind: "tool_call",
     refKey: toolCallSyncEvidenceKey(args.syncId),
     sessionId: args.sessionId,
     syncId: args.syncId,
+    repository: args.repository ?? null,
+    filePath: filePaths.length === 1 ? filePaths[0] : null,
+    filePaths,
     locator: {
       sessionId: args.sessionId,
       syncId: args.syncId,
@@ -87,6 +108,9 @@ export function toolCallEvidenceRef(args: {
       callIndex: args.callIndex,
       messageSyncId: args.messageSyncId ?? null,
       messageOrdinal: args.messageOrdinal,
+      repository: args.repository ?? null,
+      filePath: filePaths.length === 1 ? filePaths[0] : null,
+      filePaths,
     },
   };
 }
@@ -97,18 +121,28 @@ export function hookEventEvidenceRef(args: {
   eventType: string;
   timestampMs: number;
   toolName?: string | null;
+  repository?: string | null;
+  filePath?: string | null;
+  filePaths?: string[] | null;
 }): EvidenceRefInput {
+  const filePaths = canonicalFilePaths(args);
   return {
     kind: "hook_event",
     refKey: hookEventSyncEvidenceKey(args.syncId),
     sessionId: args.sessionId,
     syncId: args.syncId,
+    repository: args.repository ?? null,
+    filePath: filePaths.length === 1 ? filePaths[0] : null,
+    filePaths,
     locator: {
       sessionId: args.sessionId,
       syncId: args.syncId,
       eventType: args.eventType,
       timestampMs: args.timestampMs,
       toolName: args.toolName ?? null,
+      repository: args.repository ?? null,
+      filePath: filePaths.length === 1 ? filePaths[0] : null,
+      filePaths,
     },
   };
 }
@@ -116,15 +150,21 @@ export function hookEventEvidenceRef(args: {
 export function fileSnapshotEvidenceRef(args: {
   filePath: string;
   content: string;
+  repository?: string | null;
 }): EvidenceRefInput {
   const contentHash = sha256Hex(args.content);
+  const filePaths = [args.filePath];
   return {
     kind: "file_snapshot",
     refKey: `file_snapshot:${args.filePath}:${contentHash}`,
+    repository: args.repository ?? null,
     filePath: args.filePath,
+    filePaths,
     locator: {
       filePath: args.filePath,
+      filePaths,
       contentHash,
+      repository: args.repository ?? null,
     },
   };
 }
@@ -135,7 +175,24 @@ function tableHasColumn(db: Database, table: string, column: string): boolean {
   ).some((col) => col.name === column);
 }
 
+function syncEvidenceRefPaths(
+  db: Database,
+  evidenceRefId: number,
+  filePaths: string[],
+): void {
+  if (filePaths.length === 0) return;
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO evidence_ref_paths (evidence_ref_id, file_path)
+     VALUES (?, ?)`,
+  );
+  for (const filePath of filePaths) {
+    stmt.run(evidenceRefId, filePath);
+  }
+}
+
 export function ensureEvidenceRef(db: Database, ref: EvidenceRefInput): number {
+  const filePaths = canonicalFilePaths(ref);
+  const singletonFilePath = filePaths.length === 1 ? filePaths[0] : null;
   db.prepare(
     `INSERT INTO evidence_refs
        (ref_key, kind, session_id, sync_id, repository, file_path, trace_id, span_id, locator_json)
@@ -154,7 +211,7 @@ export function ensureEvidenceRef(db: Database, ref: EvidenceRefInput): number {
     ref.sessionId ?? null,
     ref.syncId ?? null,
     ref.repository ?? null,
-    ref.filePath ?? null,
+    singletonFilePath,
     ref.traceId ?? null,
     ref.spanId ?? null,
     JSON.stringify(ref.locator),
@@ -162,6 +219,7 @@ export function ensureEvidenceRef(db: Database, ref: EvidenceRefInput): number {
   const row = db
     .prepare(`SELECT id FROM evidence_refs WHERE ref_key = ?`)
     .get(ref.refKey) as { id: number };
+  syncEvidenceRefPaths(db, row.id, filePaths);
   return row.id;
 }
 
@@ -336,8 +394,10 @@ export function legacyEvidenceRefFromKey(
       kind: "file_snapshot",
       refKey: `file_snapshot:${filePath}:${contentHash}`,
       filePath,
+      filePaths: [filePath],
       locator: {
         filePath,
+        filePaths: [filePath],
         contentHash,
       },
     };
@@ -419,7 +479,8 @@ export function typedEvidenceRefFromKey(key: string): EvidenceRefInput | null {
       kind: "file_snapshot",
       refKey: key,
       filePath,
-      locator: { filePath, contentHash },
+      filePaths: [filePath],
+      locator: { filePath, filePaths: [filePath], contentHash },
     };
   }
   return null;

@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { gunzipSync } from "node:zlib";
-import { fileSnapshotEvidenceRef } from "../../claims/evidence-refs.js";
+import {
+  fileSnapshotEvidenceRef,
+  loadEvidenceRefById,
+} from "../../claims/evidence-refs.js";
 import {
   assertClaim,
   deleteClaimsByAsserter,
@@ -111,12 +114,16 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
       }
       const observedAtMs =
         preparedEdit.edit.timestampMs ?? preparedEdit.closedAtMs ?? Date.now();
+      const intent = preparedEdit.edit.intentKey
+        ? intents.get(preparedEdit.edit.intentKey)
+        : undefined;
       const evidence = verdict.fileContent
         ? [
             {
               ref: fileSnapshotEvidenceRef({
                 filePath: preparedEdit.edit.filePath!,
                 content: verdict.fileContent,
+                repository: intent?.repository ?? null,
               }),
               role: "origin" as const,
             },
@@ -269,11 +276,17 @@ function loadParsedPayloadEvidence(
   cache: Map<string, ParsedPayloadEvidence | null>,
 ): ParsedPayloadEvidence | null {
   const cacheKey =
-    edit.payloadEvidenceKey ?? `hook_event_id:${edit.hookEventId ?? "none"}`;
+    typeof edit.payloadEvidenceRefId === "number"
+      ? `evidence_ref:${edit.payloadEvidenceRefId}`
+      : (edit.payloadEvidenceKey ??
+        `hook_event_id:${edit.hookEventId ?? "none"}`);
   if (cache.has(cacheKey)) {
     return cache.get(cacheKey) ?? null;
   }
-  const raw = decodePayloadEvidence(edit.payloadEvidenceKey, edit.hookEventId);
+  const raw = decodePayloadEvidence(
+    edit.payloadEvidenceRefId,
+    edit.hookEventId,
+  );
   const toolName = edit.toolName ?? raw?.toolName;
   const parsed =
     toolName && raw?.toolInput
@@ -287,63 +300,84 @@ function loadParsedPayloadEvidence(
 }
 
 function decodePayloadEvidence(
-  evidenceKey: string | null | undefined,
+  evidenceRefId: number | null | undefined,
   hookEventId: number | null | undefined,
 ): {
   toolName: string | null;
   toolInput: Record<string, unknown> | undefined;
 } | null {
-  if (evidenceKey?.startsWith("tc:")) {
-    const toolCallSyncId = evidenceKey.slice("tc:".length);
-    const db = getDb();
-    const row = db
-      .prepare(
-        `SELECT tool_name, input_json
-         FROM tool_calls
-         WHERE sync_id = ?`,
-      )
-      .get(toolCallSyncId) as
-      | { tool_name: string; input_json: string | null }
-      | undefined;
-    if (!row?.input_json) return null;
-    try {
-      return {
-        toolName: row.tool_name,
-        toolInput: JSON.parse(row.input_json) as Record<string, unknown>,
-      };
-    } catch {
-      return null;
+  const db = getDb();
+  if (typeof evidenceRefId === "number") {
+    const ref = loadEvidenceRefById(db, evidenceRefId);
+    if (!ref) return null;
+    if (ref.kind === "tool_call") {
+      return decodeToolCallPayload(ref.sync_id);
     }
-  }
-  if (evidenceKey?.startsWith("hook_event:")) {
-    const hookEventSyncId = evidenceKey.slice("hook_event:".length);
-    const db = getDb();
-    const row = db
-      .prepare(`SELECT payload FROM hook_events WHERE sync_id = ?`)
-      .get(hookEventSyncId) as { payload: Uint8Array } | undefined;
-    if (!row) return null;
-    try {
-      const payload = JSON.parse(
-        gunzipSync(row.payload).toString("utf8"),
-      ) as Record<string, unknown>;
-      return {
-        toolName:
-          typeof payload.tool_name === "string" ? payload.tool_name : null,
-        toolInput: payload.tool_input as Record<string, unknown> | undefined,
-      };
-    } catch {
-      return null;
+    if (ref.kind === "hook_event") {
+      return decodeHookPayloadBySyncId(ref.sync_id);
     }
+    return null;
   }
   if (typeof hookEventId !== "number") return null;
+  return decodeHookPayloadById(hookEventId);
+}
+
+function decodeToolCallPayload(toolCallSyncId: string | null): {
+  toolName: string | null;
+  toolInput: Record<string, unknown> | undefined;
+} | null {
+  if (!toolCallSyncId) return null;
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT tool_name, input_json
+       FROM tool_calls
+       WHERE sync_id = ?`,
+    )
+    .get(toolCallSyncId) as
+    | { tool_name: string; input_json: string | null }
+    | undefined;
+  if (!row?.input_json) return null;
+  try {
+    return {
+      toolName: row.tool_name,
+      toolInput: JSON.parse(row.input_json) as Record<string, unknown>,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function decodeHookPayloadBySyncId(hookEventSyncId: string | null): {
+  toolName: string | null;
+  toolInput: Record<string, unknown> | undefined;
+} | null {
+  if (!hookEventSyncId) return null;
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT payload FROM hook_events WHERE sync_id = ?`)
+    .get(hookEventSyncId) as { payload: Uint8Array } | undefined;
+  return row ? decodeHookPayload(row.payload) : null;
+}
+
+function decodeHookPayloadById(hookEventId: number): {
+  toolName: string | null;
+  toolInput: Record<string, unknown> | undefined;
+} | null {
   const db = getDb();
   const row = db
     .prepare(`SELECT payload FROM hook_events WHERE id = ?`)
     .get(hookEventId) as { payload: Uint8Array } | undefined;
-  if (!row) return null;
+  return row ? decodeHookPayload(row.payload) : null;
+}
+
+function decodeHookPayload(payloadBytes: Uint8Array): {
+  toolName: string | null;
+  toolInput: Record<string, unknown> | undefined;
+} | null {
   try {
     const payload = JSON.parse(
-      gunzipSync(row.payload).toString("utf8"),
+      gunzipSync(payloadBytes).toString("utf8"),
     ) as Record<string, unknown>;
     return {
       toolName:

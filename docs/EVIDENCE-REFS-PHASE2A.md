@@ -88,6 +88,7 @@ interface EvidenceRefInput {
   syncId?: string | null;
   repository?: string | null;
   filePath?: string | null;
+  filePaths?: string[] | null;
   locator: Record<string, unknown>;
 }
 ```
@@ -110,6 +111,12 @@ CREATE TABLE evidence_refs (
   locator_json TEXT NOT NULL
 );
 
+CREATE TABLE evidence_ref_paths (
+  evidence_ref_id INTEGER NOT NULL,
+  file_path TEXT NOT NULL,
+  UNIQUE(evidence_ref_id, file_path)
+);
+
 CREATE TABLE claim_evidence (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   claim_id INTEGER NOT NULL,
@@ -126,9 +133,13 @@ Notes:
   fixed columns immediately.
 - denormalized columns like `session_id`, `sync_id`, `trace_id`, `span_id`,
   `repository`, and `file_path` are intended to make lookups and filtering
-  cheap once hydrated from raw rows. The core cutover implemented on this
-  branch only fills fields that are naturally available at write time, so
-  follow-up work should backfill/hydrate the rest where derivable.
+  cheap. For current claim producers, populate them eagerly at claim-write
+  time wherever the raw evidence already makes them unambiguous; future
+  families can still use targeted backfills if a writer cannot supply them
+  up front.
+- `evidence_ref_paths` holds the normalized path set for refs that touch one
+  or more files. Keep `evidence_refs.file_path` as the singleton fast path and
+  use the join table when a ref touches multiple paths.
 - local row IDs are intentionally not part of canonical identity.
 
 ## Canonical Ref Keys
@@ -179,8 +190,8 @@ Not fully delivered yet:
   `git_commit`, or `git_hunk` refs yet
 - some evidence consumers still branch on canonical ref-key prefixes instead of
   loading an `evidence_ref` and dispatching by `kind`
-- most denormalized `evidence_refs` columns are still sparse and need a follow-up
-  hydration pass
+- denormalized `repository` / `file_path` fields are only populated for the
+  evidence families that already emit typed refs today
 
 ## Recommendation for Hooks and OTel
 
@@ -300,7 +311,8 @@ Examples:
    get a deterministic observation-level transport identity too?
 2. Should `evidence_refs` dedupe purely by `ref_key`, or also enforce kind
    consistency in the schema/index layer?
-3. Should denormalized `evidence_refs` columns be hydrated eagerly at write
-   time, or via a follow-up backfill / repair pass from raw rows?
+3. For future evidence families that cannot populate denormalized columns
+   unambiguously at write time, do we prefer a targeted backfill / repair pass
+   or leaving those fields sparse until a consumer needs them?
 4. If hook or OTel raw replay becomes first-class, which family should get
    deterministic ingest identity first: `hook_events` or `otel_logs`?
