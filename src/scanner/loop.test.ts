@@ -12,8 +12,8 @@ vi.mock("../archive/index.js", () => ({
 
 vi.mock("../db/schema.js", () => ({
   getDb: vi.fn(() => ({ transaction: (fn: () => void) => fn })),
-  markResyncComplete: vi.fn(),
-  needsResync: vi.fn(() => false),
+  needsClaimsRebuild: vi.fn(() => false),
+  needsRawDataResync: vi.fn(() => false),
 }));
 
 vi.mock("../db/store.js", () => ({
@@ -98,6 +98,10 @@ vi.mock("./store.js", () => ({
 vi.mock("./status.js", () => ({
   clearScannerStatus: vi.fn(),
   writeScannerStatus: vi.fn(),
+}));
+
+vi.mock("./claims-rebuild.js", () => ({
+  rebuildClaimsDerivedState: vi.fn(),
 }));
 
 import { scanOnce } from "./loop.js";

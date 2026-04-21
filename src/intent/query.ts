@@ -38,10 +38,110 @@ export function intentForCode(opts: {
   file_path: string;
   limit?: number;
 }): IntentForCodeRow[] {
-  const db = getDb();
   const limit = opts.limit ?? 50;
+  const rows = collectIntentForCodeRows(opts.file_path, limit);
 
-  const rows = db
+  return rows.map((r) => ({
+    intent_unit_id: r.intent_unit_id,
+    prompt_text: r.prompt_text,
+    prompt_ts_ms: r.prompt_ts_ms,
+    session_id: r.session_id,
+    repository: r.repository,
+    edit: {
+      intent_edit_id: r.edit_id,
+      tool_name: r.tool_name,
+      timestamp_ms: r.timestamp_ms ?? r.prompt_ts_ms,
+      landed: r.landed,
+      landed_reason: r.landed_reason,
+      new_string_snippet: r.new_string_snippet,
+    },
+    status: classifyStatus(r.landed, r.landed_reason),
+  }));
+}
+
+interface IntentForCodeCandidateRow {
+  intent_unit_id: number;
+  prompt_text: string;
+  prompt_ts_ms: number;
+  session_id: string;
+  repository: string | null;
+  edit_id: number;
+  tool_name: string;
+  timestamp_ms: number | null;
+  landed: number | null;
+  landed_reason: string | null;
+  new_string_snippet: string | null;
+}
+
+function collectIntentForCodeRows(
+  filePath: string,
+  limit: number,
+): IntentForCodeCandidateRow[] {
+  const candidateLimit = Math.max(limit * 2, limit);
+  const normalized = loadIntentForCodeRowsFromFileSubjects(
+    filePath,
+    candidateLimit,
+  );
+  const legacy = loadIntentForCodeRowsLegacy(filePath, candidateLimit);
+  const byEditId = new Map<number, IntentForCodeCandidateRow>();
+
+  for (const row of [...normalized, ...legacy]) {
+    if (!byEditId.has(row.edit_id)) {
+      byEditId.set(row.edit_id, row);
+    }
+  }
+
+  return [...byEditId.values()]
+    .sort(
+      (a, b) =>
+        (b.timestamp_ms ?? 0) - (a.timestamp_ms ?? 0) || b.edit_id - a.edit_id,
+    )
+    .slice(0, limit);
+}
+
+function loadIntentForCodeRowsFromFileSubjects(
+  filePath: string,
+  limit: number,
+): IntentForCodeCandidateRow[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT DISTINCT
+              u.id AS intent_unit_id,
+              u.prompt_text,
+              u.prompt_ts_ms,
+              u.session_id,
+              u.repository,
+              e.id AS edit_id,
+              e.tool_name,
+              e.timestamp_ms,
+              e.landed,
+              e.landed_reason,
+              e.new_string_snippet
+       FROM active_claims ac_file
+       JOIN claims c_file ON c_file.id = ac_file.claim_id
+       JOIN claims c_touch
+         ON c_touch.subject_kind = 'edit'
+        AND c_touch.predicate = 'edit/touches-file'
+        AND c_touch.value_text = c_file.subject
+       JOIN active_claims ac_touch ON ac_touch.claim_id = c_touch.id
+       JOIN intent_edits e ON e.edit_key = c_touch.subject
+       JOIN intent_units u ON u.id = e.intent_unit_id
+       WHERE c_file.subject_kind = 'file'
+         AND c_file.predicate = 'file/path'
+         AND c_file.value_text = ?
+       ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
+       LIMIT ?`,
+    )
+    .all(filePath, limit) as IntentForCodeCandidateRow[];
+}
+
+function loadIntentForCodeRowsLegacy(
+  filePath: string,
+  limit: number,
+): IntentForCodeCandidateRow[] {
+  const db = getDb();
+  return db
     .prepare(
       `SELECT u.id AS intent_unit_id,
               u.prompt_text,
@@ -57,39 +157,10 @@ export function intentForCode(opts: {
        FROM intent_edits e
        JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
-       ORDER BY e.timestamp_ms DESC
+       ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
        LIMIT ?`,
     )
-    .all(opts.file_path, limit) as Array<{
-    intent_unit_id: number;
-    prompt_text: string;
-    prompt_ts_ms: number;
-    session_id: string;
-    repository: string | null;
-    edit_id: number;
-    tool_name: string;
-    timestamp_ms: number;
-    landed: number | null;
-    landed_reason: string | null;
-    new_string_snippet: string | null;
-  }>;
-
-  return rows.map((r) => ({
-    intent_unit_id: r.intent_unit_id,
-    prompt_text: r.prompt_text,
-    prompt_ts_ms: r.prompt_ts_ms,
-    session_id: r.session_id,
-    repository: r.repository,
-    edit: {
-      intent_edit_id: r.edit_id,
-      tool_name: r.tool_name,
-      timestamp_ms: r.timestamp_ms,
-      landed: r.landed,
-      landed_reason: r.landed_reason,
-      new_string_snippet: r.new_string_snippet,
-    },
-    status: classifyStatus(r.landed, r.landed_reason),
-  }));
+    .all(filePath, limit) as IntentForCodeCandidateRow[];
 }
 
 function classifyStatus(

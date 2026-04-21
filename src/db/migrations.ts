@@ -34,6 +34,12 @@
  *    upgrade forward. Rolling back means reinstalling.
  */
 
+import {
+  ALL_DATA_COMPONENTS,
+  CLAIM_DATA_COMPONENTS,
+  ensureDataVersionsTable,
+  markDataComponentsStaleInDb,
+} from "./data-versions.js";
 import type { Database } from "./driver.js";
 import {
   buildMessageSyncId,
@@ -281,6 +287,75 @@ function rebuildClaimEvidenceWithRefsOnly(db: Database): void {
   );
 }
 
+function rebuildClaimTablesWithIntegerAsserterVersions(db: Database): void {
+  if (tableExists(db, "claims")) {
+    db.exec("DROP TABLE claims");
+  }
+  db.exec(`
+    CREATE TABLE claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      observation_key TEXT NOT NULL UNIQUE,
+      head_key TEXT NOT NULL,
+      predicate TEXT NOT NULL,
+      subject_kind TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      value_kind TEXT NOT NULL,
+      value_text TEXT,
+      value_num REAL,
+      value_json TEXT,
+      source_type TEXT NOT NULL,
+      source_rank INTEGER NOT NULL DEFAULT 0,
+      confidence REAL NOT NULL DEFAULT 1.0,
+      observed_at_ms INTEGER NOT NULL,
+      asserted_at_ms INTEGER NOT NULL,
+      asserter TEXT NOT NULL,
+      asserter_version INTEGER NOT NULL,
+      machine TEXT NOT NULL DEFAULT 'local',
+      sync_id TEXT DEFAULT (hex(randomblob(8)))
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_claims_head ON claims(head_key)");
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_claims_predicate_subject ON claims(predicate, subject_kind, subject)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_claims_observed ON claims(observed_at_ms)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_claims_asserter ON claims(asserter, observed_at_ms)",
+  );
+
+  if (tableExists(db, "active_claims")) {
+    db.exec("DROP TABLE active_claims");
+  }
+  db.exec(`
+    CREATE TABLE active_claims (
+      head_key TEXT PRIMARY KEY,
+      claim_id INTEGER NOT NULL,
+      selected_at_ms INTEGER NOT NULL,
+      selection_reason TEXT NOT NULL
+    )
+  `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_active_claims_claim ON active_claims(claim_id)",
+  );
+
+  if (tableExists(db, "claim_rebuild_runs")) {
+    db.exec("DROP TABLE claim_rebuild_runs");
+  }
+  db.exec(`
+    CREATE TABLE claim_rebuild_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asserter TEXT NOT NULL,
+      asserter_version INTEGER NOT NULL,
+      started_at_ms INTEGER NOT NULL,
+      finished_at_ms INTEGER,
+      rows_emitted INTEGER NOT NULL DEFAULT 0,
+      scope JSON
+    )
+  `);
+}
+
 function deleteAllRowsIfTableExists(db: Database, table: string): void {
   if (!tableExists(db, table)) return;
   db.exec(`DELETE FROM ${table}`);
@@ -288,6 +363,7 @@ function deleteAllRowsIfTableExists(db: Database, table: string): void {
 
 function resetDerivedStateForEvidenceRefCutover(db: Database): void {
   ensureEvidenceRefSchema(db);
+  ensureDataVersionsTable(db);
   rebuildClaimEvidenceWithRefsOnly(db);
 
   // Claim/projection tables are disposable derived state. Rebuild them from
@@ -305,9 +381,30 @@ function resetDerivedStateForEvidenceRefCutover(db: Database): void {
   deleteAllRowsIfTableExists(db, "ingestion_cursors");
   deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
 
-  // Force the startup scanner loop to run atomic reparse after upgrade,
-  // even on machines whose DB was already stamped with a newer data version.
-  db.pragma("user_version = 0");
+  // Force the startup scanner loop to rebuild from raw data after upgrade.
+  markDataComponentsStaleInDb(db, ALL_DATA_COMPONENTS);
+}
+
+function resetClaimDerivedStateForAsserterVersionIntegerCutover(
+  db: Database,
+): void {
+  ensureEvidenceRefSchema(db);
+  ensureDataVersionsTable(db);
+  rebuildClaimEvidenceWithRefsOnly(db);
+  rebuildClaimTablesWithIntegerAsserterVersions(db);
+
+  deleteAllRowsIfTableExists(db, "code_provenance");
+  deleteAllRowsIfTableExists(db, "intent_session_summaries");
+  deleteAllRowsIfTableExists(db, "session_summaries");
+  deleteAllRowsIfTableExists(db, "intent_edits");
+  deleteAllRowsIfTableExists(db, "intent_units_fts");
+  deleteAllRowsIfTableExists(db, "intent_units");
+  deleteAllRowsIfTableExists(db, "evidence_ref_paths");
+  deleteAllRowsIfTableExists(db, "evidence_refs");
+  deleteAllRowsIfTableExists(db, "ingestion_cursors");
+  deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
+
+  markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +498,7 @@ export const MIGRATIONS: Migration[] = [
           observed_at_ms INTEGER NOT NULL,
           asserted_at_ms INTEGER NOT NULL,
           asserter TEXT NOT NULL,
-          asserter_version TEXT NOT NULL,
+          asserter_version INTEGER NOT NULL,
           machine TEXT NOT NULL DEFAULT 'local',
           sync_id TEXT DEFAULT (hex(randomblob(8)))
         )
@@ -436,7 +533,7 @@ export const MIGRATIONS: Migration[] = [
         CREATE TABLE IF NOT EXISTS claim_rebuild_runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           asserter TEXT NOT NULL,
-          asserter_version TEXT NOT NULL,
+          asserter_version INTEGER NOT NULL,
           started_at_ms INTEGER NOT NULL,
           finished_at_ms INTEGER,
           rows_emitted INTEGER NOT NULL DEFAULT 0,
@@ -708,6 +805,13 @@ export const MIGRATIONS: Migration[] = [
     name: "add_evidence_ref_paths_and_reset_derived_state",
     up: (db) => {
       resetDerivedStateForEvidenceRefCutover(db);
+    },
+  },
+  {
+    id: 13,
+    name: "convert_asserter_versions_to_integer_and_reset_claim_state",
+    up: (db) => {
+      resetClaimDerivedStateForAsserterVersionIntegerCutover(db);
     },
   },
 ];

@@ -25,92 +25,144 @@ import { Database } from "../db/driver.js";
 import {
   closeDb,
   getDb,
+  markClaimsRebuildComplete,
   markResyncComplete,
+  needsClaimsRebuild,
+  needsRawDataResync,
   needsResync,
   SCANNER_DATA_VERSION,
+  staleDataComponents,
 } from "../db/schema.js";
 
 beforeEach(() => {
-  // Reset DB for each test
   closeDb();
-  try {
-    fs.unlinkSync(config.dbPath);
-  } catch {}
-  try {
-    fs.unlinkSync(`${config.dbPath}-wal`);
-  } catch {}
-  try {
-    fs.unlinkSync(`${config.dbPath}-shm`);
-  } catch {}
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      fs.unlinkSync(`${config.dbPath}${suffix}`);
+    } catch {}
+  }
 });
 
 afterEach(() => {
   closeDb();
 });
 
-describe("data version", () => {
-  it("fresh DB needs resync (user_version = 0)", () => {
+describe("data version registry", () => {
+  it("fresh empty DB boots with current component versions", () => {
     getDb();
-    expect(needsResync()).toBe(true);
+
+    expect(needsResync()).toBe(false);
+    expect(needsRawDataResync()).toBe(false);
+    expect(needsClaimsRebuild()).toBe(false);
+    expect(staleDataComponents()).toEqual([]);
   });
 
-  it("markResyncComplete stamps version and clears flag", () => {
+  it("treats populated DBs missing data_versions as fully stale", () => {
     const db = getDb();
+    db.prepare(`INSERT INTO sessions (session_id) VALUES (?)`).run("session-1");
+    closeDb();
+
+    const raw = new Database(config.dbPath);
+    raw.prepare(`DELETE FROM data_versions`).run();
+    raw.close();
+
+    getDb();
+
     expect(needsResync()).toBe(true);
+    expect(needsRawDataResync()).toBe(true);
+    expect(needsClaimsRebuild()).toBe(true);
+    expect(staleDataComponents()).toEqual([
+      "scanner.raw",
+      "intent.from_scanner",
+      "intent.from_hooks",
+      "intent.landed_from_disk",
+      "claims.active",
+    ]);
+  });
+
+  it("markClaimsRebuildComplete clears claim-component staleness", () => {
+    getDb();
+    const raw = new Database(config.dbPath);
+    const now = Date.now();
+    raw
+      .prepare(
+        `UPDATE data_versions
+       SET version = ?, updated_at_ms = ?
+       WHERE component IN (?, ?, ?, ?)`,
+      )
+      .run(
+        0,
+        now,
+        "intent.from_scanner",
+        "intent.from_hooks",
+        "intent.landed_from_disk",
+        "claims.active",
+      );
+    raw.close();
+    closeDb();
+
+    getDb();
+    expect(needsClaimsRebuild()).toBe(true);
+    expect(needsRawDataResync()).toBe(false);
+
+    markClaimsRebuildComplete();
+
+    expect(needsResync()).toBe(false);
+    expect(needsClaimsRebuild()).toBe(false);
+    expect(needsRawDataResync()).toBe(false);
+  });
+
+  it("markResyncComplete stamps the raw scanner component current", () => {
+    getDb();
+    const raw = new Database(config.dbPath);
+    raw
+      .prepare(
+        `INSERT INTO data_versions (component, version, updated_at_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT(component) DO UPDATE SET
+         version = excluded.version,
+         updated_at_ms = excluded.updated_at_ms`,
+      )
+      .run("scanner.raw", 0, Date.now());
+    raw.close();
+    closeDb();
+
+    getDb();
+    expect(needsRawDataResync()).toBe(true);
 
     markResyncComplete();
+
+    expect(needsRawDataResync()).toBe(false);
     expect(needsResync()).toBe(false);
 
-    const v = db.pragma("user_version", { simple: true }) as number;
-    expect(v).toBe(SCANNER_DATA_VERSION);
+    const reopened = new Database(config.dbPath);
+    const versionRow = reopened
+      .prepare(`SELECT version FROM data_versions WHERE component = ?`)
+      .get("scanner.raw") as { version: number };
+    reopened.close();
+
+    expect(versionRow.version).toBe(SCANNER_DATA_VERSION);
   });
 
-  it("reopening stamped DB does not need resync", () => {
+  it("higher raw component versions do not trigger resync", () => {
     getDb();
     markResyncComplete();
-    closeDb();
-
-    getDb();
-    expect(needsResync()).toBe(false);
-  });
-
-  it("stale version triggers needsResync", () => {
-    getDb();
-    markResyncComplete();
-    closeDb();
-
-    // Simulate old data version
-    const raw = new Database(config.dbPath);
-    raw.pragma("user_version = 0");
-    raw.close();
-
-    getDb();
-    expect(needsResync()).toBe(true);
-  });
-
-  it("needsResync opens the DB before checking version", () => {
-    getDb();
-    markResyncComplete();
+    markClaimsRebuildComplete();
     closeDb();
 
     const raw = new Database(config.dbPath);
-    raw.pragma("user_version = 0");
-    raw.close();
-
-    expect(needsResync()).toBe(true);
-  });
-
-  it("higher user_version does not trigger resync", () => {
-    getDb();
-    markResyncComplete();
-    closeDb();
-
-    // Simulate a newer build left a higher version
-    const raw = new Database(config.dbPath);
-    raw.pragma(`user_version = ${SCANNER_DATA_VERSION + 10}`);
+    raw
+      .prepare(
+        `UPDATE data_versions
+       SET version = ?, updated_at_ms = ?
+       WHERE component = ?`,
+      )
+      .run(SCANNER_DATA_VERSION + 10, Date.now(), "scanner.raw");
     raw.close();
 
     getDb();
+
+    expect(needsRawDataResync()).toBe(false);
     expect(needsResync()).toBe(false);
   });
 });

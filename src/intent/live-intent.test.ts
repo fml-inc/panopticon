@@ -1240,6 +1240,97 @@ describe("scanner-only landed reconciliation", () => {
     });
   });
 
+  it("emits normalized repository and file subject claims for scanner-backed edits", () => {
+    const sessionId = "scanner-normalized-subjects";
+    const filePath = path.join(scratchDir, "scanner-normalized-subjects.ts");
+    fs.writeFileSync(filePath, "export const value = 1;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "patch the file",
+      timestampMs: 1000,
+      uuid: "scanner-normalized-subjects-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "Edit",
+      inputJson: {
+        file_path: filePath,
+        old_string: "export const value = 0;\n",
+        new_string: "export const value = 1;\n",
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    rebuildActiveClaims();
+
+    const rows = getDb()
+      .prepare(
+        `SELECT c.predicate, c.subject_kind, c.value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.predicate IN (
+           'repository/name',
+           'file/path',
+           'file/in-repository',
+           'intent/in-repository',
+           'edit/touches-file'
+         )
+         ORDER BY c.predicate ASC, c.subject_kind ASC, c.value_text ASC`,
+      )
+      .all() as Array<{
+      predicate: string;
+      subject_kind: string;
+      value_text: string | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "edit/touches-file",
+        subject_kind: "edit",
+        value_text: `file:${scratchDir}:${filePath}`,
+      },
+      {
+        predicate: "file/in-repository",
+        subject_kind: "file",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "file/path",
+        subject_kind: "file",
+        value_text: filePath,
+      },
+      {
+        predicate: "intent/in-repository",
+        subject_kind: "intent",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "repository/name",
+        subject_kind: "repository",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
   it("stores normalized path rows for multi-file apply_patch evidence", () => {
     const sessionId = "scanner-multi-file-tool-evidence";
     const fileA = path.join(scratchDir, "scanner-multi-file-a.ts");

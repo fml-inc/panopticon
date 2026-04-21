@@ -17,8 +17,8 @@ import { Database } from "../db/driver.js";
 import {
   closeDb,
   getDb,
+  markAllDataRebuildsComplete,
   runMigrations,
-  SCANNER_DATA_VERSION,
   SCHEMA_SQL,
 } from "../db/schema.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
@@ -511,7 +511,6 @@ export function reparseAll(
     tx();
 
     tempDb.exec("DETACH DATABASE old_db");
-    tempDb.pragma(`user_version = ${SCANNER_DATA_VERSION}`);
     tempDb.close();
     copyMs = performance.now() - copyStartedAt;
     log(`Preserved-data copy finished in ${formatMs(copyMs)}`);
@@ -525,6 +524,7 @@ export function reparseAll(
     (config as { dbPath: string }).dbPath = tempPath;
     closeDb();
     deriveMs = rebuildDerivedStateFromRaw(log).totalMs;
+    markAllDataRebuildsComplete();
     closeDb();
     (config as { dbPath: string }).dbPath = savedDbPath;
   } catch (err) {

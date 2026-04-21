@@ -153,29 +153,38 @@ export function deleteClaimsByAsserterForSession(
         )
         .all(sessionId) as Array<{ subject: string }>
     ).map((row) => row.subject);
-    if (intentSubjects.length === 0) return 0;
-
-    const intentPlaceholders = intentSubjects.map(() => "?").join(",");
-    const editSubjects = (
-      db
-        .prepare(
-          `SELECT DISTINCT subject
-           FROM claims
-           WHERE predicate = 'edit/part-of-intent'
-             AND value_text IN (${intentPlaceholders})`,
-        )
-        .all(...intentSubjects) as Array<{ subject: string }>
-    ).map((row) => row.subject);
+    const editSubjects =
+      intentSubjects.length > 0
+        ? (
+            db
+              .prepare(
+                `SELECT DISTINCT subject
+                 FROM claims
+                 WHERE predicate = 'edit/part-of-intent'
+                   AND value_text IN (${intentSubjects.map(() => "?").join(",")})`,
+              )
+              .all(...intentSubjects) as Array<{ subject: string }>
+          ).map((row) => row.subject)
+        : [];
 
     const subjects = [...new Set([...intentSubjects, ...editSubjects])];
-    const subjectPlaceholders = subjects.map(() => "?").join(",");
+    const subjectFilter =
+      subjects.length > 0
+        ? ` OR c.subject IN (${subjects.map(() => "?").join(",")})`
+        : "";
     const ids = db
       .prepare(
-        `SELECT id, head_key
-         FROM claims
-         WHERE asserter = ? AND subject IN (${subjectPlaceholders})`,
+        `SELECT DISTINCT c.id, c.head_key
+         FROM claims c
+         LEFT JOIN claim_evidence ce ON ce.claim_id = c.id
+         LEFT JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         WHERE c.asserter = ?
+           AND (er.session_id = ?${subjectFilter})`,
       )
-      .all(asserter, ...subjects) as Array<{ id: number; head_key: string }>;
+      .all(asserter, sessionId, ...subjects) as Array<{
+      id: number;
+      head_key: string;
+    }>;
     if (ids.length === 0) return 0;
 
     const idList = ids.map((row) => row.id);

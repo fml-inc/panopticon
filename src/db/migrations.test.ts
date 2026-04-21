@@ -727,7 +727,6 @@ describe("runMigrations — existing DB", () => {
 
   it("migrations 10 and 11 reset derived state and rebuild claim_evidence schema", () => {
     const db = createExistingDb();
-    db.pragma("user_version = 7");
     db.exec(`
       CREATE TABLE messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -784,7 +783,7 @@ describe("runMigrations — existing DB", () => {
         observed_at_ms INTEGER NOT NULL,
         asserted_at_ms INTEGER NOT NULL,
         asserter TEXT NOT NULL,
-        asserter_version TEXT NOT NULL,
+        asserter_version INTEGER NOT NULL,
         machine TEXT NOT NULL DEFAULT 'local',
         sync_id TEXT DEFAULT (hex(randomblob(8)))
       );
@@ -891,7 +890,7 @@ describe("runMigrations — existing DB", () => {
       CREATE TABLE claim_rebuild_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         asserter TEXT NOT NULL,
-        asserter_version TEXT NOT NULL,
+        asserter_version INTEGER NOT NULL,
         started_at_ms INTEGER NOT NULL,
         finished_at_ms INTEGER,
         rows_emitted INTEGER NOT NULL DEFAULT 0,
@@ -1013,7 +1012,7 @@ describe("runMigrations — existing DB", () => {
       `INSERT INTO claim_rebuild_runs (
          asserter, asserter_version, started_at_ms
        ) VALUES (?, ?, ?)`,
-    ).run("intent.from_scanner", "1", 1000);
+    ).run("intent.from_scanner", 1, 1000);
 
     runMigrations(db);
 
@@ -1022,6 +1021,19 @@ describe("runMigrations — existing DB", () => {
       .all() as Array<{ name: string }>;
     expect(cols.map((c) => c.name)).toContain("evidence_ref_id");
     expect(cols.map((c) => c.name)).not.toContain("evidence_key");
+    const claimCols = db.prepare("PRAGMA table_info(claims)").all() as Array<{
+      name: string;
+      type: string;
+    }>;
+    const rebuildRunCols = db
+      .prepare("PRAGMA table_info(claim_rebuild_runs)")
+      .all() as Array<{ name: string; type: string }>;
+    expect(claimCols.find((c) => c.name === "asserter_version")?.type).toBe(
+      "INTEGER",
+    );
+    expect(
+      rebuildRunCols.find((c) => c.name === "asserter_version")?.type,
+    ).toBe("INTEGER");
 
     const derivedCounts = db
       .prepare(
@@ -1071,12 +1083,10 @@ describe("runMigrations — existing DB", () => {
       hook_events: 1,
     });
 
-    const userVersion = db.pragma("user_version", { simple: true }) as number;
-    expect(userVersion).toBe(0);
-
     expect(getApplied(db).map((r) => r.id)).toContain(10);
     expect(getApplied(db).map((r) => r.id)).toContain(11);
     expect(getApplied(db).map((r) => r.id)).toContain(12);
+    expect(getApplied(db).map((r) => r.id)).toContain(13);
   });
 
   it("tolerates rerunning migration 5 after claim_evidence was rebuilt", () => {

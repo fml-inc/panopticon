@@ -1,6 +1,13 @@
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
 import { config } from "../config.js";
+import {
+  CLAIMS_ACTIVE_COMPONENT,
+  type DataComponent,
+  INTENT_FROM_HOOKS_COMPONENT,
+  INTENT_FROM_SCANNER_COMPONENT,
+  LANDED_FROM_DISK_COMPONENT,
+} from "../db/data-versions.js";
 import { refreshPricing as refreshPricingDirect } from "../db/pricing.js";
 import { pruneEstimate, pruneExecute } from "../db/prune.js";
 import {
@@ -14,7 +21,14 @@ import {
   search,
   sessionTimeline,
 } from "../db/query.js";
-import { getDb, needsResync } from "../db/schema.js";
+import {
+  getDb,
+  markDataComponentsCurrent,
+  needsClaimsRebuild,
+  needsRawDataResync,
+  needsResync,
+  staleDataComponents,
+} from "../db/schema.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
@@ -25,7 +39,11 @@ import {
   searchIntent,
 } from "../intent/query.js";
 import { log } from "../log.js";
-import { reparseAll, scanOnce } from "../scanner/index.js";
+import {
+  rebuildClaimsDerivedState,
+  reparseAll,
+  scanOnce,
+} from "../scanner/index.js";
 import { readScannerStatus } from "../scanner/status.js";
 import {
   listSessionSummaries,
@@ -60,7 +78,11 @@ function assertSessionSummaryProjectionsEnabled(): void {
   throw new Error("Session summary projections are disabled");
 }
 
-const ACTIVE_REPARSE_PHASES = new Set([
+const ACTIVE_DERIVED_REBUILD_PHASES = new Set([
+  "claims_rebuild_init",
+  "claims_rebuild_claims",
+  "claims_rebuild_projection",
+  "claims_rebuild_finalize",
   "reparse_init",
   "reparse_scan",
   "reparse_process",
@@ -69,9 +91,9 @@ const ACTIVE_REPARSE_PHASES = new Set([
   "reparse_finalize",
 ]);
 
-function isReparseInProgress(): boolean {
+function isDerivedRebuildInProgress(): boolean {
   const phase = readScannerStatus()?.phase;
-  return phase ? ACTIVE_REPARSE_PHASES.has(phase) : false;
+  return phase ? ACTIVE_DERIVED_REBUILD_PHASES.has(phase) : false;
 }
 
 function runSummaryGeneration(): number {
@@ -82,6 +104,26 @@ function runSummaryGeneration(): number {
       `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
     );
     return 0;
+  }
+}
+
+function markComponentsCurrentIfFull(
+  sessionId: string | undefined,
+  components: readonly DataComponent[],
+): void {
+  if (sessionId) return;
+  markDataComponentsCurrent(components);
+}
+
+function maybeMarkClaimsActiveCurrent(sessionId: string | undefined): void {
+  if (sessionId) return;
+  const stale = new Set(staleDataComponents());
+  if (
+    !stale.has(INTENT_FROM_SCANNER_COMPONENT) &&
+    !stale.has(INTENT_FROM_HOOKS_COMPONENT) &&
+    !stale.has(LANDED_FROM_DISK_COMPONENT)
+  ) {
+    markDataComponentsCurrent([CLAIMS_ACTIVE_COMPONENT]);
   }
 }
 
@@ -156,16 +198,33 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async scan(opts?: ScanInput): Promise<ScanResult> {
       if (needsResync()) {
-        if (isReparseInProgress()) {
-          throw new Error("Scanner resync already in progress");
+        if (isDerivedRebuildInProgress()) {
+          throw new Error("Derived-state rebuild already in progress");
         }
-        const result = reparseAll((msg) => log.scanner.debug(msg));
-        if (!result.success) {
-          throw new Error(result.error ?? "Atomic reparse failed");
+        if (needsRawDataResync()) {
+          const result = reparseAll((msg) => log.scanner.debug(msg));
+          if (!result.success) {
+            throw new Error(result.error ?? "Atomic reparse failed");
+          }
+          return {
+            filesScanned: result.filesScanned,
+            newTurns: result.newTurns,
+            summariesUpdated:
+              opts?.summaries === false ? 0 : runSummaryGeneration(),
+          };
+        }
+        if (needsClaimsRebuild()) {
+          rebuildClaimsDerivedState((msg) => log.scanner.debug(msg));
+          return {
+            filesScanned: 0,
+            newTurns: 0,
+            summariesUpdated:
+              opts?.summaries === false ? 0 : runSummaryGeneration(),
+          };
         }
         return {
-          filesScanned: result.filesScanned,
-          newTurns: result.newTurns,
+          filesScanned: 0,
+          newTurns: 0,
           summariesUpdated:
             opts?.summaries === false ? 0 : runSummaryGeneration(),
         };
@@ -213,6 +272,11 @@ export function createDirectPanopticonService(): PanopticonService {
         sessionId: opts?.sessionId,
       });
       const activeHeads = rebuildActiveClaims();
+      markComponentsCurrentIfFull(opts?.sessionId, [
+        INTENT_FROM_SCANNER_COMPONENT,
+        INTENT_FROM_HOOKS_COMPONENT,
+      ]);
+      maybeMarkClaimsActiveCurrent(opts?.sessionId);
       return { scanner, hooks, activeHeads };
     },
     async rebuildIntentProjectionFromClaims(
@@ -225,6 +289,10 @@ export function createDirectPanopticonService(): PanopticonService {
         sessionId: opts?.sessionId,
       });
       const activeHeads = rebuildActiveClaims();
+      markComponentsCurrentIfFull(opts?.sessionId, [
+        LANDED_FROM_DISK_COMPONENT,
+      ]);
+      maybeMarkClaimsActiveCurrent(opts?.sessionId);
       return { landed, activeHeads };
     },
     async claimEvidenceIntegrity() {

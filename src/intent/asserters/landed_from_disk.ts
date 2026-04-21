@@ -10,6 +10,10 @@ import {
   deleteClaimsByAsserter,
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
+import {
+  LANDED_FROM_DISK_COMPONENT,
+  targetDataVersion,
+} from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
 import { canUseLocalPathApis } from "../../paths.js";
 import {
@@ -19,8 +23,8 @@ import {
 } from "../claimViews.js";
 import { type ParsedEditEntry, parseEditEntries } from "../editParsing.js";
 
-const ASSERTER = "intent.landed_from_disk";
-const VERSION = "2";
+const ASSERTER = LANDED_FROM_DISK_COMPONENT;
+const VERSION = targetDataVersion(ASSERTER);
 
 type LandedReason =
   | "present_in_file"

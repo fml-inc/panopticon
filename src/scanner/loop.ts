@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { getDb, markResyncComplete, needsResync } from "../db/schema.js";
+import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
@@ -18,6 +18,7 @@ import type {
   ParseResult,
   TargetScannerSpec,
 } from "../targets/types.js";
+import { rebuildClaimsDerivedState } from "./claims-rebuild.js";
 import { clearScannerStatus, writeScannerStatus } from "./status.js";
 import {
   getEventCount,
@@ -686,16 +687,14 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     // On first tick, check if data version requires a full reparse
     if (!reparseChecked) {
       reparseChecked = true;
-      if (needsResync()) {
+      if (needsRawDataResync()) {
         log.scanner.info("Data version outdated — running atomic reparse...");
         import("./reparse.js")
           .then(({ reparseAll }) => {
             try {
               const result = reparseAll((msg) => log.scanner.debug(msg));
               clearScannerStatus();
-              if (result.success) {
-                markResyncComplete();
-              } else {
+              if (!result.success) {
                 log.scanner.error(
                   `Reparse failed: ${result.error ?? "unknown"}`,
                 );
@@ -717,8 +716,21 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
           });
         return;
       }
-      // No reparse needed — stamp version if not already set
-      markResyncComplete();
+      if (needsClaimsRebuild()) {
+        log.scanner.info(
+          "Claims data outdated — rebuilding from local raw data...",
+        );
+        try {
+          rebuildClaimsDerivedState((msg) => log.scanner.info(msg));
+          clearScannerStatus();
+        } catch (err) {
+          log.scanner.error(
+            `Claims rebuild error: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        scheduleNext(true);
+        return;
+      }
     }
 
     let hadWork = false;

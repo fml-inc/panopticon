@@ -5,7 +5,9 @@ import {
 } from "../../claims/evidence-refs.js";
 import {
   editKey,
+  fileKey,
   intentKey,
+  repositoryKey,
   semanticEditIdentity,
   sha256Hex,
 } from "../../claims/keys.js";
@@ -14,6 +16,10 @@ import {
   deleteClaimsByAsserter,
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
+import {
+  INTENT_FROM_SCANNER_COMPONENT,
+  targetDataVersion,
+} from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
 import { resolveFilePathFromCwd } from "../../paths.js";
 import {
@@ -21,8 +27,8 @@ import {
   parseEditEntriesFromJson,
 } from "../editParsing.js";
 
-const ASSERTER = "intent.from_scanner";
-const VERSION = "1";
+const ASSERTER = INTENT_FROM_SCANNER_COMPONENT;
+const VERSION = targetDataVersion(ASSERTER);
 const SNIPPET_LEN = 200;
 
 interface UserMessageRow {
@@ -103,6 +109,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       repoBySession.set(row.session_id, row.repository);
     }
   }
+  const seenRepositorySubjects = new Set<string>();
+  const seenFileSubjects = new Set<string>();
 
   const intentsBySession = new Map<string, UserMessageRow[]>();
   for (const msg of userMessages) {
@@ -180,6 +188,14 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           asserter: ASSERTER,
           asserterVersion: VERSION,
           evidence,
+        });
+        assertNormalizedRepositoryClaims({
+          assertClaim: assertScannerClaim,
+          repository,
+          intentSubject: key,
+          observedAtMs: msg.timestamp_ms ?? 0,
+          evidence,
+          seenRepositorySubjects,
         });
       }
       if (msg.cwd) {
@@ -303,6 +319,18 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         asserterVersion: VERSION,
         evidence,
       });
+      if (repository) {
+        assertNormalizedFileClaims({
+          assertClaim: assertScannerClaim,
+          repository,
+          filePath: resolvedFilePath,
+          editSubject: subject,
+          observedAtMs,
+          evidence,
+          seenRepositorySubjects,
+          seenFileSubjects,
+        });
+      }
       assertScannerClaim({
         predicate: "edit/tool-name",
         subjectKind: "edit",
@@ -390,4 +418,100 @@ function resolveEvidenceFilePaths(
       entries.map((entry) => resolveFilePathFromCwd(entry.filePath, cwd)),
     ),
   ].sort((a, b) => a.localeCompare(b));
+}
+
+function assertNormalizedRepositoryClaims(args: {
+  assertClaim: (input: Parameters<typeof assertClaim>[0]) => void;
+  repository: string;
+  intentSubject?: string;
+  observedAtMs: number;
+  evidence: Parameters<typeof assertClaim>[0]["evidence"];
+  seenRepositorySubjects: Set<string>;
+}): string {
+  const repositorySubject = repositoryKey(args.repository);
+  if (!args.seenRepositorySubjects.has(repositorySubject)) {
+    args.assertClaim({
+      predicate: "repository/name",
+      subjectKind: "repository",
+      subject: repositorySubject,
+      value: args.repository,
+      observedAtMs: args.observedAtMs,
+      sourceType: "scanner",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+    });
+    args.seenRepositorySubjects.add(repositorySubject);
+  }
+  if (args.intentSubject) {
+    args.assertClaim({
+      predicate: "intent/in-repository",
+      subjectKind: "intent",
+      subject: args.intentSubject,
+      value: repositorySubject,
+      observedAtMs: args.observedAtMs,
+      sourceType: "scanner",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+    });
+  }
+  return repositorySubject;
+}
+
+function assertNormalizedFileClaims(args: {
+  assertClaim: (input: Parameters<typeof assertClaim>[0]) => void;
+  repository: string;
+  filePath: string;
+  editSubject: string;
+  observedAtMs: number;
+  evidence: Parameters<typeof assertClaim>[0]["evidence"];
+  seenRepositorySubjects: Set<string>;
+  seenFileSubjects: Set<string>;
+}): string {
+  const repositorySubject = assertNormalizedRepositoryClaims({
+    assertClaim: args.assertClaim,
+    repository: args.repository,
+    observedAtMs: args.observedAtMs,
+    evidence: args.evidence,
+    seenRepositorySubjects: args.seenRepositorySubjects,
+  });
+  const fileSubject = fileKey(args.repository, args.filePath);
+  if (!args.seenFileSubjects.has(fileSubject)) {
+    args.assertClaim({
+      predicate: "file/path",
+      subjectKind: "file",
+      subject: fileSubject,
+      value: args.filePath,
+      observedAtMs: args.observedAtMs,
+      sourceType: "scanner",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+    });
+    args.assertClaim({
+      predicate: "file/in-repository",
+      subjectKind: "file",
+      subject: fileSubject,
+      value: repositorySubject,
+      observedAtMs: args.observedAtMs,
+      sourceType: "scanner",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+    });
+    args.seenFileSubjects.add(fileSubject);
+  }
+  args.assertClaim({
+    predicate: "edit/touches-file",
+    subjectKind: "edit",
+    subject: args.editSubject,
+    value: fileSubject,
+    observedAtMs: args.observedAtMs,
+    sourceType: "scanner",
+    asserter: ASSERTER,
+    asserterVersion: VERSION,
+    evidence: args.evidence,
+  });
+  return fileSubject;
 }
