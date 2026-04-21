@@ -46,22 +46,14 @@ The script builds panopticon from source, starts both containers, installs Pi an
 
 ## End-to-end test
 
-After `setup.sh` completes:
+After `setup.sh` completes, run a prompt through Pi interactively:
 
-1. Run a prompt through Pi interactively:
+```bash
+docker compose -f examples/pi/docker-compose.yml exec pi bash
+pi
+```
 
-   ```bash
-   docker compose -f examples/pi/docker-compose.yml exec pi bash
-   pi
-   ```
-
-2. Verify capture:
-
-   ```bash
-   ./examples/pi/verify-capture.sh
-   ```
-
-   Exits non-zero if no Pi events are found.
+`setup.sh` prints a `hook_events` row count at the end of its run — re-run it (or use the queries below) to confirm new events landed.
 
 ## Services
 

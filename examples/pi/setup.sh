@@ -70,9 +70,9 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T pi bash -c '
   # Verify the extension exists
   echo "Extension at project-local dir:"
   ls -la /workspace/.pi/extensions/
-  echo "\nExtension at global dir (if present):"
+  printf "\nExtension at global dir (if present):\n"
   ls -la ~/.pi/agent/extensions/ 2>/dev/null || echo "  (none)"
-' 2>/dev/null || {
+' || {
   echo "  Could not exec into pi container — install pi manually"
   exit 1
 }

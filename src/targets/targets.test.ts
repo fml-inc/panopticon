@@ -800,38 +800,21 @@ describe("pi target adapter", () => {
     expect(pi.detect.displayName).toBe("Pi");
   });
 
-  it("maps session events correctly", () => {
+  it("has an empty eventMap — the extension emits canonical names directly", () => {
     const pi = getTarget("pi")!;
-    expect(pi.events.eventMap.session_start).toBe("SessionStart");
-    expect(pi.events.eventMap.input).toBe("UserPromptSubmit");
-    expect(pi.events.eventMap.tool_call).toBe("PreToolUse");
-    expect(pi.events.eventMap.tool_result).toBe("PostToolUse");
-    expect(pi.events.eventMap.session_shutdown).toBe("SessionEnd");
+    expect(pi.events.eventMap).toEqual({});
   });
 
-  it("shellEnv only forwards PANOPTICON_HOST/PORT when set", async () => {
+  it("shellEnv emits PANOPTICON_HOST/PORT with static defaults", () => {
     const pi = getTarget("pi")!;
-    const saved = {
-      host: process.env.PANOPTICON_HOST,
-      port: process.env.PANOPTICON_PORT,
-    };
-    try {
-      delete process.env.PANOPTICON_HOST;
-      delete process.env.PANOPTICON_PORT;
-      expect(pi.shellEnv.envVars(4318, true)).toEqual([]);
-
-      process.env.PANOPTICON_HOST = "pano.internal";
-      process.env.PANOPTICON_PORT = "9000";
-      expect(pi.shellEnv.envVars(4318, false)).toEqual([
-        ["PANOPTICON_HOST", "pano.internal"],
-        ["PANOPTICON_PORT", "9000"],
-      ]);
-    } finally {
-      if (saved.host === undefined) delete process.env.PANOPTICON_HOST;
-      else process.env.PANOPTICON_HOST = saved.host;
-      if (saved.port === undefined) delete process.env.PANOPTICON_PORT;
-      else process.env.PANOPTICON_PORT = saved.port;
-    }
+    expect(pi.shellEnv.envVars(4318, true)).toEqual([
+      ["PANOPTICON_HOST", "127.0.0.1"],
+      ["PANOPTICON_PORT", "4318"],
+    ]);
+    expect(pi.shellEnv.envVars(9000, false)).toEqual([
+      ["PANOPTICON_HOST", "127.0.0.1"],
+      ["PANOPTICON_PORT", "9000"],
+    ]);
   });
 
   it("has no proxy spec (Pi routes through its own config)", () => {

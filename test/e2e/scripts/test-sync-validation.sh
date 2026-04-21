@@ -74,7 +74,7 @@ fi
 # the shell env block each time, scoped to the --target's env vars. If Pi
 # went last it would wipe the other CLIs' telemetry vars
 # (CLAUDE_CODE_ENABLE_TELEMETRY, ANTHROPIC_BASE_URL, GEMINI_TELEMETRY_*)
-# since Pi's shellEnv only forwards PANOPTICON_HOST/PORT. Putting Pi first
+# since Pi's shellEnv only emits PANOPTICON_HOST/PORT. Putting Pi first
 # lets the last-installed CLI's vars be the ones that survive in .bashrc.
 INSTALL_ORDER=""
 [ -n "$HAS_PI" ]     && INSTALL_ORDER="${INSTALL_ORDER} pi"

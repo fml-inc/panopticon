@@ -42,8 +42,11 @@ function getExtensionSource(pluginRoot: string): string | null {
   );
   try {
     return fs.readFileSync(extensionPath, "utf-8");
-  } catch {
-    return null;
+  } catch (err) {
+    // Only swallow "not found" — re-raise EACCES/EISDIR/etc. so real I/O
+    // problems surface instead of masquerading as "run pnpm build first".
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
   }
 }
 
@@ -105,39 +108,25 @@ const pi: TargetAdapter = {
   },
 
   shellEnv: {
-    envVars() {
-      // Expose PANOPTICON_HOST and PANOPTICON_PORT so the extension
-      // can connect to panopticon even when running in a different
-      // container or host.
-      const vars: Array<[string, string]> = [];
-      if (process.env.PANOPTICON_HOST) {
-        vars.push(["PANOPTICON_HOST", process.env.PANOPTICON_HOST]);
-      }
-      if (process.env.PANOPTICON_PORT) {
-        vars.push(["PANOPTICON_PORT", process.env.PANOPTICON_PORT]);
-      }
-      return vars;
+    // Emit the extension's connection vars unconditionally so that setup.ts's
+    // .bashrc cleanup pass recognizes them as ours. Users who need a non-local
+    // panopticon (e.g. Pi in a container talking to panopticon on the host)
+    // set PANOPTICON_HOST themselves — via docker-compose env or their shell
+    // rc — and that always overrides what we write here.
+    envVars(port) {
+      return [
+        ["PANOPTICON_HOST", "127.0.0.1"],
+        ["PANOPTICON_PORT", String(port)],
+      ];
     },
   },
 
   events: {
-    eventMap: {
-      // Session lifecycle
-      session_start: "SessionStart",
-      session_shutdown: "SessionEnd",
-
-      // User input
-      input: "UserPromptSubmit",
-
-      // Tool lifecycle — maps to PreToolUse + PostToolUse via
-      // tool_call + tool_result in the extension
-      tool_call: "PreToolUse",
-      tool_result: "PostToolUse",
-
-      // Turn boundaries (if available in future Pi versions)
-      // turn_start: "Stop",
-      // turn_end: "Stop",
-    },
+    // Empty: the extension emits canonical event names directly
+    // (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
+    // PostToolUseFailure, SessionEnd). ingest.ts falls through when
+    // eventMap lacks a key, so no translation is needed.
+    eventMap: {},
 
     formatPermissionResponse({ allow, reason }) {
       // Pi extensions cannot block tool calls — return structure is
