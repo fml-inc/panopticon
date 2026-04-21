@@ -59,6 +59,7 @@ interface HookEvent {
   repository?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  tool_result?: Record<string, unknown>;
   prompt?: string;
   source: string;
   [key: string]: unknown;
@@ -140,17 +141,15 @@ export default function panopticon(pi: ExtensionAPI) {
     });
   });
 
-  // PostToolUse — capture the result
+  // PostToolUse — preserve the original tool_input (so file_path/command
+  // columns populate) and carry the result separately in tool_result
+  // (which insertHookEvent reads for the tool_result column).
   pi.on("tool_result", async (event) => {
     emit({
       hook_event_name: event.isError ? "PostToolUseFailure" : "PostToolUse",
       tool_name: event.toolName,
-      // Send result content as tool_input for PostToolUse
-      tool_input: {
-        content: event.content,
-        details: event.details,
-        isError: event.isError,
-      },
+      tool_input: event.input,
+      tool_result: { content: event.content, details: event.details },
     });
   });
 
