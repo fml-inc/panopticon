@@ -14,7 +14,7 @@ Review the current branch as a thorough code reviewer would review a pull reques
 3. Run `git log main..HEAD --oneline` to understand the commit history
 4. Read any files that need fuller context to understand the changes
 
-As you do your review, if you have questions about the coding intent or the choices made, query panopticon's local session DB to try to answer them.
+After you produce the review, if you have lingering questions about the coding intent or the choices made, query panopticon's local session DB to try to answer them. Do not query panopticon while producing the review — the review should reflect what the diff tells you, not what you had to ask the DB about. Only reach for panopticon for the *"why"* questions that the code and commit messages didn't resolve. Append any answers under a **Follow-up: panopticon-sourced intent** section after the Verdict.
 
 ### Querying panopticon
 
@@ -57,3 +57,5 @@ The review should include:
 - **Verdict**: Approve, request changes, or comment-only
 
 Be direct and specific. Reference file paths and line numbers. Focus on things that matter — correctness, security, maintainability — not nitpicks.
+
+After the verdict, if panopticon queries answered any of your intent questions, add a **Follow-up: panopticon-sourced intent** section that summarizes what you found and which review items it confirmed, softened, or contradicted. If the local DB doesn't cover the branch's commit window, say so instead of guessing.
