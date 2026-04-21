@@ -37,9 +37,9 @@ export const ALL_EVENTS = [
 
   // ── Tool lifecycle (highest volume events) ───────────────────────────────
   // PreToolUse: Fired BEFORE each tool execution. Payload: tool_name, tool_input.
-  //   This is the permission enforcement point — hooks can return a
-  //   permissionDecision ("allow"/"deny") to approve/reject without user prompt.
-  //   Panopticon checks allowed.json here for auto-approval rules.
+  //   Some targets can deny/block here; some also allow approval here.
+  //   Codex only supports blocking at PreToolUse and uses PermissionRequest
+  //   for approval. Panopticon still captures/logs the event for all targets.
   "PreToolUse",
   // PostToolUse: Fired AFTER a tool executes successfully. Payload: tool_name,
   //   tool_input, tool_result. Good for auditing what tools actually did.
@@ -184,11 +184,16 @@ export interface TargetEventSpec {
   normalizePayload?(data: HookInput): HookInput;
   /**
    * Format a permission response for this target's expected shape.
+   * Return {} when the target cannot represent the given decision for
+   * the current hook event.
    */
-  formatPermissionResponse(decision: {
-    allow: boolean;
-    reason: string;
-  }): Record<string, unknown>;
+  formatPermissionResponse(
+    eventName: "PreToolUse" | "PermissionRequest",
+    decision: {
+      allow: boolean;
+      reason: string;
+    },
+  ): Record<string, unknown>;
 }
 
 // ── Doctor / Detection ──────────────────────────────────────────────────────

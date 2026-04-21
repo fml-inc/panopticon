@@ -503,6 +503,55 @@ describe("server integration", () => {
         .map((r: any) => r.cwd);
       expect(cwds2).toContain("/workspace/other-project");
     });
+
+    it("Codex PreToolUse allow decisions fail open without emitting invalid approval output", async () => {
+      fs.mkdirSync(path.join(config.dataDir, "permissions"), {
+        recursive: true,
+      });
+      fs.writeFileSync(
+        path.join(config.dataDir, "permissions", "allowed.json"),
+        `${JSON.stringify({ bash_commands: ["git status"], tools: [] }, null, 2)}\n`,
+      );
+
+      const { status, body } = await post("/hooks", {
+        session_id: "codex-pretool-allow",
+        source: "codex",
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "git status" },
+      });
+
+      expect(status).toBe(200);
+      expect(body).toEqual({});
+    });
+
+    it("Codex PermissionRequest returns an allow decision for approved Bash commands", async () => {
+      fs.mkdirSync(path.join(config.dataDir, "permissions"), {
+        recursive: true,
+      });
+      fs.writeFileSync(
+        path.join(config.dataDir, "permissions", "allowed.json"),
+        `${JSON.stringify({ bash_commands: ["git status"], tools: [] }, null, 2)}\n`,
+      );
+
+      const { status, body } = await post("/hooks", {
+        session_id: "codex-permission-request-allow",
+        source: "codex",
+        hook_event_name: "PermissionRequest",
+        tool_name: "Bash",
+        tool_input: { command: "git status" },
+      });
+
+      expect(status).toBe(200);
+      expect(body).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: {
+            behavior: "allow",
+          },
+        },
+      });
+    });
   });
 
   describe("OTel ingestion", () => {

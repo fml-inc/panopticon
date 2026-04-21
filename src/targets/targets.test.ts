@@ -96,7 +96,7 @@ describe("gemini event normalization", () => {
 describe("permission response formatting", () => {
   it("claude formats as hookSpecificOutput", () => {
     const claude = getTarget("claude")!;
-    const response = claude.events.formatPermissionResponse({
+    const response = claude.events.formatPermissionResponse("PreToolUse", {
       allow: true,
       reason: "Tool is allowed",
     });
@@ -111,7 +111,7 @@ describe("permission response formatting", () => {
 
   it("gemini formats as flat decision/reason", () => {
     const gemini = getTarget("gemini")!;
-    const response = gemini.events.formatPermissionResponse({
+    const response = gemini.events.formatPermissionResponse("PreToolUse", {
       allow: true,
       reason: "Tool is allowed",
     });
@@ -121,19 +121,37 @@ describe("permission response formatting", () => {
     });
   });
 
-  it("codex formats as hookSpecificOutput (same as claude)", () => {
+  it("codex PreToolUse approvals are a no-op", () => {
     const codex = getTarget("codex")!;
-    const response = codex.events.formatPermissionResponse({
+    const response = codex.events.formatPermissionResponse("PreToolUse", {
       allow: true,
       reason: "Tool is allowed",
     });
+    expect(response).toEqual({});
+  });
+
+  it("codex PermissionRequest approvals use decision.behavior", () => {
+    const codex = getTarget("codex")!;
+    const response = codex.events.formatPermissionResponse(
+      "PermissionRequest",
+      {
+        allow: true,
+        reason: "Tool is allowed",
+      },
+    );
     expect(response).toEqual({
       hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-        permissionDecisionReason: "Tool is allowed",
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+        },
       },
     });
+  });
+
+  it("codex installs a PermissionRequest hook", () => {
+    const codex = getTarget("codex")!;
+    expect(codex.hooks.events).toContain("PermissionRequest");
   });
 });
 
@@ -253,7 +271,7 @@ describe("openclaw target adapter", () => {
 
   it("formats permission response as flat decision/reason", () => {
     expect(
-      openclaw.events.formatPermissionResponse({
+      openclaw.events.formatPermissionResponse("PreToolUse", {
         allow: true,
         reason: "allowed",
       }),

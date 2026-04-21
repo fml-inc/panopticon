@@ -387,7 +387,7 @@ const claude: TargetAdapter = {
   events: {
     // Claude Code already sends canonical event names
     eventMap: {},
-    formatPermissionResponse({ allow, reason }) {
+    formatPermissionResponse(_eventName, { allow, reason }) {
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",

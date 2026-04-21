@@ -56,7 +56,7 @@ const claudeDesktop: TargetAdapter = {
 
   events: {
     eventMap: {},
-    formatPermissionResponse({ allow, reason }) {
+    formatPermissionResponse(_eventName, { allow, reason }) {
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",

@@ -207,7 +207,7 @@ const openclaw: TargetAdapter = {
       "command:reset": "SessionEnd",
       tool_result_persist: "PostToolUse",
     },
-    formatPermissionResponse({ allow, reason }) {
+    formatPermissionResponse(_eventName, { allow, reason }) {
       return { decision: allow ? "allow" : "deny", reason };
     },
   },
