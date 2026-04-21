@@ -105,6 +105,10 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
         });
         const subject = resolved.subject;
         searchStart = resolved.nextSearchStart;
+        const repository = resolveSessionRepository(
+          sessionId,
+          event.repository,
+        );
         if (lastSubject && !currentClosed) {
           assertClosedAtClaim({
             subject: lastSubject,
@@ -115,6 +119,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
               eventType: event.event_type,
               timestampMs: event.timestamp_ms,
               toolName: event.tool_name,
+              repository,
             }),
             canonicalize: false,
           });
@@ -132,6 +137,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             eventType: event.event_type,
             timestampMs: event.timestamp_ms,
             toolName: event.tool_name,
+            repository,
           }),
           canonicalize: false,
         });
@@ -150,15 +156,21 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
         const parsedPayload = JSON.parse(
           gunzipSync(event.payload).toString("utf8"),
         ) as Record<string, unknown>;
+        const repository = resolveSessionRepository(
+          sessionId,
+          event.repository,
+        );
         const editEntries = parseToolEditEntries(
           event.tool_name,
           parsedPayload.tool_input as Record<string, unknown> | undefined,
         );
+        const sessionCwd = resolveSessionCwd(sessionId, event.cwd);
+        const evidenceFilePaths = resolveEvidenceFilePaths(
+          editEntries,
+          sessionCwd,
+        );
         for (const entry of editEntries) {
-          const resolvedFilePath = resolveFilePath(
-            entry.filePath,
-            resolveSessionCwd(sessionId, event.cwd),
-          );
+          const resolvedFilePath = resolveFilePath(entry.filePath, sessionCwd);
           const semanticIdentity = semanticEditIdentity({
             filePath: resolvedFilePath,
             newString: entry.newString,
@@ -174,14 +186,20 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             toolName: event.tool_name,
             entry,
             cwd: event.cwd,
+            repository,
             timestampMs: event.timestamp_ms,
             semanticOccurrence,
+            evidenceFilePaths,
             canonicalize: false,
           });
           semanticOccurrences.set(semanticKey, semanticOccurrence + 1);
           edits += 1;
         }
       } else if (lastSubject && !currentClosed) {
+        const repository = resolveSessionRepository(
+          sessionId,
+          event.repository,
+        );
         assertClosedAtClaim({
           subject: lastSubject,
           timestampMs: event.timestamp_ms,
@@ -191,6 +209,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             eventType: event.event_type,
             timestampMs: event.timestamp_ms,
             toolName: event.tool_name,
+            repository,
           }),
           canonicalize: false,
         });
@@ -246,6 +265,10 @@ export function recordIntentClaimsFromHookEvent(args: {
   }>;
 
   const hookEventSyncId = resolveHookEventSyncId(args.hookEventId);
+  const repository = resolveSessionRepository(
+    args.sessionId,
+    args.repository ?? null,
+  );
   const canonicalEvidenceRef = hookEventEvidenceRef({
     sessionId: args.sessionId,
     syncId: hookEventSyncId,
@@ -255,6 +278,7 @@ export function recordIntentClaimsFromHookEvent(args: {
       typeof args.payload.tool_name === "string"
         ? args.payload.tool_name
         : null,
+    repository,
   });
   if (args.eventType === "UserPromptSubmit") {
     const subject = resolveIntentSubject({
@@ -309,11 +333,10 @@ export function recordIntentClaimsFromHookEvent(args: {
       toolName,
       args.payload.tool_input as Record<string, unknown> | undefined,
     );
+    const sessionCwd = resolveSessionCwd(args.sessionId, args.cwd ?? null);
+    const evidenceFilePaths = resolveEvidenceFilePaths(entries, sessionCwd);
     for (const entry of entries) {
-      const resolvedFilePath = resolveFilePath(
-        entry.filePath,
-        resolveSessionCwd(args.sessionId, args.cwd ?? null),
-      );
+      const resolvedFilePath = resolveFilePath(entry.filePath, sessionCwd);
       const semanticIdentity = semanticEditIdentity({
         filePath: resolvedFilePath,
         newString: entry.newString,
@@ -331,8 +354,10 @@ export function recordIntentClaimsFromHookEvent(args: {
         toolName,
         entry,
         cwd: args.cwd ?? null,
+        repository,
         timestampMs: args.timestampMs,
         semanticOccurrence,
+        evidenceFilePaths,
       });
     }
     return;
@@ -432,8 +457,10 @@ function assertHookEditClaims(args: {
   toolName: string;
   entry: ParsedEditEntry;
   cwd: string | null;
+  repository: string | null;
   timestampMs: number;
   semanticOccurrence: number;
+  evidenceFilePaths: string[];
   canonicalize?: boolean;
 }): void {
   const resolvedFilePath = resolveFilePath(
@@ -460,6 +487,8 @@ function assertHookEditClaims(args: {
         eventType: "PostToolUse",
         timestampMs: args.timestampMs,
         toolName: args.toolName,
+        repository: args.repository,
+        filePaths: args.evidenceFilePaths,
       }),
       role: "origin" as const,
     },
@@ -665,8 +694,35 @@ function resolveSessionCwd(
   return row?.cwd ?? null;
 }
 
+function resolveSessionRepository(
+  sessionId: string,
+  repository: string | null,
+): string | null {
+  if (repository) return repository;
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT repository
+       FROM session_repositories
+       WHERE session_id = ?
+       ORDER BY first_seen_ms ASC
+       LIMIT 1`,
+    )
+    .get(sessionId) as { repository: string | null } | undefined;
+  return row?.repository ?? null;
+}
+
 function resolveFilePath(filePath: string, cwd: string | null): string {
   return resolveFilePathFromCwd(filePath, cwd);
+}
+
+function resolveEvidenceFilePaths(
+  entries: ParsedEditEntry[],
+  cwd: string | null,
+): string[] {
+  return [
+    ...new Set(entries.map((entry) => resolveFilePath(entry.filePath, cwd))),
+  ].sort((a, b) => a.localeCompare(b));
 }
 
 function resolveHookEventSyncId(hookEventId: number): string {

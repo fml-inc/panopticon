@@ -46,6 +46,7 @@ export interface EvidenceRefInput {
   syncId?: string | null;
   repository?: string | null;
   filePath?: string | null;
+  filePaths?: string[] | null;
   traceId?: string | null;
   spanId?: string | null;
   locator: Record<string, unknown>;

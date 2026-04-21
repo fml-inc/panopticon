@@ -61,6 +61,7 @@ afterAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM evidence_ref_paths").run();
   db.prepare("DELETE FROM evidence_refs").run();
   db.prepare("DELETE FROM active_claims").run();
   db.prepare("DELETE FROM claims").run();
@@ -170,6 +171,20 @@ function insertSession(args: {
     );
 }
 
+function insertSessionRepository(args: {
+  sessionId: string;
+  repository: string;
+  firstSeenMs?: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO session_repositories
+         (session_id, repository, first_seen_ms)
+       VALUES (?, ?, ?)`,
+    )
+    .run(args.sessionId, args.repository, args.firstSeenMs ?? Date.now());
+}
+
 function rebuildMixedProjection(sessionId: string): void {
   rebuildIntentClaimsFromHooks({ sessionId });
   rebuildIntentClaimsFromScanner({ sessionId });
@@ -258,6 +273,7 @@ describe("live hook claims", () => {
 
   it("uses typed hook-event evidence refs for hook-backed edits", () => {
     const sessionId = "hook-typed-evidence";
+    const repository = scratchDir;
     insertSession({
       sessionId,
       endedAtMs: 2000,
@@ -273,12 +289,14 @@ describe("live hook claims", () => {
       session_id: sessionId,
       event_type: "UserPromptSubmit",
       timestamp_ms: 1000,
+      repository,
       payload: { prompt: "make the hook edit" },
     });
     const editId = insertHookEvent({
       session_id: sessionId,
       event_type: "PostToolUse",
       timestamp_ms: 1100,
+      repository,
       tool_name: "Edit",
       payload: {
         tool_name: "Edit",
@@ -300,10 +318,28 @@ describe("live hook claims", () => {
     rebuildActiveClaims();
 
     const [activeEdit] = [...loadActiveEdits({ sessionId }).values()];
+    expect(activeEdit?.payloadEvidenceRefId).toBeGreaterThan(0);
     expect(activeEdit?.payloadEvidenceKey?.startsWith("hook_event:")).toBe(
       true,
     );
     expect(activeEdit?.hookEventId).toBe(editId);
+
+    const evidenceRow = getDb()
+      .prepare(
+        `SELECT DISTINCT er.repository, er.file_path
+         FROM claim_evidence ce
+         JOIN claims c ON c.id = ce.claim_id
+         JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         WHERE c.subject = ?
+         LIMIT 1`,
+      )
+      .get(activeEdit?.editKey) as
+      | { repository: string | null; file_path: string | null }
+      | undefined;
+    expect(evidenceRow).toEqual({
+      repository,
+      file_path: "/tmp/hook-typed-evidence.ts",
+    });
   });
 
   it("keeps the first close boundary instead of stretching across later stops", () => {
@@ -1097,6 +1133,11 @@ describe("scanner-only landed reconciliation", () => {
       endedAtMs: 2000,
       hasScanner: true,
     });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
     insertUserMessage({
       sessionId,
       ordinal: 1,
@@ -1136,10 +1177,51 @@ describe("scanner-only landed reconciliation", () => {
     );
 
     const [activeEdit] = [...loadActiveEdits({ sessionId }).values()];
+    expect(activeEdit?.payloadEvidenceRefId).toBeGreaterThan(0);
     expect(activeEdit?.payloadEvidenceKey?.startsWith("tc:")).toBe(true);
+
+    const eagerEvidenceRows = getDb()
+      .prepare(
+        `SELECT kind, repository, file_path
+         FROM evidence_refs
+         WHERE session_id = ?
+           AND kind IN ('message', 'tool_call')
+         ORDER BY kind ASC`,
+      )
+      .all(sessionId) as Array<{
+      kind: string;
+      repository: string | null;
+      file_path: string | null;
+    }>;
+    expect(eagerEvidenceRows).toEqual([
+      {
+        kind: "message",
+        repository: scratchDir,
+        file_path: null,
+      },
+      {
+        kind: "tool_call",
+        repository: scratchDir,
+        file_path: filePath,
+      },
+    ]);
 
     reconcileLandedClaimsFromDisk({ sessionId });
     rebuildIntentProjection({ sessionId });
+
+    const fileSnapshotRef = getDb()
+      .prepare(
+        `SELECT repository, file_path
+         FROM evidence_refs
+         WHERE kind = 'file_snapshot' AND file_path = ?`,
+      )
+      .get(filePath) as
+      | { repository: string | null; file_path: string | null }
+      | undefined;
+    expect(fileSnapshotRef).toEqual({
+      repository: scratchDir,
+      file_path: filePath,
+    });
 
     const row = getDb()
       .prepare(
@@ -1156,6 +1238,81 @@ describe("scanner-only landed reconciliation", () => {
       tool_name: "apply_patch",
       landed: 1,
     });
+  });
+
+  it("stores normalized path rows for multi-file apply_patch evidence", () => {
+    const sessionId = "scanner-multi-file-tool-evidence";
+    const fileA = path.join(scratchDir, "scanner-multi-file-a.ts");
+    const fileB = path.join(scratchDir, "scanner-multi-file-b.ts");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "patch both files",
+      timestampMs: 1000,
+      uuid: "scanner-multi-file-tool-evidence-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "apply_patch",
+      inputJson: {
+        input: [
+          "*** Begin Patch",
+          `*** Update File: ${fileA}`,
+          "@@",
+          "-export const a = 0;",
+          "+export const a = 1;",
+          `*** Update File: ${fileB}`,
+          "@@",
+          "-export const b = 0;",
+          "+export const b = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    rebuildActiveClaims();
+
+    const toolCallRef = getDb()
+      .prepare(
+        `SELECT id, file_path
+         FROM evidence_refs
+         WHERE session_id = ?
+           AND kind = 'tool_call'`,
+      )
+      .get(sessionId) as { id: number; file_path: string | null } | undefined;
+    const pathRows = getDb()
+      .prepare(
+        `SELECT file_path
+         FROM evidence_ref_paths
+         WHERE evidence_ref_id = ?
+         ORDER BY file_path ASC`,
+      )
+      .all(toolCallRef?.id ?? -1) as Array<{ file_path: string }>;
+
+    expect(toolCallRef).toEqual({
+      id: expect.any(Number),
+      file_path: null,
+    });
+    expect(pathRows).toEqual([{ file_path: fileA }, { file_path: fileB }]);
   });
 
   it("marks deletion-only apply_patch hunks as landed when the removed text stays gone", () => {

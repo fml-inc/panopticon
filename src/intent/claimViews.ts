@@ -22,6 +22,7 @@ export interface ActiveEdit {
   timestampMs?: number;
   timestampSource?: string;
   hookEventId?: number | null;
+  payloadEvidenceRefId?: number | null;
   payloadEvidenceKey?: string | null;
   landedStatus?: string | null;
   landedReason?: string | null;
@@ -113,6 +114,7 @@ function loadActiveEditRows(sessionId?: string): ActiveClaimRow[] {
 
 interface ActiveEditEvidenceRow {
   subject: string;
+  evidence_ref_id: number;
   evidence_ref_key: string;
   hook_event_id: number | null;
 }
@@ -125,6 +127,7 @@ function loadActiveEditEvidenceRows(
     return db
       .prepare(
         `SELECT c.subject,
+                ce.evidence_ref_id,
                 er.ref_key AS evidence_ref_key,
                 he.id AS hook_event_id
          FROM active_claims ac
@@ -164,6 +167,7 @@ function loadActiveEditEvidenceRows(
            AND c.value_text IN (SELECT subject FROM scoped_intents)
        )
        SELECT c.subject,
+              ce.evidence_ref_id,
               er.ref_key AS evidence_ref_key,
               he.id AS hook_event_id
        FROM active_claims ac
@@ -277,6 +281,9 @@ export function loadActiveEdits(
   for (const row of evidenceRows) {
     const edit = edits.get(row.subject);
     if (!edit) continue;
+    if (edit.payloadEvidenceRefId == null) {
+      edit.payloadEvidenceRefId = row.evidence_ref_id;
+    }
     if (!edit.payloadEvidenceKey) {
       edit.payloadEvidenceKey = row.evidence_ref_key;
     }

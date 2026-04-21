@@ -31,6 +31,7 @@ import {
   fileSnapshotEvidenceRef,
   hookEventEvidenceRef,
   messageEvidenceRef,
+  toolCallEvidenceRef,
 } from "./evidence-refs.js";
 import { runIntegrityCheck } from "./integrity.js";
 import { assertClaim } from "./store.js";
@@ -46,6 +47,7 @@ afterAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM evidence_ref_paths").run();
   db.prepare("DELETE FROM evidence_refs").run();
   db.prepare("DELETE FROM active_claims").run();
   db.prepare("DELETE FROM claims").run();
@@ -315,5 +317,59 @@ describe("assertClaim", () => {
       dangling: 0,
       examples: [],
     });
+  });
+
+  it("stores normalized path rows for multi-file evidence refs", () => {
+    const result = assertClaim({
+      predicate: "edit/tool-name",
+      subjectKind: "edit",
+      subject: "edit:test",
+      value: "apply_patch",
+      observedAtMs: 1000,
+      sourceType: "scanner",
+      asserter: "test",
+      asserterVersion: "1",
+      evidence: [
+        {
+          ref: toolCallEvidenceRef({
+            sessionId: "session-tool",
+            syncId: "tool-sync-1",
+            toolName: "apply_patch",
+            repository: "/tmp/repo",
+            filePaths: ["/tmp/b.ts", "/tmp/a.ts", "/tmp/b.ts"],
+          }),
+          role: "origin",
+        },
+      ],
+    });
+
+    const db = getDb();
+    const refRow = db
+      .prepare(
+        `SELECT ce.evidence_ref_id, er.file_path, er.repository
+         FROM claim_evidence ce
+         JOIN evidence_refs er ON er.id = ce.evidence_ref_id
+         WHERE ce.claim_id = ?`,
+      )
+      .get(result.claimId) as {
+      evidence_ref_id: number;
+      file_path: string | null;
+      repository: string | null;
+    };
+    const pathRows = db
+      .prepare(
+        `SELECT file_path
+         FROM evidence_ref_paths
+         WHERE evidence_ref_id = ?
+         ORDER BY file_path ASC`,
+      )
+      .all(refRow.evidence_ref_id) as Array<{ file_path: string }>;
+
+    expect(refRow.file_path).toBeNull();
+    expect(refRow.repository).toBe("/tmp/repo");
+    expect(pathRows).toEqual([
+      { file_path: "/tmp/a.ts" },
+      { file_path: "/tmp/b.ts" },
+    ]);
   });
 });

@@ -56,6 +56,7 @@ afterAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM evidence_ref_paths").run();
   db.prepare("DELETE FROM evidence_refs").run();
   db.prepare("DELETE FROM active_claims").run();
   db.prepare("DELETE FROM claims").run();

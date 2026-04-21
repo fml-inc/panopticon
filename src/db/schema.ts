@@ -330,6 +330,12 @@ CREATE TABLE IF NOT EXISTS evidence_refs (
   locator_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS evidence_ref_paths (
+  evidence_ref_id INTEGER NOT NULL,
+  file_path TEXT NOT NULL,
+  UNIQUE(evidence_ref_id, file_path)
+);
+
 CREATE TABLE IF NOT EXISTS claim_evidence (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   claim_id INTEGER NOT NULL,
@@ -616,6 +622,8 @@ CREATE INDEX IF NOT EXISTS idx_evidence_refs_session ON evidence_refs(session_id
 CREATE INDEX IF NOT EXISTS idx_evidence_refs_kind_sync ON evidence_refs(kind, sync_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_refs_trace_span ON evidence_refs(trace_id, span_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path);
+CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_ref ON evidence_ref_paths(evidence_ref_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_file ON evidence_ref_paths(file_path);
 `;
 
 /**
