@@ -91,7 +91,7 @@ vi.mock("./store.js", () => ({
   insertTurns: vi.fn(),
   linkSubagentSessions: vi.fn(() => 0),
   readArchivedSize: vi.fn(() => 0),
-  readFileWatermark: vi.fn(() => 0),
+  readFileWatermark: vi.fn(() => ({ byteOffset: 0 })),
   readSessionByScannerFile: vi.fn(() => undefined),
   resetFileForReparse: vi.fn(),
   restoreSyncIds: vi.fn(),
@@ -126,7 +126,7 @@ describe("scanOnce progress", () => {
     vi.clearAllMocks();
     discoverMock.mockReset();
     parseFileMock.mockReset();
-    vi.mocked(readFileWatermark).mockReturnValue(0);
+    vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 0 });
     vi.mocked(readSessionByScannerFile).mockReturnValue(undefined);
   });
 
@@ -206,12 +206,9 @@ describe("scanOnce progress", () => {
     fs.writeFileSync(filePath, "fixture");
 
     discoverMock.mockReturnValue([{ filePath }]);
-    vi.mocked(readFileWatermark).mockReturnValue(7);
-    vi.mocked(readSessionByScannerFile).mockReturnValue({
+    vi.mocked(readFileWatermark).mockReturnValue({
+      byteOffset: 7,
       sessionId: "session-1",
-      cwd: "/repo",
-      cliVersion: "0.122.0",
-      startedAtMs: 1,
     });
     parseFileMock.mockReturnValue({
       turns: [
@@ -280,7 +277,45 @@ describe("scanOnce progress", () => {
       ],
       undefined,
     );
-    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(filePath, 42);
+    expect(vi.mocked(readSessionByScannerFile)).not.toHaveBeenCalled();
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(
+      filePath,
+      42,
+      "session-1",
+    );
+  });
+
+  it("falls back to the existing session row when the watermark has no session id", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-loop-test-"));
+    const filePath = path.join(tempDir, "session.jsonl");
+    fs.writeFileSync(filePath, "fixture");
+
+    discoverMock.mockReturnValue([{ filePath }]);
+    vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 7 });
+    vi.mocked(readSessionByScannerFile).mockReturnValue({
+      sessionId: "session-2",
+      cwd: "/repo",
+      cliVersion: "0.122.0",
+      startedAtMs: 1,
+    });
+    parseFileMock.mockReturnValue({
+      turns: [],
+      events: [],
+      messages: [],
+      newByteOffset: 42,
+    });
+
+    scanOnce();
+
+    expect(vi.mocked(readSessionByScannerFile)).toHaveBeenCalledWith(
+      filePath,
+      "fake",
+    );
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(
+      filePath,
+      42,
+      "session-2",
+    );
   });
 
   it("reports incremental chunks that still have no session metadata", () => {
@@ -289,7 +324,7 @@ describe("scanOnce progress", () => {
     fs.writeFileSync(filePath, "fixture");
 
     discoverMock.mockReturnValue([{ filePath }]);
-    vi.mocked(readFileWatermark).mockReturnValue(7);
+    vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 7 });
     vi.mocked(readSessionByScannerFile).mockReturnValue(undefined);
     parseFileMock.mockReturnValue({
       turns: [],
@@ -311,7 +346,11 @@ describe("scanOnce progress", () => {
         new_byte_offset: 42,
       }),
     );
-    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(filePath, 42);
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(
+      filePath,
+      42,
+      undefined,
+    );
     expect(vi.mocked(upsertSession)).not.toHaveBeenCalled();
   });
 });

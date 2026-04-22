@@ -52,6 +52,11 @@ export interface SavedSyncIds {
   }>;
 }
 
+export interface FileWatermarkState {
+  byteOffset: number;
+  sessionId?: string;
+}
+
 // ── Session upsert (writes to unified sessions table) ───────────────────────
 
 export function upsertSession(
@@ -339,23 +344,38 @@ export function updateSessionTotals(sessionId: string): void {
 
 // ── File watermarks ─────────────────────────────────────────────────────────
 
-export function readFileWatermark(filePath: string): number {
+export function readFileWatermark(filePath: string): FileWatermarkState {
   const db = getDb();
   const row = db
     .prepare(
-      "SELECT byte_offset FROM scanner_file_watermarks WHERE file_path = ?",
+      "SELECT byte_offset, session_id FROM scanner_file_watermarks WHERE file_path = ?",
     )
-    .get(filePath) as { byte_offset: number } | undefined;
-  return row?.byte_offset ?? 0;
+    .get(filePath) as
+    | {
+        byte_offset: number;
+        session_id: string | null;
+      }
+    | undefined;
+  return {
+    byteOffset: row?.byte_offset ?? 0,
+    sessionId: row?.session_id ?? undefined,
+  };
 }
 
-export function writeFileWatermark(filePath: string, byteOffset: number): void {
+export function writeFileWatermark(
+  filePath: string,
+  byteOffset: number,
+  sessionId?: string,
+): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO scanner_file_watermarks (file_path, byte_offset, last_scanned_ms)
-     VALUES (?, ?, ?)
-     ON CONFLICT(file_path) DO UPDATE SET byte_offset = excluded.byte_offset, last_scanned_ms = excluded.last_scanned_ms`,
-  ).run(filePath, byteOffset, Date.now());
+    `INSERT INTO scanner_file_watermarks (file_path, byte_offset, last_scanned_ms, session_id)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET
+       byte_offset = excluded.byte_offset,
+       last_scanned_ms = excluded.last_scanned_ms,
+       session_id = COALESCE(excluded.session_id, scanner_file_watermarks.session_id)`,
+  ).run(filePath, byteOffset, Date.now(), sessionId ?? null);
 }
 
 /**

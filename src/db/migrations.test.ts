@@ -1128,6 +1128,90 @@ describe("runMigrations — existing DB", () => {
     );
   });
 
+  it("backfills scanner file watermark session ids from the canonical file session", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        target TEXT,
+        started_at_ms INTEGER,
+        created_at INTEGER,
+        relationship_type TEXT DEFAULT '',
+        scanner_file_path TEXT
+      );
+      CREATE TABLE scanner_file_watermarks (
+        file_path TEXT PRIMARY KEY,
+        byte_offset INTEGER NOT NULL DEFAULT 0,
+        last_scanned_ms INTEGER NOT NULL,
+        archived_size INTEGER DEFAULT 0
+      );
+    `);
+
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 14) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    db.prepare(
+      `INSERT INTO sessions (
+         session_id, target, started_at_ms, created_at, relationship_type, scanner_file_path
+       ) VALUES
+         (?, ?, ?, ?, ?, ?),
+         (?, ?, ?, ?, ?, ?),
+         (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "root-session",
+      "claude",
+      100,
+      100,
+      "",
+      "/tmp/session.jsonl",
+      "root-session-fork",
+      "claude",
+      50,
+      50,
+      "fork",
+      "/tmp/session.jsonl",
+      "agent-1",
+      "claude",
+      10,
+      10,
+      "subagent",
+      "/tmp/session.jsonl",
+    );
+    db.prepare(
+      `INSERT INTO scanner_file_watermarks (file_path, byte_offset, last_scanned_ms)
+       VALUES (?, ?, ?)`,
+    ).run("/tmp/session.jsonl", 42, 1000);
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(scanner_file_watermarks)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((col) => col.name)).toContain("session_id");
+
+    const row = db
+      .prepare(
+        `SELECT byte_offset, archived_size, session_id
+         FROM scanner_file_watermarks
+         WHERE file_path = ?`,
+      )
+      .get("/tmp/session.jsonl") as {
+      byte_offset: number;
+      archived_size: number | null;
+      session_id: string | null;
+    };
+    expect(row).toEqual({
+      byte_offset: 42,
+      archived_size: 0,
+      session_id: "root-session",
+    });
+  });
+
   it("upgrades a 0.2.4-style DB after SCHEMA_SQL creates latest claim tables", () => {
     const db = createExistingDb();
     db.prepare(

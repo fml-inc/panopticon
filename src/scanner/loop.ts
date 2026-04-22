@@ -328,7 +328,8 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         let fileDbWriteMs = 0;
         let fileArchiveMs = 0;
         let reparsedFromStart = false;
-        let offset = readFileWatermark(filePath);
+        const watermark = readFileWatermark(filePath);
+        let offset = watermark.byteOffset;
         let parseStartedAt = performance.now();
         let result = target.scanner.parseFile(filePath, offset);
         fileParseMs += performance.now() - parseStartedAt;
@@ -339,7 +340,12 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         }
 
         if (offset > 0 && !result.meta?.sessionId) {
-          rehydrateIncrementalSession(result, filePath, source);
+          rehydrateIncrementalSession(
+            result,
+            watermark.sessionId,
+            filePath,
+            source,
+          );
         }
 
         // If incremental parse detected a DAG fork, reset watermark
@@ -403,7 +409,11 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
           }
           // Fail open for now: keep advancing the watermark so one bad
           // incremental chunk does not stall the scanner indefinitely.
-          writeFileWatermark(filePath, result.newByteOffset);
+          writeFileWatermark(
+            filePath,
+            result.newByteOffset,
+            result.meta?.sessionId,
+          );
           continue;
         }
 
@@ -435,7 +445,11 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             updateSessionMessageCounts(sessionId);
           }
 
-          writeFileWatermark(filePath, fileResult.newByteOffset);
+          writeFileWatermark(
+            filePath,
+            fileResult.newByteOffset,
+            fileMeta.sessionId,
+          );
         })();
         fileDbWriteMs += performance.now() - writeStartedAt;
         dbWriteMs += fileDbWriteMs;
@@ -684,13 +698,21 @@ function reindexEvents(result: ParseResult, startIndex: number): void {
 
 function rehydrateIncrementalSession(
   result: ParseResult,
+  knownSessionId: string | undefined,
   filePath: string,
   source: string,
 ): void {
-  const existingMeta = readSessionByScannerFile(filePath, source);
+  const existingMeta =
+    knownSessionId != null
+      ? { sessionId: knownSessionId }
+      : readSessionByScannerFile(filePath, source);
   if (!existingMeta?.sessionId) return;
 
-  result.meta = existingMeta;
+  result.meta = {
+    ...existingMeta,
+    ...result.meta,
+    sessionId: result.meta?.sessionId ?? existingMeta.sessionId,
+  };
   for (const turn of result.turns) {
     if (!turn.sessionId) turn.sessionId = existingMeta.sessionId;
   }

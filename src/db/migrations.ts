@@ -407,6 +407,42 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
 }
 
+function backfillScannerFileWatermarkSessionIds(db: Database): void {
+  if (!tableExists(db, "scanner_file_watermarks")) {
+    return;
+  }
+
+  addColumnIfMissing(
+    db,
+    "scanner_file_watermarks",
+    "session_id",
+    "session_id TEXT",
+  );
+
+  if (
+    !tableExists(db, "sessions") ||
+    !tableHasColumn(db, "sessions", "scanner_file_path")
+  ) {
+    return;
+  }
+
+  db.exec(`
+    UPDATE scanner_file_watermarks
+       SET session_id = (
+         SELECT s.session_id
+           FROM sessions s
+          WHERE s.scanner_file_path = scanner_file_watermarks.file_path
+          ORDER BY
+            CASE WHEN COALESCE(s.relationship_type, '') = 'fork' THEN 1 ELSE 0 END,
+            CASE WHEN COALESCE(s.relationship_type, '') = 'subagent' THEN 1 ELSE 0 END,
+            COALESCE(s.started_at_ms, s.created_at, 0) ASC,
+            s.session_id ASC
+          LIMIT 1
+       )
+     WHERE session_id IS NULL
+  `);
+}
+
 // ---------------------------------------------------------------------------
 // Migration registry — append only, never reorder or remove
 // ---------------------------------------------------------------------------
@@ -812,6 +848,13 @@ export const MIGRATIONS: Migration[] = [
     name: "convert_asserter_versions_to_integer_and_reset_claim_state",
     up: (db) => {
       resetClaimDerivedStateForAsserterVersionIntegerCutover(db);
+    },
+  },
+  {
+    id: 14,
+    name: "add_session_id_to_scanner_file_watermarks",
+    up: (db) => {
+      backfillScannerFileWatermarkSessionIds(db);
     },
   },
 ];

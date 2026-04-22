@@ -241,7 +241,11 @@ function parseAndInsert(filePath: string): void {
         insertMessages(result.messages, result.orphanedToolResults);
         updateSessionMessageCounts(result.meta!.sessionId);
       }
-      writeFileWatermark(filePath, result.newByteOffset);
+      writeFileWatermark(
+        filePath,
+        result.newByteOffset,
+        result.meta!.sessionId,
+      );
     }) as any
   )();
 
