@@ -42,7 +42,15 @@ const MARKETPLACE_DIR = path.join(
   "claude-plugins",
 );
 
-const DEFAULT_PORT = 4318;
+const DEFAULT_PORT_BASE = 4318;
+
+// Offset the default port by the user's uid so two users on the same host
+// don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
+// Mirrored in src/sdk.ts (kept dependency-free, hence the duplication).
+function defaultPort(): number {
+  const uidOffset = (process.getuid?.() ?? 0) % 100;
+  return DEFAULT_PORT_BASE + uidOffset;
+}
 
 export const config = {
   dataDir: DATA_DIR,
@@ -51,7 +59,7 @@ export const config = {
   port: parseInt(
     process.env.PANOPTICON_PORT ??
       process.env.PANOPTICON_OTLP_PORT ??
-      String(DEFAULT_PORT),
+      String(defaultPort()),
     10,
   ),
   host: process.env.PANOPTICON_HOST ?? "127.0.0.1",

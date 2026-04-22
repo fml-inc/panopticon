@@ -87,13 +87,22 @@ function countRows(table: string): number {
   ).c;
 }
 
+// Pin the bearer token so the test client and server agree on it without
+// having to read/write the token file from a tmp dir. Set before the server
+// boots in beforeAll() — see auth.ts readAuthToken/getOrCreateAuthToken.
+const TEST_AUTH_TOKEN = "integration-test-token";
+process.env.PANOPTICON_AUTH_TOKEN = TEST_AUTH_TOKEN;
+
 async function post(
   urlPath: string,
   body: unknown,
 ): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${baseUrl}${urlPath}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${TEST_AUTH_TOKEN}`,
+    },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -616,10 +625,31 @@ describe("server integration", () => {
     it("returns 500 for invalid JSON to /hooks", async () => {
       const res = await fetch(`${baseUrl}/hooks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEST_AUTH_TOKEN}`,
+        },
         body: "not json",
       });
       expect(res.status).toBe(500);
+    });
+
+    it("returns 401 to /hooks without bearer token", async () => {
+      const res = await fetch(`${baseUrl}/hooks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "x", hook_event_name: "Stop" }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 401 to /api/tool without bearer token", async () => {
+      const res = await fetch(`${baseUrl}/api/tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "sessions" }),
+      });
+      expect(res.status).toBe(401);
     });
   });
 

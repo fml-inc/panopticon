@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import { handleApiRequest } from "./api/routes.js";
+import { getOrCreateAuthToken, requireBearerToken } from "./auth.js";
 import { config } from "./config.js";
 import { autoPrune } from "./db/prune.js";
 import { syncAwarePrune } from "./db/sync-prune.js";
@@ -36,19 +37,25 @@ function collectBody(req: http.IncomingMessage): Promise<Buffer> {
 }
 
 export function createUnifiedServer(): http.Server {
+  // Generate/load the bearer token at server boot so every request handler
+  // checks against the same value without re-reading the file each time.
+  const authToken = getOrCreateAuthToken();
+
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "";
     const method = req.method ?? "";
 
-    // Health check
+    // Health check — unauthenticated by design (used by liveness probes,
+    // including waitForServer() which runs before any client has the token).
     if (url === "/health" && method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok", port: config.port }));
       return;
     }
 
-    // Hook event ingest
+    // Hook event ingest — auth required (DB write surface).
     if (url === "/hooks" && method === "POST") {
+      if (!requireBearerToken(req, res, authToken)) return;
       try {
         const body = await collectBody(req);
         const data: HookInput = JSON.parse(body.toString("utf-8"));
@@ -94,8 +101,9 @@ export function createUnifiedServer(): http.Server {
       return;
     }
 
-    // API routes — /api/tool, /api/exec
+    // API routes — /api/tool, /api/exec — auth required (read-everything surface).
     if (url.startsWith("/api/") && method === "POST") {
+      if (!requireBearerToken(req, res, authToken)) return;
       await handleApiRequest(req, res);
       return;
     }

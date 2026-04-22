@@ -14,6 +14,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isServerRunning, waitForServer } from "../api/util.js";
+import { readAuthToken } from "../auth.js";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import {
@@ -120,16 +121,19 @@ function postToServer(
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
+    const token = readAuthToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Content-Length": String(Buffer.byteLength(body)),
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path: "/hooks",
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-        },
+        headers,
         timeout: 5000,
       },
       (res) => {
