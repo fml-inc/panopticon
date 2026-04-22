@@ -319,12 +319,20 @@ export function reparseAll(
     };
   }
 
-  // Snapshot old session count for safety check
-  let oldSessionCount = 0;
+  // Snapshot old session count for safety check.
+  // Only count scanner-derived sessions (has_scanner=1) so the comparison
+  // against tempSessionCount (post-scanOnce, scanner-only) is apples-to-
+  // apples. A DB that only has hook-only or OTEL-only sessions would
+  // otherwise hit `tempSessionCount === 0 && oldSessionCount > 0` and
+  // abort reparse forever — keeping needsResync() true and 503'ing
+  // derived MCP tools until manual intervention.
+  let oldScannerSessionCount = 0;
   try {
     const oldDb = new Database(origPath);
-    oldSessionCount = (
-      oldDb.prepare("SELECT COUNT(*) as c FROM sessions").get() as {
+    oldScannerSessionCount = (
+      oldDb
+        .prepare("SELECT COUNT(*) as c FROM sessions WHERE has_scanner = 1")
+        .get() as {
         c: number;
       }
     ).c;
@@ -411,16 +419,20 @@ export function reparseAll(
   // Restore config path for all subsequent operations
   (config as { dbPath: string }).dbPath = savedDbPath;
 
-  // Abort if scan produced nothing but old DB had data
-  if (tempSessionCount === 0 && oldSessionCount > 0) {
+  // Abort if scan produced nothing but old DB had scanner sessions.
+  // Compares scanner-only counts: a hook-only or OTEL-only DB legitimately
+  // has tempSessionCount === 0 and oldScannerSessionCount === 0, which is
+  // not an error — the preservation block below copies the hook/OTEL data
+  // from the old DB into the temp DB.
+  if (tempSessionCount === 0 && oldScannerSessionCount > 0) {
     writeReparseStatus(
       "reparse_error",
-      `Reparse aborted: 0 sessions in reparse vs ${oldSessionCount} in old DB`,
+      `Reparse aborted: 0 sessions in reparse vs ${oldScannerSessionCount} scanner sessions in old DB`,
       statusStartedAtMs,
     );
     clearScannerStatus();
     log(
-      `Reparse aborted: temp DB has 0 sessions but old DB has ${oldSessionCount}`,
+      `Reparse aborted: temp DB has 0 sessions but old DB has ${oldScannerSessionCount} scanner sessions`,
     );
     getDb(); // reopen original
     removeTempFiles(tempPath);
@@ -428,7 +440,7 @@ export function reparseAll(
       success: false,
       filesScanned,
       newTurns,
-      error: `Aborted: 0 sessions in reparse vs ${oldSessionCount} in old DB`,
+      error: `Aborted: 0 sessions in reparse vs ${oldScannerSessionCount} scanner sessions in old DB`,
     };
   }
 
