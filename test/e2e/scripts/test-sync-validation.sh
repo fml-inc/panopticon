@@ -223,9 +223,18 @@ assert_file_exists \
   "Fresh-home MCP log file"
 rm -rf "$MCP_SMOKE_HOME"
 
-# Source env vars (OTel endpoints, proxy URLs) written by install
+# Source env vars (OTel endpoints, headers, proxy URLs) written by install.
+# Prefer the dedicated env file — the standard Debian `~/.bashrc` aborts
+# early for non-interactive shells, so sourcing it from this script
+# silently skips the panopticon block (and we won't get
+# OTEL_EXPORTER_OTLP_HEADERS, which the gated /v1/* needs).
+PANO_ENV_FILE="${PANOPTICON_DATA_DIR:-$HOME/.local/share/panopticon}/env.sh"
 # shellcheck disable=SC1090
-source "$HOME/.bashrc" 2>/dev/null || true
+if [ -f "$PANO_ENV_FILE" ]; then
+  source "$PANO_ENV_FILE"
+else
+  source "$HOME/.bashrc" 2>/dev/null || true
+fi
 
 # ─── Phase 5: Run Coding Sessions ────────────────────────────────────────────
 log_phase 5 "Run Coding Sessions"
