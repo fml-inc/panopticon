@@ -110,28 +110,14 @@ export function upsertSession(
   }
 }
 
-export function readSessionByScannerFile(
+export function readSessionIdByScannerFile(
   filePath: string,
   source: string,
-): ParsedSession | undefined {
+): string | undefined {
   const db = getDb();
   const row = db
     .prepare(
-      `SELECT
-         s.session_id,
-         s.parent_session_id,
-         s.relationship_type,
-         s.model,
-         s.cli_version,
-         s.started_at_ms,
-         s.first_prompt,
-         (
-           SELECT sc.cwd
-           FROM session_cwds sc
-           WHERE sc.session_id = s.session_id
-           ORDER BY sc.first_seen_ms ASC, sc.rowid ASC
-           LIMIT 1
-         ) AS cwd
+      `SELECT s.session_id
        FROM sessions s
        WHERE s.scanner_file_path = ?
          AND s.target = ?
@@ -142,31 +128,9 @@ export function readSessionByScannerFile(
          s.session_id ASC
        LIMIT 1`,
     )
-    .get(filePath, source) as
-    | {
-        session_id: string;
-        parent_session_id: string | null;
-        relationship_type: ParsedSession["relationshipType"] | null;
-        model: string | null;
-        cli_version: string | null;
-        started_at_ms: number | null;
-        first_prompt: string | null;
-        cwd: string | null;
-      }
-    | undefined;
+    .get(filePath, source) as { session_id: string } | undefined;
 
-  if (!row?.session_id) return undefined;
-
-  return {
-    sessionId: row.session_id,
-    parentSessionId: row.parent_session_id ?? undefined,
-    relationshipType: row.relationship_type ?? undefined,
-    model: row.model ?? undefined,
-    cwd: row.cwd ?? undefined,
-    cliVersion: row.cli_version ?? undefined,
-    startedAtMs: row.started_at_ms ?? undefined,
-    firstPrompt: row.first_prompt ?? undefined,
-  };
+  return row?.session_id ?? undefined;
 }
 
 // ── Turn insert ─────────────────────────────────────────────────────────────

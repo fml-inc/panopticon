@@ -92,7 +92,7 @@ vi.mock("./store.js", () => ({
   linkSubagentSessions: vi.fn(() => 0),
   readArchivedSize: vi.fn(() => 0),
   readFileWatermark: vi.fn(() => ({ byteOffset: 0 })),
-  readSessionByScannerFile: vi.fn(() => undefined),
+  readSessionIdByScannerFile: vi.fn(() => undefined),
   resetFileForReparse: vi.fn(),
   restoreSyncIds: vi.fn(),
   updateSessionTotals: vi.fn(),
@@ -116,7 +116,7 @@ import {
   insertMessages,
   insertTurns,
   readFileWatermark,
-  readSessionByScannerFile,
+  readSessionIdByScannerFile,
   upsertSession,
   writeFileWatermark,
 } from "./store.js";
@@ -127,7 +127,7 @@ describe("scanOnce progress", () => {
     discoverMock.mockReset();
     parseFileMock.mockReset();
     vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 0 });
-    vi.mocked(readSessionByScannerFile).mockReturnValue(undefined);
+    vi.mocked(readSessionIdByScannerFile).mockReturnValue(undefined);
   });
 
   it("reports progress across discovered files", () => {
@@ -277,7 +277,7 @@ describe("scanOnce progress", () => {
       ],
       undefined,
     );
-    expect(vi.mocked(readSessionByScannerFile)).not.toHaveBeenCalled();
+    expect(vi.mocked(readSessionIdByScannerFile)).not.toHaveBeenCalled();
     expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(
       filePath,
       42,
@@ -292,12 +292,7 @@ describe("scanOnce progress", () => {
 
     discoverMock.mockReturnValue([{ filePath }]);
     vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 7 });
-    vi.mocked(readSessionByScannerFile).mockReturnValue({
-      sessionId: "session-2",
-      cwd: "/repo",
-      cliVersion: "0.122.0",
-      startedAtMs: 1,
-    });
+    vi.mocked(readSessionIdByScannerFile).mockReturnValue("session-2");
     parseFileMock.mockReturnValue({
       turns: [],
       events: [],
@@ -307,7 +302,7 @@ describe("scanOnce progress", () => {
 
     scanOnce();
 
-    expect(vi.mocked(readSessionByScannerFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(readSessionIdByScannerFile)).toHaveBeenCalledWith(
       filePath,
       "fake",
     );
@@ -325,7 +320,7 @@ describe("scanOnce progress", () => {
 
     discoverMock.mockReturnValue([{ filePath }]);
     vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 7 });
-    vi.mocked(readSessionByScannerFile).mockReturnValue(undefined);
+    vi.mocked(readSessionIdByScannerFile).mockReturnValue(undefined);
     parseFileMock.mockReturnValue({
       turns: [],
       events: [],

@@ -31,7 +31,7 @@ import {
   linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
-  readSessionByScannerFile,
+  readSessionIdByScannerFile,
   resetFileForReparse,
   updateSessionTotals,
   upsertSession,
@@ -702,25 +702,22 @@ function rehydrateIncrementalSession(
   filePath: string,
   source: string,
 ): void {
-  const existingMeta =
-    knownSessionId != null
-      ? { sessionId: knownSessionId }
-      : readSessionByScannerFile(filePath, source);
-  if (!existingMeta?.sessionId) return;
+  const sessionId =
+    knownSessionId ?? readSessionIdByScannerFile(filePath, source);
+  if (!sessionId) return;
 
   result.meta = {
-    ...existingMeta,
     ...result.meta,
-    sessionId: result.meta?.sessionId ?? existingMeta.sessionId,
+    sessionId: result.meta?.sessionId ?? sessionId,
   };
   for (const turn of result.turns) {
-    if (!turn.sessionId) turn.sessionId = existingMeta.sessionId;
+    if (!turn.sessionId) turn.sessionId = sessionId;
   }
   for (const event of result.events) {
-    if (!event.sessionId) event.sessionId = existingMeta.sessionId;
+    if (!event.sessionId) event.sessionId = sessionId;
   }
   for (const message of result.messages) {
-    if (!message.sessionId) message.sessionId = existingMeta.sessionId;
+    if (!message.sessionId) message.sessionId = sessionId;
   }
 }
 
