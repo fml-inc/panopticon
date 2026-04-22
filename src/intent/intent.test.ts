@@ -99,6 +99,76 @@ function rebuildClaimBackedProjection(): void {
   rebuildIntentProjection({ sessionId: SESSION });
 }
 
+describe("rebuildIntentProjection", () => {
+  it("clears large session FTS sets without variadic rowid deletes", () => {
+    const db = getDb();
+    const count = 35_000;
+    const insertUnit = db.prepare(
+      `INSERT INTO intent_units
+       (intent_key, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms,
+        edit_count, landed_count, reconciled_at_ms, cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertFts = db.prepare(
+      `INSERT INTO intent_units_fts (rowid, prompt_text) VALUES (?, ?)`,
+    );
+    const seed = db.transaction(() => {
+      for (let i = 0; i < count; i++) {
+        const result = insertUnit.run(
+          `intent:${i}`,
+          SESSION,
+          `prompt ${i}`,
+          1_000 + i,
+          null,
+          0,
+          null,
+          null,
+          null,
+          null,
+        );
+        insertFts.run(Number(result.lastInsertRowid), `prompt ${i}`);
+      }
+      const other = insertUnit.run(
+        "intent:other",
+        "other-session",
+        "other prompt",
+        99_999,
+        null,
+        0,
+        null,
+        null,
+        null,
+        null,
+      );
+      insertFts.run(Number(other.lastInsertRowid), "other prompt");
+    });
+    seed();
+
+    const projection = rebuildIntentProjection({ sessionId: SESSION });
+    const sessionUnits = (
+      db
+        .prepare(`SELECT COUNT(*) AS c FROM intent_units WHERE session_id = ?`)
+        .get(SESSION) as { c: number }
+    ).c;
+    const otherUnits = (
+      db
+        .prepare(`SELECT COUNT(*) AS c FROM intent_units WHERE session_id = ?`)
+        .get("other-session") as { c: number }
+    ).c;
+    const ftsRows = (
+      db.prepare(`SELECT COUNT(*) AS c FROM intent_units_fts`).get() as {
+        c: number;
+      }
+    ).c;
+
+    expect(projection.intents).toBe(0);
+    expect(projection.edits).toBe(0);
+    expect(sessionUnits).toBe(0);
+    expect(otherUnits).toBe(1);
+    expect(ftsRows).toBe(1);
+  });
+});
+
 describe("query: intent_for_code", () => {
   it("returns chronological intents touching a file with status", () => {
     const file = path.join(scratchDir, "history.ts");

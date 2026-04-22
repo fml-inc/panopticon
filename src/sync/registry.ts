@@ -12,6 +12,30 @@ import {
 } from "./reader.js";
 import type { TableSyncDescriptor } from "./types.js";
 
+export const CORE_SESSION_TABLES = [
+  "messages",
+  "tool_calls",
+  "scanner_turns",
+  "scanner_events",
+  "hook_events",
+] as const;
+
+export const OTEL_SESSION_TABLES = [
+  "otel_logs",
+  "otel_metrics",
+  "otel_spans",
+] as const;
+
+export const DEFAULT_SESSION_TABLES = [
+  ...CORE_SESSION_TABLES,
+  ...OTEL_SESSION_TABLES,
+] as const;
+
+export const DEFAULT_NON_SESSION_TABLES = [
+  "user_config_snapshots",
+  "repo_config_snapshots",
+] as const;
+
 /**
  * Ordered list of table sync descriptors. The order matches the
  * round-robin execution order in the sync loop.

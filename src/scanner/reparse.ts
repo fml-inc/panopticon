@@ -471,6 +471,22 @@ export function reparseAll(
         log(`  hook_events_fts rebuild: ${e instanceof Error ? e.message : e}`);
       }
 
+      // Preserve sessions that only exist via hooks/OTLP. Scanner-backed
+      // sessions are rebuilt from raw files above and should remain owned by
+      // the reparse output.
+      try {
+        tempDb.exec(`
+          INSERT OR IGNORE INTO main.sessions
+          SELECT *
+          FROM old_db.sessions
+          WHERE COALESCE(old_db.sessions.has_scanner, 0) = 0
+        `);
+      } catch (e) {
+        log(
+          `  Non-scanner session preserve: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+
       // Merge session metadata from hooks/OTLP into scanner-created sessions
       const setClauses = SESSION_MERGE_COLUMNS.map(
         (col) => `${col} = old_db.sessions.${col}`,
