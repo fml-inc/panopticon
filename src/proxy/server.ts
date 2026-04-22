@@ -227,7 +227,7 @@ function forwardNonStreaming(
           timestamp_ms: startMs,
           request: {
             path: route.path,
-            headers: flattenHeaders(clientReq.headers),
+            headers: redactSensitiveHeaders(flattenHeaders(clientReq.headers)),
             body: parsedReqBody,
           },
           response: {
@@ -326,7 +326,7 @@ function forwardStreaming(
           timestamp_ms: startMs,
           request: {
             path: route.path,
-            headers: flattenHeaders(clientReq.headers),
+            headers: redactSensitiveHeaders(flattenHeaders(clientReq.headers)),
             body: parsedReqBody,
           },
           response: {
@@ -371,6 +371,28 @@ function flattenHeaders(
     }
   }
   return flat;
+}
+
+const SENSITIVE_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "anthropic-auth-token",
+  "x-amz-security-token",
+  "cookie",
+  "set-cookie",
+]);
+
+export function redactSensitiveHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const redacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    redacted[key] = SENSITIVE_HEADER_NAMES.has(key.toLowerCase())
+      ? "[REDACTED]"
+      : value;
+  }
+  return redacted;
 }
 
 function tunnelWebSocket(
@@ -467,7 +489,7 @@ function tunnelWebSocket(
             timestamp_ms: requestTimestamp,
             request: {
               path: route.path,
-              headers: flattenHeaders(req.headers),
+              headers: redactSensitiveHeaders(flattenHeaders(req.headers)),
               body: pendingRequest,
             },
             response: {

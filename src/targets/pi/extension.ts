@@ -17,10 +17,40 @@
 
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const PORT = parseInt(process.env.PANOPTICON_PORT ?? "4318", 10);
+
+// Read the panopticon bearer token (mirrors src/auth.ts readAuthToken).
+// /hooks requires it; without it events are 401'd and silently dropped.
+function readAuthToken(): string | null {
+  if (process.env.PANOPTICON_AUTH_TOKEN)
+    return process.env.PANOPTICON_AUTH_TOKEN;
+  const dataDir =
+    process.env.PANOPTICON_DATA_DIR ??
+    (process.platform === "darwin"
+      ? path.join(os.homedir(), "Library", "Application Support", "panopticon")
+      : process.platform === "win32"
+        ? path.join(
+            process.env.APPDATA ??
+              path.join(os.homedir(), "AppData", "Roaming"),
+            "panopticon",
+          )
+        : path.join(os.homedir(), ".local", "share", "panopticon"));
+  try {
+    return (
+      fs.readFileSync(path.join(dataDir, "auth-token"), "utf-8").trim() || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+const AUTH_TOKEN = readAuthToken();
 
 interface HookEvent {
   session_id: string;
@@ -36,16 +66,18 @@ interface HookEvent {
 
 function post(event: HookEvent): void {
   const body = JSON.stringify(event);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Content-Length": String(Buffer.byteLength(body)),
+  };
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
   const req = http.request(
     {
       hostname: "127.0.0.1",
       port: PORT,
       path: "/hooks",
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
+      headers,
       timeout: 5000,
     },
     (res) => res.resume(),

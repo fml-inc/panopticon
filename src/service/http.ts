@@ -1,4 +1,5 @@
 import http from "node:http";
+import { readAuthToken } from "../auth.js";
 import { config } from "../config.js";
 import type {
   ActivitySummaryResult,
@@ -25,16 +26,19 @@ function post(
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const json = JSON.stringify(body);
+    const token = readAuthToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Content-Length": String(Buffer.byteLength(json)),
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
     const req = http.request(
       {
         hostname: config.host,
         port: config.port,
         path,
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(json),
-        },
+        headers,
         timeout: timeoutMs,
       },
       (res) => {

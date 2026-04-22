@@ -13,15 +13,57 @@
  *   }
  */
 
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 
-const DEFAULT_PORT = 4318;
+// Mirrors src/config.ts defaultPort() — offset by uid to avoid multi-user
+// port collision on the OTLP standard port. Duplicated to keep this SDK
+// shim dependency-free.
+const DEFAULT_PORT_BASE = 4318;
 const PORT = parseInt(
   process.env.PANOPTICON_PORT ??
     process.env.PANOPTICON_OTLP_PORT ??
-    String(DEFAULT_PORT),
+    String(DEFAULT_PORT_BASE + ((process.getuid?.() ?? 0) % 100)),
   10,
 );
+
+// Mirrors src/config.ts defaultDataDir() — duplicated to keep dependency-free.
+function defaultDataDir(): string {
+  switch (process.platform) {
+    case "darwin":
+      return path.join(
+        os.homedir(),
+        "Library",
+        "Application Support",
+        "panopticon",
+      );
+    case "win32":
+      return path.join(
+        process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+        "panopticon",
+      );
+    default:
+      return path.join(os.homedir(), ".local", "share", "panopticon");
+  }
+}
+
+// Read the bearer token once at module load. /hooks and /api/* require it;
+// /v1/* (which this SDK uses for metrics) does not, so a missing token only
+// breaks emitHook calls — emitMetrics still works.
+const AUTH_TOKEN: string | null = (() => {
+  if (process.env.PANOPTICON_AUTH_TOKEN)
+    return process.env.PANOPTICON_AUTH_TOKEN;
+  const dataDir = process.env.PANOPTICON_DATA_DIR ?? defaultDataDir();
+  try {
+    return (
+      fs.readFileSync(path.join(dataDir, "auth-token"), "utf-8").trim() || null
+    );
+  } catch {
+    return null;
+  }
+})();
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -29,16 +71,18 @@ const PORT = parseInt(
 
 function postJSON(path: string, body: unknown): void {
   const data = JSON.stringify(body);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Content-Length": String(Buffer.byteLength(data)),
+  };
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
   const req = http.request(
     {
       hostname: "127.0.0.1",
       port: PORT,
       path,
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(data),
-      },
+      headers,
       timeout: 3000,
     },
     (res) => {
