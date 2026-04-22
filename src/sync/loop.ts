@@ -40,6 +40,7 @@ const WM_COLUMNS = {
 type SessionTableName = keyof typeof WM_COLUMNS;
 
 type PendingSessionRow = {
+  row_id: number;
   session_id: string;
   sync_seq: number;
   synced_seq: number;
@@ -171,6 +172,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let syncing = false;
   let stopping = false;
+  const pendingSessionCursorByTarget = new Map<string, number>();
 
   function formatLog(message: string): string {
     return `${loopPrefix}${message}`;
@@ -273,42 +275,19 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
   // ── Phase 2: Sync dependent data (per-session, gated by confirmed) ───────
 
-  function readPendingSessions(targetName: string): PendingSessionRow[] {
-    if (sessionTables.length === 0) return [];
-
-    const db = getDb();
-    const whereClause =
-      sessionPendingMode === "watermark-gap"
-        ? watermarkGapPredicate
-          ? `AND (${watermarkGapPredicate})`
-          : "AND 0"
-        : "AND sync_seq > synced_seq";
-
-    return db
-      .prepare(
-        `SELECT session_id, sync_seq, synced_seq,
-                wm_messages, wm_tool_calls, wm_scanner_turns,
-                wm_scanner_events, wm_hook_events, wm_otel_logs,
-                wm_otel_metrics, wm_otel_spans
-         FROM target_session_sync
-         WHERE target = ? AND confirmed = 1
-           ${whereClause}
-         ORDER BY rowid
-         LIMIT ?`,
-      )
-      .all(targetName, maxSessionsPerTick) as PendingSessionRow[];
+  function buildPendingSessionWhereClause(): string {
+    return sessionPendingMode === "watermark-gap"
+      ? watermarkGapPredicate
+        ? `AND (${watermarkGapPredicate})`
+        : "AND 0"
+      : "AND sync_seq > synced_seq";
   }
 
   function hasRemainingPendingSessions(targetName: string): boolean {
     if (sessionTables.length === 0) return false;
 
     const db = getDb();
-    const whereClause =
-      sessionPendingMode === "watermark-gap"
-        ? watermarkGapPredicate
-          ? `AND (${watermarkGapPredicate})`
-          : "AND 0"
-        : "AND sync_seq > synced_seq";
+    const whereClause = buildPendingSessionWhereClause();
     const row = db
       .prepare(
         `SELECT COUNT(*) as cnt
@@ -320,32 +299,98 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     return row.cnt > 0;
   }
 
+  function readPendingSessionsPage(
+    targetName: string,
+    whereClause: string,
+    rowPredicate: string,
+    rowParam: number,
+    limit: number,
+  ): PendingSessionRow[] {
+    if (limit <= 0) return [];
+
+    const db = getDb();
+    return db
+      .prepare(
+        `SELECT rowid AS row_id, session_id, sync_seq, synced_seq,
+                wm_messages, wm_tool_calls, wm_scanner_turns,
+                wm_scanner_events, wm_hook_events, wm_otel_logs,
+                wm_otel_metrics, wm_otel_spans
+         FROM target_session_sync
+         WHERE target = ? AND confirmed = 1
+           ${whereClause}
+           AND ${rowPredicate}
+         ORDER BY rowid
+         LIMIT ?`,
+      )
+      .all(targetName, rowParam, limit) as PendingSessionRow[];
+  }
+
+  function readPendingSessions(targetName: string): PendingSessionRow[] {
+    if (sessionTables.length === 0) return [];
+
+    const whereClause = buildPendingSessionWhereClause();
+    const cursor = pendingSessionCursorByTarget.get(targetName) ?? 0;
+    const firstPage = readPendingSessionsPage(
+      targetName,
+      whereClause,
+      "rowid > ?",
+      cursor,
+      maxSessionsPerTick,
+    );
+    const wrappedPage =
+      firstPage.length < maxSessionsPerTick && cursor > 0
+        ? readPendingSessionsPage(
+            targetName,
+            whereClause,
+            "rowid <= ?",
+            cursor,
+            maxSessionsPerTick - firstPage.length,
+          )
+        : [];
+    const pending = [...firstPage, ...wrappedPage];
+
+    if (pending.length === 0) {
+      pendingSessionCursorByTarget.set(targetName, 0);
+      return pending;
+    }
+
+    pendingSessionCursorByTarget.set(
+      targetName,
+      pending[pending.length - 1].row_id,
+    );
+    return pending;
+  }
+
   function writeSessionProgress(
     sessionId: string,
     targetName: string,
-    watermarks: Record<SessionTableName, number>,
-    syncedSeq: number,
+    watermarks: Partial<Record<SessionTableName, number>>,
+    expectedSyncSeq: number,
+    syncedSeq?: number,
   ): void {
+    const assignments: string[] = [];
+    const params: Array<number | string> = [];
+
+    for (const [table, watermark] of Object.entries(watermarks) as Array<
+      [SessionTableName, number]
+    >) {
+      assignments.push(`${WM_COLUMNS[table]} = ?`);
+      params.push(watermark);
+    }
+
+    if (syncedSeq !== undefined) {
+      assignments.push("synced_seq = ?");
+      params.push(syncedSeq);
+    }
+
+    if (assignments.length === 0) return;
+
     const db = getDb();
     db.prepare(
       `UPDATE target_session_sync
-       SET wm_messages = ?, wm_tool_calls = ?, wm_scanner_turns = ?,
-           wm_scanner_events = ?, wm_hook_events = ?, wm_otel_logs = ?,
-           wm_otel_metrics = ?, wm_otel_spans = ?, synced_seq = ?
-       WHERE session_id = ? AND target = ?`,
-    ).run(
-      watermarks.messages,
-      watermarks.tool_calls,
-      watermarks.scanner_turns,
-      watermarks.scanner_events,
-      watermarks.hook_events,
-      watermarks.otel_logs,
-      watermarks.otel_metrics,
-      watermarks.otel_spans,
-      syncedSeq,
-      sessionId,
-      targetName,
-    );
+       SET ${assignments.join(", ")}
+       WHERE session_id = ? AND target = ? AND sync_seq = ?`,
+    ).run(...params, sessionId, targetName, expectedSyncSeq);
   }
 
   async function syncSessionData(target: SyncTarget): Promise<boolean> {
@@ -418,12 +463,16 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       const nextSyncedSeq =
         sessionPendingMode === "sync-seq" && fullyDrained
           ? entry.sync_seq
-          : entry.synced_seq;
+          : undefined;
+      const ownedWatermarks = Object.fromEntries(
+        sessionTables.map((table) => [table, watermarks[table]]),
+      ) as Partial<Record<SessionTableName, number>>;
 
       writeSessionProgress(
         entry.session_id,
         target.name,
-        watermarks,
+        ownedWatermarks,
+        entry.sync_seq,
         nextSyncedSeq,
       );
 
