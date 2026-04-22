@@ -1485,6 +1485,124 @@ describe("scanner-only landed reconciliation", () => {
     ]);
   });
 
+  it("falls back to session repository for hook prompt claims during rebuild", () => {
+    const sessionId = "hook-prompt-repo-fallback-rebuild";
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "use session repo fallback",
+      timestampMs: 1000,
+      uuid: "hook-prompt-repo-fallback-rebuild-user",
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      cwd: scratchDir,
+      payload: { prompt: "use session repo fallback" },
+    });
+
+    rebuildIntentClaimsFromHooks({ sessionId });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT predicate, value_text
+         FROM claims
+         WHERE predicate IN ('intent/repository', 'intent/in-repository', 'repository/name')
+         ORDER BY predicate ASC, value_text ASC`,
+      )
+      .all() as Array<{ predicate: string; value_text: string | null }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "intent/in-repository",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "intent/repository",
+        value_text: scratchDir,
+      },
+      {
+        predicate: "repository/name",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
+  it("falls back to session repository for live hook prompt claims", () => {
+    const sessionId = "hook-prompt-repo-fallback-live";
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    const promptId = insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      cwd: scratchDir,
+      payload: { prompt: "live session repo fallback" },
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "live session repo fallback",
+      timestampMs: 1000,
+      uuid: "hook-prompt-repo-fallback-live-user",
+    });
+
+    recordIntentClaimsFromHookEvent({
+      sessionId,
+      eventType: "UserPromptSubmit",
+      hookEventId: promptId,
+      timestampMs: 1000,
+      cwd: scratchDir,
+      payload: { prompt: "live session repo fallback" },
+    });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT predicate, value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE predicate IN ('intent/repository', 'intent/in-repository', 'repository/name')
+         ORDER BY predicate ASC, value_text ASC`,
+      )
+      .all() as Array<{ predicate: string; value_text: string | null }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "intent/in-repository",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "intent/repository",
+        value_text: scratchDir,
+      },
+      {
+        predicate: "repository/name",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
   it("stores normalized path rows for multi-file apply_patch evidence", () => {
     const sessionId = "scanner-multi-file-tool-evidence";
     const fileA = path.join(scratchDir, "scanner-multi-file-a.ts");
