@@ -33,6 +33,7 @@ import {
   readFileWatermark,
   readSessionIdByScannerFile,
   resetFileForReparse,
+  shouldResetWatermark,
   updateSessionTotals,
   upsertSession,
   writeArchivedSize,
@@ -330,6 +331,30 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         let reparsedFromStart = false;
         const watermark = readFileWatermark(filePath);
         let offset = watermark.byteOffset;
+
+        // Detect file rotation/truncation/recreation: if the file is
+        // smaller than the recorded watermark, the offset is meaningless.
+        // Reset and reparse from byte 0. statSync may throw if the file
+        // is gone — let parseFile handle that case below.
+        if (offset > 0) {
+          let currentSize: number | null = null;
+          try {
+            currentSize = fs.statSync(filePath).size;
+          } catch {
+            currentSize = null;
+          }
+          if (
+            currentSize !== null &&
+            shouldResetWatermark(currentSize, offset)
+          ) {
+            log.scanner.warn(
+              `${filePath}: file size ${currentSize} < watermark ${offset}, resetting (truncated/recreated)`,
+            );
+            resetFileForReparse(filePath, watermark.sessionId);
+            offset = 0;
+          }
+        }
+
         let parseStartedAt = performance.now();
         let result = target.scanner.parseFile(filePath, offset);
         fileParseMs += performance.now() - parseStartedAt;

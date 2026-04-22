@@ -308,6 +308,28 @@ export function updateSessionTotals(sessionId: string): void {
 
 // ── File watermarks ─────────────────────────────────────────────────────────
 
+/**
+ * Returns true when the recorded watermark offset is past the file's
+ * current end — i.e. the file was truncated, replaced, or recreated since
+ * the last scan. The caller should reset the file's scanner state and
+ * re-read from byte 0; without this the next read would skip events
+ * (best case) or read garbage offsets (worst case).
+ *
+ * Pure function so tests don't need fs/db mocks — the loop stats the file
+ * and passes the size in.
+ *
+ * Same-size-different-content (replace with content of the exact same
+ * length) is not detected; an inode/mtime check would catch that but
+ * requires schema changes. The size check covers truncation and
+ * replacement-with-smaller-content, which is the common rotation pattern.
+ */
+export function shouldResetWatermark(
+  fileSize: number,
+  watermarkOffset: number,
+): boolean {
+  return watermarkOffset > 0 && fileSize < watermarkOffset;
+}
+
 export function readFileWatermark(filePath: string): FileWatermarkState {
   const db = getDb();
   const row = db
