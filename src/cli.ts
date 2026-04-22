@@ -214,6 +214,16 @@ function describeScannerPhase(phase: string): string {
       return "finalizing reparse";
     case "reparse_error":
       return "reparse error";
+    case "claims_rebuild_init":
+      return "initializing claims rebuild";
+    case "claims_rebuild_claims":
+      return "rebuilding claims";
+    case "claims_rebuild_projection":
+      return "rebuilding intent projection";
+    case "claims_rebuild_finalize":
+      return "finalizing claims rebuild";
+    case "claims_rebuild_error":
+      return "claims rebuild error";
     default:
       return phase;
   }
