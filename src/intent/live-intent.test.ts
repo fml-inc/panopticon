@@ -1240,6 +1240,369 @@ describe("scanner-only landed reconciliation", () => {
     });
   });
 
+  it("emits normalized repository and file subject claims for scanner-backed edits", () => {
+    const sessionId = "scanner-normalized-subjects";
+    const filePath = path.join(scratchDir, "scanner-normalized-subjects.ts");
+    fs.writeFileSync(filePath, "export const value = 1;\n");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+      hasScanner: true,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "patch the file",
+      timestampMs: 1000,
+      uuid: "scanner-normalized-subjects-user",
+    });
+    const assistant = insertAssistantMessage({
+      sessionId,
+      ordinal: 2,
+      timestampMs: 1100,
+    });
+    insertToolCall({
+      messageId: assistant,
+      sessionId,
+      toolName: "Edit",
+      inputJson: {
+        file_path: filePath,
+        old_string: "export const value = 0;\n",
+        new_string: "export const value = 1;\n",
+      },
+    });
+
+    rebuildIntentClaimsFromScanner({ sessionId });
+    rebuildActiveClaims();
+
+    const rows = getDb()
+      .prepare(
+        `SELECT c.predicate, c.subject_kind, c.value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.predicate IN (
+           'repository/name',
+           'file/path',
+           'file/in-repository',
+           'intent/in-repository',
+           'edit/touches-file'
+         )
+         ORDER BY c.predicate ASC, c.subject_kind ASC, c.value_text ASC`,
+      )
+      .all() as Array<{
+      predicate: string;
+      subject_kind: string;
+      value_text: string | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "edit/touches-file",
+        subject_kind: "edit",
+        value_text: `file:${scratchDir}:${filePath}`,
+      },
+      {
+        predicate: "file/in-repository",
+        subject_kind: "file",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "file/path",
+        subject_kind: "file",
+        value_text: filePath,
+      },
+      {
+        predicate: "intent/in-repository",
+        subject_kind: "intent",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "repository/name",
+        subject_kind: "repository",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
+  it("preserves per-session normalized repo/file observations in full scanner rebuilds", () => {
+    const filePath = path.join(scratchDir, "scanner-shared-normalized-file.ts");
+    fs.writeFileSync(filePath, "export const shared = 1;\n");
+
+    for (const sessionId of ["scanner-shared-1", "scanner-shared-2"]) {
+      insertSession({
+        sessionId,
+        cwd: scratchDir,
+        endedAtMs: 2000,
+        hasScanner: true,
+      });
+      insertSessionRepository({
+        sessionId,
+        repository: scratchDir,
+        firstSeenMs: 900,
+      });
+      insertUserMessage({
+        sessionId,
+        ordinal: 1,
+        content: `patch ${sessionId}`,
+        timestampMs: 1000,
+        uuid: `${sessionId}-user`,
+      });
+      const assistant = insertAssistantMessage({
+        sessionId,
+        ordinal: 2,
+        timestampMs: 1100,
+      });
+      insertToolCall({
+        messageId: assistant,
+        sessionId,
+        toolName: "Edit",
+        inputJson: {
+          file_path: filePath,
+          old_string: "export const shared = 0;\n",
+          new_string: "export const shared = 1;\n",
+        },
+      });
+    }
+
+    rebuildIntentClaimsFromScanner();
+
+    const rows = getDb()
+      .prepare(
+        `SELECT predicate, COUNT(*) AS count
+         FROM claims
+         WHERE predicate IN ('repository/name', 'file/path')
+         GROUP BY predicate
+         ORDER BY predicate ASC`,
+      )
+      .all() as Array<{ predicate: string; count: number }>;
+
+    expect(rows).toEqual([
+      { predicate: "file/path", count: 2 },
+      { predicate: "repository/name", count: 2 },
+    ]);
+  });
+
+  it("preserves per-event normalized repo/file observations in full hook rebuilds", () => {
+    const sessionId = "hook-shared-normalized";
+    const filePath = path.join(scratchDir, "hook-shared-normalized-file.ts");
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 3000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "first hook prompt",
+      timestampMs: 1000,
+      uuid: "hook-shared-1",
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 2,
+      content: "second hook prompt",
+      timestampMs: 2000,
+      uuid: "hook-shared-2",
+    });
+
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { prompt: "first hook prompt" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 1100,
+      cwd: scratchDir,
+      repository: scratchDir,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: filePath,
+          old_string: "before",
+          new_string: "after one",
+        },
+      },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 2000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { prompt: "second hook prompt" },
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "PostToolUse",
+      timestamp_ms: 2100,
+      cwd: scratchDir,
+      repository: scratchDir,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: filePath,
+          old_string: "after one",
+          new_string: "after two",
+        },
+      },
+    });
+
+    rebuildIntentClaimsFromHooks();
+
+    const rows = getDb()
+      .prepare(
+        `SELECT predicate, COUNT(*) AS count
+         FROM claims
+         WHERE predicate IN ('repository/name', 'file/path')
+         GROUP BY predicate
+         ORDER BY predicate ASC`,
+      )
+      .all() as Array<{ predicate: string; count: number }>;
+
+    expect(rows).toEqual([
+      { predicate: "file/path", count: 2 },
+      { predicate: "repository/name", count: 4 },
+    ]);
+  });
+
+  it("falls back to session repository for hook prompt claims during rebuild", () => {
+    const sessionId = "hook-prompt-repo-fallback-rebuild";
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "use session repo fallback",
+      timestampMs: 1000,
+      uuid: "hook-prompt-repo-fallback-rebuild-user",
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      cwd: scratchDir,
+      payload: { prompt: "use session repo fallback" },
+    });
+
+    rebuildIntentClaimsFromHooks({ sessionId });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT predicate, value_text
+         FROM claims
+         WHERE predicate IN ('intent/repository', 'intent/in-repository', 'repository/name')
+         ORDER BY predicate ASC, value_text ASC`,
+      )
+      .all() as Array<{ predicate: string; value_text: string | null }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "intent/in-repository",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "intent/repository",
+        value_text: scratchDir,
+      },
+      {
+        predicate: "repository/name",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
+  it("falls back to session repository for live hook prompt claims", () => {
+    const sessionId = "hook-prompt-repo-fallback-live";
+
+    insertSession({
+      sessionId,
+      cwd: scratchDir,
+      endedAtMs: 2000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    const promptId = insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      cwd: scratchDir,
+      payload: { prompt: "live session repo fallback" },
+    });
+    insertUserMessage({
+      sessionId,
+      ordinal: 1,
+      content: "live session repo fallback",
+      timestampMs: 1000,
+      uuid: "hook-prompt-repo-fallback-live-user",
+    });
+
+    recordIntentClaimsFromHookEvent({
+      sessionId,
+      eventType: "UserPromptSubmit",
+      hookEventId: promptId,
+      timestampMs: 1000,
+      cwd: scratchDir,
+      payload: { prompt: "live session repo fallback" },
+    });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT predicate, value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE predicate IN ('intent/repository', 'intent/in-repository', 'repository/name')
+         ORDER BY predicate ASC, value_text ASC`,
+      )
+      .all() as Array<{ predicate: string; value_text: string | null }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "intent/in-repository",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "intent/repository",
+        value_text: scratchDir,
+      },
+      {
+        predicate: "repository/name",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
   it("stores normalized path rows for multi-file apply_patch evidence", () => {
     const sessionId = "scanner-multi-file-tool-evidence";
     const fileA = path.join(scratchDir, "scanner-multi-file-a.ts");

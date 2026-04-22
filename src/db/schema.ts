@@ -1,6 +1,16 @@
 import fs from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { config } from "../config.js";
+import {
+  ALL_DATA_COMPONENTS,
+  CLAIM_DATA_COMPONENTS,
+  type DataComponent,
+  ensureDataVersionsInitialized,
+  markDataComponentsCurrentInDb,
+  RAW_SCANNER_COMPONENT,
+  staleDataComponentsInDb,
+  targetDataVersion,
+} from "./data-versions.js";
 import { Database } from "./driver.js";
 import { runMigrations } from "./migrations.js";
 
@@ -295,6 +305,15 @@ CREATE TABLE IF NOT EXISTS repo_config_snapshots (
 
 -- ── Claims layer ────────────────────────────────────────────────────────────
 
+CREATE TABLE IF NOT EXISTS data_versions (
+  component TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_data_versions_updated
+  ON data_versions(updated_at_ms);
+
 CREATE TABLE IF NOT EXISTS claims (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   observation_key TEXT NOT NULL UNIQUE,
@@ -312,7 +331,7 @@ CREATE TABLE IF NOT EXISTS claims (
   observed_at_ms INTEGER NOT NULL,
   asserted_at_ms INTEGER NOT NULL,
   asserter TEXT NOT NULL,
-  asserter_version TEXT NOT NULL,
+  asserter_version INTEGER NOT NULL,
   machine TEXT NOT NULL DEFAULT 'local',
   sync_id TEXT DEFAULT (hex(randomblob(8)))
 );
@@ -362,7 +381,7 @@ CREATE TABLE IF NOT EXISTS ingestion_cursors (
 CREATE TABLE IF NOT EXISTS claim_rebuild_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   asserter TEXT NOT NULL,
-  asserter_version TEXT NOT NULL,
+  asserter_version INTEGER NOT NULL,
   started_at_ms INTEGER NOT NULL,
   finished_at_ms INTEGER,
   rows_emitted INTEGER NOT NULL DEFAULT 0,
@@ -629,17 +648,22 @@ CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_file ON evidence_ref_paths(fil
 /**
  * Scanner data version. Increment when parser logic changes in ways that
  * affect stored data (new fields extracted, content formatting changes,
- * fork detection improvements, etc.). On startup, if the DB's user_version
- * is lower than this, a full atomic reparse is triggered automatically.
+ * fork detection improvements, etc.). The canonical value lives in the
+ * data_versions registry under scanner.raw.
  */
-export const SCANNER_DATA_VERSION = 3;
+export const SCANNER_DATA_VERSION = targetDataVersion(RAW_SCANNER_COMPONENT);
 
 // ---------------------------------------------------------------------------
 // Database initialization
 // ---------------------------------------------------------------------------
 
 let _db: Database | null = null;
-let _needsResync = false;
+let _staleDataComponents = new Set<DataComponent>();
+
+function refreshDataVersionState(db: Database): void {
+  ensureDataVersionsInitialized(db);
+  _staleDataComponents = new Set(staleDataComponentsInDb(db));
+}
 
 function registerCompressionFunctions(db: Database): void {
   db.function("decompress", (blob: unknown) =>
@@ -675,15 +699,7 @@ export function getDb(): Database {
   _db.exec(SCHEMA_SQL);
   runMigrations(_db);
   _db.exec(POST_MIGRATION_INDEX_SQL);
-
-  // Check data version for resync
-  const currentVersion = (_db.pragma("user_version", { simple: true }) ??
-    0) as number;
-  if (currentVersion < SCANNER_DATA_VERSION) {
-    _needsResync = true;
-  } else {
-    _needsResync = false;
-  }
+  refreshDataVersionState(_db);
 
   return _db;
 }
@@ -693,14 +709,51 @@ export function needsResync(): boolean {
   if (!_db) {
     getDb();
   }
-  return _needsResync;
+  return _staleDataComponents.size > 0;
+}
+
+export function staleDataComponents(): DataComponent[] {
+  if (!_db) {
+    getDb();
+  }
+  return [..._staleDataComponents];
+}
+
+export function needsRawDataResync(): boolean {
+  if (!_db) {
+    getDb();
+  }
+  return _staleDataComponents.has(RAW_SCANNER_COMPONENT);
+}
+
+export function needsClaimsRebuild(): boolean {
+  if (!_db) {
+    getDb();
+  }
+  return CLAIM_DATA_COMPONENTS.some((component) =>
+    _staleDataComponents.has(component),
+  );
+}
+
+export function markDataComponentsCurrent(
+  components: readonly DataComponent[],
+): void {
+  const db = getDb();
+  markDataComponentsCurrentInDb(db, components);
+  refreshDataVersionState(db);
 }
 
 /** Mark resync as complete and stamp the current data version. */
 export function markResyncComplete(): void {
-  _needsResync = false;
-  const db = getDb();
-  db.pragma(`user_version = ${SCANNER_DATA_VERSION}`);
+  markDataComponentsCurrent([RAW_SCANNER_COMPONENT]);
+}
+
+export function markClaimsRebuildComplete(): void {
+  markDataComponentsCurrent(CLAIM_DATA_COMPONENTS);
+}
+
+export function markAllDataRebuildsComplete(): void {
+  markDataComponentsCurrent(ALL_DATA_COMPONENTS);
 }
 
 export function closeDb(): void {
@@ -708,4 +761,5 @@ export function closeDb(): void {
     _db.close();
     _db = null;
   }
+  _staleDataComponents = new Set<DataComponent>();
 }

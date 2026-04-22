@@ -2,7 +2,9 @@ import { gunzipSync } from "node:zlib";
 import { hookEventEvidenceRef } from "../../claims/evidence-refs.js";
 import {
   editKey,
+  fileKey,
   intentKey,
+  repositoryKey,
   semanticEditIdentity,
   sha256Hex,
 } from "../../claims/keys.js";
@@ -11,6 +13,10 @@ import {
   deleteClaimsByAsserter,
   deleteClaimsByAsserterForSession,
 } from "../../claims/store.js";
+import {
+  INTENT_FROM_HOOKS_COMPONENT,
+  targetDataVersion,
+} from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
 import { resolveFilePathFromCwd } from "../../paths.js";
 import {
@@ -19,8 +25,8 @@ import {
   parseEditEntries as parseToolEditEntries,
 } from "../editParsing.js";
 
-const ASSERTER = "intent.from_hooks";
-const VERSION = "1";
+const ASSERTER = INTENT_FROM_HOOKS_COMPONENT;
+const VERSION = targetDataVersion(ASSERTER);
 const SNIPPET_LEN = 200;
 
 interface HookPromptRow {
@@ -124,11 +130,12 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             canonicalize: false,
           });
         }
+        const seenRepositorySubjects = new Set<string>();
         assertHookIntentClaims({
           subject,
           sessionId,
           promptText: event.user_prompt,
-          repository: event.repository,
+          repository,
           cwd: event.cwd,
           timestampMs: event.timestamp_ms,
           evidenceRef: hookEventEvidenceRef({
@@ -140,6 +147,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             repository,
           }),
           canonicalize: false,
+          seenRepositorySubjects,
         });
         lastSubject = subject;
         currentClosed = false;
@@ -169,6 +177,8 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           editEntries,
           sessionCwd,
         );
+        const seenRepositorySubjects = new Set<string>();
+        const seenFileSubjects = new Set<string>();
         for (const entry of editEntries) {
           const resolvedFilePath = resolveFilePath(entry.filePath, sessionCwd);
           const semanticIdentity = semanticEditIdentity({
@@ -191,6 +201,8 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             semanticOccurrence,
             evidenceFilePaths,
             canonicalize: false,
+            seenRepositorySubjects,
+            seenFileSubjects,
           });
           semanticOccurrences.set(semanticKey, semanticOccurrence + 1);
           edits += 1;
@@ -281,6 +293,7 @@ export function recordIntentClaimsFromHookEvent(args: {
     repository,
   });
   if (args.eventType === "UserPromptSubmit") {
+    const seenRepositorySubjects = new Set<string>();
     const subject = resolveIntentSubject({
       sessionId: args.sessionId,
       users: currentUser,
@@ -308,10 +321,11 @@ export function recordIntentClaimsFromHookEvent(args: {
       subject,
       sessionId: args.sessionId,
       promptText: readPromptText(args.payload),
-      repository: args.repository ?? null,
+      repository,
       cwd: args.cwd ?? null,
       timestampMs: args.timestampMs,
       evidenceRef: canonicalEvidenceRef,
+      seenRepositorySubjects,
     });
     return;
   }
@@ -324,6 +338,8 @@ export function recordIntentClaimsFromHookEvent(args: {
     searchStart: 0,
   }).subject;
   if (args.eventType === "PostToolUse") {
+    const seenRepositorySubjects = new Set<string>();
+    const seenFileSubjects = new Set<string>();
     const toolName =
       typeof args.payload.tool_name === "string"
         ? args.payload.tool_name
@@ -358,6 +374,8 @@ export function recordIntentClaimsFromHookEvent(args: {
         timestampMs: args.timestampMs,
         semanticOccurrence,
         evidenceFilePaths,
+        seenRepositorySubjects,
+        seenFileSubjects,
       });
     }
     return;
@@ -380,6 +398,7 @@ function assertHookIntentClaims(args: {
   timestampMs: number;
   evidenceRef: ReturnType<typeof hookEventEvidenceRef>;
   canonicalize?: boolean;
+  seenRepositorySubjects?: Set<string>;
 }): void {
   const evidence = [{ ref: args.evidenceRef, role: "origin" as const }];
   if (args.promptText && args.promptText.trim() !== "") {
@@ -433,6 +452,14 @@ function assertHookIntentClaims(args: {
       evidence,
       canonicalize: args.canonicalize,
     });
+    assertNormalizedRepositoryClaims({
+      repository: args.repository,
+      intentSubject: args.subject,
+      observedAtMs: args.timestampMs,
+      evidence,
+      canonicalize: args.canonicalize,
+      seenRepositorySubjects: args.seenRepositorySubjects,
+    });
   }
   if (args.cwd) {
     assertClaim({
@@ -462,6 +489,8 @@ function assertHookEditClaims(args: {
   semanticOccurrence: number;
   evidenceFilePaths: string[];
   canonicalize?: boolean;
+  seenRepositorySubjects?: Set<string>;
+  seenFileSubjects?: Set<string>;
 }): void {
   const resolvedFilePath = resolveFilePath(
     args.entry.filePath,
@@ -517,6 +546,18 @@ function assertHookEditClaims(args: {
     evidence,
     canonicalize: args.canonicalize,
   });
+  if (args.repository) {
+    assertNormalizedFileClaims({
+      repository: args.repository,
+      filePath: resolvedFilePath,
+      editSubject: subject,
+      observedAtMs: args.timestampMs,
+      evidence,
+      canonicalize: args.canonicalize,
+      seenRepositorySubjects: args.seenRepositorySubjects,
+      seenFileSubjects: args.seenFileSubjects,
+    });
+  }
   assertClaim({
     predicate: "edit/tool-name",
     subjectKind: "edit",
@@ -734,4 +775,105 @@ function resolveHookEventSyncId(hookEventId: number): string {
     throw new Error(`Hook event ${hookEventId} is missing sync_id`);
   }
   return row.sync_id;
+}
+
+function assertNormalizedRepositoryClaims(args: {
+  repository: string;
+  intentSubject?: string;
+  observedAtMs: number;
+  evidence: Parameters<typeof assertClaim>[0]["evidence"];
+  canonicalize?: boolean;
+  seenRepositorySubjects?: Set<string>;
+}): string {
+  const repositorySubject = repositoryKey(args.repository);
+  if (!args.seenRepositorySubjects?.has(repositorySubject)) {
+    assertClaim({
+      predicate: "repository/name",
+      subjectKind: "repository",
+      subject: repositorySubject,
+      value: args.repository,
+      observedAtMs: args.observedAtMs,
+      sourceType: "hook",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+      canonicalize: args.canonicalize,
+    });
+    args.seenRepositorySubjects?.add(repositorySubject);
+  }
+  if (args.intentSubject) {
+    assertClaim({
+      predicate: "intent/in-repository",
+      subjectKind: "intent",
+      subject: args.intentSubject,
+      value: repositorySubject,
+      observedAtMs: args.observedAtMs,
+      sourceType: "hook",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+      canonicalize: args.canonicalize,
+    });
+  }
+  return repositorySubject;
+}
+
+function assertNormalizedFileClaims(args: {
+  repository: string;
+  filePath: string;
+  editSubject: string;
+  observedAtMs: number;
+  evidence: Parameters<typeof assertClaim>[0]["evidence"];
+  canonicalize?: boolean;
+  seenRepositorySubjects?: Set<string>;
+  seenFileSubjects?: Set<string>;
+}): string {
+  const repositorySubject = assertNormalizedRepositoryClaims({
+    repository: args.repository,
+    observedAtMs: args.observedAtMs,
+    evidence: args.evidence,
+    canonicalize: args.canonicalize,
+    seenRepositorySubjects: args.seenRepositorySubjects,
+  });
+  const fileSubject = fileKey(args.repository, args.filePath);
+  if (!args.seenFileSubjects?.has(fileSubject)) {
+    assertClaim({
+      predicate: "file/path",
+      subjectKind: "file",
+      subject: fileSubject,
+      value: args.filePath,
+      observedAtMs: args.observedAtMs,
+      sourceType: "hook",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+      canonicalize: args.canonicalize,
+    });
+    assertClaim({
+      predicate: "file/in-repository",
+      subjectKind: "file",
+      subject: fileSubject,
+      value: repositorySubject,
+      observedAtMs: args.observedAtMs,
+      sourceType: "hook",
+      asserter: ASSERTER,
+      asserterVersion: VERSION,
+      evidence: args.evidence,
+      canonicalize: args.canonicalize,
+    });
+    args.seenFileSubjects?.add(fileSubject);
+  }
+  assertClaim({
+    predicate: "edit/touches-file",
+    subjectKind: "edit",
+    subject: args.editSubject,
+    value: fileSubject,
+    observedAtMs: args.observedAtMs,
+    sourceType: "hook",
+    asserter: ASSERTER,
+    asserterVersion: VERSION,
+    evidence: args.evidence,
+    canonicalize: args.canonicalize,
+  });
+  return fileSubject;
 }

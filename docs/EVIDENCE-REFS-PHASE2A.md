@@ -178,11 +178,16 @@ Implemented here:
 - migrations treat claims/projection state as disposable derived data and force
   atomic reparse from raw scanner files plus preserved `hook_events` / `otel_*`
   rows.
+- derived-state freshness now uses `data_versions(component, version, updated_at_ms)`
+  instead of `PRAGMA user_version`, which allows startup to distinguish raw
+  scanner reparses from claims-only rebuilds.
 - active claim producers now emit typed refs for:
   - `message`
   - `tool_call`
   - `hook_event`
   - `file_snapshot`
+- `claims.asserter_version` and `claim_rebuild_runs.asserter_version` are now
+  integer component versions sourced from the central version registry.
 
 Not fully delivered yet:
 
@@ -260,12 +265,13 @@ So the recommended order is:
 3. Treat `claims`, `claim_evidence`, `active_claims`, `intent_*`,
    `session_summaries`, and `code_provenance` as disposable derived state for
    this cutover.
-4. Bump the scanner data version so startup runs atomic reparse:
+4. Mark the relevant `data_versions` components stale so startup runs the
+   required rebuild:
    - rescan session files into a fresh DB
    - copy raw `hook_events` / `otel_*` rows forward
    - derive claims, intent projection, and evidence refs fresh from raw data
-   - reset `PRAGMA user_version` during migration so upgrade always triggers
-     the reparse even on DBs already stamped by newer local builds
+   - populated DBs that predate `data_versions` are treated as stale and
+     rebuilt on first startup with the new code
 5. Update claim writers to create/read `evidence_refs`.
 6. Start moving integrity checks and provenance resolvers to `evidence_refs`.
    Finishing the move from key-prefix dispatch to `kind + locator` is follow-up

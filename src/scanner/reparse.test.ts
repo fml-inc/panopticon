@@ -61,13 +61,7 @@ vi.mock("../targets/registry.js", () => ({
 import { config } from "../config.js";
 import { Database } from "../db/driver.js";
 import { MIGRATIONS } from "../db/migrations.js";
-import {
-  closeDb,
-  getDb,
-  needsResync,
-  SCANNER_DATA_VERSION,
-  SCHEMA_SQL,
-} from "../db/schema.js";
+import { closeDb, getDb, needsResync, SCHEMA_SQL } from "../db/schema.js";
 import { insertHookEvent, upsertSession } from "../db/store.js";
 import { buildMessageSyncId } from "../db/sync-ids.js";
 import { createDirectPanopticonService } from "../service/direct.js";
@@ -310,7 +304,7 @@ function seedPreUpgradeDb(args: {
       1,
       1,
       "test",
-      "1",
+      1,
     );
   const claimId = (
     raw.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
@@ -359,7 +353,6 @@ function seedPreUpgradeDb(args: {
      VALUES (?, ?, ?, ?)`,
     )
     .run("stale-edit", intentUnitId, args.sessionId, "/stale/path.ts");
-  raw.pragma(`user_version = ${SCANNER_DATA_VERSION}`);
   raw.close();
 }
 

@@ -1,3 +1,5 @@
+export type { ClaimsRebuildResult } from "./claims-rebuild.js";
+export { rebuildClaimsDerivedState } from "./claims-rebuild.js";
 export { createScannerLoop, scanOnce } from "./loop.js";
 export type { ReparseResult } from "./reparse.js";
 export { reparseAll } from "./reparse.js";

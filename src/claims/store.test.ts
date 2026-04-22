@@ -34,7 +34,7 @@ import {
   toolCallEvidenceRef,
 } from "./evidence-refs.js";
 import { runIntegrityCheck } from "./integrity.js";
-import { assertClaim } from "./store.js";
+import { assertClaim, deleteClaimsByAsserterForSession } from "./store.js";
 
 beforeAll(() => {
   getDb();
@@ -63,7 +63,7 @@ describe("assertClaim", () => {
       observedAtMs: 1000,
       sourceType: "hook" as const,
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: hookEventEvidenceRef({
@@ -105,7 +105,7 @@ describe("assertClaim", () => {
       observedAtMs: 1000,
       sourceType: "hook",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: hookEventEvidenceRef({
@@ -126,7 +126,7 @@ describe("assertClaim", () => {
       observedAtMs: 999,
       sourceType: "scanner",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: messageEvidenceRef({
@@ -164,7 +164,7 @@ describe("assertClaim", () => {
       observedAtMs: 1000,
       sourceType: "git_disk",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: fileSnapshotEvidenceRef({
@@ -183,7 +183,7 @@ describe("assertClaim", () => {
       observedAtMs: 2000,
       sourceType: "git_disk",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: fileSnapshotEvidenceRef({
@@ -223,7 +223,7 @@ describe("assertClaim", () => {
       observedAtMs: 1000,
       sourceType: "hook",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: hookEventEvidenceRef({
@@ -269,7 +269,7 @@ describe("assertClaim", () => {
       observedAtMs: 1000,
       sourceType: "git_disk",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: fileSnapshotEvidenceRef({
@@ -328,7 +328,7 @@ describe("assertClaim", () => {
       observedAtMs: 1000,
       sourceType: "scanner",
       asserter: "test",
-      asserterVersion: "1",
+      asserterVersion: 1,
       evidence: [
         {
           ref: toolCallEvidenceRef({
@@ -371,5 +371,162 @@ describe("assertClaim", () => {
       { file_path: "/tmp/a.ts" },
       { file_path: "/tmp/b.ts" },
     ]);
+  });
+
+  it("deletes repository and file subject claims when rebuilding one session", () => {
+    assertClaim({
+      predicate: "repository/name",
+      subjectKind: "repository",
+      subject: "repository:/tmp/repo-a",
+      value: "/tmp/repo-a",
+      observedAtMs: 1000,
+      sourceType: "scanner",
+      asserter: "test",
+      asserterVersion: 1,
+      evidence: [
+        {
+          ref: messageEvidenceRef({
+            sessionId: "session-a",
+            syncId: "msg-sync-a",
+            ordinal: 1,
+          }),
+          role: "origin",
+        },
+      ],
+    });
+    assertClaim({
+      predicate: "file/path",
+      subjectKind: "file",
+      subject: "file:/tmp/repo-a:/tmp/repo-a/src/a.ts",
+      value: "/tmp/repo-a/src/a.ts",
+      observedAtMs: 1000,
+      sourceType: "scanner",
+      asserter: "test",
+      asserterVersion: 1,
+      evidence: [
+        {
+          ref: toolCallEvidenceRef({
+            sessionId: "session-a",
+            syncId: "tool-sync-a",
+            toolName: "Edit",
+            filePaths: ["/tmp/repo-a/src/a.ts"],
+          }),
+          role: "origin",
+        },
+      ],
+    });
+    assertClaim({
+      predicate: "repository/name",
+      subjectKind: "repository",
+      subject: "repository:/tmp/repo-b",
+      value: "/tmp/repo-b",
+      observedAtMs: 1000,
+      sourceType: "scanner",
+      asserter: "test",
+      asserterVersion: 1,
+      evidence: [
+        {
+          ref: messageEvidenceRef({
+            sessionId: "session-b",
+            syncId: "msg-sync-b",
+            ordinal: 1,
+          }),
+          role: "origin",
+        },
+      ],
+    });
+
+    const deleted = deleteClaimsByAsserterForSession("test", "session-a");
+    const db = getDb();
+    const remaining = db
+      .prepare(
+        `SELECT predicate, subject_kind, subject
+         FROM claims
+         ORDER BY predicate ASC, subject ASC`,
+      )
+      .all() as Array<{
+      predicate: string;
+      subject_kind: string;
+      subject: string;
+    }>;
+
+    expect(deleted).toBe(2);
+    expect(remaining).toEqual([
+      {
+        predicate: "repository/name",
+        subject_kind: "repository",
+        subject: "repository:/tmp/repo-b",
+      },
+    ]);
+  });
+
+  it("reselects the remaining active repository claim when sessions share a head", () => {
+    assertClaim({
+      predicate: "repository/name",
+      subjectKind: "repository",
+      subject: "repository:/tmp/repo-a",
+      value: "/tmp/repo-a",
+      observedAtMs: 1000,
+      sourceType: "scanner",
+      asserter: "test",
+      asserterVersion: 1,
+      evidence: [
+        {
+          ref: messageEvidenceRef({
+            sessionId: "session-a",
+            syncId: "msg-sync-a",
+            ordinal: 1,
+          }),
+          role: "origin",
+        },
+      ],
+    });
+    assertClaim({
+      predicate: "repository/name",
+      subjectKind: "repository",
+      subject: "repository:/tmp/repo-a",
+      value: "/tmp/repo-a",
+      observedAtMs: 2000,
+      sourceType: "scanner",
+      asserter: "test",
+      asserterVersion: 1,
+      evidence: [
+        {
+          ref: messageEvidenceRef({
+            sessionId: "session-b",
+            syncId: "msg-sync-b",
+            ordinal: 1,
+          }),
+          role: "origin",
+        },
+      ],
+    });
+
+    const deleted = deleteClaimsByAsserterForSession("test", "session-b");
+    const db = getDb();
+    const remainingClaims = db
+      .prepare(
+        `SELECT observed_at_ms
+         FROM claims
+         WHERE predicate = 'repository/name'
+           AND subject = 'repository:/tmp/repo-a'
+         ORDER BY observed_at_ms ASC`,
+      )
+      .all() as Array<{ observed_at_ms: number }>;
+    const active = db
+      .prepare(
+        `SELECT c.observed_at_ms
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.predicate = 'repository/name'
+           AND c.subject = 'repository:/tmp/repo-a'`,
+      )
+      .get() as {
+      observed_at_ms: number;
+    };
+
+    expect(deleted).toBe(1);
+    expect(remainingClaims).toEqual([{ observed_at_ms: 1000 }]);
+    expect(active).toEqual({ observed_at_ms: 1000 });
   });
 });

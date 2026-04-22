@@ -1,12 +1,17 @@
 export const INTENT_CLAIM_PREDICATES = [
+  "repository/name",
+  "file/path",
+  "file/in-repository",
   "intent/prompt-text",
   "intent/prompt-ts-ms",
   "intent/session",
   "intent/repository",
+  "intent/in-repository",
   "intent/cwd",
   "intent/closed-at-ms",
   "edit/part-of-intent",
   "edit/file",
+  "edit/touches-file",
   "edit/tool-name",
   "edit/multi-edit-index",
   "edit/new-string-hash",
@@ -18,7 +23,7 @@ export const INTENT_CLAIM_PREDICATES = [
 
 export type ClaimPredicate = (typeof INTENT_CLAIM_PREDICATES)[number];
 
-export type ClaimSubjectKind = "intent" | "edit";
+export type ClaimSubjectKind = "intent" | "edit" | "repository" | "file";
 
 export type ClaimValueKind = "text" | "num" | "json";
 
@@ -66,7 +71,7 @@ export interface AssertClaimInput {
   observedAtMs: number;
   sourceType: ClaimSourceType;
   asserter: string;
-  asserterVersion: string;
+  asserterVersion: number;
   confidence?: number;
   evidence?: ClaimEvidenceInput[];
   canonicalize?: boolean;
@@ -102,5 +107,5 @@ export interface ClaimRow {
   observed_at_ms: number;
   asserted_at_ms: number;
   asserter: string;
-  asserter_version: string;
+  asserter_version: number;
 }

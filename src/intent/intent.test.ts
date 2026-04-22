@@ -155,6 +155,51 @@ describe("query: intent_for_code", () => {
     expect(result[1].prompt_text).toBe("earlier attempt");
     expect(result[1].status).toBe("reverted");
   });
+
+  it("prefers normalized file-subject links over legacy intent_edits.file_path", () => {
+    const file = path.join(scratchDir, "normalized-file-subject.ts");
+    const mismatched = path.join(scratchDir, "mismatched.ts");
+    fs.writeFileSync(file, "normalized subject content");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { prompt: "normalized lookup", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd: scratchDir,
+      repository: scratchDir,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "normalized subject content",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 1200,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildClaimBackedProjection();
+
+    getDb()
+      .prepare(`UPDATE intent_edits SET file_path = ? WHERE file_path = ?`)
+      .run(mismatched, file);
+
+    const result = intentForCode({ file_path: file });
+    expect(result).toHaveLength(1);
+    expect(result[0].prompt_text).toBe("normalized lookup");
+    expect(result[0].status).toBe("current");
+  });
 });
 
 describe("query: search_intent", () => {

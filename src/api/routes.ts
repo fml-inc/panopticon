@@ -51,9 +51,9 @@ function writeResyncPendingResponse(res: http.ServerResponse): void {
   const status = readScannerStatus();
   jsonResponse(res, 503, {
     error:
-      "Panopticon is rebuilding derived state after upgrade. Retry when scanner resync completes.",
+      "Panopticon is rebuilding derived state. Retry when the rebuild completes.",
     phase: status?.phase ?? null,
-    message: status?.message ?? "Derived-state resync pending",
+    message: status?.message ?? "Derived-state rebuild pending",
   });
 }
 

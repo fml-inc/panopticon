@@ -135,7 +135,23 @@ already have strong evidence support.
    - `repository`
    - `file`
 2. Stable identity rules for repository and file subjects.
-3. Initial git-derived provenance/facts for repo/file subjects.
+3. Relation predicates linking existing intent/edit subjects to normalized
+   repository/file subjects.
+4. At least one file-centric query path switched to the normalized model.
+5. Initial git-derived provenance/facts for repo/file subjects.
+
+### Current Slice
+
+The current Phase 2B slice focuses on the minimum normalized model:
+
+- first-class `repository` / `file` claim subjects
+- `intent/in-repository`, `file/in-repository`, and `edit/touches-file`
+  relations
+- normalized `intent_for_code` lookup via file subjects, with the legacy
+  `intent_edits.file_path` path retained as fallback
+
+Projection/session-summary components are still being treated as follow-up
+derived state, not first-class versioned components yet.
 
 ### Tracked Follow-Up
 
@@ -165,27 +181,49 @@ and typed references.
 - human-readable artifact/wiki generation
 - presentation-layer summaries/pages
 
+## Data Version Management
+
+Derived-state freshness is now tracked in
+`data_versions(component, version, updated_at_ms)` rather than a single global
+SQLite header integer.
+
+Current components:
+
+- `scanner.raw`
+- `intent.from_scanner`
+- `intent.from_hooks`
+- `intent.landed_from_disk`
+- `claims.active`
+
+That enables startup to distinguish:
+
+- stale raw scanner data -> atomic reparse
+- stale claims/provenance state -> claims-only rebuild from existing local raw
+  tables
+
+Full manual rebuild execs should participate in the same component-version
+model; session-scoped rebuild helpers remain partial utilities and should not
+clear global stale-state flags.
+
+`claims.asserter_version` is now the integer component version that emitted the
+row, not an independently managed string constant.
+
 ## Immediate Next Steps
 
-1. Land and monitor the Phase 2A core cutover:
-   - destructive derived-state reset
-   - forced atomic reparse from raw data
-   - typed refs for `message`, `tool_call`, `hook_event`, and `file_snapshot`
-2. Populate denormalized `evidence_refs` columns eagerly at claim-write time
-   where derivable:
-   - `session_id`
-   - `repository`
-   - `file_path`
-   - normalized `evidence_ref_paths` rows for every known touched path
-3. Finish moving evidence consumers from key-prefix parsing to resolver-by-kind.
-4. Add an end-to-end upgrade/startup regression test that exercises:
-   - old populated DB -> new build startup
-   - migration-triggered atomic reparse
-   - healthy post-upgrade `intent_*` projection and eagerly populated
-     `evidence_refs`
-5. Decide which remaining families should emit next:
+1. Land and monitor the first Phase 2B repo/file normalization slice:
+   - `repository` / `file` subject kinds
+   - normalized repo/file relations from existing claim asserters
+   - normalized `intent_for_code` lookup with legacy fallback
+2. Decide whether to version additional derived-state components explicitly:
+   - intent projection
+   - session summaries
+   - provenance/materialized file views
+3. Keep moving evidence consumers from key-prefix parsing to resolver-by-kind.
+4. Decide which remaining evidence-ref families should emit next:
    - `scanner_turn` / `scanner_event`
    - `otel_logs` / `otel_metrics` / `otel_spans`
    - `git_commit` / `git_hunk`
-6. Start `repository` / `file` normalization only after the evidence-ref layer
-   is in place and hydrated enough to support cheap provenance queries.
+5. Continue Phase 2B after the normalized file model settles:
+   - git-derived repo/file provenance
+   - richer file-centric queries
+   - possible symbol-level follow-on work later

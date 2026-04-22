@@ -7,6 +7,21 @@ import type {
 } from "./types.js";
 
 const PREDICATE_SPECS: Record<ClaimPredicate, PredicateSpec> = {
+  "repository/name": {
+    cardinality: "singleton",
+    valueKind: "text",
+    sourceRanks: { scanner: 100, hook: 50 },
+  },
+  "file/path": {
+    cardinality: "singleton",
+    valueKind: "text",
+    sourceRanks: { scanner: 100, hook: 50 },
+  },
+  "file/in-repository": {
+    cardinality: "singleton",
+    valueKind: "text",
+    sourceRanks: { scanner: 100, hook: 50 },
+  },
   "intent/prompt-text": {
     cardinality: "singleton",
     valueKind: "text",
@@ -27,6 +42,11 @@ const PREDICATE_SPECS: Record<ClaimPredicate, PredicateSpec> = {
     valueKind: "text",
     sourceRanks: { scanner: 100, hook: 50 },
   },
+  "intent/in-repository": {
+    cardinality: "singleton",
+    valueKind: "text",
+    sourceRanks: { scanner: 100, hook: 50 },
+  },
   "intent/cwd": {
     cardinality: "singleton",
     valueKind: "text",
@@ -43,6 +63,11 @@ const PREDICATE_SPECS: Record<ClaimPredicate, PredicateSpec> = {
     sourceRanks: { scanner: 100 },
   },
   "edit/file": {
+    cardinality: "singleton",
+    valueKind: "text",
+    sourceRanks: { scanner: 100, hook: 50 },
+  },
+  "edit/touches-file": {
     cardinality: "singleton",
     valueKind: "text",
     sourceRanks: { scanner: 100, hook: 50 },

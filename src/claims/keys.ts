@@ -52,6 +52,14 @@ export function editKey(args: {
   return `edit:${args.sessionId ?? "unknown"}:${args.assistantOrdinal ?? 0}:${args.toolCallIndex ?? 0}${suffix}`;
 }
 
+export function repositoryKey(repository: string): string {
+  return `repository:${repository}`;
+}
+
+export function fileKey(repository: string, filePath: string): string {
+  return `file:${repository}:${filePath}`;
+}
+
 export function messageEvidenceKey(sessionId: string, ordinal: number): string {
   return `message:${sessionId}:${ordinal}`;
 }
@@ -155,7 +163,7 @@ export function observationKey(args: {
   evidence: ClaimEvidenceInput[];
   sourceType: string;
   asserter: string;
-  asserterVersion: string;
+  asserterVersion: number;
   observedAtMs: number;
 }): string {
   const evidenceFingerprint = args.evidence
@@ -170,7 +178,7 @@ export function observationKey(args: {
       evidenceFingerprint,
       args.sourceType,
       args.asserter,
-      args.asserterVersion,
+      String(args.asserterVersion),
       String(args.observedAtMs),
     ].join("|"),
   )}`;
