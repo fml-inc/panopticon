@@ -204,6 +204,11 @@ function tableHasColumn(db: Database, table: string, column: string): boolean {
   ).some((col) => col.name === column);
 }
 
+function tableHasRows(db: Database, table: string): boolean {
+  if (!tableExists(db, table)) return false;
+  return !!db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
+}
+
 function addColumnIfMissing(
   db: Database,
   table: string,
@@ -405,6 +410,28 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
 
   markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
+}
+
+function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
+  if (!tableExists(db, "scanner_file_watermarks")) {
+    return;
+  }
+
+  addColumnIfMissing(
+    db,
+    "scanner_file_watermarks",
+    "session_id",
+    "session_id TEXT",
+  );
+
+  if (!tableHasRows(db, "scanner_file_watermarks")) {
+    return;
+  }
+
+  ensureDataVersionsTable(db);
+  // Let startup rebuild scanner state from raw files instead of trying to
+  // infer watermark session IDs from possibly incomplete historical rows.
+  markDataComponentsStaleInDb(db, ALL_DATA_COMPONENTS);
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +839,13 @@ export const MIGRATIONS: Migration[] = [
     name: "convert_asserter_versions_to_integer_and_reset_claim_state",
     up: (db) => {
       resetClaimDerivedStateForAsserterVersionIntegerCutover(db);
+    },
+  },
+  {
+    id: 14,
+    name: "add_session_id_to_scanner_file_watermarks",
+    up: (db) => {
+      addScannerFileWatermarkSessionIdAndForceReparse(db);
     },
   },
 ];

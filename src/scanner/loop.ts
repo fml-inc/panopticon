@@ -11,6 +11,7 @@ import "../targets/codex.js";
 import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { log } from "../log.js";
+import { captureException } from "../sentry.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
 import type {
@@ -30,6 +31,7 @@ import {
   linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
+  readSessionIdByScannerFile,
   resetFileForReparse,
   updateSessionTotals,
   upsertSession,
@@ -326,7 +328,8 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         let fileDbWriteMs = 0;
         let fileArchiveMs = 0;
         let reparsedFromStart = false;
-        let offset = readFileWatermark(filePath);
+        const watermark = readFileWatermark(filePath);
+        let offset = watermark.byteOffset;
         let parseStartedAt = performance.now();
         let result = target.scanner.parseFile(filePath, offset);
         fileParseMs += performance.now() - parseStartedAt;
@@ -334,6 +337,15 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
           parseMs += fileParseMs;
           targetProfile.parseMs += fileParseMs;
           continue;
+        }
+
+        if (offset > 0 && !result.meta?.sessionId) {
+          rehydrateIncrementalSession(
+            result,
+            watermark.sessionId,
+            filePath,
+            source,
+          );
         }
 
         // If incremental parse detected a DAG fork, reset watermark
@@ -383,7 +395,25 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         }
 
         if (!result.meta?.sessionId) {
-          writeFileWatermark(filePath, result.newByteOffset);
+          if (offset > 0) {
+            captureException(
+              new Error("Incremental scanner chunk missing session metadata"),
+              {
+                component: "scanner",
+                file_path: filePath,
+                source,
+                byte_offset: offset,
+                new_byte_offset: result.newByteOffset,
+              },
+            );
+          }
+          // Fail open for now: keep advancing the watermark so one bad
+          // incremental chunk does not stall the scanner indefinitely.
+          writeFileWatermark(
+            filePath,
+            result.newByteOffset,
+            result.meta?.sessionId,
+          );
           continue;
         }
 
@@ -415,7 +445,11 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             updateSessionMessageCounts(sessionId);
           }
 
-          writeFileWatermark(filePath, fileResult.newByteOffset);
+          writeFileWatermark(
+            filePath,
+            fileResult.newByteOffset,
+            fileMeta.sessionId,
+          );
         })();
         fileDbWriteMs += performance.now() - writeStartedAt;
         dbWriteMs += fileDbWriteMs;
@@ -659,6 +693,31 @@ function reindexMessages(result: ParseResult, startOrdinal: number): void {
 function reindexEvents(result: ParseResult, startIndex: number): void {
   for (let i = 0; i < result.events.length; i++) {
     result.events[i].eventIndex = startIndex + i;
+  }
+}
+
+function rehydrateIncrementalSession(
+  result: ParseResult,
+  knownSessionId: string | undefined,
+  filePath: string,
+  source: string,
+): void {
+  const sessionId =
+    knownSessionId ?? readSessionIdByScannerFile(filePath, source);
+  if (!sessionId) return;
+
+  result.meta = {
+    ...result.meta,
+    sessionId: result.meta?.sessionId ?? sessionId,
+  };
+  for (const turn of result.turns) {
+    if (!turn.sessionId) turn.sessionId = sessionId;
+  }
+  for (const event of result.events) {
+    if (!event.sessionId) event.sessionId = sessionId;
+  }
+  for (const message of result.messages) {
+    if (!message.sessionId) message.sessionId = sessionId;
   }
 }
 

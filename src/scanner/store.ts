@@ -52,6 +52,11 @@ export interface SavedSyncIds {
   }>;
 }
 
+export interface FileWatermarkState {
+  byteOffset: number;
+  sessionId?: string;
+}
+
 // ── Session upsert (writes to unified sessions table) ───────────────────────
 
 export function upsertSession(
@@ -103,6 +108,29 @@ export function upsertSession(
       );
     }
   }
+}
+
+export function readSessionIdByScannerFile(
+  filePath: string,
+  source: string,
+): string | undefined {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT s.session_id
+       FROM sessions s
+       WHERE s.scanner_file_path = ?
+         AND s.target = ?
+       ORDER BY
+         CASE WHEN COALESCE(s.relationship_type, '') = 'fork' THEN 1 ELSE 0 END,
+         CASE WHEN COALESCE(s.relationship_type, '') = 'subagent' THEN 1 ELSE 0 END,
+         COALESCE(s.started_at_ms, s.created_at, 0) ASC,
+         s.session_id ASC
+       LIMIT 1`,
+    )
+    .get(filePath, source) as { session_id: string } | undefined;
+
+  return row?.session_id ?? undefined;
 }
 
 // ── Turn insert ─────────────────────────────────────────────────────────────
@@ -280,23 +308,38 @@ export function updateSessionTotals(sessionId: string): void {
 
 // ── File watermarks ─────────────────────────────────────────────────────────
 
-export function readFileWatermark(filePath: string): number {
+export function readFileWatermark(filePath: string): FileWatermarkState {
   const db = getDb();
   const row = db
     .prepare(
-      "SELECT byte_offset FROM scanner_file_watermarks WHERE file_path = ?",
+      "SELECT byte_offset, session_id FROM scanner_file_watermarks WHERE file_path = ?",
     )
-    .get(filePath) as { byte_offset: number } | undefined;
-  return row?.byte_offset ?? 0;
+    .get(filePath) as
+    | {
+        byte_offset: number;
+        session_id: string | null;
+      }
+    | undefined;
+  return {
+    byteOffset: row?.byte_offset ?? 0,
+    sessionId: row?.session_id ?? undefined,
+  };
 }
 
-export function writeFileWatermark(filePath: string, byteOffset: number): void {
+export function writeFileWatermark(
+  filePath: string,
+  byteOffset: number,
+  sessionId?: string,
+): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO scanner_file_watermarks (file_path, byte_offset, last_scanned_ms)
-     VALUES (?, ?, ?)
-     ON CONFLICT(file_path) DO UPDATE SET byte_offset = excluded.byte_offset, last_scanned_ms = excluded.last_scanned_ms`,
-  ).run(filePath, byteOffset, Date.now());
+    `INSERT INTO scanner_file_watermarks (file_path, byte_offset, last_scanned_ms, session_id)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET
+       byte_offset = excluded.byte_offset,
+       last_scanned_ms = excluded.last_scanned_ms,
+       session_id = COALESCE(excluded.session_id, scanner_file_watermarks.session_id)`,
+  ).run(filePath, byteOffset, Date.now(), sessionId ?? null);
 }
 
 /**

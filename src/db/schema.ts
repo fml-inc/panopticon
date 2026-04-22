@@ -248,7 +248,8 @@ CREATE TABLE IF NOT EXISTS scanner_file_watermarks (
   file_path TEXT PRIMARY KEY,
   byte_offset INTEGER NOT NULL DEFAULT 0,
   last_scanned_ms INTEGER NOT NULL,
-  archived_size INTEGER DEFAULT 0
+  archived_size INTEGER DEFAULT 0,
+  session_id TEXT
 );
 
 -- ── Model pricing ───────────────────────────────────────────────────────────
@@ -541,6 +542,9 @@ CREATE INDEX IF NOT EXISTS idx_hooks_target ON hook_events(target);
 
 -- sessions
 CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target);
+CREATE INDEX IF NOT EXISTS idx_sessions_scanner_file_target
+  ON sessions(scanner_file_path, target)
+  WHERE scanner_file_path IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_sessions_sync_seq ON sessions(sync_seq);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
@@ -554,6 +558,8 @@ CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(reposi
 
 -- session_cwds
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_cwds_session_first_seen
+  ON session_cwds(session_id, first_seen_ms);
 
 -- messages
 CREATE INDEX IF NOT EXISTS idx_messages_session_ordinal ON messages(session_id, ordinal);

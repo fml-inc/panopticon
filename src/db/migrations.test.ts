@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ALL_DATA_COMPONENTS, targetDataVersion } from "./data-versions.js";
 import { Database } from "./driver.js";
 import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
@@ -1125,6 +1126,118 @@ describe("runMigrations — existing DB", () => {
 
     expect(getApplied(db).map((row) => row.id)).toEqual(
       MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
+  it("adds scanner watermark session_id and forces a full reparse instead of backfilling", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        target TEXT,
+        started_at_ms INTEGER,
+        created_at INTEGER,
+        relationship_type TEXT DEFAULT '',
+        scanner_file_path TEXT
+      );
+      CREATE TABLE scanner_file_watermarks (
+        file_path TEXT PRIMARY KEY,
+        byte_offset INTEGER NOT NULL DEFAULT 0,
+        last_scanned_ms INTEGER NOT NULL,
+        archived_size INTEGER DEFAULT 0
+      );
+    `);
+
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 14) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    db.exec(`
+      CREATE TABLE data_versions (
+        component TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+    const insertDataVersion = db.prepare(
+      `INSERT INTO data_versions (component, version, updated_at_ms)
+       VALUES (?, ?, ?)`,
+    );
+    for (const component of ALL_DATA_COMPONENTS) {
+      insertDataVersion.run(component, targetDataVersion(component), 1000);
+    }
+
+    db.prepare(
+      `INSERT INTO sessions (
+         session_id, target, started_at_ms, created_at, relationship_type, scanner_file_path
+       ) VALUES
+         (?, ?, ?, ?, ?, ?),
+         (?, ?, ?, ?, ?, ?),
+         (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "root-session",
+      "claude",
+      100,
+      100,
+      "",
+      "/tmp/session.jsonl",
+      "root-session-fork",
+      "claude",
+      50,
+      50,
+      "fork",
+      "/tmp/session.jsonl",
+      "agent-1",
+      "claude",
+      10,
+      10,
+      "subagent",
+      "/tmp/session.jsonl",
+    );
+    db.prepare(
+      `INSERT INTO scanner_file_watermarks (file_path, byte_offset, last_scanned_ms)
+       VALUES (?, ?, ?)`,
+    ).run("/tmp/session.jsonl", 42, 1000);
+
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(scanner_file_watermarks)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((col) => col.name)).toContain("session_id");
+
+    const row = db
+      .prepare(
+        `SELECT byte_offset, archived_size, session_id
+         FROM scanner_file_watermarks
+         WHERE file_path = ?`,
+      )
+      .get("/tmp/session.jsonl") as {
+      byte_offset: number;
+      archived_size: number | null;
+      session_id: string | null;
+    };
+    expect(row).toEqual({
+      byte_offset: 42,
+      archived_size: 0,
+      session_id: null,
+    });
+
+    const dataVersions = db
+      .prepare(
+        `SELECT component, version
+         FROM data_versions
+         ORDER BY component ASC`,
+      )
+      .all() as Array<{ component: string; version: number }>;
+    expect(dataVersions).toEqual(
+      [...ALL_DATA_COMPONENTS]
+        .sort((a, b) => a.localeCompare(b))
+        .map((component) => ({ component, version: 0 })),
     );
   });
 
