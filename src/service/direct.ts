@@ -6,6 +6,7 @@ import {
   type DataComponent,
   INTENT_FROM_HOOKS_COMPONENT,
   INTENT_FROM_SCANNER_COMPONENT,
+  INTENT_PROJECTION_COMPONENT,
   LANDED_FROM_DISK_COMPONENT,
 } from "../db/data-versions.js";
 import { refreshPricing as refreshPricingDirect } from "../db/pricing.js";
@@ -24,6 +25,7 @@ import {
 import {
   getDb,
   markDataComponentsCurrent,
+  markDataComponentsStale,
   needsClaimsRebuild,
   needsRawDataResync,
   needsResync,
@@ -113,6 +115,14 @@ function markComponentsCurrentIfFull(
 ): void {
   if (sessionId) return;
   markDataComponentsCurrent(components);
+}
+
+function markComponentsStaleIfFull(
+  sessionId: string | undefined,
+  components: readonly DataComponent[],
+): void {
+  if (sessionId) return;
+  markDataComponentsStale(components);
 }
 
 function maybeMarkClaimsActiveCurrent(sessionId: string | undefined): void {
@@ -277,12 +287,19 @@ export function createDirectPanopticonService(): PanopticonService {
         INTENT_FROM_HOOKS_COMPONENT,
       ]);
       maybeMarkClaimsActiveCurrent(opts?.sessionId);
+      markComponentsStaleIfFull(opts?.sessionId, [INTENT_PROJECTION_COMPONENT]);
       return { scanner, hooks, activeHeads };
     },
     async rebuildIntentProjectionFromClaims(
       opts?: RebuildIntentProjectionInput,
     ) {
-      return rebuildIntentProjection({ sessionId: opts?.sessionId });
+      const projection = rebuildIntentProjection({
+        sessionId: opts?.sessionId,
+      });
+      markComponentsCurrentIfFull(opts?.sessionId, [
+        INTENT_PROJECTION_COMPONENT,
+      ]);
+      return projection;
     },
     async reconcileLandedStatusFromDisk(opts?: ReconcileLandedStatusInput) {
       const landed = reconcileLandedClaimsFromDisk({
@@ -293,6 +310,7 @@ export function createDirectPanopticonService(): PanopticonService {
         LANDED_FROM_DISK_COMPONENT,
       ]);
       maybeMarkClaimsActiveCurrent(opts?.sessionId);
+      markComponentsStaleIfFull(opts?.sessionId, [INTENT_PROJECTION_COMPONENT]);
       return { landed, activeHeads };
     },
     async claimEvidenceIntegrity() {

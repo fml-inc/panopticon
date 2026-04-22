@@ -7,6 +7,7 @@ import {
   type DataComponent,
   ensureDataVersionsInitialized,
   markDataComponentsCurrentInDb,
+  markDataComponentsStaleInDb,
   RAW_SCANNER_COMPONENT,
   staleDataComponentsInDb,
   targetDataVersion,
@@ -740,6 +741,14 @@ export function markDataComponentsCurrent(
 ): void {
   const db = getDb();
   markDataComponentsCurrentInDb(db, components);
+  refreshDataVersionState(db);
+}
+
+export function markDataComponentsStale(
+  components: readonly DataComponent[],
+): void {
+  const db = getDb();
+  markDataComponentsStaleInDb(db, components);
   refreshDataVersionState(db);
 }
 

@@ -6,6 +6,7 @@ const {
   needsClaimsRebuildMock,
   staleDataComponentsMock,
   markDataComponentsCurrentMock,
+  markDataComponentsStaleMock,
   getDbMock,
   scanOnceMock,
   reparseAllMock,
@@ -13,6 +14,7 @@ const {
   rebuildActiveClaimsMock,
   rebuildIntentClaimsFromScannerMock,
   rebuildIntentClaimsFromHooksMock,
+  rebuildIntentProjectionMock,
   reconcileLandedClaimsFromDiskMock,
   readScannerStatusMock,
   generateSummariesOnceMock,
@@ -22,6 +24,7 @@ const {
   needsClaimsRebuildMock: vi.fn(),
   staleDataComponentsMock: vi.fn<() => string[]>(() => []),
   markDataComponentsCurrentMock: vi.fn(),
+  markDataComponentsStaleMock: vi.fn(),
   getDbMock: vi.fn(() => ({
     pragma: vi.fn(),
     exec: vi.fn(),
@@ -32,6 +35,16 @@ const {
   rebuildActiveClaimsMock: vi.fn(() => 3),
   rebuildIntentClaimsFromScannerMock: vi.fn(() => ({ intents: 1, edits: 2 })),
   rebuildIntentClaimsFromHooksMock: vi.fn(() => ({ prompts: 3, edits: 4 })),
+  rebuildIntentProjectionMock: vi.fn(() => ({
+    intents: 6,
+    edits: 7,
+    sessionSummaries: 8,
+    memberships: 9,
+    provenance: 10,
+    activeIntentsLoaded: 11,
+    activeEditsLoaded: 12,
+    activeLoadMs: 13,
+  })),
   reconcileLandedClaimsFromDiskMock: vi.fn(() => ({ checked: 5 })),
   readScannerStatusMock: vi.fn(),
   generateSummariesOnceMock: vi.fn(),
@@ -75,6 +88,7 @@ vi.mock("../db/query.js", () => ({
 vi.mock("../db/schema.js", () => ({
   getDb: getDbMock,
   markDataComponentsCurrent: markDataComponentsCurrentMock,
+  markDataComponentsStale: markDataComponentsStaleMock,
   needsClaimsRebuild: needsClaimsRebuildMock,
   needsRawDataResync: needsRawDataResyncMock,
   needsResync: needsResyncMock,
@@ -94,7 +108,7 @@ vi.mock("../intent/asserters/landed_from_disk.js", () => ({
 }));
 
 vi.mock("../intent/project.js", () => ({
-  rebuildIntentProjection: vi.fn(),
+  rebuildIntentProjection: rebuildIntentProjectionMock,
 }));
 
 vi.mock("../intent/query.js", () => ({
@@ -254,7 +268,7 @@ describe("direct service scan", () => {
     });
   });
 
-  it("marks full raw-claims rebuild components current", async () => {
+  it("marks full raw-claims rebuild components current and projection stale", async () => {
     const service = createDirectPanopticonService();
 
     const result = await service.rebuildClaimsFromRaw();
@@ -271,6 +285,9 @@ describe("direct service scan", () => {
     ]);
     expect(markDataComponentsCurrentMock).toHaveBeenNthCalledWith(2, [
       "claims.active",
+    ]);
+    expect(markDataComponentsStaleMock).toHaveBeenCalledWith([
+      "intent.projection",
     ]);
     expect(result).toEqual({
       scanner: { intents: 1, edits: 2 },
@@ -298,6 +315,7 @@ describe("direct service scan", () => {
     await service.rebuildClaimsFromRaw({ sessionId: "session-1" });
 
     expect(markDataComponentsCurrentMock).not.toHaveBeenCalled();
+    expect(markDataComponentsStaleMock).not.toHaveBeenCalled();
   });
 
   it("marks landed and active claim components current after a full landed rebuild", async () => {
@@ -314,9 +332,35 @@ describe("direct service scan", () => {
     expect(markDataComponentsCurrentMock).toHaveBeenNthCalledWith(2, [
       "claims.active",
     ]);
+    expect(markDataComponentsStaleMock).toHaveBeenCalledWith([
+      "intent.projection",
+    ]);
     expect(result).toEqual({
       landed: { checked: 5 },
       activeHeads: 3,
+    });
+  });
+
+  it("marks the projection component current after a full projection rebuild", async () => {
+    const service = createDirectPanopticonService();
+
+    const result = await service.rebuildIntentProjectionFromClaims();
+
+    expect(rebuildIntentProjectionMock).toHaveBeenCalledWith({
+      sessionId: undefined,
+    });
+    expect(markDataComponentsCurrentMock).toHaveBeenCalledWith([
+      "intent.projection",
+    ]);
+    expect(result).toEqual({
+      intents: 6,
+      edits: 7,
+      sessionSummaries: 8,
+      memberships: 9,
+      provenance: 10,
+      activeIntentsLoaded: 11,
+      activeEditsLoaded: 12,
+      activeLoadMs: 13,
     });
   });
 });

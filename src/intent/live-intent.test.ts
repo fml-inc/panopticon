@@ -342,6 +342,55 @@ describe("live hook claims", () => {
     });
   });
 
+  it("uses the resolved session repository for prompt claims during hook rebuilds", () => {
+    const sessionId = "hook-rebuild-resolved-repository";
+    insertSession({
+      sessionId,
+      endedAtMs: 2000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "patch the file" },
+    });
+
+    rebuildIntentClaimsFromHooks({ sessionId });
+    rebuildActiveClaims();
+
+    const rows = getDb()
+      .prepare(
+        `SELECT c.predicate, c.subject_kind, c.value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.predicate IN ('repository/name', 'intent/in-repository')
+         ORDER BY c.predicate ASC`,
+      )
+      .all() as Array<{
+      predicate: string;
+      subject_kind: string;
+      value_text: string | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "intent/in-repository",
+        subject_kind: "intent",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "repository/name",
+        subject_kind: "repository",
+        value_text: scratchDir,
+      },
+    ]);
+  });
+
   it("keeps the first close boundary instead of stretching across later stops", () => {
     const promptId = insertHookEvent({
       session_id: SESSION,
@@ -387,6 +436,61 @@ describe("live hook claims", () => {
       .get() as { value_num: number };
 
     expect(active.value_num).toBe(1100);
+  });
+
+  it("uses the resolved session repository for live hook prompt claims", () => {
+    const sessionId = "hook-live-resolved-repository";
+    insertSession({
+      sessionId,
+      endedAtMs: 2000,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
+    });
+    const promptId = insertHookEvent({
+      session_id: sessionId,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 1000,
+      payload: { prompt: "patch the file" },
+    });
+
+    recordIntentClaimsFromHookEvent({
+      sessionId,
+      eventType: "UserPromptSubmit",
+      hookEventId: promptId,
+      timestampMs: 1000,
+      payload: { prompt: "patch the file" },
+    });
+    rebuildActiveClaims();
+
+    const rows = getDb()
+      .prepare(
+        `SELECT c.predicate, c.subject_kind, c.value_text
+         FROM active_claims ac
+         JOIN claims c ON c.id = ac.claim_id
+         WHERE c.predicate IN ('repository/name', 'intent/in-repository')
+         ORDER BY c.predicate ASC`,
+      )
+      .all() as Array<{
+      predicate: string;
+      subject_kind: string;
+      value_text: string | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        predicate: "intent/in-repository",
+        subject_kind: "intent",
+        value_text: `repository:${scratchDir}`,
+      },
+      {
+        predicate: "repository/name",
+        subject_kind: "repository",
+        value_text: scratchDir,
+      },
+    ]);
   });
 });
 

@@ -136,7 +136,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           subject,
           sessionId,
           promptText: event.user_prompt,
-          repository: event.repository,
+          repository,
           cwd: event.cwd,
           timestampMs: event.timestamp_ms,
           evidenceRef: hookEventEvidenceRef({
@@ -320,7 +320,7 @@ export function recordIntentClaimsFromHookEvent(args: {
       subject,
       sessionId: args.sessionId,
       promptText: readPromptText(args.payload),
-      repository: args.repository ?? null,
+      repository,
       cwd: args.cwd ?? null,
       timestampMs: args.timestampMs,
       evidenceRef: canonicalEvidenceRef,

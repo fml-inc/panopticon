@@ -77,10 +77,11 @@ describe("data version registry", () => {
       "intent.from_hooks",
       "intent.landed_from_disk",
       "claims.active",
+      "intent.projection",
     ]);
   });
 
-  it("markClaimsRebuildComplete clears claim-component staleness", () => {
+  it("markClaimsRebuildComplete clears claim/projection-component staleness", () => {
     getDb();
     const raw = new Database(config.dbPath);
     const now = Date.now();
@@ -88,7 +89,7 @@ describe("data version registry", () => {
       .prepare(
         `UPDATE data_versions
        SET version = ?, updated_at_ms = ?
-       WHERE component IN (?, ?, ?, ?)`,
+       WHERE component IN (?, ?, ?, ?, ?)`,
       )
       .run(
         0,
@@ -97,6 +98,7 @@ describe("data version registry", () => {
         "intent.from_hooks",
         "intent.landed_from_disk",
         "claims.active",
+        "intent.projection",
       );
     raw.close();
     closeDb();
