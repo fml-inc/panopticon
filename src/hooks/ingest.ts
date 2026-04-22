@@ -18,6 +18,7 @@ import {
 import { isEventEnabled } from "../eventConfig.js";
 import { recordIntentClaimsFromHookEvent } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
+import { isEditToolName } from "../intent/editParsing.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import { log } from "../log.js";
 import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
@@ -402,11 +403,17 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     log.hooks.error("intent claim ingest failed:", err);
   }
 
+  // Mirror the gate in recordIntentClaimsFromHookEvent — that function uses
+  // EDIT_TOOL_NAMES which includes Codex's edit_file/write_file/create_file/
+  // apply_patch. If we hardcode Claude-only tool names here, Codex
+  // PostToolUse events write claims but never trigger a projection refresh,
+  // so intent-backed MCP tools serve stale data mid-turn until the next
+  // UserPromptSubmit/Stop/SessionEnd event happens to land.
   const shouldRefreshIntentProjection =
     eventType === "UserPromptSubmit" ||
     (eventType === "PostToolUse" &&
       typeof toolName === "string" &&
-      ["Edit", "Write", "MultiEdit"].includes(toolName));
+      isEditToolName(toolName));
 
   if (shouldRefreshIntentProjection) {
     try {
