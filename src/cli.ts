@@ -12,6 +12,7 @@ import { Command, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
+import { getOrCreateAuthToken } from "./auth.js";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
@@ -253,6 +254,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
   const PANOPTICON_VARS = [
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_HEADERS",
     "OTEL_METRICS_EXPORTER",
     "OTEL_LOGS_EXPORTER",
     "OTEL_LOG_TOOL_DETAILS",
@@ -272,6 +274,11 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     return false;
   };
 
+  // Generate (or read) the bearer token now so we can write it into the
+  // OTEL_EXPORTER_OTLP_HEADERS env var. /v1/* requires this header since
+  // the auth PR landed; without it, agent telemetry would 401.
+  const authToken = getOrCreateAuthToken();
+
   // Build the wanted env vars: shared OTEL vars + target-specific vars
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
@@ -282,6 +289,13 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     [
       "OTEL_EXPORTER_OTLP_PROTOCOL",
       "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+    ],
+    [
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      // Per the OTel spec, header values are URL-encoded — encode the
+      // space between "Bearer" and the token. The token itself is hex
+      // and needs no encoding.
+      `export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${authToken}`,
     ],
     ["OTEL_METRICS_EXPORTER", "export OTEL_METRICS_EXPORTER=otlp"],
     ["OTEL_LOGS_EXPORTER", "export OTEL_LOGS_EXPORTER=otlp"],
