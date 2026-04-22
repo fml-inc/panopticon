@@ -61,11 +61,10 @@ if ! command -v panopticon &>/dev/null; then
   log_fail "panopticon CLI not found in PATH"; print_summary
 fi
 
-# Install for each available CLI target
-for target in $AVAILABLE; do
-  panopticon install --target "$target" --proxy --force
-  log_pass "panopticon install --target $target --proxy"
-done
+# Install once for all supported targets to avoid repeated daemon
+# restarts against the same local DB during setup.
+panopticon install --target all --proxy --force
+log_pass "panopticon install --target all --proxy"
 
 # Spawn the mock panopticon-protocol sync receiver in the background. This
 # replaces the old setup that pointed sync at LGTM — #116 unified the sync
