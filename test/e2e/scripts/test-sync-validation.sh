@@ -123,16 +123,14 @@ assert_file_exists "$DB_PATH" "Database file"
 assert_file_exists "$HOME/.bashrc" "Shell RC file"
 assert_grep "$HOME/.bashrc" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTel endpoint in .bashrc"
 
-# Note: when installing multiple targets sequentially with --force, the last
-# target's install rewrites the shell env block, so target-specific .bashrc
-# vars (CLAUDE_CODE_ENABLE_TELEMETRY, ANTHROPIC_BASE_URL, GEMINI_TELEMETRY_*)
-# only persist for the last target installed. We only assert the shared OTEL var
-# and check target-specific config files which are not overwritten.
-
 if [ -n "$HAS_CLAUDE" ]; then
   log_info "── Claude artifacts ──"
   assert_file_exists "$HOME/.claude/settings.json" "Claude settings.json"
   assert_grep "$HOME/.claude/settings.json" "panopticon" "Claude plugin registered"
+  assert_grep "$HOME/.bashrc" "CLAUDE_CODE_ENABLE_TELEMETRY=1" \
+    "Claude telemetry env var in .bashrc"
+  assert_grep "$HOME/.bashrc" "ANTHROPIC_BASE_URL=http://localhost:4318/proxy/anthropic" \
+    "Claude proxy env var in .bashrc"
 fi
 
 if [ -n "$HAS_CODEX" ]; then
@@ -148,6 +146,10 @@ if [ -n "$HAS_GEMINI" ]; then
   assert_file_exists "$HOME/.gemini/settings.json" "Gemini settings.json"
   assert_grep "$HOME/.gemini/settings.json" "hooks" "Gemini hooks configured"
   assert_grep "$HOME/.gemini/settings.json" "mcpServers" "Gemini MCP server registered"
+  assert_grep "$HOME/.bashrc" "GEMINI_TELEMETRY_ENABLED=true" \
+    "Gemini telemetry enabled env var in .bashrc"
+  assert_grep "$HOME/.bashrc" "GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318" \
+    "Gemini OTLP endpoint env var in .bashrc"
 fi
 
 # ─── Phase 4: Start Server + Doctor ──────────────────────────────────────────

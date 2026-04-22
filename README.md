@@ -287,6 +287,9 @@ npm install -g ./fml-inc-panopticon-*.tgz
 panopticon install --target claude
 ```
 
+For release validation against a copied production-sized DB and real home
+config, see `docs/RELEASE-VALIDATION-RUNBOOK.md`.
+
 ## Architecture
 
 ```

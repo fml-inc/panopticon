@@ -281,7 +281,12 @@ const codex: TargetAdapter = {
         string,
         unknown
       >;
-      mcpServers.panopticon = { command: "node", args: [mcpBin] };
+      const existingPanopticonServer = asRecord(mcpServers.panopticon) ?? {};
+      mcpServers.panopticon = {
+        ...existingPanopticonServer,
+        command: "node",
+        args: [mcpBin],
+      };
       codexConfig.mcp_servers = mcpServers;
 
       return codexConfig;

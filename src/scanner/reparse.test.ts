@@ -62,11 +62,12 @@ import { config } from "../config.js";
 import { Database } from "../db/driver.js";
 import { MIGRATIONS } from "../db/migrations.js";
 import { closeDb, getDb, needsResync, SCHEMA_SQL } from "../db/schema.js";
-import { insertHookEvent, upsertSession } from "../db/store.js";
+import { insertHookEvent, insertOtelLogs, upsertSession } from "../db/store.js";
 import { buildMessageSyncId } from "../db/sync-ids.js";
 import { createDirectPanopticonService } from "../service/direct.js";
 import {
   rebuildDerivedStateFromRaw,
+  reparseAll,
   rewindTargetSessionSyncForScannerReparse,
 } from "./reparse.js";
 
@@ -652,6 +653,122 @@ describe("rewindTargetSessionSyncForScannerReparse", () => {
       wm_otel_metrics: 217,
       wm_otel_spans: 218,
     });
+  });
+});
+
+describe("reparseAll", () => {
+  it("preserves hook-only and otel-only sessions across atomic reparse", () => {
+    const scannerSessionId = "scanner-reparse-session";
+    const hooksOnlySessionId = "hooks-only-session";
+    const otelOnlySessionId = "otel-only-session";
+    const scratchDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pano-reparse-preserve-sessions-"),
+    );
+
+    try {
+      const scannerFilePath = writeCodexSessionFile({
+        sessionId: scannerSessionId,
+        cwd: scratchDir,
+        prompt: "reparse scanner session",
+        patch: [
+          "*** Begin Patch",
+          `*** Add File: ${path.join(scratchDir, "preserved.ts")}`,
+          "+export const preserved = true;",
+          "*** End Patch",
+        ].join("\n"),
+      });
+      fakeDiscoverMock.mockReturnValue([{ filePath: scannerFilePath }]);
+      fakeParseFileMock.mockImplementation((filePath: string) =>
+        buildFakeCodexParseResult({
+          filePath,
+          sessionId: scannerSessionId,
+          cwd: scratchDir,
+          prompt: "reparse scanner session",
+          patch: [
+            "*** Begin Patch",
+            `*** Add File: ${path.join(scratchDir, "preserved.ts")}`,
+            "+export const preserved = true;",
+            "*** End Patch",
+          ].join("\n"),
+        }),
+      );
+
+      upsertSession({
+        session_id: hooksOnlySessionId,
+        started_at_ms: 1_713_670_000_000,
+        has_hooks: 1,
+        has_scanner: 0,
+        relationship_type: "standalone",
+      });
+      upsertSession({
+        session_id: otelOnlySessionId,
+        started_at_ms: 1_713_670_100_000,
+        has_otel: 1,
+        has_scanner: 0,
+        relationship_type: "standalone",
+      });
+      insertHookEvent({
+        session_id: hooksOnlySessionId,
+        event_type: "SessionStart",
+        timestamp_ms: 1_713_670_000_000,
+        cwd: scratchDir,
+        payload: { session_id: hooksOnlySessionId },
+      });
+      insertOtelLogs([
+        {
+          timestamp_ns: 1_713_670_100_000_000_000,
+          body: "otel-only event",
+          session_id: otelOnlySessionId,
+        },
+      ]);
+
+      const result = reparseAll();
+      expect(result.success).toBe(true);
+
+      const db = getDb();
+      expect(
+        db
+          .prepare(
+            `SELECT has_hooks, has_otel, has_scanner
+             FROM sessions
+             WHERE session_id = ?`,
+          )
+          .get(hooksOnlySessionId),
+      ).toEqual({
+        has_hooks: 1,
+        has_otel: null,
+        has_scanner: 0,
+      });
+      expect(
+        db
+          .prepare(
+            `SELECT has_hooks, has_otel, has_scanner
+             FROM sessions
+             WHERE session_id = ?`,
+          )
+          .get(otelOnlySessionId),
+      ).toEqual({
+        has_hooks: null,
+        has_otel: 1,
+        has_scanner: 0,
+      });
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM hook_events WHERE session_id = ?",
+          )
+          .get(hooksOnlySessionId),
+      ).toEqual({ count: 1 });
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM otel_logs WHERE session_id = ?",
+          )
+          .get(otelOnlySessionId),
+      ).toEqual({ count: 1 });
+    } finally {
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -130,45 +130,42 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
   }
 
   const lines = rcContent.split("\n");
-  const seen = new Set<string>();
-  let lastPanopticonIdx = -1;
+  const preservedLines: string[] = [];
+  const existingByKey = new Map<string, string>();
+  let insertAt = -1;
 
-  for (let i = 0; i < lines.length; i++) {
-    if (!isPanopticonLine(lines[i])) continue;
-    lastPanopticonIdx = i;
+  for (const line of lines) {
+    if (!isPanopticonLine(line)) {
+      preservedLines.push(line);
+      continue;
+    }
+
+    if (insertAt < 0) {
+      insertAt = preservedLines.length;
+    }
 
     const match = wantedLines.find(([key]) => {
-      if (key.startsWith("#")) return lines[i].trim().startsWith(key);
+      if (key.startsWith("#")) return line.trim().startsWith(key);
       return (
-        lines[i].trim() === `export ${key}` ||
-        lines[i].trim().startsWith(`export ${key}=`)
+        line.trim() === `export ${key}` ||
+        line.trim().startsWith(`export ${key}=`)
       );
     });
     if (match) {
-      if (!force && lines[i].trim() !== match[1] && !match[0].startsWith("#")) {
-        // Keep user-customized value
-      } else {
-        lines[i] = match[1];
-      }
-      seen.add(match[0]);
-    } else {
-      lines[i] = "";
+      existingByKey.set(match[0], line.trim());
     }
   }
 
-  const newLines = wantedLines
-    .filter(([key]) => !seen.has(key))
-    .map(([, val]) => val);
+  const resolvedBlock = wantedLines.map(([key, value]) => {
+    if (force || key.startsWith("#")) return value;
+    return existingByKey.get(key) ?? value;
+  });
 
-  if (newLines.length > 0) {
-    if (lastPanopticonIdx >= 0) {
-      lines.splice(lastPanopticonIdx + 1, 0, ...newLines);
-    } else {
-      lines.push("", ...newLines, "");
-    }
-  }
+  const insertionIndex = insertAt >= 0 ? insertAt : preservedLines.length;
+  const blockLines = ["", ...resolvedBlock, ""];
+  preservedLines.splice(insertionIndex, 0, ...blockLines);
 
-  fs.writeFileSync(shellRc, lines.join("\n"));
+  fs.writeFileSync(shellRc, preservedLines.join("\n"));
   return shellRc;
 }
 
