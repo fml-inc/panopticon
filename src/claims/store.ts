@@ -16,6 +16,8 @@ export interface AssertClaimResult {
   headKey: string;
 }
 
+const CLAIM_DELETE_BATCH_SIZE = 500;
+
 interface NormalizedEvidenceItem {
   key: string;
   role?: "origin" | "supporting" | "refuting" | "context";
@@ -122,13 +124,9 @@ export function deleteClaimsByAsserter(asserter: string): number {
       .prepare(`SELECT id, head_key FROM claims WHERE asserter = ?`)
       .all(asserter) as Array<{ id: number; head_key: string }>;
     if (ids.length === 0) return 0;
-    const idList = ids.map((row) => row.id);
-    const placeholders = idList.map(() => "?").join(",");
-    db.prepare(
-      `DELETE FROM claim_evidence WHERE claim_id IN (${placeholders})`,
-    ).run(...idList);
-    db.prepare(`DELETE FROM claims WHERE id IN (${placeholders})`).run(
-      ...idList,
+    deleteClaimsByIdBatch(
+      db,
+      ids.map((row) => row.id),
     );
     for (const headKey of new Set(ids.map((row) => row.head_key))) {
       selectActiveClaimForHeadKey(headKey);
@@ -144,56 +142,40 @@ export function deleteClaimsByAsserterForSession(
 ): number {
   const db = getDb();
   const tx = db.transaction(() => {
-    const intentSubjects = (
-      db
-        .prepare(
-          `SELECT DISTINCT subject
-           FROM claims
-           WHERE predicate = 'intent/session' AND value_text = ?`,
-        )
-        .all(sessionId) as Array<{ subject: string }>
-    ).map((row) => row.subject);
-    const editSubjects =
-      intentSubjects.length > 0
-        ? (
-            db
-              .prepare(
-                `SELECT DISTINCT subject
-                 FROM claims
-                 WHERE predicate = 'edit/part-of-intent'
-                   AND value_text IN (${intentSubjects.map(() => "?").join(",")})`,
-              )
-              .all(...intentSubjects) as Array<{ subject: string }>
-          ).map((row) => row.subject)
-        : [];
-
-    const subjects = [...new Set([...intentSubjects, ...editSubjects])];
-    const subjectFilter =
-      subjects.length > 0
-        ? ` OR c.subject IN (${subjects.map(() => "?").join(",")})`
-        : "";
     const ids = db
       .prepare(
-        `SELECT DISTINCT c.id, c.head_key
+        `WITH session_intents AS (
+           SELECT DISTINCT subject
+           FROM claims
+           WHERE predicate = 'intent/session' AND value_text = ?
+         ),
+         session_subjects AS (
+           SELECT subject FROM session_intents
+           UNION
+           SELECT DISTINCT c.subject
+           FROM claims c
+           JOIN session_intents si ON si.subject = c.value_text
+           WHERE c.predicate = 'edit/part-of-intent'
+         )
+         SELECT DISTINCT c.id, c.head_key
          FROM claims c
          LEFT JOIN claim_evidence ce ON ce.claim_id = c.id
          LEFT JOIN evidence_refs er ON er.id = ce.evidence_ref_id
          WHERE c.asserter = ?
-           AND (er.session_id = ?${subjectFilter})`,
+           AND (
+             er.session_id = ?
+             OR c.subject IN (SELECT subject FROM session_subjects)
+           )`,
       )
-      .all(asserter, sessionId, ...subjects) as Array<{
+      .all(sessionId, asserter, sessionId) as Array<{
       id: number;
       head_key: string;
     }>;
     if (ids.length === 0) return 0;
 
-    const idList = ids.map((row) => row.id);
-    const idPlaceholders = idList.map(() => "?").join(",");
-    db.prepare(
-      `DELETE FROM claim_evidence WHERE claim_id IN (${idPlaceholders})`,
-    ).run(...idList);
-    db.prepare(`DELETE FROM claims WHERE id IN (${idPlaceholders})`).run(
-      ...idList,
+    deleteClaimsByIdBatch(
+      db,
+      ids.map((row) => row.id),
     );
     for (const headKey of new Set(ids.map((row) => row.head_key))) {
       selectActiveClaimForHeadKey(headKey);
@@ -201,4 +183,20 @@ export function deleteClaimsByAsserterForSession(
     return ids.length;
   });
   return tx();
+}
+
+function deleteClaimsByIdBatch(
+  db: ReturnType<typeof getDb>,
+  ids: number[],
+): void {
+  for (let i = 0; i < ids.length; i += CLAIM_DELETE_BATCH_SIZE) {
+    const batch = ids.slice(i, i + CLAIM_DELETE_BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(",");
+    db.prepare(
+      `DELETE FROM claim_evidence WHERE claim_id IN (${placeholders})`,
+    ).run(...batch);
+    db.prepare(`DELETE FROM claims WHERE id IN (${placeholders})`).run(
+      ...batch,
+    );
+  }
 }

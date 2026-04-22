@@ -35,6 +35,20 @@ One release risk is still open:
   blocked during rebuild. `/health` and `/api/tool` time out until reparse
   completes instead of returning a rebuild-pending response.
 
+## Notes From The April 21 2026 RC Pass
+
+- The copied production DB used in that pass was about 900 MB with 5667
+  sessions. Startup atomic reparse completed successfully, but `Scanner ready`
+  took 564.25s. On similar DBs, treat roughly 8 to 10 minutes as plausible as
+  long as `scanner-status.json` keeps advancing.
+- Use the exact tarball filename returned by `npm pack`, not
+  `./fml-inc-panopticon-*.tgz`. If the workspace already has multiple matching
+  tarballs, the glob can make the temp-prefix install ambiguous.
+- `install --target all --proxy --force` touched
+  `~/Library/Application Support/Claude/claude_desktop_config.json` and
+  `~/.openclaw/openclaw.json` on the validation machine. Include them in the
+  real-home backup and diff loops if those targets are installed.
+
 ## Prerequisites
 
 - `pnpm`
@@ -112,6 +126,8 @@ for p in \
   "$HOME/.codex/config.toml" \
   "$HOME/.codex/hooks.json" \
   "$HOME/.gemini/settings.json" \
+  "$HOME/Library/Application Support/Claude/claude_desktop_config.json" \
+  "$HOME/.openclaw/openclaw.json" \
   "$HOME/Library/Application Support/panopticon/config.json" \
   "$HOME/Library/Application Support/panopticon/allowed.json" \
   "$HOME/Library/Application Support/panopticon/approvals.json"
@@ -131,12 +147,12 @@ Use the current branch bits, not a stale global install:
 pnpm typecheck
 pnpm build
 pnpm exec tsup --config scripts/test-sync-server.tsup.config.ts
-npm pack --cache "$NPM_CACHE"
+PACK_TGZ="$(npm pack --cache "$NPM_CACHE" | tail -n 1)"
 npm install -g \
   --prefix "$RC_PREFIX" \
   --cache "$NPM_CACHE" \
   --ignore-scripts \
-  ./fml-inc-panopticon-*.tgz
+  "./$PACK_TGZ"
 ```
 
 The installed temp-prefix binaries are then:
@@ -199,6 +215,10 @@ Current expected behavior on stale DBs:
 
 - `scanner-status.json` advances through `reparse_*`
 - both curls time out until reparse finishes
+
+In the April 21 2026 pass, a 5667-session copied DB took 564.25s to reach
+`Scanner ready`. If `scanner-status.json.updatedAtMs` keeps changing, that is
+more likely normal rebuild cost than a hang.
 
 Once reparse completes, both calls should succeed.
 
@@ -373,7 +393,9 @@ for p in \
   "$HOME/.claude/settings.json" \
   "$HOME/.codex/config.toml" \
   "$HOME/.codex/hooks.json" \
-  "$HOME/.gemini/settings.json"
+  "$HOME/.gemini/settings.json" \
+  "$HOME/Library/Application Support/Claude/claude_desktop_config.json" \
+  "$HOME/.openclaw/openclaw.json"
 do
   if [ -e "$BACKUP_ROOT$p" ]; then
     cp -a "$BACKUP_ROOT$p" "$p"
@@ -395,7 +417,9 @@ for p in \
   "$HOME/.claude/settings.json" \
   "$HOME/.codex/config.toml" \
   "$HOME/.codex/hooks.json" \
-  "$HOME/.gemini/settings.json"
+  "$HOME/.gemini/settings.json" \
+  "$HOME/Library/Application Support/Claude/claude_desktop_config.json" \
+  "$HOME/.openclaw/openclaw.json"
 do
   printf '%s\n' "$p"
   diff -u "$BACKUP_ROOT$p" "$p" || true
@@ -406,13 +430,21 @@ done
 What to check:
 
 1. `.zshrc` or `.bashrc` has a single managed panopticon block that contains:
-   `CLAUDE_CODE_ENABLE_TELEMETRY`, `ANTHROPIC_BASE_URL`, and the
-   `GEMINI_TELEMETRY_*` vars.
+   the OTEL exporter vars, `CLAUDE_CODE_ENABLE_TELEMETRY`,
+   `ANTHROPIC_BASE_URL`, and the `GEMINI_TELEMETRY_*` vars.
 2. `~/.codex/config.toml` updates the `mcp_servers.panopticon.args` path
    without deleting existing `mcp_servers.panopticon.tools.*.approval_mode`
-   entries.
-3. `~/.codex/hooks.json` and `~/.gemini/settings.json` point at the current
-   branch's `bin/hook-handler` and `bin/mcp-server`.
+   entries. If install was run with `--proxy`, also verify
+   `openai_base_url = "http://localhost:4318/proxy/codex"`.
+3. `~/.codex/hooks.json` and the hook sections in `~/.gemini/settings.json`
+   point at the current branch's `bin/hook-handler`. If install was run with
+   `--proxy`, those hook commands should include `--proxy`.
+4. `~/.gemini/settings.json`,
+   `~/Library/Application Support/Claude/claude_desktop_config.json`, and
+   `~/.openclaw/openclaw.json` point at the current branch's `bin/mcp-server`.
+   If Claude Desktop or OpenClaw config did not exist before install, treat
+   creation as expected and inspect the new file contents rather than expecting
+   a diff.
 
 If you specifically want to reproduce the Codex reinstall regression check on a
 fresh home, seed a config like this before install:
@@ -446,6 +478,11 @@ home on the current branch:
 node dist/cli.js install --target all --proxy --force
 panopticon status
 ```
+
+If the live DB still predates `data_versions`, `install` may immediately start
+the server and trigger the same startup atomic reparse as the copied-data pass.
+During that window, `panopticon status` should show `reparse_*` progress, and
+`/health` plus `/api/tool` may time out until rebuild completes.
 
 Recommended canary checks:
 

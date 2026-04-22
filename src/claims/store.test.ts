@@ -34,7 +34,11 @@ import {
   toolCallEvidenceRef,
 } from "./evidence-refs.js";
 import { runIntegrityCheck } from "./integrity.js";
-import { assertClaim, deleteClaimsByAsserterForSession } from "./store.js";
+import {
+  assertClaim,
+  deleteClaimsByAsserter,
+  deleteClaimsByAsserterForSession,
+} from "./store.js";
 
 beforeAll(() => {
   getDb();
@@ -460,6 +464,71 @@ describe("assertClaim", () => {
     ]);
   });
 
+  it("deletes large session subject sets without variadic subject filters", () => {
+    const db = getDb();
+    const count = 35_000;
+    const sharedHeadKey = "intent/session|shared-head";
+    const insert = db.prepare(
+      `INSERT INTO claims
+       (observation_key, head_key, predicate, subject_kind, subject,
+        value_kind, value_text, value_num, value_json,
+        source_type, source_rank, confidence, observed_at_ms, asserted_at_ms,
+        asserter, asserter_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const seed = db.transaction(() => {
+      for (let i = 0; i < count; i++) {
+        insert.run(
+          `obs-session-${i}`,
+          sharedHeadKey,
+          "intent/session",
+          "intent",
+          `intent:${i}`,
+          "text",
+          "session-a",
+          null,
+          null,
+          "scanner",
+          1,
+          1,
+          1_000 + i,
+          2_000 + i,
+          "bulk-test",
+          1,
+        );
+      }
+      insert.run(
+        "obs-other",
+        "repository/name|shared-head",
+        "repository/name",
+        "repository",
+        "repository:/tmp/repo-b",
+        "text",
+        "/tmp/repo-b",
+        null,
+        null,
+        "scanner",
+        1,
+        1,
+        9_999,
+        9_999,
+        "bulk-test",
+        1,
+      );
+    });
+    seed();
+
+    const deleted = deleteClaimsByAsserterForSession("bulk-test", "session-a");
+    const remaining = db
+      .prepare(
+        `SELECT observation_key FROM claims ORDER BY observation_key ASC`,
+      )
+      .all() as Array<{ observation_key: string }>;
+
+    expect(deleted).toBe(count);
+    expect(remaining).toEqual([{ observation_key: "obs-other" }]);
+  });
+
   it("reselects the remaining active repository claim when sessions share a head", () => {
     assertClaim({
       predicate: "repository/name",
@@ -528,5 +597,64 @@ describe("assertClaim", () => {
     expect(deleted).toBe(1);
     expect(remainingClaims).toEqual([{ observed_at_ms: 1000 }]);
     expect(active).toEqual({ observed_at_ms: 1000 });
+  });
+});
+
+describe("deleteClaimsByAsserter", () => {
+  it("deletes large claim sets in batches without overflowing the stack", () => {
+    const db = getDb();
+    const count = 70_000;
+    const headKey = "intent/prompt-text|intent:test|text|shared";
+    const insert = db.prepare(
+      `INSERT INTO claims
+       (observation_key, head_key, predicate, subject_kind, subject,
+        value_kind, value_text, value_num, value_json,
+        source_type, source_rank, confidence, observed_at_ms, asserted_at_ms,
+        asserter, asserter_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const seed = db.transaction(() => {
+      for (let i = 0; i < count; i++) {
+        insert.run(
+          `obs-${i}`,
+          headKey,
+          "intent/prompt-text",
+          "intent",
+          "intent:test",
+          "text",
+          `prompt ${i}`,
+          null,
+          null,
+          "scanner",
+          1,
+          1,
+          1_000 + i,
+          2_000 + i,
+          "bulk-test",
+          1,
+        );
+      }
+    });
+    seed();
+
+    const activeClaim = db
+      .prepare(`SELECT id FROM claims WHERE observation_key = ?`)
+      .get("obs-0") as { id: number };
+    db.prepare(
+      `INSERT INTO active_claims (head_key, claim_id, selected_at_ms, selection_reason)
+       VALUES (?, ?, ?, ?)`,
+    ).run(headKey, activeClaim.id, Date.now(), "test");
+
+    const deleted = deleteClaimsByAsserter("bulk-test");
+    const remainingClaims = db
+      .prepare(`SELECT COUNT(*) AS c FROM claims WHERE asserter = ?`)
+      .get("bulk-test") as { c: number };
+    const remainingActive = db
+      .prepare(`SELECT COUNT(*) AS c FROM active_claims WHERE head_key = ?`)
+      .get(headKey) as { c: number };
+
+    expect(deleted).toBe(count);
+    expect(remainingClaims.c).toBe(0);
+    expect(remainingActive.c).toBe(0);
   });
 });

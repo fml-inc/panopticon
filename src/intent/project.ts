@@ -45,16 +45,12 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
 
   const tx = db.transaction(() => {
     if (opts?.sessionId) {
-      const rows = db
-        .prepare(`SELECT id FROM intent_units WHERE session_id = ?`)
-        .all(opts.sessionId) as Array<{ id: number }>;
-      const ids = rows.map((row) => row.id);
-      if (ids.length > 0) {
-        const placeholders = ids.map(() => "?").join(",");
-        db.prepare(
-          `DELETE FROM intent_units_fts WHERE rowid IN (${placeholders})`,
-        ).run(...ids);
-      }
+      db.prepare(
+        `DELETE FROM intent_units_fts
+         WHERE rowid IN (
+           SELECT id FROM intent_units WHERE session_id = ?
+         )`,
+      ).run(opts.sessionId);
       db.prepare(`DELETE FROM intent_edits WHERE session_id = ?`).run(
         opts.sessionId,
       );
