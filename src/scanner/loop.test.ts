@@ -57,6 +57,10 @@ vi.mock("../log.js", () => ({
   },
 }));
 
+vi.mock("../sentry.js", () => ({
+  captureException: vi.fn(),
+}));
+
 vi.mock("../summary/index.js", () => ({
   generateSummariesOnce: vi.fn(),
 }));
@@ -81,12 +85,14 @@ vi.mock("../targets/gemini.js", () => ({}));
 vi.mock("./store.js", () => ({
   getMaxOrdinal: vi.fn(() => 0),
   getTurnCount: vi.fn(() => 0),
+  getEventCount: vi.fn(() => 0),
   insertMessages: vi.fn(),
   insertScannerEvents: vi.fn(),
   insertTurns: vi.fn(),
   linkSubagentSessions: vi.fn(() => 0),
   readArchivedSize: vi.fn(() => 0),
   readFileWatermark: vi.fn(() => 0),
+  readSessionByScannerFile: vi.fn(() => undefined),
   resetFileForReparse: vi.fn(),
   restoreSyncIds: vi.fn(),
   updateSessionTotals: vi.fn(),
@@ -104,12 +110,24 @@ vi.mock("./claims-rebuild.js", () => ({
   rebuildClaimsDerivedState: vi.fn(),
 }));
 
+import { captureException } from "../sentry.js";
 import { scanOnce } from "./loop.js";
+import {
+  insertMessages,
+  insertTurns,
+  readFileWatermark,
+  readSessionByScannerFile,
+  upsertSession,
+  writeFileWatermark,
+} from "./store.js";
 
 describe("scanOnce progress", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     discoverMock.mockReset();
     parseFileMock.mockReset();
+    vi.mocked(readFileWatermark).mockReturnValue(0);
+    vi.mocked(readSessionByScannerFile).mockReturnValue(undefined);
   });
 
   it("reports progress across discovered files", () => {
@@ -180,5 +198,120 @@ describe("scanOnce progress", () => {
       totalSessions: 1,
       currentSessionId: "session-1",
     });
+  });
+
+  it("rehydrates incremental chunks from the existing session row", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-loop-test-"));
+    const filePath = path.join(tempDir, "session.jsonl");
+    fs.writeFileSync(filePath, "fixture");
+
+    discoverMock.mockReturnValue([{ filePath }]);
+    vi.mocked(readFileWatermark).mockReturnValue(7);
+    vi.mocked(readSessionByScannerFile).mockReturnValue({
+      sessionId: "session-1",
+      cwd: "/repo",
+      cliVersion: "0.122.0",
+      startedAtMs: 1,
+    });
+    parseFileMock.mockReturnValue({
+      turns: [
+        {
+          sessionId: "",
+          turnIndex: 0,
+          timestampMs: 10,
+          role: "assistant",
+          inputTokens: 1,
+          outputTokens: 2,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+        },
+      ],
+      events: [
+        {
+          sessionId: "",
+          eventType: "agent_message",
+          timestampMs: 11,
+        },
+      ],
+      messages: [
+        {
+          sessionId: "",
+          ordinal: 0,
+          role: "assistant",
+          content: "hello",
+          timestampMs: 12,
+          hasThinking: false,
+          hasToolUse: false,
+          isSystem: false,
+          contentLength: 5,
+          hasContextTokens: false,
+          hasOutputTokens: false,
+          toolCalls: [],
+          toolResults: new Map(),
+        },
+      ],
+      newByteOffset: 42,
+    });
+
+    const result = scanOnce();
+
+    expect(result.filesScanned).toBe(1);
+    expect(vi.mocked(upsertSession)).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-1" }),
+      filePath,
+      "fake",
+    );
+    expect(vi.mocked(insertTurns)).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          sessionId: "session-1",
+          turnIndex: 0,
+        }),
+      ],
+      "fake",
+    );
+    expect(vi.mocked(insertMessages)).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          sessionId: "session-1",
+          ordinal: 1,
+        }),
+      ],
+      undefined,
+    );
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(filePath, 42);
+  });
+
+  it("reports incremental chunks that still have no session metadata", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-loop-test-"));
+    const filePath = path.join(tempDir, "session.jsonl");
+    fs.writeFileSync(filePath, "fixture");
+
+    discoverMock.mockReturnValue([{ filePath }]);
+    vi.mocked(readFileWatermark).mockReturnValue(7);
+    vi.mocked(readSessionByScannerFile).mockReturnValue(undefined);
+    parseFileMock.mockReturnValue({
+      turns: [],
+      events: [],
+      messages: [],
+      newByteOffset: 42,
+    });
+
+    const result = scanOnce();
+
+    expect(result.filesScanned).toBe(1);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        component: "scanner",
+        file_path: filePath,
+        source: "fake",
+        byte_offset: 7,
+        new_byte_offset: 42,
+      }),
+    );
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(filePath, 42);
+    expect(vi.mocked(upsertSession)).not.toHaveBeenCalled();
   });
 });

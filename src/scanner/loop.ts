@@ -11,6 +11,7 @@ import "../targets/codex.js";
 import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { log } from "../log.js";
+import { captureException } from "../sentry.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
 import type {
@@ -30,6 +31,7 @@ import {
   linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
+  readSessionByScannerFile,
   resetFileForReparse,
   updateSessionTotals,
   upsertSession,
@@ -336,6 +338,10 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
           continue;
         }
 
+        if (offset > 0 && !result.meta?.sessionId) {
+          rehydrateIncrementalSession(result, filePath, source);
+        }
+
         // If incremental parse detected a DAG fork, reset watermark
         // and reparse from byte 0 so fork detection runs on the full file.
         if (result.needsFullReparse && offset > 0) {
@@ -383,6 +389,20 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         }
 
         if (!result.meta?.sessionId) {
+          if (offset > 0) {
+            captureException(
+              new Error("Incremental scanner chunk missing session metadata"),
+              {
+                component: "scanner",
+                file_path: filePath,
+                source,
+                byte_offset: offset,
+                new_byte_offset: result.newByteOffset,
+              },
+            );
+          }
+          // Fail open for now: keep advancing the watermark so one bad
+          // incremental chunk does not stall the scanner indefinitely.
           writeFileWatermark(filePath, result.newByteOffset);
           continue;
         }
@@ -659,6 +679,26 @@ function reindexMessages(result: ParseResult, startOrdinal: number): void {
 function reindexEvents(result: ParseResult, startIndex: number): void {
   for (let i = 0; i < result.events.length; i++) {
     result.events[i].eventIndex = startIndex + i;
+  }
+}
+
+function rehydrateIncrementalSession(
+  result: ParseResult,
+  filePath: string,
+  source: string,
+): void {
+  const existingMeta = readSessionByScannerFile(filePath, source);
+  if (!existingMeta?.sessionId) return;
+
+  result.meta = existingMeta;
+  for (const turn of result.turns) {
+    if (!turn.sessionId) turn.sessionId = existingMeta.sessionId;
+  }
+  for (const event of result.events) {
+    if (!event.sessionId) event.sessionId = existingMeta.sessionId;
+  }
+  for (const message of result.messages) {
+    if (!message.sessionId) message.sessionId = existingMeta.sessionId;
   }
 }
 
