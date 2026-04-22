@@ -7,6 +7,27 @@ export function splitChainComponents(cmd: string): string[] {
 }
 
 /**
+ * Detect shell expansions that escape the base-command check:
+ *   $(cmd)  — POSIX command substitution
+ *   `cmd`   — legacy command substitution
+ *   <(cmd)  — bash process substitution (input)
+ *   >(cmd)  — bash process substitution (output)
+ *
+ * splitChainComponents only knows about chain operators, so without this
+ * guard `approved-cmd "$(rm -rf ~)" && approved-cmd2` would auto-approve:
+ * both components have approved base commands, and the subshell is never
+ * inspected.
+ *
+ * Quote-context detection (e.g., recognizing that `'$(foo)'` is literal
+ * inside single quotes) would require a real shell parser. Conservatively
+ * rejecting any occurrence is safer — false positives just fall through
+ * to manual approval, which is the existing default for unrecognized input.
+ */
+export function containsShellExpansion(cmd: string): boolean {
+  return /\$\(|`|<\(|>\(/.test(cmd);
+}
+
+/**
  * Extract all base commands from a single (non-chain) command string.
  * Returns multiple commands when the primary command delegates to others
  * (e.g., `find -exec rm` returns ["find", "rm"]).
@@ -100,6 +121,11 @@ export function checkBashPermission(
   allowedCommands: string[],
 ): { allow: true; reason: string } | null {
   if (!allowedCommands.length) return null;
+
+  // Refuse to auto-approve when the command contains shell expansions
+  // ($(...), backticks, <(...), >(...)). These can hide arbitrary commands
+  // inside an otherwise-approved wrapper.
+  if (containsShellExpansion(command)) return null;
 
   const components = splitChainComponents(command);
   if (components.length === 0) return null;
