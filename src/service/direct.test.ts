@@ -132,6 +132,7 @@ vi.mock("../scanner/status.js", () => ({
 }));
 
 vi.mock("../session_summaries/query.js", () => ({
+  fileOverview: vi.fn(),
   listSessionSummaries: vi.fn(),
   recentWorkOnPath: vi.fn(),
   sessionSummaryDetail: vi.fn(),

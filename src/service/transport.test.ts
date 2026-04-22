@@ -32,6 +32,7 @@ function createMockService(): PanopticonService {
     sessionSummaryDetail: vi.fn(async (opts) => ({ opts })),
     whyCode: vi.fn(async (opts) => ({ opts })),
     recentWorkOnPath: vi.fn(async (opts) => ({ opts })),
+    fileOverview: vi.fn(async (opts) => ({ opts })),
     pruneEstimate: vi.fn(async (cutoffMs) => ({ cutoffMs, dryRun: true })),
     pruneExecute: vi.fn(async (cutoffMs, opts) => ({ cutoffMs, opts })),
     refreshPricing: vi.fn(async () => ({ ok: true })),
@@ -94,6 +95,29 @@ describe("service transport", () => {
       limit: 5,
     });
     expect(result).toEqual({ opts: { since: "36h", limit: 5 } });
+  });
+
+  it("dispatches file_overview through the shared service boundary", async () => {
+    const service = createMockService();
+
+    const result = await dispatchTool(service, "file_overview", {
+      path: "src/service/transport.ts",
+      recent_limit: 3,
+      related_limit: 4,
+    });
+
+    expect(service.fileOverview).toHaveBeenCalledWith({
+      path: "src/service/transport.ts",
+      recent_limit: 3,
+      related_limit: 4,
+    });
+    expect(result).toEqual({
+      opts: {
+        path: "src/service/transport.ts",
+        recent_limit: 3,
+        related_limit: 4,
+      },
+    });
   });
 
   it("dispatches prune dry-run through pruneEstimate", async () => {

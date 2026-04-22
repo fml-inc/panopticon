@@ -226,6 +226,127 @@ describe("query: intent_for_code", () => {
     expect(result[1].status).toBe("reverted");
   });
 
+  it("collapses repeated edit rows from one apply_patch event", () => {
+    const file = path.join(scratchDir, "batched-intent.ts");
+    fs.writeFileSync(
+      file,
+      ["export const a = 0;", "export const b = 0;", ""].join("\n"),
+    );
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      payload: { prompt: "batch updates", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      tool_name: "apply_patch",
+      payload: {
+        tool_name: "apply_patch",
+        tool_input: {
+          input: [
+            "*** Begin Patch",
+            `*** Update File: ${file}`,
+            "@@",
+            "-export const a = 0;",
+            "+export const a = 1;",
+            "@@",
+            "-export const b = 0;",
+            "+export const b = 1;",
+            "*** End Patch",
+          ].join("\n"),
+        },
+      },
+    });
+    fs.writeFileSync(
+      file,
+      ["export const a = 1;", "export const b = 1;", ""].join("\n"),
+    );
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildClaimBackedProjection();
+
+    const result = intentForCode({ file_path: file });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      prompt_text: "batch updates",
+      status: "current",
+      edit: {
+        edit_count: 2,
+        current_edit_count: 2,
+        superseded_edit_count: 0,
+        reverted_edit_count: 0,
+        unknown_edit_count: 0,
+        tool_name: "apply_patch",
+        timestamp_ms: 1100,
+      },
+    });
+  });
+
+  it("collapses multiple edits from one intent into one mixed row", () => {
+    const file = path.join(scratchDir, "mixed-intent.ts");
+    fs.writeFileSync(file, "final content here");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      payload: { prompt: "iterate on same file", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "temporary content",
+        },
+      },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1200,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "final content here",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildClaimBackedProjection();
+
+    const result = intentForCode({ file_path: file });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      prompt_text: "iterate on same file",
+      status: "mixed",
+      edit: {
+        edit_count: 2,
+        current_edit_count: 1,
+        timestamp_ms: 1200,
+      },
+    });
+    expect(
+      result[0].edit.superseded_edit_count + result[0].edit.reverted_edit_count,
+    ).toBe(1);
+  });
+
   it("prefers normalized file-subject links over legacy intent_edits.file_path", () => {
     const file = path.join(scratchDir, "normalized-file-subject.ts");
     const mismatched = path.join(scratchDir, "mismatched.ts");

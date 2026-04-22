@@ -90,6 +90,13 @@ export interface RecentWorkOnPathInput {
   limit?: number;
 }
 
+export interface FileOverviewInput {
+  path: string;
+  repository?: string;
+  recent_limit?: number;
+  related_limit?: number;
+}
+
 export interface PruneExecuteInput {
   vacuum?: boolean;
 }
@@ -146,6 +153,7 @@ export interface PanopticonService {
   sessionSummaryDetail(opts: SessionSummaryDetailInput): Promise<unknown>;
   whyCode(opts: WhyCodeInput): Promise<unknown>;
   recentWorkOnPath(opts: RecentWorkOnPathInput): Promise<unknown>;
+  fileOverview(opts: FileOverviewInput): Promise<unknown>;
   pruneEstimate(cutoffMs: number): Promise<unknown>;
   pruneExecute(cutoffMs: number, opts?: PruneExecuteInput): Promise<unknown>;
   refreshPricing(): Promise<unknown>;

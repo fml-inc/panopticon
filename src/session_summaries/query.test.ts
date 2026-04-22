@@ -42,6 +42,7 @@ import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js"
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import {
+  fileOverview,
   listSessionSummaries,
   recentWorkOnPath,
   sessionSummaryDetail,
@@ -535,10 +536,294 @@ describe("recent_work_on_path", () => {
     const result = recentWorkOnPath({ path: file, repository: repo });
     expect(result.recent).toHaveLength(2);
     expect(result.recent[0].prompt_text).toBe("current state");
+    expect(result.recent[0].edit_count).toBe(1);
     expect(result.recent[0].status).toBe("current");
     expect(result.recent[1].prompt_text).toBe("old state");
+    expect(result.recent[1].edit_count).toBe(1);
     expect(result.recent[1].status).toBe("reverted");
     expect(result.recent[0].session_summary_title).toBeTruthy();
     expect(result.repository).toBe(repo);
+  });
+
+  it("collapses repeated edit rows from one apply_patch event", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "batched.ts");
+    fs.writeFileSync(
+      file,
+      ["export const a = 0;", "export const b = 0;", ""].join("\n"),
+    );
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "batch updates", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "apply_patch",
+      payload: {
+        tool_name: "apply_patch",
+        tool_input: {
+          input: [
+            "*** Begin Patch",
+            `*** Update File: ${file}`,
+            "@@",
+            "-export const a = 0;",
+            "+export const a = 1;",
+            "@@",
+            "-export const b = 0;",
+            "+export const b = 1;",
+            "*** End Patch",
+          ].join("\n"),
+        },
+      },
+    });
+    fs.writeFileSync(
+      file,
+      ["export const a = 1;", "export const b = 1;", ""].join("\n"),
+    );
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const result = recentWorkOnPath({ path: file, repository: repo });
+    expect(result.recent).toHaveLength(1);
+    expect(result.recent[0]).toMatchObject({
+      prompt_text: "batch updates",
+      status: "current",
+      edit_count: 2,
+      current_edit_count: 2,
+      superseded_edit_count: 0,
+      reverted_edit_count: 0,
+      unknown_edit_count: 0,
+      timestamp_ms: 1100,
+    });
+  });
+
+  it("collapses multiple events from one intent into one mixed row", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "mixed-intent-history.ts");
+    fs.writeFileSync(file, "final state");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "iterating on the same file", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "temporary state",
+        },
+      },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1200,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "final state",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const result = recentWorkOnPath({ path: file, repository: repo });
+    expect(result.recent).toHaveLength(1);
+    expect(result.recent[0]).toMatchObject({
+      prompt_text: "iterating on the same file",
+      status: "mixed",
+      edit_count: 2,
+      current_edit_count: 1,
+      timestamp_ms: 1200,
+    });
+    expect(
+      result.recent[0].superseded_edit_count +
+        result.recent[0].reverted_edit_count,
+    ).toBe(1);
+  });
+});
+
+describe("file_overview", () => {
+  it("returns aggregate file stats, current explanation, recent history, and related files", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const targetFile = path.join(scratchDir, "target.ts");
+    const helperFile = path.join(scratchDir, "helper.ts");
+    const configFile = path.join(scratchDir, "config.ts");
+    fs.writeFileSync(targetFile, "export const target = 2;\n");
+    fs.writeFileSync(helperFile, "export const helper = true;\n");
+    fs.writeFileSync(configFile, "export const config = true;\n");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "add target and helper", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: targetFile,
+          old_string: "x",
+          new_string: "export const target = 1;\n",
+        },
+      },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1200,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: helperFile,
+          old_string: "x",
+          new_string: "export const helper = true;\n",
+        },
+      },
+    });
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "refine target and add config", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: targetFile,
+          old_string: "x",
+          new_string: "export const target = 2;\n",
+        },
+      },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2200,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: configFile,
+          old_string: "x",
+          new_string: "export const config = true;\n",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const result = fileOverview({
+      path: targetFile,
+      repository: repo,
+      recent_limit: 2,
+      related_limit: 5,
+    });
+
+    expect(result.path).toBe(targetFile);
+    expect(result.repository).toBe(repo);
+    expect(result.summary).toMatchObject({
+      intent_count: 2,
+      edit_count: 2,
+      session_summary_count: 1,
+      current_edit_count: 1,
+      unknown_edit_count: 0,
+    });
+    expect(
+      result.summary.superseded_edit_count + result.summary.reverted_edit_count,
+    ).toBe(1);
+    expect(result.current.status).toBe("current");
+    expect(result.current.intent_unit_id).not.toBeNull();
+    expect(result.recent).toHaveLength(2);
+    expect(result.recent[0].prompt_text).toBe("refine target and add config");
+    expect(result.recent[0].edit_count).toBe(1);
+    expect(result.related_files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          file_path: helperFile,
+          shared_intent_count: 1,
+          shared_session_summary_count: 1,
+          last_status: "current",
+        }),
+        expect.objectContaining({
+          file_path: configFile,
+          shared_intent_count: 1,
+          shared_session_summary_count: 1,
+          last_status: "current",
+        }),
+      ]),
+    );
   });
 });

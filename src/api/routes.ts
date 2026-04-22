@@ -27,6 +27,7 @@ const TOOLS_REQUIRING_DERIVED_STATE = new Set([
   "session_summary_detail",
   "why_code",
   "recent_work_on_path",
+  "file_overview",
 ]);
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {

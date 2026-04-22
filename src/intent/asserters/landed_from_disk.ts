@@ -1,10 +1,7 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { gunzipSync } from "node:zlib";
-import {
-  fileSnapshotEvidenceRef,
-  loadEvidenceRefById,
-} from "../../claims/evidence-refs.js";
+import { fileSnapshotEvidenceRef } from "../../claims/evidence-refs.js";
 import {
   assertClaim,
   deleteClaimsByAsserter,
@@ -279,18 +276,14 @@ function loadParsedPayloadEvidence(
   edit: ActiveEdit,
   cache: Map<string, ParsedPayloadEvidence | null>,
 ): ParsedPayloadEvidence | null {
-  const cacheKey =
-    typeof edit.payloadEvidenceRefId === "number"
-      ? `evidence_ref:${edit.payloadEvidenceRefId}`
-      : (edit.payloadEvidenceKey ??
-        `hook_event_id:${edit.hookEventId ?? "none"}`);
+  if (!edit.payloadEvidence) {
+    return null;
+  }
+  const cacheKey = `evidence_ref:${edit.payloadEvidence.refId}`;
   if (cache.has(cacheKey)) {
     return cache.get(cacheKey) ?? null;
   }
-  const raw = decodePayloadEvidence(
-    edit.payloadEvidenceRefId,
-    edit.hookEventId,
-  );
+  const raw = decodePayloadEvidence(edit.payloadEvidence);
   const toolName = edit.toolName ?? raw?.toolName;
   const parsed =
     toolName && raw?.toolInput
@@ -304,26 +297,19 @@ function loadParsedPayloadEvidence(
 }
 
 function decodePayloadEvidence(
-  evidenceRefId: number | null | undefined,
-  hookEventId: number | null | undefined,
+  payloadEvidence: ActiveEdit["payloadEvidence"] | null | undefined,
 ): {
   toolName: string | null;
   toolInput: Record<string, unknown> | undefined;
 } | null {
-  const db = getDb();
-  if (typeof evidenceRefId === "number") {
-    const ref = loadEvidenceRefById(db, evidenceRefId);
-    if (!ref) return null;
-    if (ref.kind === "tool_call") {
-      return decodeToolCallPayload(ref.sync_id);
-    }
-    if (ref.kind === "hook_event") {
-      return decodeHookPayloadBySyncId(ref.sync_id);
-    }
-    return null;
+  if (!payloadEvidence) return null;
+  if (payloadEvidence.kind === "tool_call") {
+    return decodeToolCallPayload(payloadEvidence.syncId);
   }
-  if (typeof hookEventId !== "number") return null;
-  return decodeHookPayloadById(hookEventId);
+  if (payloadEvidence.kind === "hook_event") {
+    return decodeHookPayloadBySyncId(payloadEvidence.syncId);
+  }
+  return null;
 }
 
 function decodeToolCallPayload(toolCallSyncId: string | null): {
@@ -361,17 +347,6 @@ function decodeHookPayloadBySyncId(hookEventSyncId: string | null): {
   const row = db
     .prepare(`SELECT payload FROM hook_events WHERE sync_id = ?`)
     .get(hookEventSyncId) as { payload: Uint8Array } | undefined;
-  return row ? decodeHookPayload(row.payload) : null;
-}
-
-function decodeHookPayloadById(hookEventId: number): {
-  toolName: string | null;
-  toolInput: Record<string, unknown> | undefined;
-} | null {
-  const db = getDb();
-  const row = db
-    .prepare(`SELECT payload FROM hook_events WHERE id = ?`)
-    .get(hookEventId) as { payload: Uint8Array } | undefined;
   return row ? decodeHookPayload(row.payload) : null;
 }
 

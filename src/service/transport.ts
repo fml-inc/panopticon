@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import type {
   ActivitySummaryInput,
   CostBreakdownInput,
+  FileOverviewInput,
   IntentForCodeInput,
   ListPlansInput,
   ListSessionSummariesInput,
@@ -47,6 +48,11 @@ const BASE_TOOL_HANDLERS = {
     service.searchIntent(asType<SearchIntentInput>(params)),
   outcomes_for_intent: (service, params) =>
     service.outcomesForIntent(asType<OutcomesForIntentInput>(params)),
+  why_code: (service, params) => service.whyCode(asType<WhyCodeInput>(params)),
+  recent_work_on_path: (service, params) =>
+    service.recentWorkOnPath(asType<RecentWorkOnPathInput>(params)),
+  file_overview: (service, params) =>
+    service.fileOverview(asType<FileOverviewInput>(params)),
 } satisfies Record<string, TransportHandler>;
 
 const SESSION_SUMMARY_TOOL_HANDLERS = {
@@ -54,9 +60,6 @@ const SESSION_SUMMARY_TOOL_HANDLERS = {
     service.listSessionSummaries(asType<ListSessionSummariesInput>(params)),
   session_summary_detail: (service, params) =>
     service.sessionSummaryDetail(asType<SessionSummaryDetailInput>(params)),
-  why_code: (service, params) => service.whyCode(asType<WhyCodeInput>(params)),
-  recent_work_on_path: (service, params) =>
-    service.recentWorkOnPath(asType<RecentWorkOnPathInput>(params)),
 } satisfies Record<string, TransportHandler>;
 
 export const TOOL_HANDLERS = {

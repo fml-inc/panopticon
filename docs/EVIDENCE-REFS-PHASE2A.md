@@ -2,42 +2,49 @@
 
 ## Goal
 
-Make claim evidence machine-readable and stable across raw evidence families
-without coupling provenance to local SQLite row IDs.
+Make claim evidence machine-readable and stable for the evidence families that
+current claim producers actually use, without coupling provenance to local
+SQLite row IDs.
 
-Phase 1 solved the urgent scanner-owned durability problem. Phase 2A should
-normalize how claims point at evidence:
+Phase 1 solved the urgent scanner-owned durability problem. On `main`, the
+active Phase 2A scope is the core cutover for:
 
 - `message`
 - `tool_call`
+- `hook_event`
+- `file_snapshot`
+
+That work comes before broader `repository` / `file` semantic subjects because
+the claim layer already depends on evidence references today.
+
+Other families remain reserved extension points, not required Phase 2
+completion work:
+
 - `scanner_turn`
 - `scanner_event`
-- `hook_event`
 - `otel_log`
 - `otel_metric`
 - `otel_span`
 - `git_commit`
 - `git_hunk`
-- `file_snapshot`
-
-This phase comes before `repository` / `file` semantic subjects because the
-claim layer already depends on evidence references today.
 
 ## Decision
 
 1. Introduce typed `evidence_ref` objects before adding more semantic subjects.
-2. Use the strongest existing stable locator for each evidence family now.
-3. Do not block this phase on deterministic `hook_events` / `otel_logs` /
-   `otel_metrics` generation.
-4. Keep `otel_spans` on their existing natural key: `(trace_id, span_id)`.
+2. Land the core cutover first for the evidence families current claim writers
+   actually emit.
+3. Keep additional `scanner_*` / `otel_*` refs as optional extensions until a
+   concrete provenance or query use case appears.
+4. Treat `git_*` refs as reserved kinds only until a raw git ingest model
+   exists.
 
 In practice, that means:
 
-- `messages`, `tool_calls`, `scanner_turns`, `scanner_events` use their Phase 1
-  deterministic `sync_id`.
-- `hook_events`, `otel_logs`, and `otel_metrics` use their existing stored
-  `sync_id` as the canonical locator for now.
-- `otel_spans` use `trace_id + span_id`.
+- `messages` and `tool_calls` use their Phase 1 deterministic `sync_id`.
+- `hook_events` use their existing stored `sync_id` as the canonical locator.
+- `file_snapshot` uses file path plus content hash.
+- `scanner_*`, `otel_*`, and `git_*` keep reserved typed-ref shapes for future
+  use without forcing more schema churn now.
 
 The immediate problem is reference structure, not append-only transport-key
 generation.
@@ -89,6 +96,8 @@ interface EvidenceRefInput {
   repository?: string | null;
   filePath?: string | null;
   filePaths?: string[] | null;
+  traceId?: string | null;
+  spanId?: string | null;
   locator: Record<string, unknown>;
 }
 ```
@@ -144,7 +153,11 @@ Notes:
 
 ## Canonical Ref Keys
 
-Each family should have one canonical ref-key encoding.
+Each family has a canonical ref-key encoding.
+
+The first four families below plus `file_snapshot` are the active shapes on
+`main`. The remaining rows are reserved extension shapes so future expansion
+does not require another schema redesign.
 
 | Kind | Canonical ref key | Initial locator source |
 | --- | --- | --- |
@@ -168,9 +181,9 @@ Example locators:
 { "kind": "otel_span", "refKey": "otel_span:trace:span", "sessionId": "sess-1", "locator": { "traceId": "trace", "spanId": "span" } }
 ```
 
-## Current Branch Scope
+## Current State On Main
 
-This branch lands the Phase 2A core cutover, not the full multi-family rollout.
+`main` has the Phase 2A core cutover needed by current claim producers.
 
 Implemented here:
 
@@ -186,77 +199,73 @@ Implemented here:
   - `tool_call`
   - `hook_event`
   - `file_snapshot`
+- `ensureEvidenceRef()` upserts by canonical `ref_key` and stores normalized
+  multi-file path sets in `evidence_ref_paths`
+- runtime integrity checks resolve evidence by loading the ref row and
+  dispatching on `evidence_refs.kind`
+- active edit views expose structured typed payload-evidence refs instead of
+  preserving hook-event row-id helpers
+- landed-status reconciliation decodes tool/hook payloads from those typed
+  refs directly
 - `claims.asserter_version` and `claim_rebuild_runs.asserter_version` are now
   integer component versions sourced from the central version registry.
 
-Not fully delivered yet:
+Not part of the active Phase 2 backlog:
 
 - no current claim producer emits `scanner_turn`, `scanner_event`, `otel_*`,
-  `git_commit`, or `git_hunk` refs yet
-- some evidence consumers still branch on canonical ref-key prefixes instead of
-  loading an `evidence_ref` and dispatching by `kind`
+  `git_commit`, or `git_hunk` refs
+- `scanner_*` and `otel_*` raw tables exist, but current claim/provenance
+  paths do not need those refs today
+- `git_commit` and `git_hunk` are reserved kinds only; no raw git ingest
+  tables exist today
+- compatibility helpers still parse legacy/local-id and canonical string keys
+  in `src/claims/evidence-refs.ts`, but current claim writers do not emit those
+  legacy keys anymore
 - denormalized `repository` / `file_path` fields are only populated for the
   evidence families that already emit typed refs today
 
-## Recommendation for Hooks and OTel
+## Future Extension Notes
 
 ### `hook_events`
 
-Use typed refs immediately, keyed by the existing stored `sync_id`.
+This cutover is already landed on `main`.
 
-Do **not** make deterministic hook-event sync IDs a prerequisite for Phase 2A.
+Claims no longer depend on `hook:<local id>` style references; active writers
+emit typed hook refs keyed by the stored `sync_id`.
 
-Why:
+### `scanner_turn` / `scanner_event`
 
-- `hook_events` are append-only
-- atomic reparse copies them instead of regenerating them
-- remote sync already treats `sync_id` as the transport key
-- the immediate weakness is `hook:<local id>` in claims, not transport
-  idempotency
+These raw tables have durable identities and generic resolver support, but they
+are not currently useful enough in claim provenance to justify active Phase 2
+work.
 
-If we later need raw hook replay/re-import from source logs to dedupe across new
-DBs, then we can add deterministic hook-event key generation as a follow-up.
+If a later query or provenance feature needs direct citation of scanner turns
+or events, the reserved ref shapes can be activated without another schema
+change.
 
-### `otel_logs`
+### `otel_log` / `otel_metric` / `otel_span`
 
-Use typed refs immediately, keyed by existing `otel_logs.sync_id`.
+These raw tables also exist and the generic resolver can already target them by
+`sync_id` or `trace_id + span_id`.
 
-Do not block on deterministic log IDs. Log identity is trickier because a good
-natural key may need body + attrs + timestamps + session context, and we do not
-need to solve that just to normalize provenance references.
+They are not part of active Phase 2 work because the current claim/provenance
+layer does not need them, and the product value looks low relative to the repo
+/ file follow-on work.
 
-### `otel_metrics`
+If that changes later, the existing recommendation still stands:
 
-Same call as `otel_logs`: typed refs first, current stored `sync_id` as
-canonical locator for now.
+- use stored `sync_id` for `otel_log` and `otel_metric`
+- use `trace_id + span_id` for `otel_span`
+- do not make deterministic ingest identity a prerequisite unless replay or
+  re-import becomes first-class
 
-### `otel_spans`
+### `git_commit` / `git_hunk`
 
-No extra durable-ID work is needed before typed refs. Spans already have a
-strong natural key:
+These kinds are reserved shapes only.
 
-- `trace_id`
-- `span_id`
-
-Use that directly in the canonical `ref_key`.
-
-## Why Not Deterministic Hook/Log/Metric IDs First
-
-Because those are different problems:
-
-- typed refs solve provenance structure
-- deterministic raw IDs solve replay/re-import idempotency
-
-Phase 1 needed both for scanner-owned tables because reparses actively
-recreated those rows. Hooks and OTel do not currently have the same failure
-mode.
-
-So the recommended order is:
-
-1. replace claim evidence strings with typed refs
-2. switch hook/log/metric references from local row IDs to `sync_id`
-3. only then decide whether deterministic generation is worth the migration
-   cost for those append-only families
+There are no raw git ingest tables behind them today, so they should not be
+tracked as remaining Phase 2 work. A real rollout would start with a separate
+git ingest/provenance design, then attach typed refs to that model.
 
 ## Migration Approach
 
@@ -274,18 +283,22 @@ So the recommended order is:
      rebuilt on first startup with the new code
 5. Update claim writers to create/read `evidence_refs`.
 6. Start moving integrity checks and provenance resolvers to `evidence_refs`.
-   Finishing the move from key-prefix dispatch to `kind + locator` is follow-up
-   work after the core cutover.
+   On `main`, integrity checks, active edit views, and landed-status payload
+   decoding already use the `kind + locator` pattern; the remaining follow-up
+   is repo/file/query work built on top of that foundation.
 
 ## Target Resolver Model
 
 `resolveEvidenceRef(ref)` should dispatch by `kind`, not by parsing arbitrary
 strings.
 
-The current branch stores `kind` and canonical `ref_key`, but some read paths
-still branch on canonical prefixes like `tc:` and `hook_event:`. Follow-up
-work should replace those callers with a single resolver that loads the ref row
-and dispatches by `kind`.
+This is now the runtime pattern for evidence integrity and landed-status payload
+decoding. Canonical prefix parsing still exists in compatibility helpers, but
+the current read-path pattern is:
+
+1. load the `evidence_refs` row
+2. dispatch by `kind`
+3. resolve the raw row using the locator fields already materialized on the ref
 
 Examples:
 
@@ -306,10 +319,11 @@ Examples:
    evidence strings.
 3. Typed refs for `message`, `tool_call`, `hook_event`, and `file_snapshot`
    survive local reparse and normal sync flows.
-4. Remaining families (`scanner_*`, `otel_*`, `git_*`) can be added without a
-   second schema migration.
-5. `repository` / `file` normalization can build on the evidence-ref layer once
-   denormalized-column hydration and resolver follow-up are complete.
+4. Optional future families (`scanner_*`, `otel_*`, `git_*`) can still be
+   added later without a second schema migration.
+5. `repository` / `file` normalization is already building on the evidence-ref
+   layer; remaining follow-up is current repo/file/query work on top of the
+   already-landed typed-evidence consumer cleanup.
 
 ## Open Questions
 
@@ -320,5 +334,6 @@ Examples:
 3. For future evidence families that cannot populate denormalized columns
    unambiguously at write time, do we prefer a targeted backfill / repair pass
    or leaving those fields sparse until a consumer needs them?
-4. If hook or OTel raw replay becomes first-class, which family should get
-   deterministic ingest identity first: `hook_events` or `otel_logs`?
+4. If raw replay for append-only evidence becomes first-class later, do any
+   `otel_*` families need deterministic ingest identity beyond their current
+   locator scheme?
