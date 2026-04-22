@@ -93,8 +93,6 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
 
   let prompts = 0;
   let edits = 0;
-  const seenRepositorySubjects = new Set<string>();
-  const seenFileSubjects = new Set<string>();
   for (const [sessionId, events] of eventsBySession) {
     const users = usersBySession.get(sessionId) ?? [];
     let searchStart = 0;
@@ -132,6 +130,7 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
             canonicalize: false,
           });
         }
+        const seenRepositorySubjects = new Set<string>();
         assertHookIntentClaims({
           subject,
           sessionId,
@@ -178,6 +177,8 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
           editEntries,
           sessionCwd,
         );
+        const seenRepositorySubjects = new Set<string>();
+        const seenFileSubjects = new Set<string>();
         for (const entry of editEntries) {
           const resolvedFilePath = resolveFilePath(entry.filePath, sessionCwd);
           const semanticIdentity = semanticEditIdentity({

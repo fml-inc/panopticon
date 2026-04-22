@@ -109,9 +109,6 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
       repoBySession.set(row.session_id, row.repository);
     }
   }
-  const seenRepositorySubjects = new Set<string>();
-  const seenFileSubjects = new Set<string>();
-
   const intentsBySession = new Map<string, UserMessageRow[]>();
   for (const msg of userMessages) {
     const list = intentsBySession.get(msg.session_id) ?? [];
@@ -119,9 +116,21 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     list.push(msg);
     intentsBySession.set(msg.session_id, list);
   }
+  const normalizedSubjectStateBySession = new Map<
+    string,
+    {
+      seenRepositorySubjects: Set<string>;
+      seenFileSubjects: Set<string>;
+    }
+  >();
 
   let intents = 0;
-  for (const msgs of intentsBySession.values()) {
+  for (const [sessionId, msgs] of intentsBySession) {
+    const subjectState = {
+      seenRepositorySubjects: new Set<string>(),
+      seenFileSubjects: new Set<string>(),
+    };
+    normalizedSubjectStateBySession.set(sessionId, subjectState);
     msgs.forEach((msg, index) => {
       const repository = repoBySession.get(msg.session_id) ?? null;
       const key = intentKey({
@@ -195,7 +204,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           intentSubject: key,
           observedAtMs: msg.timestamp_ms ?? 0,
           evidence,
-          seenRepositorySubjects,
+          seenRepositorySubjects: subjectState.seenRepositorySubjects,
         });
       }
       if (msg.cwd) {
@@ -254,6 +263,13 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
     if (parsed.length === 0) continue;
 
     const repository = repoBySession.get(row.session_id) ?? null;
+    const subjectState = normalizedSubjectStateBySession.get(
+      row.session_id,
+    ) ?? {
+      seenRepositorySubjects: new Set<string>(),
+      seenFileSubjects: new Set<string>(),
+    };
+    normalizedSubjectStateBySession.set(row.session_id, subjectState);
     const evidenceFilePaths = resolveEvidenceFilePaths(parsed, intentMsg.cwd);
     const intentSubject = intentKey({
       sessionId: intentMsg.session_id,
@@ -327,8 +343,8 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
           editSubject: subject,
           observedAtMs,
           evidence,
-          seenRepositorySubjects,
-          seenFileSubjects,
+          seenRepositorySubjects: subjectState.seenRepositorySubjects,
+          seenFileSubjects: subjectState.seenFileSubjects,
         });
       }
       assertScannerClaim({

@@ -77,6 +77,7 @@ describe("data version registry", () => {
       "intent.from_hooks",
       "intent.landed_from_disk",
       "claims.active",
+      "claims.projection",
     ]);
   });
 
@@ -88,7 +89,7 @@ describe("data version registry", () => {
       .prepare(
         `UPDATE data_versions
        SET version = ?, updated_at_ms = ?
-       WHERE component IN (?, ?, ?, ?)`,
+       WHERE component IN (?, ?, ?, ?, ?)`,
       )
       .run(
         0,
@@ -97,6 +98,7 @@ describe("data version registry", () => {
         "intent.from_hooks",
         "intent.landed_from_disk",
         "claims.active",
+        "claims.projection",
       );
     raw.close();
     closeDb();

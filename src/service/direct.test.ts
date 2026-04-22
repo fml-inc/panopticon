@@ -13,6 +13,7 @@ const {
   rebuildActiveClaimsMock,
   rebuildIntentClaimsFromScannerMock,
   rebuildIntentClaimsFromHooksMock,
+  rebuildIntentProjectionMock,
   reconcileLandedClaimsFromDiskMock,
   readScannerStatusMock,
   generateSummariesOnceMock,
@@ -32,6 +33,13 @@ const {
   rebuildActiveClaimsMock: vi.fn(() => 3),
   rebuildIntentClaimsFromScannerMock: vi.fn(() => ({ intents: 1, edits: 2 })),
   rebuildIntentClaimsFromHooksMock: vi.fn(() => ({ prompts: 3, edits: 4 })),
+  rebuildIntentProjectionMock: vi.fn(() => ({
+    intents: 6,
+    edits: 7,
+    sessionSummaries: 8,
+    memberships: 9,
+    provenance: 10,
+  })),
   reconcileLandedClaimsFromDiskMock: vi.fn(() => ({ checked: 5 })),
   readScannerStatusMock: vi.fn(),
   generateSummariesOnceMock: vi.fn(),
@@ -94,7 +102,7 @@ vi.mock("../intent/asserters/landed_from_disk.js", () => ({
 }));
 
 vi.mock("../intent/project.js", () => ({
-  rebuildIntentProjection: vi.fn(),
+  rebuildIntentProjection: rebuildIntentProjectionMock,
 }));
 
 vi.mock("../intent/query.js", () => ({
@@ -265,9 +273,13 @@ describe("direct service scan", () => {
     expect(rebuildIntentClaimsFromHooksMock).toHaveBeenCalledWith({
       sessionId: undefined,
     });
+    expect(rebuildIntentProjectionMock).toHaveBeenCalledWith({
+      sessionId: undefined,
+    });
     expect(markDataComponentsCurrentMock).toHaveBeenNthCalledWith(1, [
       "intent.from_scanner",
       "intent.from_hooks",
+      "claims.projection",
     ]);
     expect(markDataComponentsCurrentMock).toHaveBeenNthCalledWith(2, [
       "claims.active",
@@ -276,6 +288,13 @@ describe("direct service scan", () => {
       scanner: { intents: 1, edits: 2 },
       hooks: { prompts: 3, edits: 4 },
       activeHeads: 3,
+      projection: {
+        intents: 6,
+        edits: 7,
+        sessionSummaries: 8,
+        memberships: 9,
+        provenance: 10,
+      },
     });
   });
 
@@ -289,6 +308,7 @@ describe("direct service scan", () => {
     expect(markDataComponentsCurrentMock).toHaveBeenCalledWith([
       "intent.from_scanner",
       "intent.from_hooks",
+      "claims.projection",
     ]);
   });
 
@@ -297,6 +317,9 @@ describe("direct service scan", () => {
 
     await service.rebuildClaimsFromRaw({ sessionId: "session-1" });
 
+    expect(rebuildIntentProjectionMock).toHaveBeenCalledWith({
+      sessionId: "session-1",
+    });
     expect(markDataComponentsCurrentMock).not.toHaveBeenCalled();
   });
 
@@ -308,8 +331,12 @@ describe("direct service scan", () => {
     expect(reconcileLandedClaimsFromDiskMock).toHaveBeenCalledWith({
       sessionId: undefined,
     });
+    expect(rebuildIntentProjectionMock).toHaveBeenCalledWith({
+      sessionId: undefined,
+    });
     expect(markDataComponentsCurrentMock).toHaveBeenNthCalledWith(1, [
       "intent.landed_from_disk",
+      "claims.projection",
     ]);
     expect(markDataComponentsCurrentMock).toHaveBeenNthCalledWith(2, [
       "claims.active",
@@ -317,6 +344,33 @@ describe("direct service scan", () => {
     expect(result).toEqual({
       landed: { checked: 5 },
       activeHeads: 3,
+      projection: {
+        intents: 6,
+        edits: 7,
+        sessionSummaries: 8,
+        memberships: 9,
+        provenance: 10,
+      },
+    });
+  });
+
+  it("marks projection current after a full projection rebuild", async () => {
+    const service = createDirectPanopticonService();
+
+    const result = await service.rebuildIntentProjectionFromClaims();
+
+    expect(rebuildIntentProjectionMock).toHaveBeenCalledWith({
+      sessionId: undefined,
+    });
+    expect(markDataComponentsCurrentMock).toHaveBeenCalledWith([
+      "claims.projection",
+    ]);
+    expect(result).toEqual({
+      intents: 6,
+      edits: 7,
+      sessionSummaries: 8,
+      memberships: 9,
+      provenance: 10,
     });
   });
 });

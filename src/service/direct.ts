@@ -3,6 +3,7 @@ import { runIntegrityCheck } from "../claims/integrity.js";
 import { config } from "../config.js";
 import {
   CLAIMS_ACTIVE_COMPONENT,
+  CLAIMS_PROJECTION_COMPONENT,
   type DataComponent,
   INTENT_FROM_HOOKS_COMPONENT,
   INTENT_FROM_SCANNER_COMPONENT,
@@ -272,28 +273,42 @@ export function createDirectPanopticonService(): PanopticonService {
         sessionId: opts?.sessionId,
       });
       const activeHeads = rebuildActiveClaims();
+      const projection = rebuildIntentProjection({
+        sessionId: opts?.sessionId,
+      });
       markComponentsCurrentIfFull(opts?.sessionId, [
         INTENT_FROM_SCANNER_COMPONENT,
         INTENT_FROM_HOOKS_COMPONENT,
+        CLAIMS_PROJECTION_COMPONENT,
       ]);
       maybeMarkClaimsActiveCurrent(opts?.sessionId);
-      return { scanner, hooks, activeHeads };
+      return { scanner, hooks, activeHeads, projection };
     },
     async rebuildIntentProjectionFromClaims(
       opts?: RebuildIntentProjectionInput,
     ) {
-      return rebuildIntentProjection({ sessionId: opts?.sessionId });
+      const projection = rebuildIntentProjection({
+        sessionId: opts?.sessionId,
+      });
+      markComponentsCurrentIfFull(opts?.sessionId, [
+        CLAIMS_PROJECTION_COMPONENT,
+      ]);
+      return projection;
     },
     async reconcileLandedStatusFromDisk(opts?: ReconcileLandedStatusInput) {
       const landed = reconcileLandedClaimsFromDisk({
         sessionId: opts?.sessionId,
       });
       const activeHeads = rebuildActiveClaims();
+      const projection = rebuildIntentProjection({
+        sessionId: opts?.sessionId,
+      });
       markComponentsCurrentIfFull(opts?.sessionId, [
         LANDED_FROM_DISK_COMPONENT,
+        CLAIMS_PROJECTION_COMPONENT,
       ]);
       maybeMarkClaimsActiveCurrent(opts?.sessionId);
-      return { landed, activeHeads };
+      return { landed, activeHeads, projection };
     },
     async claimEvidenceIntegrity() {
       return runIntegrityCheck();

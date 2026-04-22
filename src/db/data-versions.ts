@@ -5,6 +5,7 @@ export const INTENT_FROM_SCANNER_COMPONENT = "intent.from_scanner";
 export const INTENT_FROM_HOOKS_COMPONENT = "intent.from_hooks";
 export const LANDED_FROM_DISK_COMPONENT = "intent.landed_from_disk";
 export const CLAIMS_ACTIVE_COMPONENT = "claims.active";
+export const CLAIMS_PROJECTION_COMPONENT = "claims.projection";
 
 export const DATA_COMPONENT_VERSIONS = {
   [RAW_SCANNER_COMPONENT]: 3,
@@ -12,6 +13,7 @@ export const DATA_COMPONENT_VERSIONS = {
   [INTENT_FROM_HOOKS_COMPONENT]: 2,
   [LANDED_FROM_DISK_COMPONENT]: 2,
   [CLAIMS_ACTIVE_COMPONENT]: 1,
+  [CLAIMS_PROJECTION_COMPONENT]: 1,
 } as const;
 
 export type DataComponent = keyof typeof DATA_COMPONENT_VERSIONS;
@@ -21,6 +23,7 @@ export const CLAIM_DATA_COMPONENTS = [
   INTENT_FROM_HOOKS_COMPONENT,
   LANDED_FROM_DISK_COMPONENT,
   CLAIMS_ACTIVE_COMPONENT,
+  CLAIMS_PROJECTION_COMPONENT,
 ] as const satisfies readonly DataComponent[];
 
 export const CLAIM_SOURCE_COMPONENTS = [
