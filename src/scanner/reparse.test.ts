@@ -770,6 +770,52 @@ describe("reparseAll", () => {
       fs.rmSync(scratchDir, { recursive: true, force: true });
     }
   });
+
+  it("succeeds when the DB has only hook-only sessions (no scanner sessions)", () => {
+    // Regression for the abort guard: previously compared
+    // `tempSessionCount === 0 && oldSessionCount > 0`, where oldSessionCount
+    // counted ALL sessions. A pure hook-only install has no scanner files,
+    // so tempSessionCount is 0 but oldSessionCount is > 0 — reparse aborted
+    // on every migration, leaving needsResync() true and 503'ing derived
+    // MCP tools until manual intervention.
+    const hooksOnlySessionId = "hooks-only-no-scanner-sess";
+    fakeDiscoverMock.mockReturnValue([]); // no scanner files at all
+
+    upsertSession({
+      session_id: hooksOnlySessionId,
+      started_at_ms: 1_713_680_000_000,
+      has_hooks: 1,
+      has_scanner: 0,
+      relationship_type: "standalone",
+    });
+    insertHookEvent({
+      session_id: hooksOnlySessionId,
+      event_type: "SessionStart",
+      timestamp_ms: 1_713_680_000_000,
+      cwd: "/tmp",
+      payload: { session_id: hooksOnlySessionId },
+    });
+
+    const result = reparseAll();
+    expect(result.success).toBe(true);
+
+    const db = getDb();
+    // The hook-only session must survive the reparse.
+    expect(
+      db
+        .prepare(
+          `SELECT has_hooks, has_scanner FROM sessions WHERE session_id = ?`,
+        )
+        .get(hooksOnlySessionId),
+    ).toEqual({ has_hooks: 1, has_scanner: 0 });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM hook_events WHERE session_id = ?",
+        )
+        .get(hooksOnlySessionId),
+    ).toEqual({ count: 1 });
+  });
 });
 
 describe("startup reparse after migration 12", () => {
