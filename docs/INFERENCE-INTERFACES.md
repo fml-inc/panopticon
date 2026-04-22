@@ -3,7 +3,7 @@
 This document defines the intended interface boundary for panopticon features
 that use a headless coding agent or LLM to enrich local data.
 
-It exists because the current session-summary path is useful in spirit but not
+It exists because the older summary-generation path is useful in spirit but not
 reliable enough in its current form:
 
 - it shells out directly to a specific CLI
@@ -19,6 +19,26 @@ more explicit and provenance-backed, and when we later come back to:
 - "why_code" natural-language explanations
 - classification or ranking tasks where deterministic signals exist but are not
   sufficient for a good UX by themselves
+
+## Current Status On Main
+
+The current codebase already has two distinct layers:
+
+- deterministic local provenance queries:
+  - `session_summaries`
+  - `session_summary_detail`
+  - `why_code`
+  - `recent_work_on_path`
+  - `file_overview`
+- best-effort inference plumbing in `src/inference/types.ts`
+
+The Phase 2 local session-summary/code-provenance path is currently fully
+deterministic and does not shell out to a model. The remaining CLI-based
+inference path lives in the older summary-generation code under
+`src/summary/llm.ts`.
+
+So this document is mainly forward-looking for presentation-grade enrichments,
+not a description of the current Phase 2 read model itself.
 
 ## Rules
 

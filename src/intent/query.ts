@@ -14,19 +14,24 @@ export interface IntentForCodeRow {
   repository: string | null;
   edit: {
     intent_edit_id: number;
+    edit_count: number;
+    current_edit_count: number;
+    superseded_edit_count: number;
+    reverted_edit_count: number;
+    unknown_edit_count: number;
     tool_name: string;
     timestamp_ms: number;
     landed: number | null; // 0 | 1 | null
     landed_reason: string | null;
     new_string_snippet: string | null;
   };
-  status: "current" | "superseded" | "reverted" | "unknown";
+  status: "current" | "superseded" | "reverted" | "mixed" | "unknown";
 }
 
 /**
  * Given a file path, return the chronological prompt-history at that location:
- * every intent that touched the file, most recent first, annotated with
- * whether the inserted content is still in the file today.
+ * one row per intent that touched the file, most recent first, annotated with
+ * aggregated edit outcomes and the latest representative edit/snippet.
  *
  * `status` summarizes:
  *   - 'current'    → landed=1 (snippet still present)
@@ -49,13 +54,18 @@ export function intentForCode(opts: {
     repository: r.repository,
     edit: {
       intent_edit_id: r.edit_id,
+      edit_count: r.edit_count,
+      current_edit_count: r.current_edit_count,
+      superseded_edit_count: r.superseded_edit_count,
+      reverted_edit_count: r.reverted_edit_count,
+      unknown_edit_count: r.unknown_edit_count,
       tool_name: r.tool_name,
       timestamp_ms: r.timestamp_ms ?? r.prompt_ts_ms,
       landed: r.landed,
       landed_reason: r.landed_reason,
       new_string_snippet: r.new_string_snippet,
     },
-    status: classifyStatus(r.landed, r.landed_reason),
+    status: classifyAggregateStatus(r),
   }));
 }
 
@@ -73,11 +83,19 @@ interface IntentForCodeCandidateRow {
   new_string_snippet: string | null;
 }
 
+interface IntentForCodeGroupedRow extends IntentForCodeCandidateRow {
+  edit_count: number;
+  current_edit_count: number;
+  superseded_edit_count: number;
+  reverted_edit_count: number;
+  unknown_edit_count: number;
+}
+
 function collectIntentForCodeRows(
   filePath: string,
   limit: number,
-): IntentForCodeCandidateRow[] {
-  const candidateLimit = Math.max(limit * 2, limit);
+): IntentForCodeGroupedRow[] {
+  const candidateLimit = Math.max(limit * 20, 200);
   const normalized = loadIntentForCodeRowsFromFileSubjects(
     filePath,
     candidateLimit,
@@ -91,7 +109,42 @@ function collectIntentForCodeRows(
     }
   }
 
-  return [...byEditId.values()]
+  const grouped = new Map<number, IntentForCodeGroupedRow>();
+  for (const row of byEditId.values()) {
+    const key = row.intent_unit_id;
+    const existing = grouped.get(key);
+    const status = classifyStatus(row.landed, row.landed_reason);
+    if (!existing) {
+      grouped.set(key, {
+        ...row,
+        edit_count: 1,
+        current_edit_count: status === "current" ? 1 : 0,
+        superseded_edit_count: status === "superseded" ? 1 : 0,
+        reverted_edit_count: status === "reverted" ? 1 : 0,
+        unknown_edit_count: status === "unknown" ? 1 : 0,
+      });
+      continue;
+    }
+    existing.edit_count += 1;
+    if (status === "current") existing.current_edit_count += 1;
+    else if (status === "superseded") existing.superseded_edit_count += 1;
+    else if (status === "reverted") existing.reverted_edit_count += 1;
+    else existing.unknown_edit_count += 1;
+    if (
+      (row.timestamp_ms ?? 0) > (existing.timestamp_ms ?? 0) ||
+      ((row.timestamp_ms ?? 0) === (existing.timestamp_ms ?? 0) &&
+        row.edit_id > existing.edit_id)
+    ) {
+      existing.edit_id = row.edit_id;
+      existing.tool_name = row.tool_name;
+      existing.timestamp_ms = row.timestamp_ms;
+      existing.landed = row.landed;
+      existing.landed_reason = row.landed_reason;
+      existing.new_string_snippet = row.new_string_snippet;
+    }
+  }
+
+  return [...grouped.values()]
     .sort(
       (a, b) =>
         (b.timestamp_ms ?? 0) - (a.timestamp_ms ?? 0) || b.edit_id - a.edit_id,
@@ -166,7 +219,7 @@ function loadIntentForCodeRowsLegacy(
 function classifyStatus(
   landed: number | null,
   reason: string | null,
-): IntentForCodeRow["status"] {
+): "current" | "superseded" | "reverted" | "unknown" {
   if (landed === null) return "unknown";
   if (landed === 1) return "current";
   if (reason === "overwritten_in_session" || reason === "write_replaced") {
@@ -176,6 +229,28 @@ function classifyStatus(
     return "reverted";
   }
   return "unknown";
+}
+
+function classifyAggregateStatus(
+  row: Pick<
+    IntentForCodeGroupedRow,
+    | "current_edit_count"
+    | "superseded_edit_count"
+    | "reverted_edit_count"
+    | "unknown_edit_count"
+  >,
+): IntentForCodeRow["status"] {
+  type AtomicStatus = "current" | "superseded" | "reverted" | "unknown";
+  const nonZero = [
+    row.current_edit_count > 0 ? "current" : null,
+    row.superseded_edit_count > 0 ? "superseded" : null,
+    row.reverted_edit_count > 0 ? "reverted" : null,
+    row.unknown_edit_count > 0 ? "unknown" : null,
+  ].filter((value): value is AtomicStatus => value !== null);
+
+  if (nonZero.length === 0) return "unknown";
+  if (nonZero.length > 1) return "mixed";
+  return nonZero[0];
 }
 
 // ── search_intent ──────────────────────────────────────────────────────────

@@ -1308,6 +1308,68 @@ program
 // Query commands
 // ---------------------------------------------------------------------------
 
+const file = program
+  .command("file")
+  .description("Query local provenance for a file");
+
+file
+  .command("overview")
+  .description("Show aggregate local provenance for a file")
+  .argument("<path>", "File path to query")
+  .option("--repository <path>", "Optional repository path override")
+  .option(
+    "--recent-limit <n>",
+    "Max recent edits to return (default 5)",
+    parseInt,
+  )
+  .option(
+    "--related-limit <n>",
+    "Max related files to return (default 10)",
+    parseInt,
+  )
+  .action(async (filePath: string, opts: Opts) => {
+    output(
+      await service.fileOverview({
+        path: filePath,
+        repository: opts.repository,
+        recent_limit: opts.recentLimit,
+        related_limit: opts.relatedLimit,
+      }),
+    );
+  });
+
+file
+  .command("why")
+  .description("Show the best current explanation for a file or line")
+  .argument("<path>", "File path to query")
+  .option("--line <n>", "Optional line number", parseInt)
+  .option("--repository <path>", "Optional repository path override")
+  .action(async (filePath: string, opts: Opts) => {
+    output(
+      await service.whyCode({
+        path: filePath,
+        line: opts.line,
+        repository: opts.repository,
+      }),
+    );
+  });
+
+file
+  .command("recent")
+  .description("Show recent local history for a file")
+  .argument("<path>", "File path to query")
+  .option("--repository <path>", "Optional repository path override")
+  .option("--limit <n>", "Max recent rows to return (default 10)", parseInt)
+  .action(async (filePath: string, opts: Opts) => {
+    output(
+      await service.recentWorkOnPath({
+        path: filePath,
+        repository: opts.repository,
+        limit: opts.limit,
+      }),
+    );
+  });
+
 program
   .command("sessions")
   .description("List recent sessions with stats (event count, tools, cost)")

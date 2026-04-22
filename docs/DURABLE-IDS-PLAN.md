@@ -9,6 +9,30 @@ This work is about making ingestion and sync idempotent across reparse and
 rescan. It is not the broader semantic identity project for repositories,
 files, symbols, decisions, or future wiki artifacts.
 
+## Status On Main
+
+As of `main` on April 22, 2026, the implementation is ahead of the original
+Phase 2 wording in a few places:
+
+- Phase 1 durable IDs are landed for `messages`, `tool_calls`,
+  `scanner_turns`, and `scanner_events`.
+- Phase 2A core evidence-ref cutover is landed:
+  - `claim_evidence` stores `evidence_ref_id`
+  - `evidence_refs` and `evidence_ref_paths` are in the schema
+  - active claim writers emit typed refs for `message`, `tool_call`,
+    `hook_event`, and `file_snapshot`
+- The first Phase 2B repo/file normalization slice is also landed:
+  - `repository` / `file` subject kinds exist
+  - scanner and hook asserters emit `repository/name`, `file/path`,
+    `file/in-repository`, `intent/in-repository`, and `edit/touches-file`
+  - `intent_for_code` prefers normalized file-subject relations and falls back
+    to the legacy `intent_edits.file_path` path
+- The local `session_summaries` / `code_provenance` projection exists, but it
+  is feature-gated behind
+  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1` and is currently tracked
+  under the shared `claims.projection` data-version component rather than its
+  own versioned components.
+
 ## Why This Comes First
 
 Today, some scanner-owned rows depend on local row IDs or random `sync_id`
@@ -70,96 +94,65 @@ following evidence-normalization phase; they are not indefinite backlog.
 - `messages` no longer rely on local numeric row IDs for remote idempotency.
 - `restoreSyncIds` is no longer needed for scanner-owned rows.
 
-## Phase 2A: Evidence Ref Normalization
+## Phase 2: Remaining Foundation Work
 
 ### Objective
 
-Once scanner-owned evidence rows are stable, normalize provenance references
-across all raw evidence families and remove dependence on local row IDs or
-opaque ad hoc keys in the claim layer.
+Finish the still-open evidence and repo/file provenance work on top of the
+already-landed Phase 1 durable IDs, Phase 2A core evidence-ref cutover, and
+the first Phase 2B repo/file normalization slice.
 
-### Deliverables
+The old 2A/2B split is no longer the best way to track active work: `main`
+already contains part of each. The remaining Phase 2 items are grouped here as
+one contiguous tranche.
 
-1. Typed evidence references for:
-   - hook event
-   - otel log
-   - otel metric
-   - otel span
-   - message
-   - tool call
-   - scanner turn
-   - scanner event
-   - git commit
-   - git hunk
-   - file snapshot
-2. Replace freeform/local-id evidence keys in claims with typed references.
-3. Adopt a canonical locator strategy for append-only evidence that still uses
-   stored random `sync_id` values today:
-   - `hook_events`
-   - `otel_logs`
-   - `otel_metrics`
-   - keep `otel_spans` aligned with their existing `(trace_id, span_id)` key
-   - explicitly decide whether any of those families need deterministic ingest
-     identity beyond typed refs in a follow-up slice
-4. Update claim integrity/provenance resolution to target typed evidence refs
-   instead of string-parsing local identifiers.
+### Completed On Main
 
-This phase-level list is still the desired end state. The current branch lands
-the core schema/migration cutover and actively emits typed refs for
-`message`, `tool_call`, `hook_event`, and `file_snapshot`; the remaining
-families stay in Phase 2A follow-up.
+These items are no longer part of the active Phase 2 backlog:
 
-### Why Hooks/OTel Land Here
-
-- They did not need to block Phase 1 because the urgent correctness problem was
-  scanner reparse/rescan duplication.
-- They should not wait until later semantic work, because claims already cite
-  hook/message/tool evidence and need a stable, typed reference substrate
-  before we broaden provenance further.
-- `hook_events` are highest priority in this phase because they already back
-  active claim generation directly.
+- typed evidence refs are in the schema and active claim writers emit them for
+  `message`, `tool_call`, `hook_event`, and `file_snapshot`
+- claim integrity and landed-status read paths already resolve evidence by
+  `kind` plus locator data instead of depending on local numeric row IDs
+- active edit views and landed-status reconciliation now consume typed
+  payload-evidence refs directly instead of preserving hook-event row-id
+  fallbacks
+- `repository` / `file` subject kinds and the initial repo/file relations are
+  emitted by scanner-backed and hook-backed asserters
+- `intent_for_code` already uses the normalized file-subject path with legacy
+  fallback
 
 See [EVIDENCE-REFS-PHASE2A.md](./EVIDENCE-REFS-PHASE2A.md) for the concrete
-typed-ref shape, migration sketch, and the hook/OTel identity recommendation.
+typed-ref shape, landed core cutover, and optional extension notes.
 
-## Phase 2B: Repo/File Normalization
+### Remaining Work
 
-### Objective
+1. Add the next repo/file provenance slice:
+   - git-derived repo facts
+   - git-derived file facts and provenance
+2. Continue adding richer file-centric query paths on top of the normalized
+   repo/file relations. `file_overview` is now landed as the first aggregate
+   file-centric query in this slice.
+3. Decide whether local projection tables should remain under the shared
+   `claims.projection` component or get explicit versioned components:
+   - session summaries
+   - code provenance
+   - any future materialized repo/file views
+4. Revisit the `messages` ordinal fallback for UUID-less rows before later
+   provenance layers depend on those message identities as stable evidence.
 
-Once evidence references are structured, add the first semantic subjects that
-already have strong evidence support.
+### Future Consideration
 
-### Deliverables
+These items are no longer part of the active Phase 2 backlog:
 
-1. First-class subject kinds for:
-   - `repository`
-   - `file`
-2. Stable identity rules for repository and file subjects.
-3. Relation predicates linking existing intent/edit subjects to normalized
-   repository/file subjects.
-4. At least one file-centric query path switched to the normalized model.
-5. Initial git-derived provenance/facts for repo/file subjects.
-
-### Current Slice
-
-The current Phase 2B slice focuses on the minimum normalized model:
-
-- first-class `repository` / `file` claim subjects
-- `intent/in-repository`, `file/in-repository`, and `edit/touches-file`
-  relations
-- normalized `intent_for_code` lookup via file subjects, with the legacy
-  `intent_edits.file_path` path retained as fallback
-
-Projection/session-summary components are still being treated as follow-up
-derived state, not first-class versioned components yet.
-
-### Tracked Follow-Up
-
-- Revisit the `messages` ordinal fallback for rows without source UUIDs.
-  Phase 1 accepts `session_id + ordinal` as the durable key input, but a future
-  parser that re-numbers legacy UUID-less streams would change those message
-  identities after reparse. Evaluate a stronger fallback before later
-  provenance layers depend on those rows as stable evidence.
+- `scanner_turn` / `scanner_event` typed refs:
+  raw tables exist, but current claim/provenance paths do not need them
+- `otel_log` / `otel_metric` / `otel_span` typed refs:
+  raw tables exist, but the provenance value is currently unclear outside
+  sync, diagnostics, and operational queries
+- `git_commit` / `git_hunk` typed refs:
+  reserved evidence kinds only for now; a real rollout would require a future
+  raw git ingest model rather than just more claim writers
 
 ## Phase 3: Claims and Provenance Expansion
 
@@ -194,6 +187,14 @@ Current components:
 - `intent.from_hooks`
 - `intent.landed_from_disk`
 - `claims.active`
+- `claims.projection`
+
+`claims.projection` currently covers:
+
+- `intent_units`
+- `intent_edits`
+- and, when session-summary projections are enabled,
+  `session_summaries`, `intent_session_summaries`, and `code_provenance`
 
 That enables startup to distinguish:
 
@@ -207,23 +208,3 @@ clear global stale-state flags.
 
 `claims.asserter_version` is now the integer component version that emitted the
 row, not an independently managed string constant.
-
-## Immediate Next Steps
-
-1. Land and monitor the first Phase 2B repo/file normalization slice:
-   - `repository` / `file` subject kinds
-   - normalized repo/file relations from existing claim asserters
-   - normalized `intent_for_code` lookup with legacy fallback
-2. Decide whether to version additional derived-state components explicitly:
-   - intent projection
-   - session summaries
-   - provenance/materialized file views
-3. Keep moving evidence consumers from key-prefix parsing to resolver-by-kind.
-4. Decide which remaining evidence-ref families should emit next:
-   - `scanner_turn` / `scanner_event`
-   - `otel_logs` / `otel_metrics` / `otel_spans`
-   - `git_commit` / `git_hunk`
-5. Continue Phase 2B after the normalized file model settles:
-   - git-derived repo/file provenance
-   - richer file-centric queries
-   - possible symbol-level follow-on work later

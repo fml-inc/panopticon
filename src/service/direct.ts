@@ -47,6 +47,7 @@ import {
 } from "../scanner/index.js";
 import { readScannerStatus } from "../scanner/status.js";
 import {
+  fileOverview,
   listSessionSummaries,
   recentWorkOnPath,
   sessionSummaryDetail,
@@ -175,12 +176,13 @@ export function createDirectPanopticonService(): PanopticonService {
       return sessionSummaryDetail(opts);
     },
     async whyCode(opts) {
-      assertSessionSummaryProjectionsEnabled();
       return whyCode(opts);
     },
     async recentWorkOnPath(opts) {
-      assertSessionSummaryProjectionsEnabled();
       return recentWorkOnPath(opts);
+    },
+    async fileOverview(opts) {
+      return fileOverview(opts);
     },
     async pruneEstimate(cutoffMs) {
       return pruneEstimate(cutoffMs);

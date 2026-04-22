@@ -292,7 +292,7 @@ describe("live hook claims", () => {
       repository,
       payload: { prompt: "make the hook edit" },
     });
-    const editId = insertHookEvent({
+    const _editId = insertHookEvent({
       session_id: sessionId,
       event_type: "PostToolUse",
       timestamp_ms: 1100,
@@ -318,11 +318,11 @@ describe("live hook claims", () => {
     rebuildActiveClaims();
 
     const [activeEdit] = [...loadActiveEdits({ sessionId }).values()];
-    expect(activeEdit?.payloadEvidenceRefId).toBeGreaterThan(0);
-    expect(activeEdit?.payloadEvidenceKey?.startsWith("hook_event:")).toBe(
-      true,
-    );
-    expect(activeEdit?.hookEventId).toBe(editId);
+    expect(activeEdit?.payloadEvidence).toMatchObject({
+      refId: expect.any(Number),
+      kind: "hook_event",
+      refKey: expect.stringMatching(/^hook_event:/),
+    });
 
     const evidenceRow = getDb()
       .prepare(
@@ -1177,8 +1177,11 @@ describe("scanner-only landed reconciliation", () => {
     );
 
     const [activeEdit] = [...loadActiveEdits({ sessionId }).values()];
-    expect(activeEdit?.payloadEvidenceRefId).toBeGreaterThan(0);
-    expect(activeEdit?.payloadEvidenceKey?.startsWith("tc:")).toBe(true);
+    expect(activeEdit?.payloadEvidence).toMatchObject({
+      refId: expect.any(Number),
+      kind: "tool_call",
+      refKey: expect.stringMatching(/^tc:/),
+    });
 
     const eagerEvidenceRows = getDb()
       .prepare(

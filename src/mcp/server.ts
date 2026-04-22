@@ -426,56 +426,89 @@ if (config.enableSessionSummaryProjections) {
       };
     },
   );
-
-  server.tool(
-    "why_code",
-    "Explain the best current local provenance for a file path and optional line: which intent/session-summary most likely established the code and what evidence supports it.",
-    {
-      path: z.string().describe("File path to explain"),
-      line: z
-        .number()
-        .optional()
-        .describe("Optional 1-based line number for a more specific answer"),
-      repository: z
-        .string()
-        .optional()
-        .describe("Optional repository root used to resolve relative paths"),
-    },
-    async ({ path, line, repository }) => {
-      const result = await service.whyCode({ path, line, repository });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    },
-  );
-
-  server.tool(
-    "recent_work_on_path",
-    "Show recent local intents, edits, and session summaries that touched a file path.",
-    {
-      path: z.string().describe("File path to inspect"),
-      repository: z
-        .string()
-        .optional()
-        .describe("Optional repository root used to resolve relative paths"),
-      limit: z.number().optional().describe("Max results (default 20)"),
-    },
-    async ({ path, repository, limit }) => {
-      const result = await service.recentWorkOnPath({
-        path,
-        repository,
-        limit,
-      });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    },
-  );
 }
+
+server.tool(
+  "why_code",
+  "Explain the best current local provenance for a file path and optional line: which intent/session-summary most likely established the code and what evidence supports it.",
+  {
+    path: z.string().describe("File path to explain"),
+    line: z
+      .number()
+      .optional()
+      .describe("Optional 1-based line number for a more specific answer"),
+    repository: z
+      .string()
+      .optional()
+      .describe("Optional repository root used to resolve relative paths"),
+  },
+  async ({ path, line, repository }) => {
+    const result = await service.whyCode({ path, line, repository });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "recent_work_on_path",
+  "Show recent local intents, edits, and session summaries that touched a file path.",
+  {
+    path: z.string().describe("File path to inspect"),
+    repository: z
+      .string()
+      .optional()
+      .describe("Optional repository root used to resolve relative paths"),
+    limit: z.number().optional().describe("Max results (default 20)"),
+  },
+  async ({ path, repository, limit }) => {
+    const result = await service.recentWorkOnPath({
+      path,
+      repository,
+      limit,
+    });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "file_overview",
+  "Return a file-centric overview for a path: aggregate edit/session counts, the best current explanation, recent work, and related files that changed with it.",
+  {
+    path: z.string().describe("File path to inspect"),
+    repository: z
+      .string()
+      .optional()
+      .describe("Optional repository root used to resolve relative paths"),
+    recent_limit: z
+      .number()
+      .optional()
+      .describe("Max recent history rows to include (default 5)"),
+    related_limit: z
+      .number()
+      .optional()
+      .describe("Max related files to include (default 10)"),
+  },
+  async ({ path, repository, recent_limit, related_limit }) => {
+    const result = await service.fileOverview({
+      path,
+      repository,
+      recent_limit,
+      related_limit,
+    });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
 
 // ───────────────────────────────────────────────────────────────────────────
 // Permissions tools — read/preview/apply the panopticon hook allowlist.

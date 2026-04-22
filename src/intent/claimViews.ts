@@ -11,6 +11,13 @@ export interface ActiveIntent {
   closedAtMs?: number | null;
 }
 
+export interface ActiveEditPayloadEvidence {
+  refId: number;
+  kind: "hook_event" | "tool_call";
+  refKey: string;
+  syncId: string | null;
+}
+
 export interface ActiveEdit {
   editKey: string;
   intentKey?: string;
@@ -21,9 +28,7 @@ export interface ActiveEdit {
   newStringSnippet?: string | null;
   timestampMs?: number;
   timestampSource?: string;
-  hookEventId?: number | null;
-  payloadEvidenceRefId?: number | null;
-  payloadEvidenceKey?: string | null;
+  payloadEvidence?: ActiveEditPayloadEvidence | null;
   landedStatus?: string | null;
   landedReason?: string | null;
 }
@@ -115,8 +120,9 @@ function loadActiveEditRows(sessionId?: string): ActiveClaimRow[] {
 interface ActiveEditEvidenceRow {
   subject: string;
   evidence_ref_id: number;
+  evidence_kind: "hook_event" | "tool_call";
   evidence_ref_key: string;
-  hook_event_id: number | null;
+  evidence_sync_id: string | null;
 }
 
 function loadActiveEditEvidenceRows(
@@ -128,15 +134,13 @@ function loadActiveEditEvidenceRows(
       .prepare(
         `SELECT c.subject,
                 ce.evidence_ref_id,
+                er.kind AS evidence_kind,
                 er.ref_key AS evidence_ref_key,
-                he.id AS hook_event_id
+                er.sync_id AS evidence_sync_id
          FROM active_claims ac
          JOIN claims c ON c.id = ac.claim_id
          JOIN claim_evidence ce ON ce.claim_id = c.id
          JOIN evidence_refs er ON er.id = ce.evidence_ref_id
-         LEFT JOIN hook_events he
-           ON er.kind = 'hook_event'
-          AND he.sync_id = er.sync_id
          WHERE c.subject_kind = 'edit'
            AND er.kind IN ('hook_event', 'tool_call')
          ORDER BY
@@ -168,15 +172,13 @@ function loadActiveEditEvidenceRows(
        )
        SELECT c.subject,
               ce.evidence_ref_id,
+              er.kind AS evidence_kind,
               er.ref_key AS evidence_ref_key,
-              he.id AS hook_event_id
+              er.sync_id AS evidence_sync_id
        FROM active_claims ac
        JOIN claims c ON c.id = ac.claim_id
        JOIN claim_evidence ce ON ce.claim_id = c.id
        JOIN evidence_refs er ON er.id = ce.evidence_ref_id
-       LEFT JOIN hook_events he
-         ON er.kind = 'hook_event'
-        AND he.sync_id = er.sync_id
        WHERE c.subject_kind = 'edit'
          AND c.subject IN (SELECT subject FROM scoped_edits)
          AND er.kind IN ('hook_event', 'tool_call')
@@ -281,14 +283,13 @@ export function loadActiveEdits(
   for (const row of evidenceRows) {
     const edit = edits.get(row.subject);
     if (!edit) continue;
-    if (edit.payloadEvidenceRefId == null) {
-      edit.payloadEvidenceRefId = row.evidence_ref_id;
-    }
-    if (!edit.payloadEvidenceKey) {
-      edit.payloadEvidenceKey = row.evidence_ref_key;
-    }
-    if (row.hook_event_id != null && edit.hookEventId == null) {
-      edit.hookEventId = row.hook_event_id;
+    if (!edit.payloadEvidence) {
+      edit.payloadEvidence = {
+        refId: row.evidence_ref_id,
+        kind: row.evidence_kind,
+        refKey: row.evidence_ref_key,
+        syncId: row.evidence_sync_id,
+      };
     }
     edits.set(row.subject, edit);
   }

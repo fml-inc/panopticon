@@ -125,8 +125,48 @@ export interface RecentWorkOnPathResult {
     intent_unit_id: number;
     prompt_text: string;
     intent_edit_id: number;
+    edit_count: number;
+    current_edit_count: number;
+    superseded_edit_count: number;
+    reverted_edit_count: number;
+    unknown_edit_count: number;
     timestamp_ms: number | null;
-    status: string;
+    status: "current" | "superseded" | "reverted" | "mixed" | "unknown";
+  }>;
+}
+
+export interface FileOverviewResult {
+  path: string;
+  repository: string | null;
+  summary: {
+    intent_count: number;
+    edit_count: number;
+    session_summary_count: number;
+    current_edit_count: number;
+    superseded_edit_count: number;
+    reverted_edit_count: number;
+    unknown_edit_count: number;
+    first_edit_ts_ms: number | null;
+    last_edit_ts_ms: number | null;
+  };
+  current: {
+    status: WhyCodeResult["status"];
+    confidence: number;
+    binding_level: "span" | "file" | "none";
+    session_summary_id: number | null;
+    session_summary_title: string | null;
+    intent_unit_id: number | null;
+    intent_edit_id: number | null;
+    prompt_text: string | null;
+    snippet_preview: string | null;
+  };
+  recent: RecentWorkOnPathResult["recent"];
+  related_files: Array<{
+    file_path: string;
+    shared_intent_count: number;
+    shared_session_summary_count: number;
+    last_touched_ts_ms: number | null;
+    last_status: "current" | "superseded" | "reverted" | "unknown";
   }>;
 }
 
@@ -371,72 +411,191 @@ export function recentWorkOnPath(opts: {
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
-  let rows: Array<{
+  if (config.enableSessionSummaryProjections) {
+    ensureSessionSummaryProjections();
+  }
+  const rows = db
+    .prepare(
+      `SELECT e.id AS intent_edit_id,
+              e.timestamp_ms,
+              e.landed,
+              e.landed_reason,
+              u.id AS intent_unit_id,
+              u.prompt_text,
+              u.repository,
+              ${
+                config.enableSessionSummaryProjections
+                  ? `(SELECT iss.session_summary_id
+                      FROM intent_session_summaries iss
+                      WHERE iss.intent_unit_id = u.id
+                      ORDER BY CASE iss.membership_kind
+                                 WHEN 'primary' THEN 0
+                                 ELSE 1
+                               END ASC,
+                               iss.score DESC,
+                               iss.session_summary_id DESC
+                      LIMIT 1) AS session_summary_id,
+                     (SELECT s.title
+                      FROM intent_session_summaries iss
+                      JOIN session_summaries s ON s.id = iss.session_summary_id
+                      WHERE iss.intent_unit_id = u.id
+                      ORDER BY CASE iss.membership_kind
+                                 WHEN 'primary' THEN 0
+                                 ELSE 1
+                               END ASC,
+                               iss.score DESC,
+                               iss.session_summary_id DESC
+                      LIMIT 1) AS session_summary_title`
+                  : `NULL AS session_summary_id,
+                     NULL AS session_summary_title`
+              }
+       FROM intent_edits e
+       JOIN intent_units u ON u.id = e.intent_unit_id
+       WHERE e.file_path = ?
+       ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC`,
+    )
+    .all(normalizedPath) as Array<{
     intent_edit_id: number;
     timestamp_ms: number | null;
     landed: number | null;
     landed_reason: string | null;
     intent_unit_id: number;
     prompt_text: string;
+    repository: string | null;
     session_summary_id: number | null;
     session_summary_title: string | null;
   }>;
 
-  if (config.enableSessionSummaryProjections) {
-    ensureSessionSummaryProjections();
-    rows = db
-      .prepare(
-        `SELECT e.id AS intent_edit_id,
-                e.timestamp_ms,
-                e.landed,
-                e.landed_reason,
-                u.id AS intent_unit_id,
-                u.prompt_text,
-                s.id AS session_summary_id,
-                s.title AS session_summary_title
-         FROM intent_edits e
-         JOIN intent_units u ON u.id = e.intent_unit_id
-         LEFT JOIN intent_session_summaries iss
-           ON iss.intent_unit_id = u.id
-         LEFT JOIN session_summaries s ON s.id = iss.session_summary_id
-         WHERE e.file_path = ?
-         ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
-         LIMIT ?`,
-      )
-      .all(normalizedPath, limit) as typeof rows;
-  } else {
-    rows = db
-      .prepare(
-        `SELECT e.id AS intent_edit_id,
-                e.timestamp_ms,
-                e.landed,
-                e.landed_reason,
-                u.id AS intent_unit_id,
-                u.prompt_text,
-                NULL AS session_summary_id,
-                NULL AS session_summary_title
-         FROM intent_edits e
-         JOIN intent_units u ON u.id = e.intent_unit_id
-         WHERE e.file_path = ?
-         ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
-         LIMIT ?`,
-      )
-      .all(normalizedPath, limit) as typeof rows;
+  const grouped = new Map<
+    number,
+    {
+      session_summary_id: number | null;
+      session_summary_title: string | null;
+      intent_unit_id: number;
+      prompt_text: string;
+      repository: string | null;
+      intent_edit_id: number;
+      edit_count: number;
+      current_edit_count: number;
+      superseded_edit_count: number;
+      reverted_edit_count: number;
+      unknown_edit_count: number;
+      timestamp_ms: number | null;
+    }
+  >();
+
+  for (const row of rows) {
+    const existing = grouped.get(row.intent_unit_id);
+    const status = classifyEditStatus(row.landed, row.landed_reason);
+    if (!existing) {
+      grouped.set(row.intent_unit_id, {
+        session_summary_id: row.session_summary_id,
+        session_summary_title: row.session_summary_title,
+        intent_unit_id: row.intent_unit_id,
+        prompt_text: row.prompt_text,
+        repository: row.repository,
+        intent_edit_id: row.intent_edit_id,
+        edit_count: 1,
+        current_edit_count: status === "current" ? 1 : 0,
+        superseded_edit_count: status === "superseded" ? 1 : 0,
+        reverted_edit_count: status === "reverted" ? 1 : 0,
+        unknown_edit_count: status === "unknown" ? 1 : 0,
+        timestamp_ms: row.timestamp_ms,
+      });
+      continue;
+    }
+    existing.edit_count += 1;
+    if (status === "current") existing.current_edit_count += 1;
+    else if (status === "superseded") existing.superseded_edit_count += 1;
+    else if (status === "reverted") existing.reverted_edit_count += 1;
+    else existing.unknown_edit_count += 1;
+    if (
+      (row.timestamp_ms ?? 0) > (existing.timestamp_ms ?? 0) ||
+      ((row.timestamp_ms ?? 0) === (existing.timestamp_ms ?? 0) &&
+        row.intent_edit_id > existing.intent_edit_id)
+    ) {
+      existing.intent_edit_id = row.intent_edit_id;
+      existing.timestamp_ms = row.timestamp_ms;
+      existing.session_summary_id = row.session_summary_id;
+      existing.session_summary_title = row.session_summary_title;
+      existing.repository = row.repository;
+    }
   }
+
+  const recent = [...grouped.values()]
+    .sort(
+      (a, b) =>
+        (b.timestamp_ms ?? 0) - (a.timestamp_ms ?? 0) ||
+        b.intent_edit_id - a.intent_edit_id,
+    )
+    .slice(0, limit);
 
   return {
     path: normalizedPath,
     repository:
-      opts.repository ?? lookupRepositoryForPath(normalizedPath) ?? null,
-    recent: rows.map((row) => ({
+      opts.repository ??
+      recent[0]?.repository ??
+      lookupRepositoryForPath(normalizedPath) ??
+      null,
+    recent: recent.map((row) => ({
       session_summary_id: row.session_summary_id,
       session_summary_title: row.session_summary_title,
       intent_unit_id: row.intent_unit_id,
       prompt_text: row.prompt_text,
       intent_edit_id: row.intent_edit_id,
+      edit_count: row.edit_count,
+      current_edit_count: row.current_edit_count,
+      superseded_edit_count: row.superseded_edit_count,
+      reverted_edit_count: row.reverted_edit_count,
+      unknown_edit_count: row.unknown_edit_count,
       timestamp_ms: row.timestamp_ms,
-      status: classifyEditStatus(row.landed, row.landed_reason),
+      status: classifyAggregateEditStatus(row),
     })),
+  };
+}
+
+export function fileOverview(opts: {
+  path: string;
+  repository?: string;
+  recent_limit?: number;
+  related_limit?: number;
+}): FileOverviewResult {
+  const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
+  const summary = loadFileOverviewSummary(normalizedPath);
+  const current = whyCode({
+    path: normalizedPath,
+    repository: opts.repository,
+  });
+  const recent = recentWorkOnPath({
+    path: normalizedPath,
+    repository: opts.repository,
+    limit: opts.recent_limit ?? 5,
+  });
+  const relatedFiles = loadRelatedFilesForPath(
+    normalizedPath,
+    opts.related_limit ?? 10,
+  );
+
+  return {
+    path: normalizedPath,
+    repository:
+      opts.repository ??
+      current.repository ??
+      lookupRepositoryForPath(normalizedPath),
+    summary,
+    current: {
+      status: current.status,
+      confidence: current.confidence,
+      binding_level: current.binding?.binding_level ?? "none",
+      session_summary_id: current.session_summary?.session_summary_id ?? null,
+      session_summary_title: current.session_summary?.title ?? null,
+      intent_unit_id: current.intent?.intent_unit_id ?? null,
+      intent_edit_id: current.edit?.intent_edit_id ?? null,
+      prompt_text: current.intent?.prompt_text ?? null,
+      snippet_preview: current.edit?.snippet_preview ?? null,
+    },
+    recent: recent.recent,
+    related_files: relatedFiles,
   };
 }
 
@@ -693,6 +852,204 @@ function lookupRepositoryForPath(filePath: string): string | null {
   return emptyToNull(row?.repository ?? null);
 }
 
+function loadFileOverviewSummary(
+  filePath: string,
+): FileOverviewResult["summary"] {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS edit_count,
+              COUNT(DISTINCT e.intent_unit_id) AS intent_count,
+              COUNT(DISTINCT iss.session_summary_id) AS session_summary_count,
+              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS current_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed = 0
+                   AND e.landed_reason IN ('overwritten_in_session', 'write_replaced')
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS superseded_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed = 0
+                   AND e.landed_reason IN ('reverted_post_session', 'file_deleted')
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS reverted_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed IS NULL
+                    OR (
+                      e.landed = 0
+                      AND (
+                        e.landed_reason IS NULL
+                        OR e.landed_reason NOT IN (
+                          'overwritten_in_session',
+                          'write_replaced',
+                          'reverted_post_session',
+                          'file_deleted'
+                        )
+                      )
+                    )
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS unknown_edit_count,
+              MIN(COALESCE(e.timestamp_ms, u.prompt_ts_ms)) AS first_edit_ts_ms,
+              MAX(COALESCE(e.timestamp_ms, u.prompt_ts_ms)) AS last_edit_ts_ms
+       FROM intent_edits e
+       JOIN intent_units u ON u.id = e.intent_unit_id
+       LEFT JOIN intent_session_summaries iss
+         ON iss.intent_unit_id = e.intent_unit_id
+       WHERE e.file_path = ?`,
+    )
+    .get(filePath) as
+    | {
+        edit_count: number;
+        intent_count: number;
+        session_summary_count: number;
+        current_edit_count: number | null;
+        superseded_edit_count: number | null;
+        reverted_edit_count: number | null;
+        unknown_edit_count: number | null;
+        first_edit_ts_ms: number | null;
+        last_edit_ts_ms: number | null;
+      }
+    | undefined;
+
+  return {
+    intent_count: row?.intent_count ?? 0,
+    edit_count: row?.edit_count ?? 0,
+    session_summary_count: row?.session_summary_count ?? 0,
+    current_edit_count: row?.current_edit_count ?? 0,
+    superseded_edit_count: row?.superseded_edit_count ?? 0,
+    reverted_edit_count: row?.reverted_edit_count ?? 0,
+    unknown_edit_count: row?.unknown_edit_count ?? 0,
+    first_edit_ts_ms: row?.first_edit_ts_ms ?? null,
+    last_edit_ts_ms: row?.last_edit_ts_ms ?? null,
+  };
+}
+
+function loadRelatedFilesForPath(
+  filePath: string,
+  limit: number,
+): FileOverviewResult["related_files"] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `WITH seed_intents AS (
+         SELECT DISTINCT intent_unit_id
+         FROM intent_edits
+         WHERE file_path = ?
+       ),
+       seed_summaries AS (
+         SELECT DISTINCT iss.session_summary_id
+         FROM seed_intents si
+         JOIN intent_session_summaries iss
+           ON iss.intent_unit_id = si.intent_unit_id
+         WHERE iss.session_summary_id IS NOT NULL
+       ),
+       related_by_intent AS (
+         SELECT e.file_path,
+                e.intent_unit_id,
+                COALESCE(e.timestamp_ms, u.prompt_ts_ms) AS touched_ts_ms
+         FROM seed_intents si
+         JOIN intent_edits e ON e.intent_unit_id = si.intent_unit_id
+         JOIN intent_units u ON u.id = e.intent_unit_id
+         WHERE e.file_path != ?
+       ),
+       related_by_summary AS (
+         SELECT e.file_path,
+                iss.session_summary_id,
+                COALESCE(e.timestamp_ms, u.prompt_ts_ms) AS touched_ts_ms
+         FROM seed_summaries ss
+         JOIN intent_session_summaries iss
+           ON iss.session_summary_id = ss.session_summary_id
+         JOIN intent_edits e ON e.intent_unit_id = iss.intent_unit_id
+         JOIN intent_units u ON u.id = e.intent_unit_id
+         WHERE e.file_path != ?
+       ),
+       intent_counts AS (
+         SELECT file_path,
+                COUNT(DISTINCT intent_unit_id) AS shared_intent_count,
+                MAX(touched_ts_ms) AS last_intent_ts_ms
+         FROM related_by_intent
+         GROUP BY file_path
+       ),
+       summary_counts AS (
+         SELECT file_path,
+                COUNT(DISTINCT session_summary_id) AS shared_session_summary_count,
+                MAX(touched_ts_ms) AS last_summary_ts_ms
+         FROM related_by_summary
+         GROUP BY file_path
+       ),
+       candidate_files AS (
+         SELECT file_path FROM intent_counts
+         UNION
+         SELECT file_path FROM summary_counts
+       ),
+       latest_status AS (
+         SELECT e.file_path,
+                e.landed,
+                e.landed_reason,
+                COALESCE(e.timestamp_ms, u.prompt_ts_ms) AS touched_ts_ms,
+                ROW_NUMBER() OVER (
+                  PARTITION BY e.file_path
+                  ORDER BY COALESCE(e.timestamp_ms, u.prompt_ts_ms) DESC, e.id DESC
+                ) AS rn
+         FROM intent_edits e
+         JOIN intent_units u ON u.id = e.intent_unit_id
+         WHERE e.file_path IN (SELECT file_path FROM candidate_files)
+       )
+       SELECT cf.file_path,
+              COALESCE(ic.shared_intent_count, 0) AS shared_intent_count,
+              COALESCE(sc.shared_session_summary_count, 0)
+                AS shared_session_summary_count,
+              CASE
+                WHEN ic.last_intent_ts_ms IS NULL
+                 AND sc.last_summary_ts_ms IS NULL
+                 AND ls.touched_ts_ms IS NULL
+                THEN NULL
+                ELSE MAX(
+                  COALESCE(ic.last_intent_ts_ms, 0),
+                  COALESCE(sc.last_summary_ts_ms, 0),
+                  COALESCE(ls.touched_ts_ms, 0)
+                )
+              END AS last_touched_ts_ms,
+              ls.landed,
+              ls.landed_reason
+       FROM candidate_files cf
+       LEFT JOIN intent_counts ic ON ic.file_path = cf.file_path
+       LEFT JOIN summary_counts sc ON sc.file_path = cf.file_path
+       LEFT JOIN latest_status ls
+         ON ls.file_path = cf.file_path
+        AND ls.rn = 1
+       ORDER BY shared_intent_count DESC,
+                shared_session_summary_count DESC,
+                last_touched_ts_ms DESC,
+                cf.file_path ASC
+       LIMIT ?`,
+    )
+    .all(filePath, filePath, filePath, limit) as Array<{
+    file_path: string;
+    shared_intent_count: number;
+    shared_session_summary_count: number;
+    last_touched_ts_ms: number | null;
+    landed: number | null;
+    landed_reason: string | null;
+  }>;
+
+  return rows.map((row) => ({
+    file_path: row.file_path,
+    shared_intent_count: row.shared_intent_count,
+    shared_session_summary_count: row.shared_session_summary_count,
+    last_touched_ts_ms: row.last_touched_ts_ms,
+    last_status: classifyEditStatus(row.landed, row.landed_reason),
+  }));
+}
+
 function parseSince(since: string): number | null {
   const trimmed = since.trim();
   if (!trimmed) return null;
@@ -731,4 +1088,26 @@ function classifyEditStatus(
     return "reverted";
   }
   return "unknown";
+}
+
+function classifyAggregateEditStatus(
+  row: Pick<
+    RecentWorkOnPathResult["recent"][number],
+    | "current_edit_count"
+    | "superseded_edit_count"
+    | "reverted_edit_count"
+    | "unknown_edit_count"
+  >,
+): RecentWorkOnPathResult["recent"][number]["status"] {
+  type AtomicStatus = "current" | "superseded" | "reverted" | "unknown";
+  const nonZero = [
+    row.current_edit_count > 0 ? "current" : null,
+    row.superseded_edit_count > 0 ? "superseded" : null,
+    row.reverted_edit_count > 0 ? "reverted" : null,
+    row.unknown_edit_count > 0 ? "unknown" : null,
+  ].filter((value): value is AtomicStatus => value !== null);
+
+  if (nonZero.length === 0) return "unknown";
+  if (nonZero.length > 1) return "mixed";
+  return nonZero[0];
 }

@@ -1,7 +1,33 @@
 # Session Summaries And Code Provenance V1
 
-This document proposes the next read-model layer on top of panopticon's
+This document records the current local read-model layer on top of panopticon's
 existing `claims -> intent_units / intent_edits` pipeline.
+
+## Status On Main
+
+As of `main` on April 22, 2026:
+
+- `session_summaries`, `intent_session_summaries`, and `code_provenance` are in
+  the core schema.
+- `rebuildIntentProjection()` rebuilds these projections through
+  `rebuildSessionSummaryProjections()` when
+  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`.
+- The current grouping rule is intentionally simple: one derived session summary
+  row per `session_id`, keyed as `ss:local:<session_id>`.
+- The exposed service and MCP tool names are:
+  - `session_summaries`
+  - `session_summary_detail`
+  - `why_code`
+  - `recent_work_on_path`
+  - `file_overview`
+- Those tools are feature-gated behind the same environment flag.
+- `listSessions()` also enriches session results with session-summary metadata
+  when the flag is enabled.
+- `why_code`, `recent_work_on_path`, and `file_overview` are deterministic
+  structured queries. They do not currently call an LLM.
+
+Historical "workstream" terminology elsewhere in this doc should be read as
+"session summary". Cross-session grouping is still follow-up work.
 
 The current implementation scope is deliberately narrow:
 
@@ -10,9 +36,9 @@ The current implementation scope is deliberately narrow:
 - preserve the historical trail needed to later support real-time coordination
 - avoid committing to a team-wide or lease-based coordination model yet
 
-This is a local-first proposal. The current branch does not yet implement
-cross-session workstream grouping. It uses one derived summary row per session
-and leaves true multi-session session_summaries as a follow-on layer.
+This is still a local-first design. The current implementation does not yet
+implement cross-session session-summary grouping. It uses one derived summary
+row per session and leaves true multi-session grouping as a follow-on layer.
 
 ## Non-goals
 
@@ -44,7 +70,8 @@ V1 is meant to answer:
 1. Why is this code here?
 2. What explicit session summary does this intent belong to?
 3. What recently touched this path?
-4. What session summaries are active, landed, mixed, or abandoned on this machine?
+4. What is the current local overview of this file and what else changed with it?
+5. What session summaries are active, landed, mixed, or abandoned on this machine?
 
 ## Addressability Model
 
@@ -57,13 +84,9 @@ V1 addressability is intentionally simple:
 The system should prefer precise span answers when possible and fall back to
 file-level explanations when not.
 
-## Migration
+## Current Schema
 
-Suggested migration name:
-
-- `add_local_session_summaries_and_code_provenance`
-
-Suggested SQL:
+The current schema lives in `src/db/schema.ts` and includes:
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_summaries (
@@ -100,7 +123,7 @@ CREATE TABLE IF NOT EXISTS intent_session_summaries (
 
 CREATE TABLE IF NOT EXISTS code_provenance (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  repository TEXT NOT NULL,
+  repository TEXT NOT NULL DEFAULT '',
   file_path TEXT NOT NULL,
   binding_level TEXT NOT NULL, -- file | span
   start_line INTEGER,
@@ -149,29 +172,26 @@ CREATE INDEX IF NOT EXISTS idx_code_provenance_status
 
 ### `session_summaries`
 
-`session_summaries` groups prompt-level intents into a larger local work object.
+The current implementation creates exactly one local summary row per session.
 
-V1 grouping should be heuristic and conservative:
+Current grouping rule:
 
-- same `repository`
-- nearby `cwd`
-- same session when available
-- close in time
-- shared touched files
-- shared branch/worktree if available
+- `session_summary_key = ss:local:<session_id>`
+- every intent in the session gets exactly one `primary` membership
+- `membership_kind = 'primary'`
+- `source = 'heuristic'`
+- `score = 1.0`
+- `reason_json = {"strategy":"session_id"}`
 
-V1 rule:
+Cross-session grouping by shared files, time, repo, or branch is not
+implemented yet.
 
-- every intent gets exactly one `primary` workstream
-- additional `related` memberships can wait until later if they complicate the
-  initial rebuild logic
-
-V1 title derivation:
+Current title derivation:
 
 - default title: first intent prompt text, truncated
 - later override path: claim-backed metadata such as `workstream/title`
 
-V1 status derivation:
+Current status derivation:
 
 - `active`: has unreconciled edits or fresh intents with unknown outcome
 - `landed`: all known edits landed and no open edits remain
@@ -180,13 +200,14 @@ V1 status derivation:
 
 ### `intent_session_summaries`
 
-`intent_session_summaries` keeps workstream grouping explorable and auditable.
+`intent_session_summaries` keeps session-summary membership explorable and
+auditable.
 
-It should preserve:
+Current implementation preserves:
 
-- why an intent was grouped
-- whether the grouping came from heuristics or explicit future claims
-- a score so later ranking/tie-breaking does not require schema changes
+- that the membership came from the session-id grouping strategy
+- one `primary` membership per intent
+- room for richer grouping later without another schema change
 
 ### `code_provenance`
 
@@ -198,7 +219,7 @@ It is derived from:
 - landed status / landed reason
 - current file contents on disk
 
-V1 binding rules:
+Current binding rules:
 
 - if a current snippet can be matched confidently, emit a `span` row
 - otherwise emit a `file` row
@@ -208,12 +229,12 @@ V1 binding rules:
 `code_provenance` is not a history table. It is the current best explanation
 layer. Historical browsing still comes from `intent_edits` and `session_summaries`.
 
-## Proposed Service Types
+## Current Service Types
 
-Add to `src/service/types.ts`:
+The current service surface in `src/service/types.ts` exposes:
 
 ```ts
-export interface ListWorkstreamsInput {
+export interface ListSessionSummariesInput {
   repository?: string;
   cwd?: string;
   status?: "active" | "landed" | "mixed" | "abandoned";
@@ -223,8 +244,8 @@ export interface ListWorkstreamsInput {
   offset?: number;
 }
 
-export interface WorkstreamDetailInput {
-  session_summary_id: number;
+export interface SessionSummaryDetailInput {
+  session_id: string;
 }
 
 export interface WhyCodeInput {
@@ -240,31 +261,35 @@ export interface RecentWorkOnPathInput {
 }
 ```
 
-Add to `PanopticonService`:
+Current `PanopticonService` methods:
 
 ```ts
-  listWorkstreams(opts?: ListWorkstreamsInput): Promise<unknown>;
-  workstreamDetail(opts: WorkstreamDetailInput): Promise<unknown>;
+  listSessionSummaries(opts?: ListSessionSummariesInput): Promise<unknown>;
+  sessionSummaryDetail(opts: SessionSummaryDetailInput): Promise<unknown>;
   whyCode(opts: WhyCodeInput): Promise<unknown>;
   recentWorkOnPath(opts: RecentWorkOnPathInput): Promise<unknown>;
+  fileOverview(opts: FileOverviewInput): Promise<unknown>;
 ```
 
-## Proposed Tool Names
+## Current Tool Names
 
-Add to `src/service/transport.ts`:
+The current transport layer exposes:
 
 ```ts
   session_summaries: (service, params) =>
-    service.listWorkstreams(asType<ListWorkstreamsInput>(params)),
-  workstream_detail: (service, params) =>
-    service.workstreamDetail(asType<WorkstreamDetailInput>(params)),
+    service.listSessionSummaries(asType<ListSessionSummariesInput>(params)),
+  session_summary_detail: (service, params) =>
+    service.sessionSummaryDetail(asType<SessionSummaryDetailInput>(params)),
   why_code: (service, params) =>
     service.whyCode(asType<WhyCodeInput>(params)),
   recent_work_on_path: (service, params) =>
     service.recentWorkOnPath(asType<RecentWorkOnPathInput>(params)),
+  file_overview: (service, params) =>
+    service.fileOverview(asType<FileOverviewInput>(params)),
 ```
 
-These should also be added to `src/mcp/server.ts` with matching zod schemas.
+These tools are only registered when
+`PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`.
 
 ## API Contract
 
@@ -294,8 +319,7 @@ Response:
 ```json
 [
   {
-    "session_summary_id": 17,
-    "session_summary_key": "ws:local:/Users/gus/workspace/panopticon:17",
+    "session_id": "abc123",
     "title": "service layer and path hardening",
     "status": "landed",
     "repository": "/Users/gus/workspace/panopticon",
@@ -315,15 +339,15 @@ Response:
 ]
 ```
 
-### `workstream_detail`
+### `session_summary_detail`
 
 Request:
 
 ```json
 {
-  "name": "workstream_detail",
+  "name": "session_summary_detail",
   "params": {
-    "session_summary_id": 17
+    "session_id": "abc123"
   }
 }
 ```
@@ -332,8 +356,8 @@ Response:
 
 ```json
 {
-  "workstream": {
-    "session_summary_id": 17,
+  "session_summary": {
+    "session_id": "abc123",
     "title": "service layer and path hardening",
     "status": "landed",
     "repository": "/Users/gus/workspace/panopticon",
@@ -393,7 +417,7 @@ Response:
   "status": "current",
   "confidence": 0.91,
   "repository": "/Users/gus/workspace/panopticon",
-  "workstream": {
+  "session_summary": {
     "session_summary_id": 17,
     "title": "service layer and path hardening",
     "status": "landed"
@@ -424,7 +448,14 @@ Response:
     "intent_for_code": [
       {
         "intent_unit_id": 301,
-        "status": "current"
+        "edit": {
+          "edit_count": 2,
+          "current_edit_count": 1,
+          "superseded_edit_count": 1,
+          "reverted_edit_count": 0,
+          "unknown_edit_count": 0
+        },
+        "status": "mixed"
       }
     ]
   },
@@ -477,18 +508,29 @@ Response:
   "recent": [
     {
       "session_summary_id": 17,
-      "workstream_title": "service layer and path hardening",
+      "session_summary_title": "service layer and path hardening",
       "intent_unit_id": 301,
       "prompt_text": "move tool dispatch into shared transport",
       "intent_edit_id": 822,
+      "edit_count": 2,
+      "current_edit_count": 1,
+      "superseded_edit_count": 1,
+      "reverted_edit_count": 0,
+      "unknown_edit_count": 0,
       "timestamp_ms": 1745020137000,
-      "status": "current"
+      "status": "mixed"
     },
     {
       "session_summary_id": 16,
-      "workstream_title": "claims-backed intent projection clean cutover",
+      "session_summary_title": "claims-backed intent projection clean cutover",
+      "prompt_text": "initial transport cleanup",
       "intent_unit_id": 288,
       "intent_edit_id": 790,
+      "edit_count": 1,
+      "current_edit_count": 0,
+      "superseded_edit_count": 1,
+      "reverted_edit_count": 0,
+      "unknown_edit_count": 0,
       "timestamp_ms": 1745019700000,
       "status": "superseded"
     }
@@ -496,9 +538,72 @@ Response:
 }
 ```
 
+### `file_overview`
+
+Request:
+
+```json
+{
+  "name": "file_overview",
+  "params": {
+    "path": "src/service/transport.ts",
+    "recent_limit": 5,
+    "related_limit": 10
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "path": "src/service/transport.ts",
+  "repository": "/Users/gus/workspace/panopticon",
+  "summary": {
+    "intent_count": 4,
+    "edit_count": 6,
+    "session_summary_count": 2,
+    "current_edit_count": 3,
+    "superseded_edit_count": 1,
+    "reverted_edit_count": 2,
+    "unknown_edit_count": 0
+  },
+  "current": {
+    "status": "current",
+    "confidence": 0.91,
+    "binding_level": "span",
+    "session_summary_id": 17,
+    "session_summary_title": "service layer and path hardening",
+    "intent_unit_id": 301,
+    "intent_edit_id": 822,
+    "prompt_text": "move tool dispatch into shared transport",
+    "snippet_preview": "export const TOOL_HANDLERS = {"
+  },
+  "recent": [
+    {
+      "intent_unit_id": 301,
+      "edit_count": 2,
+      "current_edit_count": 1,
+      "superseded_edit_count": 1,
+      "reverted_edit_count": 0,
+      "unknown_edit_count": 0,
+      "status": "mixed"
+    }
+  ],
+  "related_files": [
+    {
+      "file_path": "src/service/http.ts",
+      "shared_intent_count": 2,
+      "shared_session_summary_count": 1,
+      "last_status": "current"
+    }
+  ]
+}
+```
+
 ## Query Implementation Sketch
 
-### `listWorkstreams`
+### `listSessionSummaries`
 
 Backed by direct reads from `session_summaries`, optionally filtered by:
 
@@ -509,10 +614,9 @@ Backed by direct reads from `session_summaries`, optionally filtered by:
 
 When `path` is provided:
 
-- join through `code_provenance` or, before that projection is complete,
-  derive from `intent_edits -> intent_session_summaries`
+- join through `code_provenance`
 
-### `workstreamDetail`
+### `sessionSummaryDetail`
 
 Return:
 
@@ -532,7 +636,12 @@ This fallback allows the tool to ship before span binding is perfect.
 
 ### `recentWorkOnPath`
 
-Return chronological local history for a file using:
+Return chronological local history for a file using one row per intent touching
+that file rather than one row per raw `intent_edit`. Repeated edits, multi-edit
+batches, and apply-patch batches from the same prompt collapse into a single row
+with aggregate outcome counts.
+
+Uses:
 
 - `intent_edits`
 - joined `intent_session_summaries`
@@ -540,19 +649,29 @@ Return chronological local history for a file using:
 
 This is historical, not only current-state provenance.
 
+### `fileOverview`
+
+Return a file-level aggregate using:
+
+- `why_code` for the best current local explanation
+- `recent_work_on_path` for short chronological history
+- `intent_edits`, `intent_units`, and `intent_session_summaries` for counts
+- related-file aggregation over shared intents and shared session summaries
+
 ## Rebuild Strategy
 
-Suggested exec command later:
+Current rebuild path:
 
-- `rebuild-workstream-projections`
+- `rebuild-intent-projection-from-claims`
 
-It should:
+That rebuilds:
 
 1. rebuild `session_summaries`
 2. rebuild `intent_session_summaries`
 3. rebuild `code_provenance`
 
-Session-scoped rebuild support can wait until the grouping logic is stable.
+Session-scoped rebuild is also supported through the `sessionId` option on the
+projection rebuild path.
 
 ## Validation Cases
 

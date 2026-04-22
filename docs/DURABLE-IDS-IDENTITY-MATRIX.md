@@ -2,8 +2,8 @@
 
 ## Scope
 
-This document maps the current identity and sync behavior for the scanner-owned
-tables and proposes the Phase 1 durable-ID model.
+This document records the landed Phase 1 durable-ID model for the
+scanner-owned tables.
 
 Phase 1 is about durable evidence row identity only:
 
@@ -27,47 +27,38 @@ decisions, or claims. Those come later.
 
 ### Summary
 
-- `messages` have no `sync_id` at all.
-- `tool_calls`, `scanner_turns`, and `scanner_events` have `sync_id`, but it is
-  random and must be preserved manually across reparse.
-- Sync watermarks are based on local autoincrement `id`, not durable identity.
-- `tool_calls` sync payloads include unstable local `message_id`.
-- Full atomic reparse preserves `target_session_sync`, which means local row-id
-  watermarks can become stale even if row identity is otherwise preserved.
+- `messages`, `tool_calls`, `scanner_turns`, and `scanner_events` all have
+  deterministic `sync_id` values.
+- `tool_calls` now store `call_index`, and sync payloads carry
+  `messageSyncId`, `callIndex`, and deterministic `syncId`.
+- Session-linked incremental sync still uses local row-id watermarks in
+  `target_session_sync` as a local efficiency optimization.
+- Atomic reparse rewinds scanner-owned `target_session_sync` rows so replay can
+  happen safely against durable remote identities.
+- `restoreSyncIds` is now a no-op for scanner-owned rows.
 
 ## Identity Matrix
 
-| Table | Local id | Current natural key | Current transport key | Proposed durable key input | Proposed Phase 1 changes |
-| --- | --- | --- | --- | --- | --- |
-| `messages` | `messages.id` | `UNIQUE(session_id, ordinal)` plus optional `uuid` | none | `msg|<session_id>|uuid|<uuid>` if `uuid` present, else `msg|<session_id>|ord|<ordinal>` | Add `messages.sync_id`; emit it in sync payload; keep `id` only as local surrogate |
-| `tool_calls` | `tool_calls.id` | currently implicit: local `message_id` + `tool_use_id`/`tool_name` | random `sync_id` | `tc|<message_sync_id>|tuid|<tool_use_id>` if present, else `tc|<message_sync_id>|idx|<call_index>` | Make `sync_id` deterministic; add `call_index`; emit `messageSyncId`; stop relying on local `message_id` across sync |
-| `scanner_turns` | `scanner_turns.id` | `UNIQUE(session_id, source, turn_index)` | random `sync_id` | `turn|<session_id>|<source>|<turn_index>` | Replace random `sync_id` with deterministic value derived from natural key |
-| `scanner_events` | `scanner_events.id` | `UNIQUE(session_id, source, event_index)` | random `sync_id` | `evt|<session_id>|<source>|idx|<event_index>` | Add `event_index`; derive deterministic `sync_id` from the per-session/source event ordinal |
+| Table | Local id | Current natural key | Current durable / transport key | Remaining caveat |
+| --- | --- | --- | --- | --- |
+| `messages` | `messages.id` | `UNIQUE(session_id, ordinal)` plus optional `uuid` | deterministic `sync_id` from `msg|<session_id>|uuid|<uuid>` or `msg|<session_id>|ord|<ordinal>` | UUID-less rows still fall back to `session_id + ordinal` |
+| `tool_calls` | `tool_calls.id` | parent `messageSyncId` plus `tool_use_id` when present, otherwise `call_index` | deterministic `sync_id` from `tc|<messageSyncId>|tuid|<tool_use_id>` or `tc|<messageSyncId>|idx|<call_index>` | local `message_id` remains only as a local FK |
+| `scanner_turns` | `scanner_turns.id` | `UNIQUE(session_id, source, turn_index)` | deterministic `sync_id` from `turn|<session_id>|<source>|<turn_index>` | none beyond normal row-id watermark replay rules |
+| `scanner_events` | `scanner_events.id` | `UNIQUE(session_id, source, event_index)` | deterministic `sync_id` from `evt|<session_id>|<source>|idx|<event_index>` | `event_index` must remain stable across reparses |
 
 ## Table-by-Table Notes
 
 ### Messages
 
-Current behavior:
+Landed behavior:
 
 - Local identity is `messages.id`.
 - Dedup in storage uses `UNIQUE(session_id, ordinal)`.
 - Parsed source UUIDs are stored in `uuid` / `parent_uuid`.
-- Sync sends only the local row `id`, not a durable identity.
-
-Implications:
-
-- Reparse in the same DB is usually safe because new rows get larger local IDs.
-- Atomic rebuild into a fresh DB is not safe to reason about via local IDs.
-- Remote systems cannot dedupe logical message rows independently because no
-  message-level transport key exists.
-
-Phase 1 recommendation:
-
-- Add `messages.sync_id`.
-- Populate it deterministically on insert.
-- Extend `MessageSyncRecord` and readers to include `syncId`.
-- Keep `messages.id` for local joins and FTS only.
+- `messages.sync_id` is populated deterministically on insert and backfilled for
+  older DBs by migration 6.
+- Sync readers emit `syncId`.
+- `messages.id` remains only a local surrogate for joins and FTS.
 
 Fallback caveat:
 
@@ -78,57 +69,32 @@ Fallback caveat:
 
 ### Tool Calls
 
-Current behavior:
+Landed behavior:
 
 - Local identity is `tool_calls.id`.
-- Sync sends both random `sync_id` and unstable local `message_id`.
-- Reparse preservation matches rows by session + message ordinal + `tool_use_id`
-  + `tool_name`.
-- There is no stored `call_index`, so there is no deterministic fallback when
-  `tool_use_id` is missing.
-
-Implications:
-
-- `tool_use_id` is good when present.
-- Without `tool_use_id`, durable identity is under-specified today.
-- Remote consumers should not depend on `message_id`.
-
-Phase 1 recommendation:
-
-- Add `call_index INTEGER NOT NULL` to `tool_calls`.
-- Populate `call_index` from the tool-call position inside each message.
-- Make `tool_calls.sync_id` deterministic from durable message identity plus
+- `call_index INTEGER NOT NULL` is stored on every row and backfilled for older
+  DBs by migration 7.
+- `tool_calls.sync_id` is deterministic from durable message identity plus
   either `tool_use_id` or `call_index`.
-- Extend `ToolCallSyncRecord` to include `messageSyncId`.
-- Keep `message_id` only as a local FK.
+- Sync readers emit `messageSyncId`, `callIndex`, and deterministic `syncId`.
+- `message_id` remains only as a local FK.
 
 ### Scanner Turns
 
-Current behavior:
+Landed behavior:
 
 - Storage already has a strong natural key:
   `UNIQUE(session_id, source, turn_index)`.
-- Sync identity is still random and restored manually after reparse.
-
-Phase 1 recommendation:
-
-- Derive `sync_id` directly from the existing natural key.
-- Remove `scanner_turns` from sync-id snapshot/restore logic once inserts are
-  deterministic.
+- `sync_id` is derived directly from that natural key.
+- Older DBs are backfilled by migration 8.
 
 ### Scanner Events
 
-Current behavior:
+Landed behavior:
 
 - Storage now uses `UNIQUE(session_id, source, event_index)`.
-- Sync identity is random and restored manually after reparse.
-
-Phase 1 recommendation:
-
-- Add a stable `event_index` per `session_id` / `source` event stream.
-- Derive `sync_id` from `session_id + source + event_index`.
-- Remove `scanner_events` from sync-id snapshot/restore logic once inserts are
-  deterministic.
+- `sync_id` is derived from `session_id + source + event_index`.
+- Older DBs are rebuilt/backfilled by migrations 8 and 9.
 
 Why the event index exists:
 
@@ -194,14 +160,9 @@ Current state:
 - Session-linked sync still reads rows by local `id > watermark`.
 - That is acceptable as a local efficiency optimization only while local row IDs
   remain monotonic within the same DB.
-
-Phase 1 recommendation:
-
-- Keep local row-id watermarks for steady-state incremental sync.
-- On operations that can lower or reshuffle local row IDs, especially atomic
-  full-reparse into a fresh DB, reset or rewind scanner-owned `target_session_sync`
-  watermarks so the rows replay.
-- Rely on deterministic `sync_id` for remote idempotency when replay happens.
+- Atomic full reparse rewinds scanner-owned `target_session_sync` watermarks so
+  rows replay.
+- Remote idempotency relies on deterministic `sync_id` when replay happens.
 
 Without this, a fresh DB rebuild can preserve old watermarks that point past the
 new local row IDs.
@@ -215,7 +176,7 @@ replacement-detection improvement probably wants stronger file identity inputs
 such as file hash, inode/device, or both. This can remain a supporting task and
 does not need to block the row-level durable-ID work.
 
-## Migration Notes
+## What Shipped
 
 1. Add `messages.sync_id`.
 2. Add `tool_calls.call_index`.
@@ -225,7 +186,7 @@ does not need to block the row-level durable-ID work.
 6. Update reparse paths to stop restoring scanner-owned random `sync_id` values.
 7. Reset or rewind scanner-owned sync watermarks during atomic full-reparse.
 
-## Suggested Implementation Order
+## Implementation Order That Landed
 
 1. `messages`
    - add `sync_id`
@@ -242,7 +203,7 @@ does not need to block the row-level durable-ID work.
    - stop preserving random scanner sync IDs
    - reset/rewind session sync watermarks when needed
 
-## Tests Needed
+## Validation Covered By Tests
 
 1. Reparse unchanged scanner data in the same DB:
    - no duplicate remote logical rows
@@ -259,9 +220,9 @@ does not need to block the row-level durable-ID work.
 ## Open Questions
 
 1. Is `session_id + ordinal` an acceptable fallback durable message identity for
-   rows without `uuid`, or do we want a content-based fallback before Phase 1
-   lands?
+   rows without `uuid`, or do we want a content-based fallback before later
+   provenance layers rely on those IDs as permanent evidence?
 2. Do any scanner sources require a stronger event discriminator than the
    current `scanner_events` unique constraint?
-3. Does the remote sync consumer need a compatibility window where both
-   `messageId` and `messageSyncId` are sent for tool calls?
+3. When can sync transport drop `messageId` and rely on `messageSyncId`
+   exclusively for tool-call relationships?
