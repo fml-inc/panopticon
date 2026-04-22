@@ -56,21 +56,74 @@ function logHook(
 
 /**
  * Atomically claim the right to start the server using O_EXCL on a lock file.
- * Returns true if this process won the race, false if another process already claimed it.
+ * Returns true if this process won the race, false if another process already
+ * claimed it.
+ *
+ * If the existing lock file's writer is dead (SIGKILL, OOM, reboot mid-hook),
+ * the lock is reclaimed and we retry once. Without this, a single hard crash
+ * would wedge ingest until the user manually removed the lock file — every
+ * subsequent hook would see the lock, skip startServer(), then waitForServer()
+ * would time out and silently drop events.
  */
-function acquireStartLock(): boolean {
+export function acquireStartLock(lockFile?: string): boolean {
   ensureDataDir();
-  const lockFile = `${config.serverPidFile}.lock`;
+  // Resolve the lock path lazily so PANOPTICON_DATA_DIR overrides apply
+  // even when this module was imported before the env var was set
+  // (matches auth.ts tokenPath() behavior).
+  const fp =
+    lockFile ??
+    `${path.join(
+      process.env.PANOPTICON_DATA_DIR ?? config.dataDir,
+      "panopticon.pid",
+    )}.lock`;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(
+        fp,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+      );
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return false;
+      // Only attempt reclaim once. If we lost the race after a successful
+      // reclaim, the new holder is genuinely live — yield rather than fight.
+      if (attempt > 0) return false;
+      if (!reclaimStaleLock(fp)) return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * If the lock file's PID points to a dead process, unlink the lock and
+ * return true (the caller should retry). Returns false if the holder is
+ * alive, the lock holds our own PID, the file is unreadable/corrupt, or
+ * we couldn't unlink. The conservative bias (don't reclaim on uncertainty)
+ * favors the rare false negative — manual recovery — over the dangerous
+ * false positive of kicking out a live writer.
+ */
+export function reclaimStaleLock(lockFile: string): boolean {
+  let pid: number;
   try {
-    const fd = fs.openSync(
-      lockFile,
-      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
-    );
-    fs.writeSync(fd, String(process.pid));
-    fs.closeSync(fd);
-    return true;
+    pid = Number.parseInt(fs.readFileSync(lockFile, "utf-8").trim(), 10);
   } catch {
     return false;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0); // throws if no such process
+    return false; // holder is alive — don't reclaim
+  } catch {
+    try {
+      fs.unlinkSync(lockFile);
+      logHook("warn", "reclaimed stale start lock", { stalePid: pid });
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -316,8 +369,18 @@ export async function runHandler(opts: {
   }
 }
 
-await initSentry();
-// CLI args are set at install time: `node hook-handler <target> <port> [--proxy]`
-// When invoked without args (e.g. by Claude Code's plugin system), falls back
-// to config defaults and server-side target detection.
-runHandler(parseArgs(process.argv));
+// Guard the CLI dispatch so this file is safely importable in tests.
+// Same convention as src/server.ts.
+const entryScript = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  entryScript.endsWith("/handler.js") ||
+  entryScript.endsWith("/handler.ts") ||
+  entryScript.endsWith("/hook-handler") ||
+  entryScript.endsWith("/hook-handler.js")
+) {
+  await initSentry();
+  // CLI args are set at install time: `node hook-handler <target> <port> [--proxy]`
+  // When invoked without args (e.g. by Claude Code's plugin system), falls back
+  // to config defaults and server-side target detection.
+  runHandler(parseArgs(process.argv));
+}
