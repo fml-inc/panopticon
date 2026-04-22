@@ -114,6 +114,29 @@ describe("data version registry", () => {
     expect(needsRawDataResync()).toBe(false);
   });
 
+  it("treats older landed-from-disk component versions as claim-state stale", () => {
+    getDb();
+    markClaimsRebuildComplete();
+    closeDb();
+
+    const raw = new Database(config.dbPath);
+    raw
+      .prepare(
+        `UPDATE data_versions
+         SET version = ?, updated_at_ms = ?
+         WHERE component = ?`,
+      )
+      .run(2, Date.now(), "intent.landed_from_disk");
+    raw.close();
+    closeDb();
+
+    getDb();
+
+    expect(needsRawDataResync()).toBe(false);
+    expect(needsClaimsRebuild()).toBe(true);
+    expect(staleDataComponents()).toContain("intent.landed_from_disk");
+  });
+
   it("markResyncComplete stamps the raw scanner component current", () => {
     getDb();
     const raw = new Database(config.dbPath);
