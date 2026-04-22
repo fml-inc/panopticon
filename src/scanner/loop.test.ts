@@ -95,6 +95,10 @@ vi.mock("./store.js", () => ({
   readSessionIdByScannerFile: vi.fn(() => undefined),
   resetFileForReparse: vi.fn(),
   restoreSyncIds: vi.fn(),
+  // Pure function — keep the real implementation so the loop's
+  // file-rotation guard exercises real logic.
+  shouldResetWatermark: (fileSize: number, watermarkOffset: number) =>
+    watermarkOffset > 0 && fileSize < watermarkOffset,
   updateSessionTotals: vi.fn(),
   upsertSession: vi.fn(),
   writeArchivedSize: vi.fn(),
