@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ALL_DATA_COMPONENTS, targetDataVersion } from "./data-versions.js";
 import { Database } from "./driver.js";
 import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
@@ -1128,7 +1129,7 @@ describe("runMigrations — existing DB", () => {
     );
   });
 
-  it("backfills scanner file watermark session ids from the canonical file session", () => {
+  it("adds scanner watermark session_id and forces a full reparse instead of backfilling", () => {
     const db = createExistingDb();
     db.exec(`
       CREATE TABLE sessions (
@@ -1153,6 +1154,21 @@ describe("runMigrations — existing DB", () => {
     for (const migration of MIGRATIONS) {
       if (migration.id >= 14) break;
       stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    db.exec(`
+      CREATE TABLE data_versions (
+        component TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+    const insertDataVersion = db.prepare(
+      `INSERT INTO data_versions (component, version, updated_at_ms)
+       VALUES (?, ?, ?)`,
+    );
+    for (const component of ALL_DATA_COMPONENTS) {
+      insertDataVersion.run(component, targetDataVersion(component), 1000);
     }
 
     db.prepare(
@@ -1208,8 +1224,21 @@ describe("runMigrations — existing DB", () => {
     expect(row).toEqual({
       byte_offset: 42,
       archived_size: 0,
-      session_id: "root-session",
+      session_id: null,
     });
+
+    const dataVersions = db
+      .prepare(
+        `SELECT component, version
+         FROM data_versions
+         ORDER BY component ASC`,
+      )
+      .all() as Array<{ component: string; version: number }>;
+    expect(dataVersions).toEqual(
+      [...ALL_DATA_COMPONENTS]
+        .sort((a, b) => a.localeCompare(b))
+        .map((component) => ({ component, version: 0 })),
+    );
   });
 
   it("upgrades a 0.2.4-style DB after SCHEMA_SQL creates latest claim tables", () => {

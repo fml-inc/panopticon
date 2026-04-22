@@ -204,6 +204,11 @@ function tableHasColumn(db: Database, table: string, column: string): boolean {
   ).some((col) => col.name === column);
 }
 
+function tableHasRows(db: Database, table: string): boolean {
+  if (!tableExists(db, table)) return false;
+  return !!db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
+}
+
 function addColumnIfMissing(
   db: Database,
   table: string,
@@ -407,7 +412,7 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
 }
 
-function backfillScannerFileWatermarkSessionIds(db: Database): void {
+function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
   if (!tableExists(db, "scanner_file_watermarks")) {
     return;
   }
@@ -419,28 +424,14 @@ function backfillScannerFileWatermarkSessionIds(db: Database): void {
     "session_id TEXT",
   );
 
-  if (
-    !tableExists(db, "sessions") ||
-    !tableHasColumn(db, "sessions", "scanner_file_path")
-  ) {
+  if (!tableHasRows(db, "scanner_file_watermarks")) {
     return;
   }
 
-  db.exec(`
-    UPDATE scanner_file_watermarks
-       SET session_id = (
-         SELECT s.session_id
-           FROM sessions s
-          WHERE s.scanner_file_path = scanner_file_watermarks.file_path
-          ORDER BY
-            CASE WHEN COALESCE(s.relationship_type, '') = 'fork' THEN 1 ELSE 0 END,
-            CASE WHEN COALESCE(s.relationship_type, '') = 'subagent' THEN 1 ELSE 0 END,
-            COALESCE(s.started_at_ms, s.created_at, 0) ASC,
-            s.session_id ASC
-          LIMIT 1
-       )
-     WHERE session_id IS NULL
-  `);
+  ensureDataVersionsTable(db);
+  // Let startup rebuild scanner state from raw files instead of trying to
+  // infer watermark session IDs from possibly incomplete historical rows.
+  markDataComponentsStaleInDb(db, ALL_DATA_COMPONENTS);
 }
 
 // ---------------------------------------------------------------------------
@@ -854,7 +845,7 @@ export const MIGRATIONS: Migration[] = [
     id: 14,
     name: "add_session_id_to_scanner_file_watermarks",
     up: (db) => {
-      backfillScannerFileWatermarkSessionIds(db);
+      addScannerFileWatermarkSessionIdAndForceReparse(db);
     },
   },
 ];
