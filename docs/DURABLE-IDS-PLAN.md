@@ -201,6 +201,10 @@ That enables startup to distinguish:
 - stale claims/provenance state -> claims-only rebuild from existing local raw
   tables
 
+Migration `13` intentionally marks all components stale instead of doing a
+claims-only recovery, so older installs take one full scanner reparse and pick
+up any raw session data that may have been missed before the cutover.
+
 Full manual rebuild execs should participate in the same component-version
 model; session-scoped rebuild helpers remain partial utilities and should not
 clear global stale-state flags.

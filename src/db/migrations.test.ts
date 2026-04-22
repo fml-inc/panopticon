@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ALL_DATA_COMPONENTS } from "./data-versions.js";
 import { Database } from "./driver.js";
 import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
@@ -1082,6 +1083,19 @@ describe("runMigrations — existing DB", () => {
       tool_calls: 1,
       hook_events: 1,
     });
+
+    const dataVersions = db
+      .prepare(
+        `SELECT component, version
+         FROM data_versions
+         ORDER BY component ASC`,
+      )
+      .all() as Array<{ component: string; version: number }>;
+    expect(dataVersions).toEqual(
+      [...ALL_DATA_COMPONENTS]
+        .sort((a, b) => a.localeCompare(b))
+        .map((component) => ({ component, version: 0 })),
+    );
 
     expect(getApplied(db).map((r) => r.id)).toContain(10);
     expect(getApplied(db).map((r) => r.id)).toContain(11);

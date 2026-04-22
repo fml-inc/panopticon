@@ -36,7 +36,6 @@
 
 import {
   ALL_DATA_COMPONENTS,
-  CLAIM_DATA_COMPONENTS,
   ensureDataVersionsTable,
   markDataComponentsStaleInDb,
 } from "./data-versions.js";
@@ -404,7 +403,9 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   deleteAllRowsIfTableExists(db, "ingestion_cursors");
   deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
 
-  markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
+  // Force a full startup reparse for this cutover. Claims-only rebuilds
+  // cannot recover any raw session/scanner rows that were previously missed.
+  markDataComponentsStaleInDb(db, ALL_DATA_COMPONENTS);
 }
 
 // ---------------------------------------------------------------------------
