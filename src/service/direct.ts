@@ -46,6 +46,7 @@ import {
   scanOnce,
 } from "../scanner/index.js";
 import { readScannerStatus } from "../scanner/status.js";
+import { refreshSessionSummaryEnrichmentsOnce } from "../session_summaries/enrichment.js";
 import {
   listSessionSummaries,
   recentWorkOnPath,
@@ -99,6 +100,11 @@ function isDerivedRebuildInProgress(): boolean {
 
 function runSummaryGeneration(): number {
   try {
+    if (config.enableSessionSummaryProjections) {
+      return refreshSessionSummaryEnrichmentsOnce({
+        log: (msg) => log.scanner.debug(msg),
+      }).updated;
+    }
     return generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
   } catch (err) {
     log.scanner.error(

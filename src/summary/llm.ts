@@ -1,28 +1,47 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SessionSummaryRunnerName } from "../config.js";
+import { config } from "../config.js";
 import { log } from "../log.js";
 
 const LLM_TIMEOUT_MS = 180_000;
+const DEFAULT_RUNNER: SessionSummaryRunnerName = "claude";
+const CLAUDE_HEADLESS_CWD_NAME = "claude-headless";
+const CODEX_HEADLESS_CWD_NAME = "codex-headless";
+const CODEX_OUTPUT_FILE_NAME = "last-message.txt";
+const MCP_ALLOWED_TOOLS = [
+  "mcp__panopticon__timeline",
+  "mcp__panopticon__get",
+  "mcp__panopticon__query",
+  "mcp__panopticon__search",
+  "mcp__panopticon__status",
+] as const;
 
-let _claudePath: string | null | undefined;
+const _agentPaths = new Map<SessionSummaryRunnerName, string | null>();
 
 /**
  * Detect whether the `claude` CLI is available on this machine.
  * Result is cached for the lifetime of the process.
  */
-export function detectAgent(): string | null {
-  if (_claudePath !== undefined) return _claudePath;
+export function detectAgent(
+  runner: SessionSummaryRunnerName = DEFAULT_RUNNER,
+): string | null {
+  const cached = _agentPaths.get(runner);
+  if (cached !== undefined) return cached;
   try {
-    _claudePath = execFileSync("which", ["claude"], {
+    const binary = runner === "codex" ? "codex" : "claude";
+    const detected = execFileSync("which", [binary], {
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
+    _agentPaths.set(runner, detected);
   } catch {
-    _claudePath = null;
+    _agentPaths.set(runner, null);
   }
-  return _claudePath;
+  return _agentPaths.get(runner) ?? null;
 }
 
 /**
@@ -33,19 +52,131 @@ function cleanEnv(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
     if (k === "CLAUDECODE") continue;
-    if (k.startsWith("CLAUDE_CODE_")) continue;
-    if (k === "ANTHROPIC_BASE_URL") continue;
+    if (k === "ANTHROPIC_BASE_URL" && shouldStripAnthropicBaseUrl(v)) continue;
     env[k] = v;
   }
   return env;
 }
 
+function shouldStripAnthropicBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (!["localhost", "127.0.0.1", "::1"].includes(url.hostname)) {
+      return false;
+    }
+    return url.pathname === "/proxy/anthropic";
+  } catch {
+    return false;
+  }
+}
+
+function shouldUseBareMode(env: Record<string, string>): boolean {
+  // Claude's current bare mode skips OAuth/keychain auth, so only enable it
+  // when the environment already provides a compatible non-interactive auth
+  // mechanism.
+  return (
+    !!env.ANTHROPIC_API_KEY ||
+    !!env.CLAUDE_CODE_USE_BEDROCK ||
+    !!env.CLAUDE_CODE_USE_VERTEX ||
+    !!env.CLAUDE_CODE_USE_FOUNDRY
+  );
+}
+
+function getHeadlessCwd(runner: SessionSummaryRunnerName): string {
+  const dir = path.join(
+    config.dataDir,
+    runner === "codex" ? CODEX_HEADLESS_CWD_NAME : CLAUDE_HEADLESS_CWD_NAME,
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Get the path to the panopticon MCP server script. */
-function getMcpServerPath(): string {
+function getMcpServerPath(): string | null {
   const dir = path.dirname(fileURLToPath(import.meta.url));
-  // In the built dist/, summary code is in a chunk at dist/ level,
-  // and mcp/server.js is at dist/mcp/server.js (same level)
-  return path.resolve(dir, "mcp", "server.js");
+  const candidates = [
+    // Fallback for tests or ad-hoc execution from repo root.
+    path.resolve(process.cwd(), "dist", "mcp", "server.js"),
+    // Source execution from src/summary/llm.ts.
+    path.resolve(dir, "..", "..", "dist", "mcp", "server.js"),
+    // Built layout when summary code is emitted under dist/summary/.
+    path.resolve(dir, "..", "mcp", "server.js"),
+    // Legacy/fallback layout.
+    path.resolve(dir, "mcp", "server.js"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+type ClaudePrintJson = {
+  type?: unknown;
+  subtype?: unknown;
+  is_error?: unknown;
+  result?: unknown;
+  session_id?: unknown;
+};
+
+export function parseClaudePrintJson(rawText: string): {
+  ok: boolean;
+  result: string | null;
+  reason: string;
+} {
+  const text = rawText.trim();
+  if (!text) {
+    return {
+      ok: false,
+      result: null,
+      reason: "empty stdout",
+    };
+  }
+
+  let parsed: ClaudePrintJson;
+  try {
+    parsed = JSON.parse(text) as ClaudePrintJson;
+  } catch {
+    return {
+      ok: false,
+      result: null,
+      reason: "invalid json",
+    };
+  }
+
+  if (parsed.type !== "result") {
+    return {
+      ok: false,
+      result: null,
+      reason: `unexpected payload type: ${String(parsed.type)}`,
+    };
+  }
+
+  if (parsed.is_error === true) {
+    const message =
+      typeof parsed.result === "string" && parsed.result.trim().length > 0
+        ? parsed.result.trim()
+        : "unknown Claude CLI error";
+    return {
+      ok: false,
+      result: null,
+      reason: message,
+    };
+  }
+
+  if (typeof parsed.result !== "string" || parsed.result.trim().length === 0) {
+    return {
+      ok: false,
+      result: null,
+      reason: "missing result text",
+    };
+  }
+
+  return {
+    ok: true,
+    result: parsed.result.trim(),
+    reason: "ok",
+  };
 }
 
 /**
@@ -55,29 +186,75 @@ function getMcpServerPath(): string {
 export function invokeLlm(
   prompt: string,
   opts: {
+    runner?: SessionSummaryRunnerName;
     timeoutMs?: number;
     withMcp?: boolean;
     systemPrompt?: string;
-    model?: string;
+    model?: string | null;
   } = {},
 ): string | null {
-  const claudePath = detectAgent();
-  if (!claudePath) return null;
+  const runner = opts.runner ?? DEFAULT_RUNNER;
+  const agentPath = detectAgent(runner);
+  if (!agentPath) return null;
 
   const timeoutMs = opts.timeoutMs ?? LLM_TIMEOUT_MS;
+  const env = cleanEnv();
+  const cwd = getHeadlessCwd(runner);
 
+  if (runner === "codex") {
+    return invokeCodexLlm(prompt, {
+      binaryPath: agentPath,
+      cwd,
+      env,
+      timeoutMs,
+      systemPrompt: opts.systemPrompt,
+      model: opts.model,
+    });
+  }
+
+  return invokeClaudeLlm(prompt, {
+    binaryPath: agentPath,
+    cwd,
+    env,
+    timeoutMs,
+    withMcp: opts.withMcp,
+    systemPrompt: opts.systemPrompt,
+    model: opts.model,
+  });
+}
+
+function invokeClaudeLlm(
+  prompt: string,
+  opts: {
+    binaryPath: string;
+    cwd: string;
+    env: Record<string, string>;
+    timeoutMs: number;
+    withMcp?: boolean;
+    systemPrompt?: string;
+    model?: string | null;
+  },
+): string | null {
   const args = [
-    claudePath,
     "-p",
     prompt,
     "--output-format",
-    "text",
+    "json",
     "--model",
     opts.model ?? "haiku",
     "--no-session-persistence",
     "--permission-mode",
-    "auto",
+    "default",
+    "--disable-slash-commands",
+    "--setting-sources",
+    "user",
+    "--tools",
+    "",
   ];
+
+  if (shouldUseBareMode(opts.env)) {
+    args.push("--bare");
+  }
 
   if (opts.systemPrompt) {
     args.push("--append-system-prompt", opts.systemPrompt);
@@ -85,6 +262,10 @@ export function invokeLlm(
 
   if (opts.withMcp) {
     const mcpPath = getMcpServerPath();
+    if (!mcpPath) {
+      log.llm.warn("panopticon MCP server not found for Claude headless run");
+      return null;
+    }
     args.push(
       "--strict-mcp-config",
       "--mcp-config",
@@ -96,40 +277,135 @@ export function invokeLlm(
           },
         },
       }),
-      "--allowed-tools",
-      "mcp__panopticon__timeline",
-      "mcp__panopticon__get",
-      "mcp__panopticon__query",
-      "mcp__panopticon__search",
-      "mcp__panopticon__status",
+      "--allowedTools",
+      MCP_ALLOWED_TOOLS.join(" "),
     );
-  } else {
-    args.push("--tools", "");
   }
 
-  const result = spawnSync(args[0], args.slice(1), {
-    env: cleanEnv(),
+  const result = spawnSync(opts.binaryPath, args, {
+    cwd: opts.cwd,
+    env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: timeoutMs,
+    timeout: opts.timeoutMs,
     maxBuffer: 4 * 1024 * 1024,
   });
 
-  const text = result.stdout?.toString().trim();
+  const stdout = result.stdout?.toString() ?? "";
   const stderr = result.stderr?.toString().trim();
 
   if (stderr) log.llm.warn(`stderr: ${stderr.slice(0, 500)}`);
+  if (result.error) {
+    log.llm.error(`spawn failed: ${result.error.message}`);
+    return null;
+  }
   if (result.signal) {
     log.llm.error(`killed by signal: ${result.signal}`);
     return null;
   }
-  const summary = `exit=${result.status} stdout=${text?.length ?? 0} chars`;
-  if (result.status !== 0 && !text) {
-    log.llm.warn(summary);
+
+  const parsed = parseClaudePrintJson(stdout);
+  const summary = `runner=claude exit=${result.status} stdout=${stdout.trim().length} chars`;
+  if (!parsed.ok) {
+    log.llm.warn(`${summary} error=${parsed.reason}`);
+    return null;
+  }
+
+  if (result.status !== 0) {
+    log.llm.warn(
+      `${summary} accepted structured success despite non-zero exit`,
+    );
   } else {
     log.llm.debug(summary);
   }
 
-  // Accept output even with non-zero exit (hooks may cause exit code 1
-  // after successful response)
-  return text || null;
+  return parsed.result;
+}
+
+function invokeCodexLlm(
+  prompt: string,
+  opts: {
+    binaryPath: string;
+    cwd: string;
+    env: Record<string, string>;
+    timeoutMs: number;
+    systemPrompt?: string;
+    model?: string | null;
+  },
+): string | null {
+  const outputPath = path.join(opts.cwd, CODEX_OUTPUT_FILE_NAME);
+  try {
+    fs.rmSync(outputPath, { force: true });
+  } catch {}
+
+  const fullPrompt = opts.systemPrompt
+    ? `${opts.systemPrompt}\n\n${prompt}`
+    : prompt;
+  const args = [
+    "exec",
+    fullPrompt,
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--color",
+    "never",
+    "--output-last-message",
+    outputPath,
+  ];
+  if (opts.model) {
+    args.push("--model", opts.model);
+  }
+
+  const result = spawnSync(opts.binaryPath, args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: opts.timeoutMs,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+
+  const stdout = result.stdout?.toString().trim();
+  const stderr = result.stderr?.toString().trim();
+  if (stderr) log.llm.warn(`stderr: ${stderr.slice(0, 500)}`);
+  if (result.error) {
+    log.llm.error(`spawn failed: ${result.error.message}`);
+    return null;
+  }
+  if (result.signal) {
+    log.llm.error(`killed by signal: ${result.signal}`);
+    return null;
+  }
+  if (result.status !== 0) {
+    log.llm.warn(
+      `runner=codex exit=${result.status} stdout=${stdout?.length ?? 0} chars`,
+    );
+    return null;
+  }
+  if (!fs.existsSync(outputPath)) {
+    log.llm.warn("runner=codex missing output-last-message file");
+    return null;
+  }
+
+  try {
+    const text = fs.readFileSync(outputPath, "utf-8").trim();
+    if (!text) {
+      log.llm.warn("runner=codex empty output-last-message file");
+      return null;
+    }
+    log.llm.debug(
+      `runner=codex exit=0 stdout=${stdout?.length ?? 0} chars output=${text.length} chars`,
+    );
+    return text;
+  } catch (error) {
+    log.llm.warn(
+      `runner=codex failed reading output-last-message: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  } finally {
+    try {
+      fs.rmSync(outputPath, { force: true });
+    } catch {}
+  }
 }

@@ -35,6 +35,7 @@ import { config } from "../config.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { getSessionSummaryRunnerPolicy } from "../session_summaries/enrichment.js";
 import { listSessions } from "./query.js";
 import { closeDb, getDb } from "./schema.js";
 import {
@@ -68,6 +69,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM evidence_ref_paths").run();
@@ -231,9 +233,39 @@ describe("listSessions session summaries", () => {
       editCount: 2,
       landedEditCount: 1,
       openEditCount: 0,
+      summarySource: "deterministic",
+      summaryDirty: true,
     });
     expect(result.sessions[0].summary).toContain("Status: mixed");
     expect(result.sessions[0].summary).toContain(file);
     expect(result.sessions[0].summary).not.toBe("legacy weak summary");
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = 'llm',
+             summary_runner = 'claude',
+             summary_model = 'sonnet',
+             summary_policy_hash = ?,
+             dirty = 0,
+             dirty_reason_json = NULL
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "LLM-enriched session summary for retrieval.",
+        getSessionSummaryRunnerPolicy().policyHash,
+        `ss:local:${SESSION}`,
+      );
+
+    const enriched = listSessions({ limit: 5 });
+    expect(enriched.sessions[0].summary).toBe(
+      "LLM-enriched session summary for retrieval.",
+    );
+    expect(enriched.sessions[0].sessionSummary).toMatchObject({
+      summaryText: "LLM-enriched session summary for retrieval.",
+      summarySource: "llm",
+      summaryDirty: false,
+    });
   });
 });

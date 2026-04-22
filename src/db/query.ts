@@ -181,21 +181,27 @@ export function listSessions(
     sessionSummariesEnabled && sessionSummaryKeys.length > 0
       ? (db
           .prepare(
-            `SELECT id,
-                    session_summary_key,
-                    title,
-                    status,
-                    repository,
-                    cwd,
-                    branch,
-                    first_intent_ts_ms,
-                    last_intent_ts_ms,
-                    intent_count,
-                    edit_count,
-                    landed_edit_count,
-                    open_edit_count
-             FROM session_summaries
-             WHERE session_summary_key IN (${sessionSummaryKeys.map(() => "?").join(",")})`,
+            `SELECT s.id AS id,
+                    s.session_summary_key,
+                    s.title,
+                    s.status,
+                    s.repository,
+                    s.cwd,
+                    s.branch,
+                    s.first_intent_ts_ms,
+                    s.last_intent_ts_ms,
+                    s.intent_count,
+                    s.edit_count,
+                    s.landed_edit_count,
+                    s.open_edit_count,
+                    e.summary_text,
+                    e.summary_source,
+                    e.summary_generated_at_ms,
+                    COALESCE(e.dirty, 1) AS summary_dirty
+             FROM session_summaries s
+             LEFT JOIN session_summary_enrichments e
+               ON e.session_summary_key = s.session_summary_key
+             WHERE s.session_summary_key IN (${sessionSummaryKeys.map(() => "?").join(",")})`,
           )
           .all(...sessionSummaryKeys) as Array<{
           id: number;
@@ -211,6 +217,10 @@ export function listSessions(
           edit_count: number;
           landed_edit_count: number;
           open_edit_count: number;
+          summary_text: string | null;
+          summary_source: SessionSummary["summarySource"];
+          summary_generated_at_ms: number | null;
+          summary_dirty: number;
         }>)
       : [];
 
@@ -262,6 +272,12 @@ export function listSessions(
       landedEditCount: row.landed_edit_count,
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
+      summaryText: row.summary_text,
+      summarySource: row.summary_source,
+      summaryGeneratedAt: row.summary_generated_at_ms
+        ? toIso(row.summary_generated_at_ms)
+        : null,
+      summaryDirty: row.summary_dirty === 1,
     });
   }
 
@@ -308,6 +324,7 @@ function formatExplicitSessionSummary(
   fallback: string | null,
 ): string | null {
   if (!sessionSummary) return fallback;
+  if (sessionSummary.summaryText) return sessionSummary.summaryText;
   const files =
     sessionSummary.topFiles.length > 0
       ? ` Top files: ${sessionSummary.topFiles.join(", ")}.`

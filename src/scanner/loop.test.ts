@@ -6,6 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const discoverMock = vi.fn();
 const parseFileMock = vi.fn();
 
+vi.mock("../config.js", () => ({
+  config: {
+    enableSessionSummaryProjections: true,
+  },
+}));
+
 vi.mock("../archive/index.js", () => ({
   getArchiveBackend: () => ({ putSync: vi.fn() }),
 }));
@@ -63,6 +69,13 @@ vi.mock("../sentry.js", () => ({
 
 vi.mock("../summary/index.js", () => ({
   generateSummariesOnce: vi.fn(),
+}));
+
+vi.mock("../session_summaries/enrichment.js", () => ({
+  refreshSessionSummaryEnrichmentsOnce: vi.fn(() => ({
+    attempted: 0,
+    updated: 0,
+  })),
 }));
 
 vi.mock("../targets/registry.js", () => ({

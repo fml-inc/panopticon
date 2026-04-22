@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
+import { config } from "../config.js";
 import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { refreshSessionSummaryEnrichmentsOnce } from "../session_summaries/enrichment.js";
 // Import targets so they self-register before we iterate the registry
 import "../targets/claude.js";
 import "../targets/codex.js";
@@ -821,7 +823,11 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       if (!hadWork && ready) {
         try {
           const summaryStartedAt = performance.now();
-          const result = generateSummariesOnce((msg) => log.scanner.debug(msg));
+          const result = config.enableSessionSummaryProjections
+            ? refreshSessionSummaryEnrichmentsOnce({
+                log: (msg) => log.scanner.debug(msg),
+              })
+            : generateSummariesOnce((msg) => log.scanner.debug(msg));
           const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
           if (result.updated > 0) {
             log.scanner.info(summaryMessage);

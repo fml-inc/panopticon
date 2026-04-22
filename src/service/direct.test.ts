@@ -16,6 +16,7 @@ const {
   rebuildIntentProjectionMock,
   reconcileLandedClaimsFromDiskMock,
   readScannerStatusMock,
+  refreshSessionSummaryEnrichmentsOnceMock,
   generateSummariesOnceMock,
 } = vi.hoisted(() => ({
   needsResyncMock: vi.fn(),
@@ -42,6 +43,7 @@ const {
   })),
   reconcileLandedClaimsFromDiskMock: vi.fn(() => ({ checked: 5 })),
   readScannerStatusMock: vi.fn(),
+  refreshSessionSummaryEnrichmentsOnceMock: vi.fn(),
   generateSummariesOnceMock: vi.fn(),
 }));
 
@@ -138,6 +140,11 @@ vi.mock("../session_summaries/query.js", () => ({
   whyCode: vi.fn(),
 }));
 
+vi.mock("../session_summaries/enrichment.js", () => ({
+  refreshSessionSummaryEnrichmentsOnce:
+    refreshSessionSummaryEnrichmentsOnceMock,
+}));
+
 vi.mock("../summary/index.js", () => ({
   generateSummariesOnce: generateSummariesOnceMock,
 }));
@@ -193,6 +200,7 @@ describe("direct service scan", () => {
       projectedProvenance: 10,
       totalMs: 11,
     });
+    refreshSessionSummaryEnrichmentsOnceMock.mockReturnValue({ updated: 5 });
     generateSummariesOnceMock.mockReturnValue({ updated: 5 });
   });
 
@@ -255,6 +263,7 @@ describe("direct service scan", () => {
     });
     expect(reparseAllMock).not.toHaveBeenCalled();
     expect(generateSummariesOnceMock).not.toHaveBeenCalled();
+    expect(refreshSessionSummaryEnrichmentsOnceMock).not.toHaveBeenCalled();
     expect(result).toEqual({
       filesScanned: 2,
       newTurns: 3,

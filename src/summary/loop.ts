@@ -13,13 +13,23 @@ const AGENT_TIMEOUT_MS = 120_000;
 const SYSTEM_PROMPT = `You are summarizing a coding session for search and retrieval. You have access to panopticon MCP tools to explore the session data.
 
 Instructions:
-1. Use the "timeline" tool to read the session's messages and tool calls
-2. If needed, use "get" to read full message content or "query" for specific data
-3. Produce a summary optimized for AI consumption and full-text search
-4. Include: what was accomplished, key decisions made, specific file/function/package names, problems encountered and how they were resolved
-5. Use concrete names rather than generic descriptions (e.g. "added FTS5 index on messages table" not "improved search")
-6. Format as 2-4 concise sentences
-7. Output ONLY the summary text, nothing else`;
+1. Start with the "timeline" tool using a small page size
+2. Keep timeline reads small by using limit 10-20 and paging with offset if needed
+3. Prefer "get" for specific records you want to inspect in full
+4. Use "query" only for narrow, targeted questions; avoid broad joins or large LIMIT values
+5. Write a durable retrieval summary, not a play-by-play
+6. Output exactly one paragraph of 2-3 short sentences, max 140 words total
+7. Lead with the main outcome or highest-value finding, not with framing like "This session..." or "The agent..."
+8. Prioritize, in order: main outcome, key code/doc artifacts changed or reviewed, important bug or decision, unresolved follow-up if any
+9. Prefer repo-relative paths and stable identifiers like PRs, commits, and tags only when central
+10. Do not mention the model, agent, message count, timestamps, database path, absolute local paths, or how you gathered the information unless it is central to the outcome
+11. For review sessions, emphasize findings, severity, and whether fixes landed
+12. For implementation or debugging sessions, emphasize what changed and how it was verified
+13. If no code changed, say that explicitly
+14. Do not mention the current summary-generation experiment, validation batch, or any work that happened after the target session ended
+15. Keep verification to one short clause; do not narrate investigation mechanics
+16. Use concrete names rather than generic descriptions (e.g. "added FTS5 index on messages table" not "improved search")
+17. Output ONLY the summary text, nothing else`;
 
 /**
  * Generate a summary for a single session.
@@ -31,7 +41,7 @@ function _summarizeSession(
 ): string | null {
   // Try agent-based summary first
   if (detectAgent()) {
-    const prompt = `Summarize session ${sessionId}. Start by calling the timeline tool with sessionId "${sessionId}" and limit 50.`;
+    const prompt = `Summarize session ${sessionId}. Start by calling the timeline tool with sessionId "${sessionId}", limit 10, and fullPayloads false. If you need more context, page with offset in small increments. Prefer get for specific records and use query only for narrow questions. Focus on durable outcomes, not investigation mechanics.`;
     const result = invokeLlm(prompt, {
       timeoutMs: AGENT_TIMEOUT_MS,
       withMcp: true,

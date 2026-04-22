@@ -22,6 +22,13 @@ export interface SessionSummaryProjectionRow {
   edit_count: number;
   landed_edit_count: number;
   open_edit_count: number;
+  summary_text: string | null;
+  summary_search_text: string | null;
+  summary_source: string | null;
+  summary_runner: string | null;
+  summary_model: string | null;
+  summary_generated_at_ms: number | null;
+  summary_dirty: boolean;
 }
 
 export interface SessionSummaryRow {
@@ -41,6 +48,13 @@ export interface SessionSummaryRow {
   edit_count: number;
   landed_edit_count: number;
   open_edit_count: number;
+  summary_text: string | null;
+  summary_search_text: string | null;
+  summary_source: string | null;
+  summary_runner: string | null;
+  summary_model: string | null;
+  summary_generated_at_ms: number | null;
+  summary_dirty: boolean;
 }
 
 type SessionSummaryIntentRow = {
@@ -453,12 +467,23 @@ export function ensureSessionSummaryProjections(): void {
       c: number;
     }
   ).c;
+  const enrichmentCount = (
+    db
+      .prepare(`SELECT COUNT(*) AS c FROM session_summary_enrichments`)
+      .get() as {
+      c: number;
+    }
+  ).c;
   const membershipCount = (
     db.prepare(`SELECT COUNT(*) AS c FROM intent_session_summaries`).get() as {
       c: number;
     }
   ).c;
-  if (sessionSummaryCount === 0 || membershipCount === 0) {
+  if (
+    sessionSummaryCount === 0 ||
+    membershipCount === 0 ||
+    enrichmentCount < sessionSummaryCount
+  ) {
     rebuildSessionSummaryProjections();
   }
 }
@@ -493,8 +518,17 @@ function listSessionSummaryProjections(opts?: {
            s.intent_count,
            s.edit_count,
            s.landed_edit_count,
-           s.open_edit_count
-    FROM session_summaries s`;
+           s.open_edit_count,
+           e.summary_text,
+           e.summary_search_text,
+           e.summary_source,
+           e.summary_runner,
+           e.summary_model,
+           e.summary_generated_at_ms,
+           COALESCE(e.dirty, 1) AS summary_dirty
+    FROM session_summaries s
+    LEFT JOIN session_summary_enrichments e
+      ON e.session_summary_key = s.session_summary_key`;
 
   if (opts?.path) {
     sql += `
@@ -550,10 +584,18 @@ function listSessionSummaryProjections(opts?: {
       edit_count: number;
       landed_edit_count: number;
       open_edit_count: number;
+      summary_text: string | null;
+      summary_search_text: string | null;
+      summary_source: string | null;
+      summary_runner: string | null;
+      summary_model: string | null;
+      summary_generated_at_ms: number | null;
+      summary_dirty: number;
     }>
   ).map((row) => ({
     ...row,
     repository: emptyToNull(row.repository),
+    summary_dirty: row.summary_dirty === 1,
   }));
 }
 
@@ -565,29 +607,39 @@ function getSessionSummaryProjectionDetail(opts: {
   const db = getDb();
   const sessionSummary = db
     .prepare(
-      `SELECT id AS session_summary_id,
-              session_summary_key,
-              title,
-              status,
-              repository,
-              cwd,
-              branch,
-              worktree,
-              actor,
-              machine,
-              origin_scope,
-              first_intent_ts_ms,
-              last_intent_ts_ms,
-              intent_count,
-              edit_count,
-              landed_edit_count,
-              open_edit_count
-       FROM session_summaries
+      `SELECT s.id AS session_summary_id,
+              s.session_summary_key,
+              s.title,
+              s.status,
+              s.repository,
+              s.cwd,
+              s.branch,
+              s.worktree,
+              s.actor,
+              s.machine,
+              s.origin_scope,
+              s.first_intent_ts_ms,
+              s.last_intent_ts_ms,
+              s.intent_count,
+              s.edit_count,
+              s.landed_edit_count,
+              s.open_edit_count,
+              e.summary_text,
+              e.summary_search_text,
+              e.summary_source,
+              e.summary_runner,
+              e.summary_model,
+              e.summary_generated_at_ms,
+              COALESCE(e.dirty, 1) AS summary_dirty
+       FROM session_summaries s
+       LEFT JOIN session_summary_enrichments e
+         ON e.session_summary_key = s.session_summary_key
        WHERE id = ?`,
     )
     .get(opts.session_summary_id) as
-    | (Omit<SessionSummaryProjectionRow, "repository"> & {
+    | (Omit<SessionSummaryProjectionRow, "repository" | "summary_dirty"> & {
         repository: string | null;
+        summary_dirty: number;
       })
     | undefined;
   if (!sessionSummary) return null;
@@ -624,6 +676,7 @@ function getSessionSummaryProjectionDetail(opts: {
     session_summary: {
       ...sessionSummary,
       repository: emptyToNull(sessionSummary.repository),
+      summary_dirty: sessionSummary.summary_dirty === 1,
     },
     intents,
     files,
@@ -656,6 +709,13 @@ function toSessionSummaryRow(
     edit_count: row.edit_count,
     landed_edit_count: row.landed_edit_count,
     open_edit_count: row.open_edit_count,
+    summary_text: row.summary_text,
+    summary_search_text: row.summary_search_text,
+    summary_source: row.summary_source,
+    summary_runner: row.summary_runner,
+    summary_model: row.summary_model,
+    summary_generated_at_ms: row.summary_generated_at_ms,
+    summary_dirty: row.summary_dirty,
   };
 }
 

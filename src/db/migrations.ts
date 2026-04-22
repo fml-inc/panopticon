@@ -375,6 +375,7 @@ function resetDerivedStateForEvidenceRefCutover(db: Database): void {
   // raw scanner session files plus preserved hook/OTel tables after reparse.
   deleteAllRowsIfTableExists(db, "code_provenance");
   deleteAllRowsIfTableExists(db, "intent_session_summaries");
+  deleteAllRowsIfTableExists(db, "session_summary_enrichments");
   deleteAllRowsIfTableExists(db, "session_summaries");
   deleteAllRowsIfTableExists(db, "intent_edits");
   deleteAllRowsIfTableExists(db, "intent_units_fts");
@@ -400,6 +401,7 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
 
   deleteAllRowsIfTableExists(db, "code_provenance");
   deleteAllRowsIfTableExists(db, "intent_session_summaries");
+  deleteAllRowsIfTableExists(db, "session_summary_enrichments");
   deleteAllRowsIfTableExists(db, "session_summaries");
   deleteAllRowsIfTableExists(db, "intent_edits");
   deleteAllRowsIfTableExists(db, "intent_units_fts");
@@ -846,6 +848,36 @@ export const MIGRATIONS: Migration[] = [
     name: "add_session_id_to_scanner_file_watermarks",
     up: (db) => {
       addScannerFileWatermarkSessionIdAndForceReparse(db);
+    },
+  },
+  {
+    id: 15,
+    name: "add_session_summary_enrichment_threshold_columns",
+    up: (db) => {
+      addColumnIfMissing(
+        db,
+        "session_summary_enrichments",
+        "enriched_input_hash",
+        "enriched_input_hash TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "session_summary_enrichments",
+        "enriched_message_count",
+        "enriched_message_count INTEGER",
+      );
+    },
+  },
+  {
+    id: 16,
+    name: "add_session_summary_policy_hash",
+    up: (db) => {
+      addColumnIfMissing(
+        db,
+        "session_summary_enrichments",
+        "summary_policy_hash",
+        "summary_policy_hash TEXT",
+      );
     },
   },
 ];

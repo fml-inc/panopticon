@@ -3,6 +3,11 @@ import fs from "node:fs";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
+import {
+  getSessionSummaryRunnerPolicy,
+  mergeSessionSummaryEnrichment,
+  type SessionSummaryEnrichmentRow,
+} from "./enrichment.js";
 
 const MEMBERSHIP_SOURCE = "heuristic";
 const ORIGIN_SCOPE = "local";
@@ -55,6 +60,7 @@ export function rebuildSessionSummaryProjections(opts?: {
     };
   }
   const db = getDb();
+  const runnerPolicy = getSessionSummaryRunnerPolicy();
   const tx = db.transaction(() => {
     if (opts?.sessionId) {
       const key = sessionSummaryKey(opts.sessionId);
@@ -102,6 +108,60 @@ export function rebuildSessionSummaryProjections(opts?: {
        (intent_unit_id, session_summary_id, membership_kind, source, score, reason_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
+    const existingEnrichmentStmt = db.prepare(
+      `SELECT session_summary_key,
+              session_id,
+              summary_text,
+              summary_search_text,
+              summary_source,
+              summary_runner,
+              summary_model,
+              summary_version,
+              summary_generated_at_ms,
+              projection_hash,
+              summary_input_hash,
+              summary_policy_hash,
+              enriched_input_hash,
+              enriched_message_count,
+              dirty,
+              dirty_reason_json,
+              last_material_change_at_ms,
+              last_attempted_at_ms,
+              failure_count,
+              last_error
+       FROM session_summary_enrichments
+       WHERE session_summary_key = ?`,
+    );
+    const upsertEnrichmentStmt = db.prepare(
+      `INSERT INTO session_summary_enrichments
+       (session_summary_key, session_id, summary_text, summary_search_text,
+        summary_source, summary_runner, summary_model, summary_version,
+        summary_generated_at_ms, projection_hash, summary_input_hash,
+        summary_policy_hash, enriched_input_hash, enriched_message_count,
+        dirty, dirty_reason_json, last_material_change_at_ms,
+        last_attempted_at_ms, failure_count, last_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_summary_key) DO UPDATE SET
+         session_id = excluded.session_id,
+         summary_text = excluded.summary_text,
+         summary_search_text = excluded.summary_search_text,
+         summary_source = excluded.summary_source,
+         summary_runner = excluded.summary_runner,
+         summary_model = excluded.summary_model,
+         summary_version = excluded.summary_version,
+         summary_generated_at_ms = excluded.summary_generated_at_ms,
+         projection_hash = excluded.projection_hash,
+         summary_input_hash = excluded.summary_input_hash,
+         summary_policy_hash = excluded.summary_policy_hash,
+         enriched_input_hash = excluded.enriched_input_hash,
+         enriched_message_count = excluded.enriched_message_count,
+         dirty = excluded.dirty,
+         dirty_reason_json = excluded.dirty_reason_json,
+         last_material_change_at_ms = excluded.last_material_change_at_ms,
+         last_attempted_at_ms = excluded.last_attempted_at_ms,
+         failure_count = excluded.failure_count,
+         last_error = excluded.last_error`,
+    );
     const provenanceStmt = db.prepare(
       `INSERT INTO code_provenance
        (repository, file_path, binding_level, start_line, end_line,
@@ -141,11 +201,21 @@ export function rebuildSessionSummaryProjections(opts?: {
 
       const sessionMeta = db
         .prepare(
-          `SELECT machine
+          `SELECT machine,
+                  started_at_ms,
+                  ended_at_ms,
+                  message_count
            FROM sessions
            WHERE session_id = ?`,
         )
-        .get(session.session_id) as { machine: string | null } | undefined;
+        .get(session.session_id) as
+        | {
+            machine: string | null;
+            started_at_ms: number | null;
+            ended_at_ms: number | null;
+            message_count: number | null;
+          }
+        | undefined;
       const repoMeta = db
         .prepare(
           `SELECT repository, git_user_name, branch
@@ -199,9 +269,20 @@ export function rebuildSessionSummaryProjections(opts?: {
         intents.map((intent) => intent.cwd).find(Boolean) ??
         null;
       const title = buildTitle(intents[0]?.prompt_text ?? "");
+      const summaryKey = sessionSummaryKey(session.session_id);
+      const files = summarizeFiles(edits);
+      const tools = summarizeTools(edits);
+      const nowMs = Date.now();
+      const lastActivityMs = maxTs([
+        sessionMeta?.started_at_ms,
+        sessionMeta?.ended_at_ms,
+        firstIntentTs,
+        lastIntentTs,
+        ...edits.map((edit) => edit.timestamp_ms),
+      ]);
 
       sessionSummaryStmt.run(
-        sessionSummaryKey(session.session_id),
+        summaryKey,
         repository,
         cwd,
         repoMeta?.branch ?? null,
@@ -224,6 +305,54 @@ export function rebuildSessionSummaryProjections(opts?: {
         .prepare(`SELECT last_insert_rowid() AS id`)
         .get() as { id: number };
       sessionSummaries += 1;
+
+      const mergedEnrichment = mergeSessionSummaryEnrichment(
+        (existingEnrichmentStmt.get(summaryKey) as
+          | SessionSummaryEnrichmentRow
+          | undefined) ?? null,
+        {
+          sessionSummaryKey: summaryKey,
+          sessionId: session.session_id,
+          title,
+          status,
+          repository,
+          cwd,
+          branch: repoMeta?.branch ?? null,
+          intentCount: intents.length,
+          editCount: edits.length,
+          landedEditCount,
+          openEditCount,
+          messageCount: sessionMeta?.message_count ?? 0,
+          lastActivityMs,
+          intents: intents.map((intent) => intent.prompt_text),
+          files,
+          tools,
+        },
+        runnerPolicy.policyHash,
+        nowMs,
+      );
+      upsertEnrichmentStmt.run(
+        mergedEnrichment.session_summary_key,
+        mergedEnrichment.session_id,
+        mergedEnrichment.summary_text,
+        mergedEnrichment.summary_search_text,
+        mergedEnrichment.summary_source,
+        mergedEnrichment.summary_runner,
+        mergedEnrichment.summary_model,
+        mergedEnrichment.summary_version,
+        mergedEnrichment.summary_generated_at_ms,
+        mergedEnrichment.projection_hash,
+        mergedEnrichment.summary_input_hash,
+        mergedEnrichment.summary_policy_hash,
+        mergedEnrichment.enriched_input_hash,
+        mergedEnrichment.enriched_message_count,
+        mergedEnrichment.dirty,
+        mergedEnrichment.dirty_reason_json,
+        mergedEnrichment.last_material_change_at_ms,
+        mergedEnrichment.last_attempted_at_ms,
+        mergedEnrichment.failure_count,
+        mergedEnrichment.last_error,
+      );
 
       for (const intent of intents) {
         membershipStmt.run(
@@ -301,6 +430,30 @@ export function rebuildSessionSummaryProjections(opts?: {
       }
     }
 
+    if (opts?.sessionId) {
+      const key = sessionSummaryKey(opts.sessionId);
+      const exists = db
+        .prepare(
+          `SELECT id
+           FROM session_summaries
+           WHERE session_summary_key = ?`,
+        )
+        .get(key) as { id: number } | undefined;
+      if (!exists) {
+        db.prepare(
+          `DELETE FROM session_summary_enrichments
+           WHERE session_summary_key = ?`,
+        ).run(key);
+      }
+    } else {
+      db.prepare(
+        `DELETE FROM session_summary_enrichments
+         WHERE session_summary_key NOT IN (
+           SELECT session_summary_key FROM session_summaries
+         )`,
+      ).run();
+    }
+
     return { sessionSummaries, memberships, provenance };
   });
 
@@ -329,6 +482,39 @@ function buildTitle(promptText: string): string {
   const compact = promptText.replace(/\s+/g, " ").trim();
   if (!compact) return "untitled session summary";
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function summarizeFiles(
+  edits: EditRow[],
+): Array<{ filePath: string; editCount: number; landedCount: number }> {
+  const files = new Map<
+    string,
+    { filePath: string; editCount: number; landedCount: number }
+  >();
+  for (const edit of edits) {
+    const current = files.get(edit.file_path) ?? {
+      filePath: edit.file_path,
+      editCount: 0,
+      landedCount: 0,
+    };
+    current.editCount += 1;
+    if (edit.landed === 1) current.landedCount += 1;
+    files.set(edit.file_path, current);
+  }
+  return [...files.values()].sort(
+    (a, b) => b.editCount - a.editCount || a.filePath.localeCompare(b.filePath),
+  );
+}
+
+function summarizeTools(edits: EditRow[]): string[] {
+  const counts = new Map<string, number>();
+  for (const edit of edits) {
+    if (!edit.tool_name) continue;
+    counts.set(edit.tool_name, (counts.get(edit.tool_name) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([toolName]) => toolName);
 }
 
 function readFileSnapshot(
