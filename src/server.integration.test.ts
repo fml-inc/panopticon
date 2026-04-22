@@ -651,6 +651,24 @@ describe("server integration", () => {
       });
       expect(res.status).toBe(401);
     });
+
+    it("returns 401 to /v1/logs without bearer token", async () => {
+      const res = await fetch(`${baseUrl}/v1/logs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resourceLogs: [] }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 401 to /v1/metrics without bearer token", async () => {
+      const res = await fetch(`${baseUrl}/v1/metrics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resourceMetrics: [] }),
+      });
+      expect(res.status).toBe(401);
+    });
   });
 
   describe("proxy routing", () => {

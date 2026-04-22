@@ -112,3 +112,67 @@ describe("configureShellEnv", () => {
     expect(anthLineIndexes[0]).toBeLessThan(block.end);
   });
 });
+
+describe("writePanopticonEnvFile", () => {
+  const ORIGINAL_DATA_DIR = process.env.PANOPTICON_DATA_DIR;
+  const ORIGINAL_TOKEN = process.env.PANOPTICON_AUTH_TOKEN;
+
+  afterEach(() => {
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env.PANOPTICON_DATA_DIR;
+    else process.env.PANOPTICON_DATA_DIR = ORIGINAL_DATA_DIR;
+    if (ORIGINAL_TOKEN === undefined) delete process.env.PANOPTICON_AUTH_TOKEN;
+    else process.env.PANOPTICON_AUTH_TOKEN = ORIGINAL_TOKEN;
+    vi.resetModules();
+  });
+
+  it("writes a sourcable env.sh including OTEL_EXPORTER_OTLP_HEADERS", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envsh-"));
+    process.env.PANOPTICON_DATA_DIR = tmpDir;
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-abc";
+
+    const { writePanopticonEnvFile } = await import("./setup.js");
+    const envFile = writePanopticonEnvFile(false);
+
+    expect(envFile).toBe(path.join(tmpDir, "env.sh"));
+    const content = fs.readFileSync(envFile, "utf-8");
+
+    // Every required panopticon env var is exported.
+    expect(content).toContain("export OTEL_EXPORTER_OTLP_ENDPOINT=");
+    expect(content).toContain(
+      "export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20test-token-abc",
+    );
+    expect(content).toContain("export OTEL_METRICS_EXPORTER=otlp");
+    expect(content).toContain("export OTEL_LOGS_EXPORTER=otlp");
+  });
+
+  it("file is mode 0600 (contains the auth token)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envsh-"));
+    process.env.PANOPTICON_DATA_DIR = tmpDir;
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-mode";
+
+    const { writePanopticonEnvFile } = await import("./setup.js");
+    const envFile = writePanopticonEnvFile(false);
+    const stat = fs.statSync(envFile);
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  it("can be sourced by /bin/sh and exports the variables", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envsh-"));
+    process.env.PANOPTICON_DATA_DIR = tmpDir;
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-source";
+
+    const { writePanopticonEnvFile } = await import("./setup.js");
+    const envFile = writePanopticonEnvFile(false);
+
+    // The whole point of this file is that a non-interactive shell can
+    // source it without the bashrc-guard problem. Verify with a real
+    // bash subprocess.
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync(
+      "bash",
+      ["-c", `source "${envFile}" && echo "$OTEL_EXPORTER_OTLP_HEADERS"`],
+      { encoding: "utf-8" },
+    ).trim();
+    expect(out).toBe("Authorization=Bearer%20test-token-source");
+  });
+});

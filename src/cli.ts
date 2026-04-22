@@ -12,6 +12,7 @@ import { Command, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
+import { getOrCreateAuthToken } from "./auth.js";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
@@ -29,6 +30,7 @@ import {
 } from "./mcp/permissions.js";
 import { readScannerStatus } from "./scanner/status.js";
 import { httpPanopticonService } from "./service/http.js";
+import { writePanopticonEnvFile } from "./setup.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -253,6 +255,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
   const PANOPTICON_VARS = [
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_HEADERS",
     "OTEL_METRICS_EXPORTER",
     "OTEL_LOGS_EXPORTER",
     "OTEL_LOG_TOOL_DETAILS",
@@ -272,6 +275,10 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     return false;
   };
 
+  // Generate the auth token once so the bashrc and the env.sh file both
+  // contain the same OTEL_EXPORTER_OTLP_HEADERS value.
+  const authToken = getOrCreateAuthToken();
+
   // Build the wanted env vars: shared OTEL vars + target-specific vars
   const wantedLines: [string, string][] = [
     ["# >>> panopticon >>>", "# >>> panopticon >>>"],
@@ -282,6 +289,12 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
     [
       "OTEL_EXPORTER_OTLP_PROTOCOL",
       "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+    ],
+    [
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      // Per the OTel spec, header values are URL-encoded — encode the
+      // space between "Bearer" and the token. The token itself is hex.
+      `export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${authToken}`,
     ],
     ["OTEL_METRICS_EXPORTER", "export OTEL_METRICS_EXPORTER=otlp"],
     ["OTEL_LOGS_EXPORTER", "export OTEL_LOGS_EXPORTER=otlp"],
@@ -349,8 +362,14 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
 
   fs.writeFileSync(shellRc, preservedLines.join("\n"));
   console.log(
-    `      ${insertAt >= 0 ? "Updated" : "Added"} env vars in ${shellRc}\n`,
+    `      ${insertAt >= 0 ? "Updated" : "Added"} env vars in ${shellRc}`,
   );
+
+  // Also write the dedicated env file so non-interactive callers (CI,
+  // docker entrypoints, e2e scripts) can source the panopticon env without
+  // depending on the standard `~/.bashrc` non-interactive guard.
+  const envFile = writePanopticonEnvFile(proxy);
+  console.log(`      Wrote ${envFile}\n`);
 }
 
 function removeShellEnv() {
