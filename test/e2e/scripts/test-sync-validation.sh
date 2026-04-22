@@ -170,9 +170,16 @@ fi
 
 log_info "── Fresh-home MCP stdio smoke ──"
 MCP_SMOKE_HOME="$(mktemp -d /tmp/pano-mcp-home.XXXXXX)"
+# The MCP server needs to find the running panopticon's bearer token, which
+# lives at <PANOPTICON_DATA_DIR>/auth-token. Without overriding, the fresh
+# HOME would point the MCP server at an empty data dir and it would 401.
+# Log paths use HOME directly (not PANOPTICON_DATA_DIR), so the fresh-HOME
+# log-file assertion below still holds.
+SERVER_DATA_DIR="${PANOPTICON_DATA_DIR:-$HOME/.local/share/panopticon}"
 if (
   cd /opt/panopticon
-  env HOME="$MCP_SMOKE_HOME" node --input-type=module <<'EOF'
+  env HOME="$MCP_SMOKE_HOME" PANOPTICON_DATA_DIR="$SERVER_DATA_DIR" \
+    node --input-type=module <<'EOF'
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
