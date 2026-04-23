@@ -7,7 +7,9 @@ import { Database } from "../db/driver.js";
 const state = vi.hoisted(() => ({
   db: null as Database | null,
   inTx: false,
-  detectAgentMock: vi.fn((runner: string) => `/usr/local/bin/${runner}`),
+  detectAgentMock: vi.fn(
+    (runner: string): string | null => `/usr/local/bin/${runner}`,
+  ),
   invokeLlmMock: vi.fn(),
 }));
 
@@ -33,6 +35,7 @@ vi.mock("../summary/llm.js", () => ({
   invokeLlm: state.invokeLlmMock,
 }));
 
+import { getAttemptBackoff } from "../attempt-backoff.js";
 import {
   refreshSessionSummaryEnrichmentsOnce,
   SESSION_SUMMARY_ENRICHMENT_VERSION,
@@ -113,6 +116,16 @@ describe("session summary enrichment refresh", () => {
         intent_unit_id INTEGER NOT NULL,
         file_path TEXT NOT NULL,
         landed INTEGER
+      );
+      CREATE TABLE attempt_backoffs (
+        scope_kind TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        last_attempted_at_ms INTEGER,
+        next_attempt_at_ms INTEGER,
+        last_error TEXT,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (scope_kind, scope_key)
       );
     `);
 
@@ -214,6 +227,43 @@ describe("session summary enrichment refresh", () => {
       dirty: 1,
       failure_count: 0,
       last_error: null,
+    });
+  });
+
+  it("backs off runner availability without poisoning the dirty row", () => {
+    state.detectAgentMock.mockReturnValue(null);
+
+    const result = refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+    });
+
+    const row = state
+      .db!.prepare(
+        `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          last_attempted_at_ms: number | null;
+          failure_count: number;
+          last_error: string | null;
+          dirty: number;
+        }
+      | undefined;
+
+    expect(result).toEqual({ attempted: 0, updated: 0 });
+    expect(row).toMatchObject({
+      last_attempted_at_ms: null,
+      failure_count: 0,
+      last_error: null,
+      dirty: 1,
+    });
+    expect(
+      getAttemptBackoff("session-summary-global", "runner-availability"),
+    ).toMatchObject({
+      failure_count: 1,
+      last_error: "no allowed summary runner available",
     });
   });
 });

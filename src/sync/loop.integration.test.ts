@@ -136,6 +136,20 @@ function getTss(sessionId: string, target: string) {
     .get(sessionId, target) as Record<string, number | string> | undefined;
 }
 
+function getAttemptBackoff(scopeKind: string, scopeKey: string) {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT scope_kind, scope_key, failure_count, last_attempted_at_ms,
+              next_attempt_at_ms, last_error, updated_at_ms
+       FROM attempt_backoffs
+       WHERE scope_kind = ? AND scope_key = ?`,
+    )
+    .get(scopeKind, scopeKey) as
+    | Record<string, number | string | null>
+    | undefined;
+}
+
 function insertTargetSessionSync(
   sessionId: string,
   target: string,
@@ -232,8 +246,10 @@ beforeEach(() => {
   db.prepare("DELETE FROM otel_metrics").run();
   db.prepare("DELETE FROM otel_spans").run();
   db.prepare("DELETE FROM watermarks").run();
+  db.prepare("DELETE FROM attempt_backoffs").run();
   mockedPostSync.mockReset();
   ackEverything();
+  vi.useRealTimers();
 });
 
 afterAll(() => {
@@ -402,6 +418,38 @@ describe("createSyncLoop integration", () => {
 
       expect(getTss("good", "fml")).toBeDefined();
       expect(getTss("bad", "fml")).toBeUndefined();
+    });
+
+    it("backs off target retries after a sync failure instead of hammering every run", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+
+      insertSession("blocked", 1);
+      insertSessionRepo("blocked");
+
+      mockedPostSync.mockRejectedValue(new Error("HTTP 503"));
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      expect(mockedPostSync).toHaveBeenCalledTimes(1);
+      expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+        failure_count: 1,
+        last_error: "HTTP 503",
+        next_attempt_at_ms: 60_000,
+      });
+
+      mockedPostSync.mockClear();
+      await handle.runOnce();
+      expect(mockedPostSync).not.toHaveBeenCalled();
+
+      vi.setSystemTime(new Date(60_000));
+      await handle.runOnce();
+      expect(mockedPostSync).toHaveBeenCalledTimes(1);
+      expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+        failure_count: 2,
+        next_attempt_at_ms: 180_000,
+      });
     });
   });
 

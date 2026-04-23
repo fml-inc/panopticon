@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { clearAttemptBackoff } from "../attempt-backoff.js";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
@@ -306,10 +307,12 @@ export function rebuildSessionSummaryProjections(opts?: {
         .get() as { id: number };
       sessionSummaries += 1;
 
-      const mergedEnrichment = mergeSessionSummaryEnrichment(
+      const existingEnrichment =
         (existingEnrichmentStmt.get(summaryKey) as
           | SessionSummaryEnrichmentRow
-          | undefined) ?? null,
+          | undefined) ?? null;
+      const mergedEnrichment = mergeSessionSummaryEnrichment(
+        existingEnrichment,
         {
           sessionSummaryKey: summaryKey,
           sessionId: session.session_id,
@@ -331,6 +334,14 @@ export function rebuildSessionSummaryProjections(opts?: {
         runnerPolicy.policyHash,
         nowMs,
       );
+      if (
+        existingEnrichment &&
+        (existingEnrichment.summary_input_hash !==
+          mergedEnrichment.summary_input_hash ||
+          existingEnrichment.summary_policy_hash !== runnerPolicy.policyHash)
+      ) {
+        clearAttemptBackoff("session-summary-row", summaryKey);
+      }
       upsertEnrichmentStmt.run(
         mergedEnrichment.session_summary_key,
         mergedEnrichment.session_id,
