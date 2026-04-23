@@ -375,7 +375,6 @@ function resetDerivedStateForEvidenceRefCutover(db: Database): void {
   // raw scanner session files plus preserved hook/OTel tables after reparse.
   deleteAllRowsIfTableExists(db, "code_provenance");
   deleteAllRowsIfTableExists(db, "intent_session_summaries");
-  deleteAllRowsIfTableExists(db, "session_summary_enrichments");
   deleteAllRowsIfTableExists(db, "session_summaries");
   deleteAllRowsIfTableExists(db, "intent_edits");
   deleteAllRowsIfTableExists(db, "intent_units_fts");
@@ -401,7 +400,6 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
 
   deleteAllRowsIfTableExists(db, "code_provenance");
   deleteAllRowsIfTableExists(db, "intent_session_summaries");
-  deleteAllRowsIfTableExists(db, "session_summary_enrichments");
   deleteAllRowsIfTableExists(db, "session_summaries");
   deleteAllRowsIfTableExists(db, "intent_edits");
   deleteAllRowsIfTableExists(db, "intent_units_fts");
@@ -852,32 +850,36 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 15,
-    name: "add_session_summary_enrichment_threshold_columns",
+    name: "flatten_session_summary_projection_storage",
     up: (db) => {
+      if (tableExists(db, "session_summary_enrichments")) {
+        db.exec(`DROP TABLE session_summary_enrichments`);
+      }
       addColumnIfMissing(
         db,
-        "session_summary_enrichments",
-        "enriched_input_hash",
-        "enriched_input_hash TEXT",
+        "session_summaries",
+        "session_id",
+        "session_id TEXT",
       );
       addColumnIfMissing(
         db,
-        "session_summary_enrichments",
-        "enriched_message_count",
-        "enriched_message_count INTEGER",
+        "session_summaries",
+        "summary_text",
+        "summary_text TEXT",
       );
-    },
-  },
-  {
-    id: 16,
-    name: "add_session_summary_policy_hash",
-    up: (db) => {
       addColumnIfMissing(
         db,
-        "session_summary_enrichments",
-        "summary_policy_hash",
-        "summary_policy_hash TEXT",
+        "session_summaries",
+        "summary_search_text",
+        "summary_search_text TEXT",
       );
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+          ON session_summaries(session_id)
+      `);
+      deleteAllRowsIfTableExists(db, "code_provenance");
+      deleteAllRowsIfTableExists(db, "intent_session_summaries");
+      deleteAllRowsIfTableExists(db, "session_summaries");
     },
   },
 ];

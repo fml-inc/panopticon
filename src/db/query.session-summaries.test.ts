@@ -72,7 +72,6 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
-  db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM evidence_ref_paths").run();
@@ -236,118 +235,10 @@ describe("listSessions session summaries", () => {
       editCount: 2,
       landedEditCount: 1,
       openEditCount: 0,
-      summarySource: "deterministic",
-      summaryDirty: true,
     });
-    expect(result.sessions[0].summary).toBe("legacy weak summary");
-
-    getDb()
-      .prepare(
-        `UPDATE session_summary_enrichments
-         SET summary_text = ?,
-             summary_source = 'llm',
-             summary_runner = 'claude',
-             summary_model = 'sonnet',
-             summary_policy_hash = ?,
-             dirty = 0,
-             dirty_reason_json = NULL
-         WHERE session_summary_key = ?`,
-      )
-      .run(
-        "LLM-enriched session summary for retrieval.",
-        "policy-hash",
-        `ss:local:${SESSION}`,
-      );
-
-    const enriched = listSessions({ limit: 5 });
-    expect(enriched.sessions[0].summary).toBe("legacy weak summary");
-    expect(enriched.sessions[0].sessionSummary).toMatchObject({
-      summaryText: "LLM-enriched session summary for retrieval.",
-      summarySource: "llm",
-      summaryDirty: false,
-    });
-  });
-
-  it("coerces unknown summary sources to null in listSessions", () => {
-    const repo = scratchDir;
-    const cwd = scratchDir;
-    const file = path.join(scratchDir, "unknown-list-source.ts");
-    fs.writeFileSync(file, "latest implementation");
-
-    upsertSession({
-      session_id: SESSION,
-      target: "claude",
-      started_at_ms: 1_700_000_000_000,
-      first_prompt: "draft implementation",
-      turn_count: 4,
-      total_input_tokens: 100,
-      total_output_tokens: 200,
-    });
-    getDb()
-      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
-      .run("legacy weak summary", SESSION);
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
+    expect(result.sessions[0].sessionSummary?.summaryText).toContain(
+      "Status: mixed",
     );
-    upsertSessionCwd(SESSION, cwd, 900);
-
-    ingest({
-      event_type: "UserPromptSubmit",
-      ts: 1000,
-      cwd,
-      repository: repo,
-      payload: { prompt: "draft implementation", session_id: SESSION },
-    });
-    ingest({
-      event_type: "PostToolUse",
-      ts: 1100,
-      cwd,
-      repository: repo,
-      tool_name: "Edit",
-      payload: {
-        tool_name: "Edit",
-        tool_input: {
-          file_path: file,
-          old_string: "x",
-          new_string: "latest implementation",
-        },
-      },
-    });
-    ingest({
-      event_type: "Stop",
-      ts: 2000,
-      cwd,
-      repository: repo,
-      payload: { session_id: SESSION },
-    });
-
-    rebuildLocalReadModels();
-
-    getDb()
-      .prepare(
-        `UPDATE session_summary_enrichments
-         SET summary_text = ?,
-             summary_source = ?,
-             dirty = 0,
-             dirty_reason_json = NULL
-         WHERE session_summary_key = ?`,
-      )
-      .run(
-        "Projection summary with unknown source.",
-        "unexpected",
-        `ss:local:${SESSION}`,
-      );
-
-    const result = listSessions({ limit: 5 });
-    expect(result.sessions[0].sessionSummary).toMatchObject({
-      summaryText: "Projection summary with unknown source.",
-      summarySource: null,
-      summaryDirty: false,
-    });
     expect(result.sessions[0].summary).toBe("legacy weak summary");
   });
 
@@ -439,34 +330,9 @@ describe("listSessions session summaries", () => {
     const projected = listSessions({ limit: 5 });
     expect(projected.sessions[0].summary).toContain("Status: mixed");
     expect(projected.sessions[0].summary).toContain(file);
-
-    getDb()
-      .prepare(
-        `UPDATE session_summary_enrichments
-         SET summary_text = ?,
-             summary_source = 'llm',
-             summary_runner = 'claude',
-             summary_model = 'sonnet',
-             summary_policy_hash = ?,
-             dirty = 0,
-             dirty_reason_json = NULL
-         WHERE session_summary_key = ?`,
-      )
-      .run(
-        "LLM-enriched session summary for retrieval.",
-        "policy-hash",
-        `ss:local:${SESSION}`,
-      );
-
-    const enriched = listSessions({ limit: 5 });
-    expect(enriched.sessions[0].summary).toBe(
-      "LLM-enriched session summary for retrieval.",
+    expect(projected.sessions[0].sessionSummary?.summaryText).toContain(
+      "Status: mixed",
     );
-    expect(enriched.sessions[0].sessionSummary).toMatchObject({
-      summaryText: "LLM-enriched session summary for retrieval.",
-      summarySource: "llm",
-      summaryDirty: false,
-    });
   });
 
   it("searches projection summary text and summary search text", () => {
@@ -550,26 +416,8 @@ describe("listSessions session summaries", () => {
 
     rebuildLocalReadModels();
 
-    getDb()
-      .prepare(
-        `UPDATE session_summary_enrichments
-         SET summary_text = ?,
-             summary_source = 'llm',
-             summary_runner = 'claude',
-             summary_model = 'sonnet',
-             summary_policy_hash = ?,
-             dirty = 0,
-             dirty_reason_json = NULL
-         WHERE session_summary_key = ?`,
-      )
-      .run(
-        "LLM cleanup summary for retrieval.",
-        "policy-hash",
-        `ss:local:${SESSION}`,
-      );
-
     const summaryTextResult = search({
-      query: "LLM cleanup summary",
+      query: "mixed",
       limit: 10,
     });
     expect(

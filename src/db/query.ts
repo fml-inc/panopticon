@@ -1,9 +1,5 @@
 import { config } from "../config.js";
-import {
-  ensureSessionSummaryProjections,
-  parseSessionSummarySource,
-  sessionSummaryKeyForSession,
-} from "../session_summaries/query.js";
+import { ensureSessionSummaryProjections } from "../session_summaries/query.js";
 import { allTargets } from "../targets/index.js";
 import type {
   ActivitySessionDetail,
@@ -176,15 +172,13 @@ export function listSessions(
     reposBySession.set(r.session_id, list);
   }
 
-  const sessionSummaryKeys = sessionSummariesEnabled
-    ? sessionIds.map(sessionSummaryKeyForSession)
-    : [];
   const sessionSummaryRows =
-    sessionSummariesEnabled && sessionSummaryKeys.length > 0
+    sessionSummariesEnabled && sessionIds.length > 0
       ? (db
           .prepare(
             `SELECT s.id AS id,
                     s.session_summary_key,
+                    s.session_id,
                     s.title,
                     s.status,
                     s.repository,
@@ -196,18 +190,14 @@ export function listSessions(
                     s.edit_count,
                     s.landed_edit_count,
                     s.open_edit_count,
-                    e.summary_text,
-                    e.summary_source,
-                    e.summary_generated_at_ms,
-                    COALESCE(e.dirty, 1) AS summary_dirty
+                    s.summary_text
              FROM session_summaries s
-             LEFT JOIN session_summary_enrichments e
-               ON e.session_summary_key = s.session_summary_key
-             WHERE s.session_summary_key IN (${sessionSummaryKeys.map(() => "?").join(",")})`,
+             WHERE s.session_id IN (${sessionIds.map(() => "?").join(",")})`,
           )
-          .all(...sessionSummaryKeys) as Array<{
+          .all(...sessionIds) as Array<{
           id: number;
           session_summary_key: string;
+          session_id: string;
           title: string;
           status: SessionSummary["status"];
           repository: string | null;
@@ -220,9 +210,6 @@ export function listSessions(
           landed_edit_count: number;
           open_edit_count: number;
           summary_text: string | null;
-          summary_source: string | null;
-          summary_generated_at_ms: number | null;
-          summary_dirty: number;
         }>)
       : [];
 
@@ -256,10 +243,8 @@ export function listSessions(
 
   const summariesBySession = new Map<string, SessionSummary>();
   for (const row of sessionSummaryRows) {
-    const sessionId = parseSessionIdFromSummaryKey(row.session_summary_key);
-    if (!sessionId) continue;
-    summariesBySession.set(sessionId, {
-      sessionId,
+    summariesBySession.set(row.session_id, {
+      sessionId: row.session_id,
       title: row.title,
       status: row.status,
       repository: row.repository,
@@ -275,11 +260,6 @@ export function listSessions(
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
       summaryText: row.summary_text,
-      summarySource: parseSessionSummarySource(row.summary_source),
-      summaryGeneratedAt: row.summary_generated_at_ms
-        ? toIso(row.summary_generated_at_ms)
-        : null,
-      summaryDirty: row.summary_dirty === 1,
     });
   }
 
@@ -318,10 +298,6 @@ export function listSessions(
     totalCount: sessions.length,
     source: "local",
   };
-}
-
-function parseSessionIdFromSummaryKey(key: string): string | null {
-  return key.startsWith("ss:local:") ? key.slice("ss:local:".length) : null;
 }
 
 function formatExplicitSessionSummary(
@@ -763,7 +739,7 @@ export function search(opts: {
   const summarySql = sessionSummariesEnabled
     ? (() => {
         const summaryConditions: string[] = [
-          "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL)",
+          "(s.summary IS NOT NULL OR ss.summary_text IS NOT NULL OR ss.summary_search_text IS NOT NULL)",
         ];
         if (sinceMs) {
           summaryConditions.push("s.started_at_ms >= ?");
@@ -780,15 +756,15 @@ export function search(opts: {
           FROM (
             SELECT s.session_id,
                    s.started_at_ms as timestamp_ms,
-                   CASE
-                     WHEN e.summary_text LIKE ? THEN e.summary_text
-                     WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
+                  CASE
+                     WHEN ss.summary_text LIKE ? THEN ss.summary_text
+                     WHEN ss.summary_search_text LIKE ? THEN ss.summary_search_text
                      WHEN s.summary LIKE ? THEN s.summary
                      ELSE NULL
                    END as payload
             FROM sessions s
-            LEFT JOIN session_summary_enrichments e
-              ON e.session_id = s.session_id
+            LEFT JOIN session_summaries ss
+              ON ss.session_id = s.session_id
             WHERE ${summaryConditions.join(" AND ")}
           ) summary_matches
           WHERE summary_matches.payload IS NOT NULL

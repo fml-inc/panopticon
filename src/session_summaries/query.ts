@@ -2,12 +2,12 @@ import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import { resolveFilePathFromCwd } from "../paths.js";
-import type { SessionSummarySource } from "../types.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
 
 export interface SessionSummaryProjectionRow {
   session_summary_id: number;
   session_summary_key: string;
+  session_id: string;
   title: string;
   status: "active" | "landed" | "mixed" | "abandoned";
   repository: string | null;
@@ -24,12 +24,6 @@ export interface SessionSummaryProjectionRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  summary_search_text: string | null;
-  summary_source: SessionSummarySource | null;
-  summary_runner: string | null;
-  summary_model: string | null;
-  summary_generated_at_ms: number | null;
-  summary_dirty: boolean;
 }
 
 export interface SessionSummaryRow {
@@ -50,21 +44,13 @@ export interface SessionSummaryRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  summary_search_text: string | null;
-  summary_source: SessionSummarySource | null;
-  summary_runner: string | null;
-  summary_model: string | null;
-  summary_generated_at_ms: number | null;
-  summary_dirty: boolean;
 }
 
 type RawSessionSummaryProjectionRow = Omit<
   SessionSummaryProjectionRow,
-  "repository" | "summary_source" | "summary_dirty"
+  "repository"
 > & {
   repository: string | null;
-  summary_source: string | null;
-  summary_dirty: number;
 };
 
 type SessionSummaryIntentRow = {
@@ -178,11 +164,9 @@ export function sessionSummaryDetail(opts: {
     .prepare(
       `SELECT id
        FROM session_summaries
-       WHERE session_summary_key = ?`,
+       WHERE session_id = ?`,
     )
-    .get(sessionSummaryKeyForSession(opts.session_id)) as
-    | { id: number }
-    | undefined;
+    .get(opts.session_id) as { id: number } | undefined;
   if (!row) return null;
 
   const detail = getSessionSummaryProjectionDetail({
@@ -477,23 +461,12 @@ export function ensureSessionSummaryProjections(): void {
       c: number;
     }
   ).c;
-  const enrichmentCount = (
-    db
-      .prepare(`SELECT COUNT(*) AS c FROM session_summary_enrichments`)
-      .get() as {
-      c: number;
-    }
-  ).c;
   const membershipCount = (
     db.prepare(`SELECT COUNT(*) AS c FROM intent_session_summaries`).get() as {
       c: number;
     }
   ).c;
-  if (
-    sessionSummaryCount === 0 ||
-    membershipCount === 0 ||
-    enrichmentCount < sessionSummaryCount
-  ) {
+  if (sessionSummaryCount === 0 || membershipCount === 0) {
     rebuildSessionSummaryProjections();
   }
 }
@@ -514,6 +487,7 @@ function listSessionSummaryProjections(opts?: {
   let sql = `
     SELECT DISTINCT s.id AS session_summary_id,
            s.session_summary_key,
+           s.session_id,
            s.title,
            s.status,
            s.repository,
@@ -529,16 +503,8 @@ function listSessionSummaryProjections(opts?: {
            s.edit_count,
            s.landed_edit_count,
            s.open_edit_count,
-           e.summary_text,
-           e.summary_search_text,
-           e.summary_source,
-           e.summary_runner,
-           e.summary_model,
-           e.summary_generated_at_ms,
-           COALESCE(e.dirty, 1) AS summary_dirty
-    FROM session_summaries s
-    LEFT JOIN session_summary_enrichments e
-      ON e.session_summary_key = s.session_summary_key`;
+           s.summary_text
+    FROM session_summaries s`;
 
   if (opts?.path) {
     sql += `
@@ -590,6 +556,7 @@ function getSessionSummaryProjectionDetail(opts: {
     .prepare(
       `SELECT s.id AS session_summary_id,
               s.session_summary_key,
+              s.session_id,
               s.title,
               s.status,
               s.repository,
@@ -605,16 +572,8 @@ function getSessionSummaryProjectionDetail(opts: {
               s.edit_count,
               s.landed_edit_count,
               s.open_edit_count,
-              e.summary_text,
-              e.summary_search_text,
-              e.summary_source,
-              e.summary_runner,
-              e.summary_model,
-              e.summary_generated_at_ms,
-              COALESCE(e.dirty, 1) AS summary_dirty
+              s.summary_text
        FROM session_summaries s
-       LEFT JOIN session_summary_enrichments e
-         ON e.session_summary_key = s.session_summary_key
        WHERE id = ?`,
     )
     .get(opts.session_summary_id) as RawSessionSummaryProjectionRow | undefined;
@@ -662,10 +621,8 @@ function normalizeLookupPath(filePath: string, repository?: string): string {
 function toSessionSummaryRow(
   row: SessionSummaryProjectionRow,
 ): SessionSummaryRow | null {
-  const sessionId = parseSessionIdFromSummaryKey(row.session_summary_key);
-  if (!sessionId) return null;
   return {
-    session_id: sessionId,
+    session_id: row.session_id,
     title: row.title,
     status: row.status,
     repository: row.repository,
@@ -682,24 +639,11 @@ function toSessionSummaryRow(
     landed_edit_count: row.landed_edit_count,
     open_edit_count: row.open_edit_count,
     summary_text: row.summary_text,
-    summary_search_text: row.summary_search_text,
-    summary_source: row.summary_source,
-    summary_runner: row.summary_runner,
-    summary_model: row.summary_model,
-    summary_generated_at_ms: row.summary_generated_at_ms,
-    summary_dirty: row.summary_dirty,
   };
 }
 
 export function sessionSummaryKeyForSession(sessionId: string): string {
   return `ss:local:${sessionId}`;
-}
-
-function parseSessionIdFromSummaryKey(key: string): string | null {
-  const prefix = "ss:local:";
-  if (!key.startsWith(prefix)) return null;
-  const sessionId = key.slice(prefix.length);
-  return sessionId.length > 0 ? sessionId : null;
 }
 
 function toSessionSummaryProjectionRow(
@@ -708,15 +652,7 @@ function toSessionSummaryProjectionRow(
   return {
     ...row,
     repository: emptyToNull(row.repository),
-    summary_source: parseSessionSummarySource(row.summary_source),
-    summary_dirty: row.summary_dirty === 1,
   };
-}
-
-export function parseSessionSummarySource(
-  value: string | null,
-): SessionSummarySource | null {
-  return value === "deterministic" || value === "llm" ? value : null;
 }
 
 function lookupRepositoryForPath(filePath: string): string | null {

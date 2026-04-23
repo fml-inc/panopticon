@@ -19,8 +19,6 @@ export interface Repository {
   gitUserEmail: string | null;
 }
 
-export type SessionSummarySource = "deterministic" | "llm";
-
 export interface SessionSummary {
   sessionId: string;
   title: string;
@@ -36,9 +34,6 @@ export interface SessionSummary {
   openEditCount: number;
   topFiles: string[];
   summaryText: string | null;
-  summarySource: SessionSummarySource | null;
-  summaryGeneratedAt: string | null;
-  summaryDirty: boolean;
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────

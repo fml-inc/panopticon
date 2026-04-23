@@ -73,7 +73,6 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
-  db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM evidence_ref_paths").run();
@@ -195,8 +194,10 @@ describe("session_summaries", () => {
     expect(rows[0].title).toContain("draft implementation");
     expect(rows[0].intent_count).toBe(2);
     expect(rows[0].status).toBe("mixed");
+    expect(rows[0].summary_text).toContain("Status: mixed");
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toContain("Status: mixed");
     expect(detail?.intents).toHaveLength(2);
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
@@ -412,184 +413,13 @@ describe("session_summaries", () => {
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
     expect(detail?.session_summary?.session_id).toBe(SESSION);
+    expect(detail?.session_summary?.summary_text).toContain("Status: mixed");
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
   });
 
-  it("preserves llm enrichment across rebuilds when summary inputs are unchanged", () => {
-    const repo = scratchDir;
-    const cwd = scratchDir;
-    const file = path.join(scratchDir, "enriched-summary.ts");
-    fs.writeFileSync(file, "final implementation");
-
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
-    upsertSessionCwd(SESSION, cwd, 900);
-
-    ingest({
-      event_type: "UserPromptSubmit",
-      ts: 1000,
-      cwd,
-      repository: repo,
-      payload: { prompt: "draft implementation", session_id: SESSION },
-    });
-    ingest({
-      event_type: "PostToolUse",
-      ts: 1100,
-      cwd,
-      repository: repo,
-      tool_name: "Edit",
-      payload: {
-        tool_name: "Edit",
-        tool_input: {
-          file_path: file,
-          old_string: "x",
-          new_string: "draft implementation",
-        },
-      },
-    });
-    ingest({
-      event_type: "UserPromptSubmit",
-      ts: 2000,
-      cwd,
-      repository: repo,
-      payload: { prompt: "finish implementation", session_id: SESSION },
-    });
-    ingest({
-      event_type: "PostToolUse",
-      ts: 2100,
-      cwd,
-      repository: repo,
-      tool_name: "Edit",
-      payload: {
-        tool_name: "Edit",
-        tool_input: {
-          file_path: file,
-          old_string: "x",
-          new_string: "final implementation",
-        },
-      },
-    });
-    ingest({
-      event_type: "Stop",
-      ts: 3000,
-      cwd,
-      repository: repo,
-      payload: { session_id: SESSION },
-    });
-
-    rebuildLocalReadModels();
-
-    const db = getDb();
-    const key = sessionSummaryKeyForSession(SESSION);
-    db.prepare(
-      `UPDATE session_summary_enrichments
-       SET summary_text = ?,
-           summary_source = 'llm',
-           summary_runner = 'claude',
-           summary_model = 'sonnet',
-           summary_policy_hash = ?,
-           enriched_input_hash = summary_input_hash,
-           enriched_message_count = 0,
-           dirty = 0,
-           dirty_reason_json = NULL
-       WHERE session_summary_key = ?`,
-    ).run("LLM-enriched implementation summary.", "policy-hash", key);
-
-    rebuildLocalReadModels();
-
-    const rows = listSessionSummaries({ repository: repo });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].summary_text).toBe("LLM-enriched implementation summary.");
-    expect(rows[0].summary_source).toBe("llm");
-    expect(rows[0].summary_dirty).toBe(false);
-
-    const detail = sessionSummaryDetail({ session_id: SESSION });
-    expect(detail?.session_summary?.summary_text).toBe(
-      "LLM-enriched implementation summary.",
-    );
-    expect(detail?.session_summary?.summary_source).toBe("llm");
-    expect(detail?.session_summary?.summary_dirty).toBe(false);
-  });
-
-  it("coerces unknown summary sources to null", () => {
-    const repo = scratchDir;
-    const cwd = scratchDir;
-    const file = path.join(scratchDir, "unknown-source.ts");
-    fs.writeFileSync(file, "final implementation");
-
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
-    upsertSessionCwd(SESSION, cwd, 900);
-
-    ingest({
-      event_type: "UserPromptSubmit",
-      ts: 1000,
-      cwd,
-      repository: repo,
-      payload: { prompt: "draft implementation", session_id: SESSION },
-    });
-    ingest({
-      event_type: "PostToolUse",
-      ts: 1100,
-      cwd,
-      repository: repo,
-      tool_name: "Edit",
-      payload: {
-        tool_name: "Edit",
-        tool_input: {
-          file_path: file,
-          old_string: "x",
-          new_string: "final implementation",
-        },
-      },
-    });
-    ingest({
-      event_type: "Stop",
-      ts: 2000,
-      cwd,
-      repository: repo,
-      payload: { session_id: SESSION },
-    });
-
-    rebuildLocalReadModels();
-
-    const key = sessionSummaryKeyForSession(SESSION);
-    getDb()
-      .prepare(
-        `UPDATE session_summary_enrichments
-         SET summary_text = ?,
-             summary_source = ?,
-             dirty = 0,
-             dirty_reason_json = NULL
-         WHERE session_summary_key = ?`,
-      )
-      .run("Summary with unknown source.", "unexpected", key);
-
-    const rows = listSessionSummaries({ repository: repo });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].summary_text).toBe("Summary with unknown source.");
-    expect(rows[0].summary_source).toBeNull();
-
-    const detail = sessionSummaryDetail({ session_id: SESSION });
-    expect(detail?.session_summary?.summary_text).toBe(
-      "Summary with unknown source.",
-    );
-    expect(detail?.session_summary?.summary_source).toBeNull();
-  });
-
-  it("marks enrichment dirty and resets to deterministic text after a material change", () => {
+  it("refreshes deterministic summary text after a material change", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
     const file = path.join(scratchDir, "material-change.ts");
@@ -658,21 +488,9 @@ describe("session_summaries", () => {
 
     rebuildLocalReadModels();
 
-    const db = getDb();
-    const key = sessionSummaryKeyForSession(SESSION);
-    db.prepare(
-      `UPDATE session_summary_enrichments
-       SET summary_text = ?,
-           summary_source = 'llm',
-           summary_runner = 'claude',
-           summary_model = 'sonnet',
-           summary_policy_hash = ?,
-           enriched_input_hash = summary_input_hash,
-           enriched_message_count = 0,
-           dirty = 0,
-           dirty_reason_json = NULL
-       WHERE session_summary_key = ?`,
-    ).run("LLM-enriched implementation summary.", "policy-hash", key);
+    const before = listSessionSummaries({ repository: repo });
+    expect(before).toHaveLength(1);
+    const beforeSummary = before[0].summary_text;
 
     fs.writeFileSync(file, "cleanup complete");
     ingest({
@@ -709,13 +527,12 @@ describe("session_summaries", () => {
 
     const rows = listSessionSummaries({ repository: repo });
     expect(rows).toHaveLength(1);
-    expect(rows[0].summary_source).toBe("deterministic");
-    expect(rows[0].summary_dirty).toBe(true);
-    expect(rows[0].summary_text).not.toBe(
-      "LLM-enriched implementation summary.",
-    );
-    expect(rows[0].summary_search_text).toContain("ship cleanup");
+    expect(rows[0].summary_text).not.toBe(beforeSummary);
+    expect(rows[0].summary_text).toContain("3 intents");
     expect(rows[0].intent_count).toBe(3);
+
+    const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toContain("3 intents");
   });
 });
 
