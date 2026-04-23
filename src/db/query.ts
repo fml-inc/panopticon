@@ -669,6 +669,8 @@ export function search(opts: {
   fullPayloads?: boolean;
 }): SearchResult {
   const db = getDb();
+  const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const sinceMs = parseSince(opts.since);
@@ -756,11 +758,36 @@ export function search(opts: {
   `;
 
   // Session summary search
-  const summaryConditions: string[] = [
-    "s.summary IS NOT NULL",
-    "s.summary LIKE ?",
-  ];
-  const summaryParams: unknown[] = [pattern];
+  const summaryPayloadCol = sessionSummariesEnabled
+    ? truncate
+      ? `SUBSTR(
+           CASE
+             WHEN e.summary_text LIKE ? THEN e.summary_text
+             WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
+             WHEN s.summary LIKE ? THEN s.summary
+             ELSE COALESCE(e.summary_text, e.summary_search_text, s.summary)
+           END,
+           1,
+           500
+         )`
+      : `CASE
+           WHEN e.summary_text LIKE ? THEN e.summary_text
+           WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
+           WHEN s.summary LIKE ? THEN s.summary
+           ELSE COALESCE(e.summary_text, e.summary_search_text, s.summary)
+         END`
+    : truncate
+      ? "SUBSTR(s.summary, 1, 500)"
+      : "s.summary";
+  const summaryConditions: string[] = sessionSummariesEnabled
+    ? [
+        "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL)",
+        "(s.summary LIKE ? OR e.summary_text LIKE ? OR e.summary_search_text LIKE ?)",
+      ]
+    : ["s.summary IS NOT NULL", "s.summary LIKE ?"];
+  const summaryParams: unknown[] = sessionSummariesEnabled
+    ? [pattern, pattern, pattern, pattern, pattern, pattern]
+    : [pattern];
   if (sinceMs) {
     summaryConditions.push("s.started_at_ms >= ?");
     summaryParams.push(sinceMs);
@@ -769,8 +796,14 @@ export function search(opts: {
   const summarySql = `
     SELECT 'summary' as source, s.session_id as id, s.session_id,
            'summary' as event_type, s.started_at_ms as timestamp_ms,
-           NULL as tool_name, NULL as cwd, SUBSTR(s.summary, 1, 500) as payload
+           NULL as tool_name, NULL as cwd, ${summaryPayloadCol} as payload
     FROM sessions s
+    ${
+      sessionSummariesEnabled
+        ? `LEFT JOIN session_summary_enrichments e
+             ON e.session_id = s.session_id`
+        : ""
+    }
     WHERE ${summaryConditions.join(" AND ")}
   `;
 

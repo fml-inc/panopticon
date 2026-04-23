@@ -417,7 +417,7 @@ export function mergeSessionSummaryEnrichment(
       summary_generated_at_ms: nowMs,
       projection_hash: docs.projectionHash,
       summary_input_hash: docs.summaryInputHash,
-      summary_policy_hash: existing?.summary_policy_hash ?? null,
+      summary_policy_hash: policyHash,
       enriched_input_hash: existing?.enriched_input_hash ?? null,
       enriched_message_count: existing?.enriched_message_count ?? null,
       dirty: shouldRefreshNow ? 1 : 0,

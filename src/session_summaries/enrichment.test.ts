@@ -117,7 +117,7 @@ describe("session summary enrichment merge", () => {
         summary_generated_at_ms: 1000,
         projection_hash: docs.projectionHash,
         summary_input_hash: docs.summaryInputHash,
-        summary_policy_hash: policyHash,
+        summary_policy_hash: "stale-policy-hash",
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: 4,
         dirty: 0,
@@ -141,6 +141,7 @@ describe("session summary enrichment merge", () => {
 
     expect(merged.summary_source).toBe("deterministic");
     expect(merged.summary_text).not.toBe("LLM summary text.");
+    expect(merged.summary_policy_hash).toBe(policyHash);
     expect(merged.dirty).toBe(0);
     expect(merged.dirty_reason_json).toContain("summary_input_changed");
     expect(merged.dirty_reason_json).toContain("session_hot");
