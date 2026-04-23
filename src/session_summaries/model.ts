@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import type { SessionSummarySource } from "../types.js";
+
 export const SESSION_SUMMARY_ENRICHMENT_VERSION = 1;
 
 const HOT_WINDOW_MS = 30 * 60 * 1000;
@@ -42,7 +44,7 @@ export interface SessionSummaryEnrichmentRow {
   session_id: string;
   summary_text: string | null;
   summary_search_text: string | null;
-  summary_source: string | null;
+  summary_source: SessionSummarySource | null;
   summary_runner: string | null;
   summary_model: string | null;
   summary_version: number;

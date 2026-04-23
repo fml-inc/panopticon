@@ -518,6 +518,77 @@ describe("session_summaries", () => {
     expect(detail?.session_summary?.summary_dirty).toBe(false);
   });
 
+  it("coerces unknown summary sources to null", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "unknown-source.ts");
+    fs.writeFileSync(file, "final implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "final implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const key = sessionSummaryKeyForSession(SESSION);
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = ?,
+             dirty = 0,
+             dirty_reason_json = NULL
+         WHERE session_summary_key = ?`,
+      )
+      .run("Summary with unknown source.", "unexpected", key);
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary_text).toBe("Summary with unknown source.");
+    expect(rows[0].summary_source).toBeNull();
+
+    const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toBe(
+      "Summary with unknown source.",
+    );
+    expect(detail?.session_summary?.summary_source).toBeNull();
+  });
+
   it("marks enrichment dirty and resets to deterministic text after a material change", () => {
     const repo = scratchDir;
     const cwd = scratchDir;

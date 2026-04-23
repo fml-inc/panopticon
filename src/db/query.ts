@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import {
   ensureSessionSummaryProjections,
+  parseSessionSummarySource,
   sessionSummaryKeyForSession,
 } from "../session_summaries/query.js";
 import { allTargets } from "../targets/index.js";
@@ -219,7 +220,7 @@ export function listSessions(
           landed_edit_count: number;
           open_edit_count: number;
           summary_text: string | null;
-          summary_source: SessionSummary["summarySource"];
+          summary_source: string | null;
           summary_generated_at_ms: number | null;
           summary_dirty: number;
         }>)
@@ -274,7 +275,7 @@ export function listSessions(
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
       summaryText: row.summary_text,
-      summarySource: row.summary_source,
+      summarySource: parseSessionSummarySource(row.summary_source),
       summaryGeneratedAt: row.summary_generated_at_ms
         ? toIso(row.summary_generated_at_ms)
         : null,
@@ -758,54 +759,59 @@ export function search(opts: {
   `;
 
   // Session summary search
-  const summaryPayloadCol = sessionSummariesEnabled
-    ? truncate
-      ? `SUBSTR(
-           CASE
-             WHEN e.summary_text LIKE ? THEN e.summary_text
-             WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
-             WHEN s.summary LIKE ? THEN s.summary
-             ELSE COALESCE(e.summary_text, e.summary_search_text, s.summary)
-           END,
-           1,
-           500
-         )`
-      : `CASE
-           WHEN e.summary_text LIKE ? THEN e.summary_text
-           WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
-           WHEN s.summary LIKE ? THEN s.summary
-           ELSE COALESCE(e.summary_text, e.summary_search_text, s.summary)
-         END`
-    : truncate
-      ? "SUBSTR(s.summary, 1, 500)"
-      : "s.summary";
-  const summaryConditions: string[] = sessionSummariesEnabled
-    ? [
-        "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL)",
-        "(s.summary LIKE ? OR e.summary_text LIKE ? OR e.summary_search_text LIKE ?)",
-      ]
-    : ["s.summary IS NOT NULL", "s.summary LIKE ?"];
-  const summaryParams: unknown[] = sessionSummariesEnabled
-    ? [pattern, pattern, pattern, pattern, pattern, pattern]
-    : [pattern];
-  if (sinceMs) {
-    summaryConditions.push("s.started_at_ms >= ?");
-    summaryParams.push(sinceMs);
-  }
-
-  const summarySql = `
-    SELECT 'summary' as source, s.session_id as id, s.session_id,
-           'summary' as event_type, s.started_at_ms as timestamp_ms,
-           NULL as tool_name, NULL as cwd, ${summaryPayloadCol} as payload
-    FROM sessions s
-    ${
-      sessionSummariesEnabled
-        ? `LEFT JOIN session_summary_enrichments e
-             ON e.session_id = s.session_id`
-        : ""
-    }
-    WHERE ${summaryConditions.join(" AND ")}
-  `;
+  const summaryParams: unknown[] = [];
+  const summarySql = sessionSummariesEnabled
+    ? (() => {
+        const summaryConditions: string[] = [
+          "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL)",
+        ];
+        if (sinceMs) {
+          summaryConditions.push("s.started_at_ms >= ?");
+          summaryParams.push(sinceMs);
+        }
+        const payloadExpr = truncate
+          ? "SUBSTR(summary_matches.payload, 1, 500)"
+          : "summary_matches.payload";
+        summaryParams.unshift(pattern, pattern, pattern);
+        return `
+          SELECT 'summary' as source, summary_matches.session_id as id, summary_matches.session_id,
+                 'summary' as event_type, summary_matches.timestamp_ms,
+                 NULL as tool_name, NULL as cwd, ${payloadExpr} as payload
+          FROM (
+            SELECT s.session_id,
+                   s.started_at_ms as timestamp_ms,
+                   CASE
+                     WHEN e.summary_text LIKE ? THEN e.summary_text
+                     WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
+                     WHEN s.summary LIKE ? THEN s.summary
+                     ELSE NULL
+                   END as payload
+            FROM sessions s
+            LEFT JOIN session_summary_enrichments e
+              ON e.session_id = s.session_id
+            WHERE ${summaryConditions.join(" AND ")}
+          ) summary_matches
+          WHERE summary_matches.payload IS NOT NULL
+        `;
+      })()
+    : (() => {
+        const summaryConditions = ["s.summary IS NOT NULL", "s.summary LIKE ?"];
+        summaryParams.push(pattern);
+        if (sinceMs) {
+          summaryConditions.push("s.started_at_ms >= ?");
+          summaryParams.push(sinceMs);
+        }
+        const payloadExpr = truncate
+          ? "SUBSTR(s.summary, 1, 500)"
+          : "s.summary";
+        return `
+          SELECT 'summary' as source, s.session_id as id, s.session_id,
+                 'summary' as event_type, s.started_at_ms as timestamp_ms,
+                 NULL as tool_name, NULL as cwd, ${payloadExpr} as payload
+          FROM sessions s
+          WHERE ${summaryConditions.join(" AND ")}
+        `;
+      })();
 
   const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql} UNION ALL ${summarySql})`;
   const total = (

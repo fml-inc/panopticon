@@ -268,6 +268,89 @@ describe("listSessions session summaries", () => {
     });
   });
 
+  it("coerces unknown summary sources to null in listSessions", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "unknown-list-source.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "draft implementation",
+      turn_count: 4,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    getDb()
+      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
+      .run("legacy weak summary", SESSION);
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = ?,
+             dirty = 0,
+             dirty_reason_json = NULL
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "Projection summary with unknown source.",
+        "unexpected",
+        `ss:local:${SESSION}`,
+      );
+
+    const result = listSessions({ limit: 5 });
+    expect(result.sessions[0].sessionSummary).toMatchObject({
+      summaryText: "Projection summary with unknown source.",
+      summarySource: null,
+      summaryDirty: false,
+    });
+    expect(result.sessions[0].summary).toBe("legacy weak summary");
+  });
+
   it("switches listSessions summary text to projection-backed output when enabled", () => {
     const repo = scratchDir;
     const cwd = scratchDir;

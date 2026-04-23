@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import { resolveFilePathFromCwd } from "../paths.js";
+import type { SessionSummarySource } from "../types.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
 
 export interface SessionSummaryProjectionRow {
@@ -24,7 +25,7 @@ export interface SessionSummaryProjectionRow {
   open_edit_count: number;
   summary_text: string | null;
   summary_search_text: string | null;
-  summary_source: string | null;
+  summary_source: SessionSummarySource | null;
   summary_runner: string | null;
   summary_model: string | null;
   summary_generated_at_ms: number | null;
@@ -50,12 +51,21 @@ export interface SessionSummaryRow {
   open_edit_count: number;
   summary_text: string | null;
   summary_search_text: string | null;
-  summary_source: string | null;
+  summary_source: SessionSummarySource | null;
   summary_runner: string | null;
   summary_model: string | null;
   summary_generated_at_ms: number | null;
   summary_dirty: boolean;
 }
+
+type RawSessionSummaryProjectionRow = Omit<
+  SessionSummaryProjectionRow,
+  "repository" | "summary_source" | "summary_dirty"
+> & {
+  repository: string | null;
+  summary_source: string | null;
+  summary_dirty: number;
+};
 
 type SessionSummaryIntentRow = {
   intent_unit_id: number;
@@ -566,37 +576,8 @@ function listSessionSummaryProjections(opts?: {
   params.push(opts?.limit ?? 20, opts?.offset ?? 0);
 
   return (
-    db.prepare(sql).all(...params) as Array<{
-      session_summary_id: number;
-      session_summary_key: string;
-      title: string;
-      status: SessionSummaryProjectionRow["status"];
-      repository: string | null;
-      cwd: string | null;
-      branch: string | null;
-      worktree: string | null;
-      actor: string | null;
-      machine: string;
-      origin_scope: string;
-      first_intent_ts_ms: number | null;
-      last_intent_ts_ms: number | null;
-      intent_count: number;
-      edit_count: number;
-      landed_edit_count: number;
-      open_edit_count: number;
-      summary_text: string | null;
-      summary_search_text: string | null;
-      summary_source: string | null;
-      summary_runner: string | null;
-      summary_model: string | null;
-      summary_generated_at_ms: number | null;
-      summary_dirty: number;
-    }>
-  ).map((row) => ({
-    ...row,
-    repository: emptyToNull(row.repository),
-    summary_dirty: row.summary_dirty === 1,
-  }));
+    db.prepare(sql).all(...params) as RawSessionSummaryProjectionRow[]
+  ).map((row) => toSessionSummaryProjectionRow(row));
 }
 
 function getSessionSummaryProjectionDetail(opts: {
@@ -636,12 +617,7 @@ function getSessionSummaryProjectionDetail(opts: {
          ON e.session_summary_key = s.session_summary_key
        WHERE id = ?`,
     )
-    .get(opts.session_summary_id) as
-    | (Omit<SessionSummaryProjectionRow, "repository" | "summary_dirty"> & {
-        repository: string | null;
-        summary_dirty: number;
-      })
-    | undefined;
+    .get(opts.session_summary_id) as RawSessionSummaryProjectionRow | undefined;
   if (!sessionSummary) return null;
 
   const intents = db
@@ -673,11 +649,7 @@ function getSessionSummaryProjectionDetail(opts: {
     .all(opts.session_summary_id) as SessionSummaryFileRow[];
 
   return {
-    session_summary: {
-      ...sessionSummary,
-      repository: emptyToNull(sessionSummary.repository),
-      summary_dirty: sessionSummary.summary_dirty === 1,
-    },
+    session_summary: toSessionSummaryProjectionRow(sessionSummary),
     intents,
     files,
   };
@@ -728,6 +700,23 @@ function parseSessionIdFromSummaryKey(key: string): string | null {
   if (!key.startsWith(prefix)) return null;
   const sessionId = key.slice(prefix.length);
   return sessionId.length > 0 ? sessionId : null;
+}
+
+function toSessionSummaryProjectionRow(
+  row: RawSessionSummaryProjectionRow,
+): SessionSummaryProjectionRow {
+  return {
+    ...row,
+    repository: emptyToNull(row.repository),
+    summary_source: parseSessionSummarySource(row.summary_source),
+    summary_dirty: row.summary_dirty === 1,
+  };
+}
+
+export function parseSessionSummarySource(
+  value: string | null,
+): SessionSummarySource | null {
+  return value === "deterministic" || value === "llm" ? value : null;
 }
 
 function lookupRepositoryForPath(filePath: string): string | null {

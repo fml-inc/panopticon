@@ -516,17 +516,6 @@ CREATE TABLE IF NOT EXISTS watermarks (
   value INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS attempt_backoffs (
-  scope_kind TEXT NOT NULL,
-  scope_key TEXT NOT NULL,
-  failure_count INTEGER NOT NULL DEFAULT 0,
-  last_attempted_at_ms INTEGER,
-  next_attempt_at_ms INTEGER,
-  last_error TEXT,
-  updated_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (scope_kind, scope_key)
-);
-
 -- ── Per-session sync state ─────────────────────────────────────────────────
 
 DROP TABLE IF EXISTS pending_session_sync;
@@ -549,10 +538,6 @@ CREATE TABLE IF NOT EXISTS target_session_sync (
 );
 
 -- ── Indexes ─────────────────────────────────────────────────────────────────
-
--- attempt_backoffs
-CREATE INDEX IF NOT EXISTS idx_attempt_backoffs_next_attempt
-  ON attempt_backoffs(next_attempt_at_ms);
 
 -- otel_logs
 CREATE INDEX IF NOT EXISTS idx_logs_session ON otel_logs(session_id);
