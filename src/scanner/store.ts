@@ -133,6 +133,23 @@ export function readSessionIdByScannerFile(
   return row?.session_id ?? undefined;
 }
 
+export function readKnownScannerFiles(source: string): string[] {
+  const db = getDb();
+  return (
+    db
+      .prepare(
+        `SELECT DISTINCT scanner_file_path
+         FROM sessions
+         WHERE target = ?
+           AND scanner_file_path IS NOT NULL
+           AND scanner_file_path != ''
+           AND COALESCE(has_scanner, 0) = 0
+         ORDER BY scanner_file_path`,
+      )
+      .all(source) as Array<{ scanner_file_path: string }>
+  ).map((row) => row.scanner_file_path);
+}
+
 // ── Turn insert ─────────────────────────────────────────────────────────────
 
 const INSERT_TURN_SQL = `

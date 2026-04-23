@@ -92,6 +92,7 @@ vi.mock("./store.js", () => ({
   linkSubagentSessions: vi.fn(() => 0),
   readArchivedSize: vi.fn(() => 0),
   readFileWatermark: vi.fn(() => ({ byteOffset: 0 })),
+  readKnownScannerFiles: vi.fn(() => []),
   readSessionIdByScannerFile: vi.fn(() => undefined),
   resetFileForReparse: vi.fn(),
   restoreSyncIds: vi.fn(),
@@ -120,6 +121,7 @@ import {
   insertMessages,
   insertTurns,
   readFileWatermark,
+  readKnownScannerFiles,
   readSessionIdByScannerFile,
   upsertSession,
   writeFileWatermark,
@@ -131,6 +133,7 @@ describe("scanOnce progress", () => {
     discoverMock.mockReset();
     parseFileMock.mockReset();
     vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 0 });
+    vi.mocked(readKnownScannerFiles).mockReturnValue([]);
     vi.mocked(readSessionIdByScannerFile).mockReturnValue(undefined);
   });
 
@@ -169,6 +172,32 @@ describe("scanOnce progress", () => {
       discoveredFiles: 2,
       currentSource: "fake",
     });
+  });
+
+  it("includes known scanner file paths when target discovery is empty", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-loop-test-"));
+    const filePath = path.join(tempDir, "session.json");
+    fs.writeFileSync(filePath, "fixture");
+
+    discoverMock.mockReturnValue([]);
+    vi.mocked(readKnownScannerFiles).mockReturnValue([filePath]);
+    parseFileMock.mockReturnValue({
+      meta: { sessionId: "session-known" },
+      turns: [],
+      events: [],
+      messages: [],
+      newByteOffset: 7,
+    });
+
+    const result = scanOnce();
+
+    expect(result.filesScanned).toBe(1);
+    expect(parseFileMock).toHaveBeenCalledWith(filePath, 0);
+    expect(vi.mocked(upsertSession)).toHaveBeenCalledWith(
+      { sessionId: "session-known" },
+      filePath,
+      "fake",
+    );
   });
 
   it("reports touched-session processing after file scanning", () => {

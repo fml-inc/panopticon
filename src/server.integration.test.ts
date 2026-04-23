@@ -1315,6 +1315,30 @@ describe("server integration", () => {
       // Event name should be normalized to canonical form
       expect(row.event_type).toBe("PreToolUse");
     });
+
+    it("persists Gemini transcript_path as scanner_file_path", async () => {
+      _resetSessionTargetCache();
+      const sessionId = "target-test-gemini-transcript";
+      const transcriptPath =
+        "/home/testuser/.gemini/tmp/workspace/chats/session-abc123.json";
+
+      const { status } = await post("/hooks", {
+        session_id: sessionId,
+        hook_event_name: "BeforeTool",
+        tool_name: "shell",
+        transcript_path: transcriptPath,
+      });
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const row = db
+        .prepare(
+          "SELECT target, scanner_file_path FROM sessions WHERE session_id = ?",
+        )
+        .get(sessionId) as { target: string; scanner_file_path: string | null };
+      expect(row.target).toBe("gemini");
+      expect(row.scanner_file_path).toBe(transcriptPath);
+    });
   });
 
   // ── Model heuristic warning ────────────────────────────────────────────

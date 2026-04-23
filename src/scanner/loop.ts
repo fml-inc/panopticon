@@ -31,6 +31,7 @@ import {
   linkSubagentSessions,
   readArchivedSize,
   readFileWatermark,
+  readKnownScannerFiles,
   readSessionIdByScannerFile,
   resetFileForReparse,
   shouldResetWatermark,
@@ -289,7 +290,14 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
   }> = [];
   for (const target of allTargets()) {
     if (!target.scanner) continue;
-    const files = target.scanner.discover();
+    const filePaths = new Set<string>();
+    for (const { filePath } of target.scanner.discover()) {
+      filePaths.add(filePath);
+    }
+    for (const filePath of readKnownScannerFiles(target.id)) {
+      filePaths.add(filePath);
+    }
+    const files = [...filePaths].map((filePath) => ({ filePath }));
     discoveredFiles += files.length;
     discoveredTargets.push({
       source: target.id,

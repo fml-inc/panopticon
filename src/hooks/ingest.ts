@@ -48,6 +48,7 @@ export interface HookInput {
   hook_event_name: string;
   cwd?: string;
   repository?: string;
+  transcript_path?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   source?: string;
@@ -441,6 +442,13 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     target: targetId,
     has_hooks: 1,
   };
+  if (
+    targetId === "gemini" &&
+    typeof data.transcript_path === "string" &&
+    isObservedAbsolutePath(data.transcript_path)
+  ) {
+    sessionFields.scanner_file_path = data.transcript_path;
+  }
   if (eventType === "SessionStart") {
     // First event in a session — capture initial state. cwd and
     // permission_mode are snapshot values from launch time.
