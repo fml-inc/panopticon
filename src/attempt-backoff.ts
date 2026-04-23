@@ -12,6 +12,7 @@ const ATTEMPT_BACKOFF_SCHEDULE_MS = [
   4 * 60 * 60_000,
   6 * 60 * 60_000,
 ] as const;
+const ATTEMPT_BACKOFF_JITTER_RATIO = 0.1;
 
 export interface AttemptBackoffRow {
   scope_kind: string;
@@ -28,6 +29,20 @@ export function computeAttemptBackoffDelayMs(failureCount: number): number {
   return ATTEMPT_BACKOFF_SCHEDULE_MS[
     Math.min(failureCount - 1, ATTEMPT_BACKOFF_SCHEDULE_MS.length - 1)
   ];
+}
+
+export function applyAttemptBackoffJitter(
+  delayMs: number,
+  random = Math.random,
+): number {
+  if (delayMs <= 0) return 0;
+  // Spread retries across clients so a shared outage does not recover in lockstep.
+  const sample = Math.min(1, Math.max(0, random()));
+  const factor =
+    1 -
+    ATTEMPT_BACKOFF_JITTER_RATIO +
+    sample * (2 * ATTEMPT_BACKOFF_JITTER_RATIO);
+  return Math.max(1, Math.round(delayMs * factor));
 }
 
 export function getAttemptBackoff(
@@ -63,10 +78,16 @@ export function recordAttemptBackoffFailure(
   scopeKey: string,
   error: string,
   nowMs = Date.now(),
+  random = Math.random,
 ): AttemptBackoffRow {
   const existing = getAttemptBackoff(scopeKind, scopeKey);
   const failureCount = (existing?.failure_count ?? 0) + 1;
-  const nextAttemptAtMs = nowMs + computeAttemptBackoffDelayMs(failureCount);
+  const nextAttemptAtMs =
+    nowMs +
+    applyAttemptBackoffJitter(
+      computeAttemptBackoffDelayMs(failureCount),
+      random,
+    );
   const db = getDb();
   db.prepare(
     `INSERT INTO attempt_backoffs (

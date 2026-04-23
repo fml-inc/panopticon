@@ -23,6 +23,7 @@ vi.mock("./config.js", () => {
 });
 
 import {
+  applyAttemptBackoffJitter,
   clearAttemptBackoff,
   computeAttemptBackoffDelayMs,
   getAttemptBackoff,
@@ -63,8 +64,21 @@ describe("attempt backoff", () => {
     expect(computeAttemptBackoffDelayMs(99)).toBe(6 * 60 * 60_000);
   });
 
+  it("applies bounded jitter around the base backoff delay", () => {
+    expect(applyAttemptBackoffJitter(0, () => 0.5)).toBe(0);
+    expect(applyAttemptBackoffJitter(60_000, () => 0)).toBe(54_000);
+    expect(applyAttemptBackoffJitter(60_000, () => 0.5)).toBe(60_000);
+    expect(applyAttemptBackoffJitter(60_000, () => 1)).toBe(66_000);
+  });
+
   it("persists and clears backoff state by scope", () => {
-    recordAttemptBackoffFailure("sync-target", "fml", "HTTP 503", 1_000);
+    recordAttemptBackoffFailure(
+      "sync-target",
+      "fml",
+      "HTTP 503",
+      1_000,
+      () => 0.5,
+    );
     expect(isAttemptBackoffActive("sync-target", "fml", 59_999)).toBe(true);
     expect(isAttemptBackoffActive("sync-target", "fml", 61_000)).toBe(false);
 
@@ -78,7 +92,13 @@ describe("attempt backoff", () => {
       next_attempt_at_ms: 61_000,
     });
 
-    recordAttemptBackoffFailure("sync-target", "fml", "HTTP 503", 61_000);
+    recordAttemptBackoffFailure(
+      "sync-target",
+      "fml",
+      "HTTP 503",
+      61_000,
+      () => 0.5,
+    );
     expect(getAttemptBackoff("sync-target", "fml")?.failure_count).toBe(2);
     expect(getAttemptBackoff("sync-target", "fml")?.next_attempt_at_ms).toBe(
       61_000 + 2 * 60_000,

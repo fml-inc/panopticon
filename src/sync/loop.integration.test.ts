@@ -423,33 +423,38 @@ describe("createSyncLoop integration", () => {
     it("backs off target retries after a sync failure instead of hammering every run", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(0));
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
 
       insertSession("blocked", 1);
       insertSessionRepo("blocked");
 
       mockedPostSync.mockRejectedValue(new Error("HTTP 503"));
 
-      const handle = createSyncLoop({ targets: [makeTarget()] });
-      await handle.runOnce();
+      try {
+        const handle = createSyncLoop({ targets: [makeTarget()] });
+        await handle.runOnce();
 
-      expect(mockedPostSync).toHaveBeenCalledTimes(1);
-      expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
-        failure_count: 1,
-        last_error: "HTTP 503",
-        next_attempt_at_ms: 60_000,
-      });
+        expect(mockedPostSync).toHaveBeenCalledTimes(1);
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 1,
+          last_error: "HTTP 503",
+          next_attempt_at_ms: 60_000,
+        });
 
-      mockedPostSync.mockClear();
-      await handle.runOnce();
-      expect(mockedPostSync).not.toHaveBeenCalled();
+        mockedPostSync.mockClear();
+        await handle.runOnce();
+        expect(mockedPostSync).not.toHaveBeenCalled();
 
-      vi.setSystemTime(new Date(60_000));
-      await handle.runOnce();
-      expect(mockedPostSync).toHaveBeenCalledTimes(1);
-      expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
-        failure_count: 2,
-        next_attempt_at_ms: 180_000,
-      });
+        vi.setSystemTime(new Date(60_000));
+        await handle.runOnce();
+        expect(mockedPostSync).toHaveBeenCalledTimes(1);
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 2,
+          next_attempt_at_ms: 180_000,
+        });
+      } finally {
+        randomSpy.mockRestore();
+      }
     });
   });
 
