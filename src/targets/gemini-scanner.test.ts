@@ -25,6 +25,33 @@ function makeTmpSession(messages: unknown[]): {
   };
 }
 
+function makeHomeDiscoverSession(
+  fileName: string,
+  messages: unknown[],
+): {
+  filePath: string;
+  cleanup: () => void;
+} {
+  const slug = `pano-gemini-discover-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+  const rootDir = path.join(os.homedir(), ".gemini", "tmp", slug);
+  const chatsDir = path.join(rootDir, "nested", "workspace", "chats");
+  const filePath = path.join(chatsDir, fileName);
+  const session = {
+    sessionId: `${slug}-session`,
+    startTime: "2026-03-29T22:51:15.519Z",
+    lastUpdated: "2026-03-29T22:56:05.815Z",
+    messages,
+  };
+  fs.mkdirSync(chatsDir, { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(session));
+  return {
+    filePath,
+    cleanup: () => fs.rmSync(rootDir, { recursive: true, force: true }),
+  };
+}
+
 function userMsg(text: string, timestamp = "2026-03-29T22:51:15.519Z") {
   return {
     id: `user-${Math.random()}`,
@@ -83,6 +110,17 @@ describe("gemini scanner parseFile", () => {
     expect(result!.turns[1].role).toBe("assistant");
     expect(result!.turns[1].turnIndex).toBe(1);
     expect(result!.meta!.sessionId).toBe("test-session-001");
+  });
+
+  it("discovers nested chat JSON files without requiring session-* names", () => {
+    const { filePath, cleanup } = makeHomeDiscoverSession("turn-0001.json", [
+      userMsg("hello"),
+      geminiMsg("Hi there!"),
+    ]);
+    cleanups.push(cleanup);
+
+    const discovered = gemini.scanner!.discover().map((f) => f.filePath);
+    expect(discovered).toContain(filePath);
   });
 
   it("returns all turns with absolute indices when file grows", () => {
