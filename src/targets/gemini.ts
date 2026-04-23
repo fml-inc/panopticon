@@ -25,6 +25,58 @@ function geminiToolCategory(toolName: string): string {
 }
 
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
+const GEMINI_DISCOVER_MAX_DEPTH = 4;
+const GEMINI_DISCOVER_SKIP_DIRS = new Set([
+  "bin",
+  "checkpoints",
+  "logs",
+  "plans",
+  "tasks",
+  "tool-outputs",
+  "tracker",
+]);
+
+function safeReaddirDirents(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+function discoverGeminiChatFiles(rootDir: string): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+
+  function walk(dir: string, depth: number): void {
+    if (depth > GEMINI_DISCOVER_MAX_DEPTH) return;
+
+    for (const entry of safeReaddirDirents(dir)) {
+      const entryPath = path.join(dir, entry.name);
+
+      if (!entry.isDirectory()) continue;
+      if (GEMINI_DISCOVER_SKIP_DIRS.has(entry.name)) continue;
+
+      if (entry.name === "chats") {
+        for (const chatEntry of safeReaddirDirents(entryPath)) {
+          if (!chatEntry.isFile() || !chatEntry.name.endsWith(".json")) {
+            continue;
+          }
+          const filePath = path.join(entryPath, chatEntry.name);
+          if (seen.has(filePath)) continue;
+          seen.add(filePath);
+          files.push(filePath);
+        }
+        continue;
+      }
+
+      walk(entryPath, depth + 1);
+    }
+  }
+
+  walk(rootDir, 0);
+  return files;
+}
 
 const gemini: TargetAdapter = {
   id: "gemini",
@@ -223,22 +275,7 @@ const gemini: TargetAdapter = {
     normalizeToolCategory: geminiToolCategory,
     discover() {
       const tmpDir = path.join(GEMINI_DIR, "tmp");
-      const files: { filePath: string }[] = [];
-      const safeReaddir = (d: string) => {
-        try {
-          return fs.readdirSync(d);
-        } catch {
-          return [];
-        }
-      };
-      for (const project of safeReaddir(tmpDir)) {
-        const chatsDir = path.join(tmpDir, project, "chats");
-        for (const entry of safeReaddir(chatsDir)) {
-          if (entry.startsWith("session-") && entry.endsWith(".json"))
-            files.push({ filePath: path.join(chatsDir, entry) });
-        }
-      }
-      return files;
+      return discoverGeminiChatFiles(tmpDir).map((filePath) => ({ filePath }));
     },
 
     parseFile(filePath: string, fromByteOffset: number): ParseResult | null {
