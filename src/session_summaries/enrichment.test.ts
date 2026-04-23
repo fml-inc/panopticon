@@ -101,7 +101,7 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_search_text).toContain("Prompts:");
   });
 
-  it("resets to deterministic text and preserves the current policy hash after a material change", () => {
+  it("keeps the last llm summary visible while a hot material change is still below refresh thresholds", () => {
     const docs = buildDeterministicSessionSummaryDocs(BASE_INPUT);
     const policyHash = getSessionSummaryRunnerPolicy().policyHash;
     const merged = mergeSessionSummaryEnrichment(
@@ -117,7 +117,7 @@ describe("session summary enrichment merge", () => {
         summary_generated_at_ms: 1000,
         projection_hash: docs.projectionHash,
         summary_input_hash: docs.summaryInputHash,
-        summary_policy_hash: "stale-policy-hash",
+        summary_policy_hash: policyHash,
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: 4,
         dirty: 0,
@@ -139,12 +139,14 @@ describe("session summary enrichment merge", () => {
       3010,
     );
 
-    expect(merged.summary_source).toBe("deterministic");
-    expect(merged.summary_text).not.toBe("LLM summary text.");
+    expect(merged.summary_source).toBe("llm");
+    expect(merged.summary_text).toBe("LLM summary text.");
+    expect(merged.summary_input_hash).not.toBe(docs.summaryInputHash);
     expect(merged.summary_policy_hash).toBe(policyHash);
     expect(merged.dirty).toBe(0);
     expect(merged.dirty_reason_json).toContain("summary_input_changed");
     expect(merged.dirty_reason_json).toContain("session_hot");
+    expect(merged.summary_search_text).toContain("Prompts:");
   });
 
   it("marks a changed hot session dirty after the message threshold", () => {
@@ -184,9 +186,51 @@ describe("session summary enrichment merge", () => {
       3010,
     );
 
-    expect(merged.summary_source).toBe("deterministic");
+    expect(merged.summary_source).toBe("llm");
+    expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.dirty).toBe(1);
     expect(merged.dirty_reason_json).toContain("message_threshold_reached");
+  });
+
+  it("marks message-only growth dirty once the llm summary crosses the threshold", () => {
+    const docs = buildDeterministicSessionSummaryDocs(BASE_INPUT);
+    const policyHash = getSessionSummaryRunnerPolicy().policyHash;
+    const merged = mergeSessionSummaryEnrichment(
+      {
+        session_summary_key: BASE_INPUT.sessionSummaryKey,
+        session_id: BASE_INPUT.sessionId,
+        summary_text: "LLM summary text.",
+        summary_search_text: docs.summarySearchText,
+        summary_source: "llm",
+        summary_runner: "claude",
+        summary_model: "sonnet",
+        summary_version: SESSION_SUMMARY_ENRICHMENT_VERSION,
+        summary_generated_at_ms: 1000,
+        projection_hash: docs.projectionHash,
+        summary_input_hash: docs.summaryInputHash,
+        summary_policy_hash: policyHash,
+        enriched_input_hash: docs.summaryInputHash,
+        enriched_message_count: BASE_INPUT.messageCount,
+        dirty: 0,
+        dirty_reason_json: null,
+        last_material_change_at_ms: null,
+        last_attempted_at_ms: 1000,
+        failure_count: 0,
+        last_error: null,
+      },
+      {
+        ...BASE_INPUT,
+        messageCount: BASE_INPUT.messageCount + 20,
+      },
+      policyHash,
+      2000,
+    );
+
+    expect(merged.summary_source).toBe("llm");
+    expect(merged.summary_text).toBe("LLM summary text.");
+    expect(merged.dirty).toBe(1);
+    expect(merged.dirty_reason_json).toContain("message_threshold_reached");
+    expect(merged.dirty_reason_json).toContain("refresh_pending");
   });
 
   it("prefers the sticky accepted runner before same-as-session inference", () => {

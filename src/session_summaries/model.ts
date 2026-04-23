@@ -169,18 +169,19 @@ export function summaryDirtyReasons(
   const versionChanged =
     !existing ||
     existing.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION;
-  const baselineCurrent =
-    !!existing &&
-    existing.summary_policy_hash === policyHash &&
-    existing.enriched_input_hash === nextDocs.summaryInputHash &&
-    existing.summary_version === SESSION_SUMMARY_ENRICHMENT_VERSION;
-  const pendingSinceMs = baselineCurrent
-    ? null
-    : (existing?.last_material_change_at_ms ?? nowMs);
   const messageDelta = Math.max(
     0,
     input.messageCount - (existing?.enriched_message_count ?? 0),
   );
+  const enrichmentCurrent =
+    !!existing &&
+    existing.summary_policy_hash === policyHash &&
+    existing.enriched_input_hash === nextDocs.summaryInputHash &&
+    existing.summary_version === SESSION_SUMMARY_ENRICHMENT_VERSION &&
+    messageDelta === 0;
+  const pendingSinceMs = enrichmentCurrent
+    ? null
+    : (existing?.last_material_change_at_ms ?? nowMs);
   const pendingAgeMs = pendingSinceMs === null ? 0 : nowMs - pendingSinceMs;
   const lastActivityAgeMs =
     input.lastActivityMs === null
@@ -200,7 +201,7 @@ export function summaryDirtyReasons(
     reasons.push("summary_policy_changed");
   }
   if (existing && !existing.summary_text) reasons.push("missing_summary_text");
-  if (!baselineCurrent) {
+  if (!enrichmentCurrent) {
     if (lastActivityAgeMs > COLD_WINDOW_MS) {
       reasons.push("session_cold");
     } else if (messageDelta >= MESSAGE_THRESHOLD) {
@@ -213,7 +214,7 @@ export function summaryDirtyReasons(
       reasons.push("session_warm");
     }
   }
-  if (inputChanged || policyChanged || versionChanged) {
+  if (!enrichmentCurrent || inputChanged || policyChanged || versionChanged) {
     reasons.push("refresh_pending");
   }
   return reasons;
@@ -238,33 +239,37 @@ export function mergeSessionSummaryEnrichment(
   const policyChanged =
     !existing || existing.summary_policy_hash !== policyHash;
   const missingSummaryText = !existing?.summary_text;
-  const baselineCurrent =
-    !!existing &&
-    existing.summary_policy_hash === policyHash &&
-    existing.enriched_input_hash === docs.summaryInputHash &&
-    existing.summary_version === SESSION_SUMMARY_ENRICHMENT_VERSION;
-  const pendingSinceMs = baselineCurrent
-    ? null
-    : (existing?.last_material_change_at_ms ?? nowMs);
   const messageDelta = Math.max(
     0,
     input.messageCount - (existing?.enriched_message_count ?? 0),
   );
+  const enrichmentCurrent =
+    !!existing &&
+    existing.summary_policy_hash === policyHash &&
+    existing.enriched_input_hash === docs.summaryInputHash &&
+    existing.summary_version === SESSION_SUMMARY_ENRICHMENT_VERSION &&
+    messageDelta === 0;
+  const pendingSinceMs = enrichmentCurrent
+    ? null
+    : (existing?.last_material_change_at_ms ?? nowMs);
   const pendingAgeMs = pendingSinceMs === null ? 0 : nowMs - pendingSinceMs;
   const lastActivityAgeMs =
     input.lastActivityMs === null
       ? Number.POSITIVE_INFINITY
       : nowMs - input.lastActivityMs;
   const shouldRefreshNow =
-    !baselineCurrent &&
+    !enrichmentCurrent &&
     (lastActivityAgeMs > COLD_WINDOW_MS ||
       messageDelta >= MESSAGE_THRESHOLD ||
       pendingAgeMs >= PENDING_AGE_THRESHOLD_MS);
   const reasons = summaryDirtyReasons(existing, docs, input, policyHash, nowMs);
   const dirtyReasonJson =
     reasons.length > 0 ? JSON.stringify({ reasons }) : null;
+  const preserveExistingSummary =
+    !!existing?.summary_text &&
+    (existing.summary_source === "llm" || !inputChanged);
 
-  if (!existing || inputChanged || missingSummaryText) {
+  if (!existing || missingSummaryText || !preserveExistingSummary) {
     return {
       session_summary_key: input.sessionSummaryKey,
       session_id: input.sessionId,
