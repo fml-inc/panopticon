@@ -882,6 +882,32 @@ export const MIGRATIONS: Migration[] = [
       deleteAllRowsIfTableExists(db, "session_summaries");
     },
   },
+  {
+    id: 16,
+    name: "add_session_summary_refresh_state",
+    up: (db) => {
+      if (!tableExists(db, "session_summary_enrichments")) {
+        return;
+      }
+      addColumnIfMissing(
+        db,
+        "session_summary_enrichments",
+        "refresh_now",
+        "refresh_now INTEGER NOT NULL DEFAULT 0",
+      );
+      db.exec(`
+        UPDATE session_summary_enrichments
+        SET refresh_now = COALESCE(dirty, 0)
+      `);
+      db.exec(`
+        DROP INDEX IF EXISTS idx_session_summary_enrichments_dirty
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_refresh
+          ON session_summary_enrichments(refresh_now, last_material_change_at_ms)
+      `);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

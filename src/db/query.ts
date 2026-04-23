@@ -758,7 +758,7 @@ export function search(opts: {
   const summarySql = sessionSummariesEnabled
     ? (() => {
         const summaryConditions: string[] = [
-          "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL OR ss.summary_text IS NOT NULL OR ss.summary_search_text IS NOT NULL)",
+          "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR ss.summary_text IS NOT NULL OR ss.summary_search_text IS NOT NULL)",
         ];
         if (sinceMs) {
           summaryConditions.push("s.started_at_ms >= ?");
@@ -767,7 +767,7 @@ export function search(opts: {
         const payloadExpr = truncate
           ? "SUBSTR(summary_matches.payload, 1, 500)"
           : "summary_matches.payload";
-        summaryParams.unshift(pattern, pattern, pattern);
+        summaryParams.unshift(pattern, pattern, pattern, pattern);
         return `
           SELECT 'summary' as source, summary_matches.session_id as id, summary_matches.session_id,
                  'summary' as event_type, summary_matches.timestamp_ms,
@@ -776,8 +776,9 @@ export function search(opts: {
             SELECT s.session_id,
                    s.started_at_ms as timestamp_ms,
                   CASE
-                     WHEN COALESCE(e.summary_text, ss.summary_text) LIKE ? THEN COALESCE(e.summary_text, ss.summary_text)
-                     WHEN COALESCE(e.summary_search_text, ss.summary_search_text) LIKE ? THEN COALESCE(e.summary_search_text, ss.summary_search_text)
+                     WHEN e.summary_text LIKE ? THEN e.summary_text
+                     WHEN ss.summary_text LIKE ? THEN ss.summary_text
+                     WHEN ss.summary_search_text LIKE ? THEN ss.summary_search_text
                      WHEN s.summary LIKE ? THEN s.summary
                      ELSE NULL
                    END as payload

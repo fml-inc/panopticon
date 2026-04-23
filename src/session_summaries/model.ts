@@ -53,6 +53,7 @@ export interface SessionSummaryEnrichmentRow {
   enriched_input_hash: string | null;
   enriched_message_count: number | null;
   dirty: number;
+  refresh_now: number;
   dirty_reason_json: string | null;
   last_material_change_at_ms: number | null;
   last_attempted_at_ms: number | null;
@@ -145,7 +146,7 @@ export function summaryDirtyReasons(
   existing: Pick<
     SessionSummaryEnrichmentRow,
     | "summary_version"
-    | "summary_input_hash"
+    | "summary_source"
     | "summary_policy_hash"
     | "enriched_input_hash"
     | "enriched_message_count"
@@ -162,46 +163,50 @@ export function summaryDirtyReasons(
 ): string[] {
   const reasons: string[] = [];
   if (!existing) reasons.push("missing");
-  const inputChanged =
-    !existing || existing.summary_input_hash !== nextDocs.summaryInputHash;
-  const policyChanged =
-    !existing || existing.summary_policy_hash !== policyHash;
-  const versionChanged =
-    !existing ||
-    existing.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION;
+  const hasEnrichedSummary =
+    existing?.summary_source === "llm" && !!existing.summary_text;
   const messageDelta = Math.max(
     0,
     input.messageCount - (existing?.enriched_message_count ?? 0),
   );
-  const enrichmentCurrent =
-    !!existing &&
-    existing.summary_policy_hash === policyHash &&
-    existing.enriched_input_hash === nextDocs.summaryInputHash &&
-    existing.summary_version === SESSION_SUMMARY_ENRICHMENT_VERSION &&
-    messageDelta === 0;
-  const pendingSinceMs = enrichmentCurrent
-    ? null
-    : (existing?.last_material_change_at_ms ?? nowMs);
+  const inputChanged =
+    !hasEnrichedSummary ||
+    existing?.enriched_input_hash !== nextDocs.summaryInputHash;
+  const policyChanged =
+    !hasEnrichedSummary || existing?.summary_policy_hash !== policyHash;
+  const versionChanged =
+    !hasEnrichedSummary ||
+    existing?.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION;
+  const stale =
+    inputChanged || policyChanged || versionChanged || messageDelta > 0;
+  const pendingSinceMs = stale
+    ? (existing?.last_material_change_at_ms ?? nowMs)
+    : null;
   const pendingAgeMs = pendingSinceMs === null ? 0 : nowMs - pendingSinceMs;
   const lastActivityAgeMs =
     input.lastActivityMs === null
       ? Number.POSITIVE_INFINITY
       : nowMs - input.lastActivityMs;
 
+  if (existing && !hasEnrichedSummary) {
+    reasons.push("missing_enriched_summary");
+  }
   if (
-    existing &&
+    hasEnrichedSummary &&
     existing.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION
   ) {
     reasons.push("summary_version_changed");
   }
-  if (existing && existing.summary_input_hash !== nextDocs.summaryInputHash) {
+  if (
+    hasEnrichedSummary &&
+    existing.enriched_input_hash !== nextDocs.summaryInputHash
+  ) {
     reasons.push("summary_input_changed");
   }
-  if (existing && existing.summary_policy_hash !== policyHash) {
+  if (hasEnrichedSummary && existing.summary_policy_hash !== policyHash) {
     reasons.push("summary_policy_changed");
   }
-  if (existing && !existing.summary_text) reasons.push("missing_summary_text");
-  if (!enrichmentCurrent) {
+  if (stale) {
     if (lastActivityAgeMs > COLD_WINDOW_MS) {
       reasons.push("session_cold");
     } else if (messageDelta >= MESSAGE_THRESHOLD) {
@@ -214,7 +219,7 @@ export function summaryDirtyReasons(
       reasons.push("session_warm");
     }
   }
-  if (!enrichmentCurrent || inputChanged || policyChanged || versionChanged) {
+  if (stale) {
     reasons.push("refresh_pending");
   }
   return reasons;
@@ -234,87 +239,71 @@ export function mergeSessionSummaryEnrichment(
   last_error: string | null;
 } {
   const docs = buildDeterministicSessionSummaryDocs(input);
-  const inputChanged =
-    !existing || existing.summary_input_hash !== docs.summaryInputHash;
-  const policyChanged =
-    !existing || existing.summary_policy_hash !== policyHash;
-  const missingSummaryText = !existing?.summary_text;
+  const hasEnrichedSummary =
+    existing?.summary_source === "llm" && !!existing.summary_text;
   const messageDelta = Math.max(
     0,
     input.messageCount - (existing?.enriched_message_count ?? 0),
   );
-  const enrichmentCurrent =
-    !!existing &&
-    existing.summary_policy_hash === policyHash &&
-    existing.enriched_input_hash === docs.summaryInputHash &&
-    existing.summary_version === SESSION_SUMMARY_ENRICHMENT_VERSION &&
-    messageDelta === 0;
-  const pendingSinceMs = enrichmentCurrent
-    ? null
-    : (existing?.last_material_change_at_ms ?? nowMs);
+  const inputChanged =
+    !hasEnrichedSummary ||
+    existing?.enriched_input_hash !== docs.summaryInputHash;
+  const policyChanged =
+    !hasEnrichedSummary || existing?.summary_policy_hash !== policyHash;
+  const versionChanged =
+    !hasEnrichedSummary ||
+    existing?.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION;
+  const stale =
+    inputChanged || policyChanged || versionChanged || messageDelta > 0;
+  const pendingSinceMs = stale
+    ? (existing?.last_material_change_at_ms ?? nowMs)
+    : null;
   const pendingAgeMs = pendingSinceMs === null ? 0 : nowMs - pendingSinceMs;
   const lastActivityAgeMs =
     input.lastActivityMs === null
       ? Number.POSITIVE_INFINITY
       : nowMs - input.lastActivityMs;
   const shouldRefreshNow =
-    !enrichmentCurrent &&
+    stale &&
     (lastActivityAgeMs > COLD_WINDOW_MS ||
       messageDelta >= MESSAGE_THRESHOLD ||
       pendingAgeMs >= PENDING_AGE_THRESHOLD_MS);
   const reasons = summaryDirtyReasons(existing, docs, input, policyHash, nowMs);
   const dirtyReasonJson =
     reasons.length > 0 ? JSON.stringify({ reasons }) : null;
-  const preserveExistingSummary =
-    !!existing?.summary_text &&
-    (existing.summary_source === "llm" || !inputChanged);
-
-  if (!existing || missingSummaryText || !preserveExistingSummary) {
-    return {
-      session_summary_key: input.sessionSummaryKey,
-      session_id: input.sessionId,
-      summary_text: docs.summaryText,
-      summary_search_text: docs.summarySearchText,
-      summary_source: "deterministic",
-      summary_runner: null,
-      summary_model: null,
-      summary_version: SESSION_SUMMARY_ENRICHMENT_VERSION,
-      summary_generated_at_ms: nowMs,
-      projection_hash: docs.projectionHash,
-      summary_input_hash: docs.summaryInputHash,
-      summary_policy_hash: policyHash,
-      enriched_input_hash: existing?.enriched_input_hash ?? null,
-      enriched_message_count: existing?.enriched_message_count ?? null,
-      dirty: shouldRefreshNow ? 1 : 0,
-      dirty_reason_json: dirtyReasonJson,
-      last_material_change_at_ms: pendingSinceMs,
-      last_attempted_at_ms: existing?.last_attempted_at_ms ?? null,
-      failure_count: existing?.failure_count ?? 0,
-      last_error: existing?.last_error ?? null,
-    };
-  }
 
   return {
     session_summary_key: input.sessionSummaryKey,
     session_id: input.sessionId,
-    summary_text: existing.summary_text,
-    summary_search_text: docs.summarySearchText,
-    summary_source: existing.summary_source ?? "deterministic",
-    summary_runner: existing.summary_runner,
-    summary_model: existing.summary_model,
-    summary_version: existing.summary_version,
-    summary_generated_at_ms: existing.summary_generated_at_ms ?? nowMs,
+    summary_text: hasEnrichedSummary ? existing.summary_text : null,
+    summary_search_text: null,
+    summary_source: hasEnrichedSummary ? "llm" : "deterministic",
+    summary_runner: hasEnrichedSummary ? existing.summary_runner : null,
+    summary_model: hasEnrichedSummary ? existing.summary_model : null,
+    summary_version: hasEnrichedSummary
+      ? existing.summary_version
+      : SESSION_SUMMARY_ENRICHMENT_VERSION,
+    summary_generated_at_ms: hasEnrichedSummary
+      ? (existing.summary_generated_at_ms ?? nowMs)
+      : null,
     projection_hash: docs.projectionHash,
     summary_input_hash: docs.summaryInputHash,
-    summary_policy_hash: existing.summary_policy_hash,
-    enriched_input_hash: existing.enriched_input_hash,
-    enriched_message_count: existing.enriched_message_count,
-    dirty: shouldRefreshNow || policyChanged ? 1 : 0,
+    summary_policy_hash: hasEnrichedSummary
+      ? existing.summary_policy_hash
+      : null,
+    enriched_input_hash: hasEnrichedSummary
+      ? existing.enriched_input_hash
+      : null,
+    enriched_message_count: hasEnrichedSummary
+      ? existing.enriched_message_count
+      : null,
+    dirty: stale ? 1 : 0,
+    refresh_now: shouldRefreshNow ? 1 : 0,
     dirty_reason_json: dirtyReasonJson,
     last_material_change_at_ms: pendingSinceMs,
-    last_attempted_at_ms: existing.last_attempted_at_ms,
-    failure_count: existing.failure_count,
-    last_error: existing.last_error,
+    last_attempted_at_ms: existing?.last_attempted_at_ms ?? null,
+    failure_count: existing?.failure_count ?? 0,
+    last_error: existing?.last_error ?? null,
   };
 }
 

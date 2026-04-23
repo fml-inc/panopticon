@@ -75,6 +75,7 @@ describe("session summary enrichment refresh", () => {
         enriched_input_hash TEXT,
         enriched_message_count INTEGER,
         dirty INTEGER NOT NULL DEFAULT 1,
+        refresh_now INTEGER NOT NULL DEFAULT 0,
         dirty_reason_json TEXT,
         last_material_change_at_ms INTEGER,
         last_attempted_at_ms INTEGER,
@@ -93,6 +94,7 @@ describe("session summary enrichment refresh", () => {
         edit_count INTEGER NOT NULL,
         landed_edit_count INTEGER NOT NULL,
         open_edit_count INTEGER NOT NULL,
+        summary_search_text TEXT,
         last_intent_ts_ms INTEGER
       );
       CREATE TABLE sessions (
@@ -175,7 +177,7 @@ describe("session summary enrichment refresh", () => {
       expect(state.inTx).toBe(false);
       db.prepare(
         `UPDATE session_summary_enrichments
-         SET summary_input_hash = ?, dirty = 1
+         SET summary_input_hash = ?, dirty = 1, refresh_now = 1
          WHERE session_summary_key = 'ss:local:session-1'`,
       ).run("hash-2");
       return "stale summary";
@@ -207,7 +209,7 @@ describe("session summary enrichment refresh", () => {
 
     expect(result).toEqual({ attempted: 1, updated: 0 });
     expect(row).toMatchObject({
-      summary_text: "deterministic summary",
+      summary_text: null,
       summary_source: "deterministic",
       summary_input_hash: "hash-2",
       last_attempted_at_ms: null,
@@ -255,8 +257,8 @@ function seedSummaryRow(): void {
     `INSERT INTO session_summaries
      (id, session_summary_key, session_id, title, status, repository, branch,
       intent_count, edit_count, landed_edit_count, open_edit_count,
-      last_intent_ts_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      summary_search_text, last_intent_ts_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     1,
     "ss:local:session-1",
@@ -269,6 +271,7 @@ function seedSummaryRow(): void {
     1,
     1,
     0,
+    "Title: diagnose summary lock",
     1_000,
   );
 
@@ -298,24 +301,25 @@ function seedSummaryRow(): void {
       summary_source, summary_runner, summary_model, summary_version,
       summary_generated_at_ms, projection_hash, summary_input_hash,
       summary_policy_hash, enriched_input_hash, enriched_message_count,
-      dirty, dirty_reason_json, last_material_change_at_ms,
+      dirty, refresh_now, dirty_reason_json, last_material_change_at_ms,
       last_attempted_at_ms, failure_count, last_error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     "ss:local:session-1",
     "session-1",
-    "deterministic summary",
-    "Title: diagnose summary lock",
+    null,
+    null,
     "deterministic",
     null,
     null,
     SESSION_SUMMARY_ENRICHMENT_VERSION,
-    500,
+    null,
     "projection-hash",
     "hash-1",
-    "policy-hash",
     null,
     null,
+    null,
+    1,
     1,
     JSON.stringify({ reasons: ["session_cold", "refresh_pending"] }),
     600,

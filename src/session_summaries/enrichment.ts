@@ -94,7 +94,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
   const where: string[] = [];
   const params: unknown[] = [];
   if (!force) {
-    where.push("e.dirty = 1");
+    where.push("e.refresh_now = 1");
     where.push(
       "(e.last_attempted_at_ms IS NULL OR e.last_attempted_at_ms < ?)",
     );
@@ -145,7 +145,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     `UPDATE session_summary_enrichments
      SET last_attempted_at_ms = ?
      WHERE session_summary_key = ?
-       AND (? = 1 OR dirty = 1)
+       AND (? = 1 OR refresh_now = 1)
        AND (
          (last_attempted_at_ms = ?)
          OR (last_attempted_at_ms IS NULL AND ? IS NULL)
@@ -183,6 +183,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
          enriched_input_hash = ?,
          enriched_message_count = ?,
          dirty = 0,
+         refresh_now = 0,
          dirty_reason_json = NULL,
          last_material_change_at_ms = NULL,
          last_attempted_at_ms = ?,
@@ -357,12 +358,10 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
               s.edit_count,
               s.landed_edit_count,
               s.open_edit_count,
-              e.summary_search_text
+              s.summary_search_text
        FROM session_summaries s
        LEFT JOIN sessions sess
          ON sess.session_id = s.session_id
-       LEFT JOIN session_summary_enrichments e
-         ON e.session_summary_key = s.session_summary_key
        WHERE s.session_summary_key = ?`,
     )
     .get(sessionSummaryKey) as

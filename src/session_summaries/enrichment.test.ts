@@ -30,7 +30,7 @@ const BASE_INPUT = {
 };
 
 describe("session summary enrichment merge", () => {
-  it("creates a deterministic non-dirty row for a hot session under the threshold", () => {
+  it("marks a hot session stale without making it immediately refreshable", () => {
     const merged = mergeSessionSummaryEnrichment(
       null,
       BASE_INPUT,
@@ -40,9 +40,10 @@ describe("session summary enrichment merge", () => {
 
     expect(merged.summary_source).toBe("deterministic");
     expect(merged.summary_version).toBe(SESSION_SUMMARY_ENRICHMENT_VERSION);
-    expect(merged.summary_text).toContain("Status: mixed");
-    expect(merged.summary_search_text).toContain("Files:");
-    expect(merged.dirty).toBe(0);
+    expect(merged.summary_text).toBeNull();
+    expect(merged.summary_search_text).toBeNull();
+    expect(merged.dirty).toBe(1);
+    expect(merged.refresh_now).toBe(0);
     expect(merged.dirty_reason_json).toContain("missing");
     expect(merged.dirty_reason_json).toContain("session_hot");
   });
@@ -61,6 +62,7 @@ describe("session summary enrichment merge", () => {
 
     expect(merged.summary_source).toBe("deterministic");
     expect(merged.dirty).toBe(1);
+    expect(merged.refresh_now).toBe(1);
     expect(merged.dirty_reason_json).toContain("session_cold");
   });
 
@@ -84,6 +86,7 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: BASE_INPUT.messageCount,
         dirty: 0,
+        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: null,
         last_attempted_at_ms: 1000,
@@ -98,7 +101,8 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.summary_source).toBe("llm");
     expect(merged.dirty).toBe(0);
-    expect(merged.summary_search_text).toContain("Prompts:");
+    expect(merged.refresh_now).toBe(0);
+    expect(merged.summary_search_text).toBeNull();
   });
 
   it("keeps the last llm summary visible while a hot material change is still below refresh thresholds", () => {
@@ -121,6 +125,7 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: 4,
         dirty: 0,
+        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: 1000,
         last_attempted_at_ms: 1000,
@@ -143,10 +148,11 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.summary_input_hash).not.toBe(docs.summaryInputHash);
     expect(merged.summary_policy_hash).toBe(policyHash);
-    expect(merged.dirty).toBe(0);
+    expect(merged.dirty).toBe(1);
+    expect(merged.refresh_now).toBe(0);
     expect(merged.dirty_reason_json).toContain("summary_input_changed");
     expect(merged.dirty_reason_json).toContain("session_hot");
-    expect(merged.summary_search_text).toContain("Prompts:");
+    expect(merged.summary_search_text).toBeNull();
   });
 
   it("marks a changed hot session dirty after the message threshold", () => {
@@ -169,6 +175,7 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: 2,
         dirty: 0,
+        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: 1000,
         last_attempted_at_ms: 1000,
@@ -189,6 +196,7 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_source).toBe("llm");
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.dirty).toBe(1);
+    expect(merged.refresh_now).toBe(1);
     expect(merged.dirty_reason_json).toContain("message_threshold_reached");
   });
 
@@ -212,6 +220,7 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: BASE_INPUT.messageCount,
         dirty: 0,
+        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: null,
         last_attempted_at_ms: 1000,
@@ -229,6 +238,7 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_source).toBe("llm");
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.dirty).toBe(1);
+    expect(merged.refresh_now).toBe(1);
     expect(merged.dirty_reason_json).toContain("message_threshold_reached");
     expect(merged.dirty_reason_json).toContain("refresh_pending");
   });
