@@ -432,6 +432,7 @@ CREATE TABLE IF NOT EXISTS intent_edits (
 CREATE TABLE IF NOT EXISTS session_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_summary_key TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
   repository TEXT,
   cwd TEXT,
   branch TEXT,
@@ -447,6 +448,8 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   edit_count INTEGER NOT NULL DEFAULT 0,
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
+  summary_text TEXT,
+  summary_search_text TEXT,
   reconciled_at_ms INTEGER,
   reason_json TEXT
 );
@@ -617,6 +620,8 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 
 -- session_summaries
 CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+  ON session_summaries(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
 

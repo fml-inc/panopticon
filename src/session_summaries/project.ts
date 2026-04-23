@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
+import { buildDeterministicSessionSummaryDocs } from "./model.js";
 
 const MEMBERSHIP_SOURCE = "heuristic";
 const ORIGIN_SCOPE = "local";
@@ -91,11 +92,12 @@ export function rebuildSessionSummaryProjections(opts?: {
 
     const sessionSummaryStmt = db.prepare(
       `INSERT INTO session_summaries
-       (session_summary_key, repository, cwd, branch, worktree, actor, machine,
-        origin_scope, title, status, first_intent_ts_ms, last_intent_ts_ms,
-        intent_count, edit_count, landed_edit_count, open_edit_count,
-        reconciled_at_ms, reason_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (session_summary_key, session_id, repository, cwd, branch, worktree,
+        actor, machine, origin_scope, title, status, first_intent_ts_ms,
+        last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
+        open_edit_count, summary_text, summary_search_text, reconciled_at_ms,
+        reason_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const membershipStmt = db.prepare(
       `INSERT INTO intent_session_summaries
@@ -145,7 +147,11 @@ export function rebuildSessionSummaryProjections(opts?: {
            FROM sessions
            WHERE session_id = ?`,
         )
-        .get(session.session_id) as { machine: string | null } | undefined;
+        .get(session.session_id) as
+        | {
+            machine: string | null;
+          }
+        | undefined;
       const repoMeta = db
         .prepare(
           `SELECT repository, git_user_name, branch
@@ -199,9 +205,27 @@ export function rebuildSessionSummaryProjections(opts?: {
         intents.map((intent) => intent.cwd).find(Boolean) ??
         null;
       const title = buildTitle(intents[0]?.prompt_text ?? "");
+      const summaryKey = sessionSummaryKey(session.session_id);
+      const files = summarizeFiles(edits);
+      const tools = summarizeTools(edits);
+      const docs = buildDeterministicSessionSummaryDocs({
+        title,
+        status,
+        repository,
+        cwd,
+        branch: repoMeta?.branch ?? null,
+        intentCount: intents.length,
+        editCount: edits.length,
+        landedEditCount,
+        openEditCount,
+        intents: intents.map((intent) => intent.prompt_text),
+        files,
+        tools,
+      });
 
       sessionSummaryStmt.run(
-        sessionSummaryKey(session.session_id),
+        summaryKey,
+        session.session_id,
         repository,
         cwd,
         repoMeta?.branch ?? null,
@@ -217,6 +241,8 @@ export function rebuildSessionSummaryProjections(opts?: {
         edits.length,
         landedEditCount,
         openEditCount,
+        docs.summaryText,
+        docs.summarySearchText,
         reconciledAtMs,
         JSON.stringify({ strategy: "session_id" }),
       );
@@ -329,6 +355,39 @@ function buildTitle(promptText: string): string {
   const compact = promptText.replace(/\s+/g, " ").trim();
   if (!compact) return "untitled session summary";
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function summarizeFiles(
+  edits: EditRow[],
+): Array<{ filePath: string; editCount: number; landedCount: number }> {
+  const files = new Map<
+    string,
+    { filePath: string; editCount: number; landedCount: number }
+  >();
+  for (const edit of edits) {
+    const current = files.get(edit.file_path) ?? {
+      filePath: edit.file_path,
+      editCount: 0,
+      landedCount: 0,
+    };
+    current.editCount += 1;
+    if (edit.landed === 1) current.landedCount += 1;
+    files.set(edit.file_path, current);
+  }
+  return [...files.values()].sort(
+    (a, b) => b.editCount - a.editCount || a.filePath.localeCompare(b.filePath),
+  );
+}
+
+function summarizeTools(edits: EditRow[]): string[] {
+  const counts = new Map<string, number>();
+  for (const edit of edits) {
+    if (!edit.tool_name) continue;
+    counts.set(edit.tool_name, (counts.get(edit.tool_name) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([toolName]) => toolName);
 }
 
 function readFileSnapshot(

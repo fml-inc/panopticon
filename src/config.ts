@@ -89,6 +89,9 @@ export const config = {
   enableSessionSummaryProjections: envBool(
     "PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS",
   ),
+  useProjectionSessionSummaryText: envBool(
+    "PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT",
+  ),
 } as const;
 
 export function ensureDataDir(): void {

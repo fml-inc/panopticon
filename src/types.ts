@@ -33,6 +33,7 @@ export interface SessionSummary {
   landedEditCount: number;
   openEditCount: number;
   topFiles: string[];
+  summaryText: string | null;
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────

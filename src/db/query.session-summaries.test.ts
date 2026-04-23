@@ -25,6 +25,7 @@ vi.mock("../config.js", () => {
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
       enableSessionSummaryProjections: true,
+      useProjectionSessionSummaryText: false,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -35,7 +36,7 @@ import { config } from "../config.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
-import { listSessions } from "./query.js";
+import { listSessions, search } from "./query.js";
 import { closeDb, getDb } from "./schema.js";
 import {
   insertHookEvent,
@@ -65,6 +66,9 @@ beforeEach(() => {
   (
     config as { enableSessionSummaryProjections: boolean }
   ).enableSessionSummaryProjections = true;
+  (
+    config as { useProjectionSessionSummaryText: boolean }
+  ).useProjectionSessionSummaryText = false;
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
@@ -138,7 +142,7 @@ describe("listSessions session summaries", () => {
     expect(result.sessions[0].summary).toBe("legacy weak summary");
   });
 
-  it("replaces the weak summary text with explicit session-derived provenance", () => {
+  it("keeps the legacy summary text by default while exposing projection data separately", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
     const file = path.join(scratchDir, "derived-summary.ts");
@@ -232,8 +236,204 @@ describe("listSessions session summaries", () => {
       landedEditCount: 1,
       openEditCount: 0,
     });
-    expect(result.sessions[0].summary).toContain("Status: mixed");
-    expect(result.sessions[0].summary).toContain(file);
-    expect(result.sessions[0].summary).not.toBe("legacy weak summary");
+    expect(result.sessions[0].sessionSummary?.summaryText).toContain(
+      "Status: mixed",
+    );
+    expect(result.sessions[0].summary).toBe("legacy weak summary");
+  });
+
+  it("switches listSessions summary text to projection-backed output when enabled", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "projected-summary.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "draft implementation",
+      turn_count: 4,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    getDb()
+      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
+      .run("legacy weak summary", SESSION);
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "draft implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "finish implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    (
+      config as { useProjectionSessionSummaryText: boolean }
+    ).useProjectionSessionSummaryText = true;
+
+    const projected = listSessions({ limit: 5 });
+    expect(projected.sessions[0].summary).toContain("Status: mixed");
+    expect(projected.sessions[0].summary).toContain(file);
+    expect(projected.sessions[0].sessionSummary?.summaryText).toContain(
+      "Status: mixed",
+    );
+  });
+
+  it("searches projection summary text and summary search text", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "projection-search.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "draft implementation",
+      turn_count: 4,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    getDb()
+      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
+      .run("legacy weak summary", SESSION);
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "draft implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "finish implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const summaryTextResult = search({
+      query: "mixed",
+      limit: 10,
+    });
+    expect(
+      summaryTextResult.results.some(
+        (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(true);
+
+    const summarySearchTextResult = search({
+      query: "Prompts",
+      limit: 10,
+    });
+    expect(
+      summarySearchTextResult.results.some(
+        (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(true);
   });
 });

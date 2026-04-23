@@ -848,6 +848,43 @@ export const MIGRATIONS: Migration[] = [
       addScannerFileWatermarkSessionIdAndForceReparse(db);
     },
   },
+  {
+    id: 15,
+    name: "flatten_session_summary_projection_storage",
+    up: (db) => {
+      if (tableExists(db, "session_summary_enrichments")) {
+        db.exec(`DROP TABLE session_summary_enrichments`);
+      }
+      if (!tableExists(db, "session_summaries")) {
+        return;
+      }
+      addColumnIfMissing(
+        db,
+        "session_summaries",
+        "session_id",
+        "session_id TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "session_summaries",
+        "summary_text",
+        "summary_text TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "session_summaries",
+        "summary_search_text",
+        "summary_search_text TEXT",
+      );
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+          ON session_summaries(session_id)
+      `);
+      deleteAllRowsIfTableExists(db, "code_provenance");
+      deleteAllRowsIfTableExists(db, "intent_session_summaries");
+      deleteAllRowsIfTableExists(db, "session_summaries");
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

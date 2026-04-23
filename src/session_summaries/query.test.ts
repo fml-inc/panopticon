@@ -195,8 +195,10 @@ describe("session_summaries", () => {
     expect(rows[0].title).toContain("draft implementation");
     expect(rows[0].intent_count).toBe(2);
     expect(rows[0].status).toBe("mixed");
+    expect(rows[0].summary_text).toContain("Status: mixed");
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toContain("Status: mixed");
     expect(detail?.intents).toHaveLength(2);
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
@@ -412,9 +414,126 @@ describe("session_summaries", () => {
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
     expect(detail?.session_summary?.session_id).toBe(SESSION);
+    expect(detail?.session_summary?.summary_text).toContain("Status: mixed");
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
+  });
+
+  it("refreshes deterministic summary text after a material change", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "material-change.ts");
+    fs.writeFileSync(file, "final implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "draft implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "finish implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 2100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "final implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const before = listSessionSummaries({ repository: repo });
+    expect(before).toHaveLength(1);
+    const beforeSummary = before[0].summary_text;
+
+    fs.writeFileSync(file, "cleanup complete");
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 4000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "ship cleanup", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 4100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "cleanup complete",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 5000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary_text).not.toBe(beforeSummary);
+    expect(rows[0].summary_text).toContain("3 intents");
+    expect(rows[0].intent_count).toBe(3);
+
+    const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toContain("3 intents");
   });
 });
 
