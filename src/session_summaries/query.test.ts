@@ -74,6 +74,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM evidence_ref_paths").run();
@@ -203,6 +204,95 @@ describe("session_summaries", () => {
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
+  });
+
+  it("returns llm enrichment metadata when present", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "llm-summary.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_search_text = ?,
+             summary_source = 'llm',
+             summary_runner = ?,
+             summary_model = ?,
+             summary_generated_at_ms = ?,
+             dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "LLM session summary.",
+        "LLM session summary.\nDeterministic retrieval document.",
+        "claude",
+        "sonnet",
+        1_700_000_010_000,
+        sessionSummaryKeyForSession(SESSION),
+      );
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows[0]).toMatchObject({
+      summary_text: "LLM session summary.",
+      summary_source: "llm",
+      summary_runner: "claude",
+      summary_model: "sonnet",
+      summary_dirty: false,
+      summary_generated_at_ms: 1_700_000_010_000,
+    });
+
+    const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary).toMatchObject({
+      summary_text: "LLM session summary.",
+      summary_source: "llm",
+      summary_runner: "claude",
+      summary_model: "sonnet",
+      summary_dirty: false,
+      summary_generated_at_ms: 1_700_000_010_000,
+    });
   });
 
   it("deduplicates path-filtered session summary results", () => {

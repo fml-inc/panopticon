@@ -3,7 +3,12 @@ import fs from "node:fs";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
-import { buildDeterministicSessionSummaryDocs } from "./model.js";
+import {
+  buildDeterministicSessionSummaryDocs,
+  mergeSessionSummaryEnrichment,
+  type SessionSummaryEnrichmentRow,
+} from "./model.js";
+import { getSessionSummaryRunnerPolicy } from "./policy.js";
 
 const MEMBERSHIP_SOURCE = "heuristic";
 const ORIGIN_SCOPE = "local";
@@ -56,6 +61,7 @@ export function rebuildSessionSummaryProjections(opts?: {
     };
   }
   const db = getDb();
+  const runnerPolicy = getSessionSummaryRunnerPolicy();
   const tx = db.transaction(() => {
     if (opts?.sessionId) {
       const key = sessionSummaryKey(opts.sessionId);
@@ -73,6 +79,10 @@ export function rebuildSessionSummaryProjections(opts?: {
         ).run(row.id);
         db.prepare(`DELETE FROM session_summaries WHERE id = ?`).run(row.id);
       }
+      db.prepare(
+        `DELETE FROM session_summary_enrichments
+         WHERE session_summary_key = ?`,
+      ).run(key);
     } else {
       db.prepare(`DELETE FROM code_provenance`).run();
       db.prepare(`DELETE FROM intent_session_summaries`).run();
@@ -103,6 +113,60 @@ export function rebuildSessionSummaryProjections(opts?: {
       `INSERT INTO intent_session_summaries
        (intent_unit_id, session_summary_id, membership_kind, source, score, reason_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const existingEnrichmentStmt = db.prepare(
+      `SELECT session_summary_key,
+              session_id,
+              summary_text,
+              summary_search_text,
+              summary_source,
+              summary_runner,
+              summary_model,
+              summary_version,
+              summary_generated_at_ms,
+              projection_hash,
+              summary_input_hash,
+              summary_policy_hash,
+              enriched_input_hash,
+              enriched_message_count,
+              dirty,
+              dirty_reason_json,
+              last_material_change_at_ms,
+              last_attempted_at_ms,
+              failure_count,
+              last_error
+       FROM session_summary_enrichments
+       WHERE session_summary_key = ?`,
+    );
+    const upsertEnrichmentStmt = db.prepare(
+      `INSERT INTO session_summary_enrichments
+       (session_summary_key, session_id, summary_text, summary_search_text,
+        summary_source, summary_runner, summary_model, summary_version,
+        summary_generated_at_ms, projection_hash, summary_input_hash,
+        summary_policy_hash, enriched_input_hash, enriched_message_count,
+        dirty, dirty_reason_json, last_material_change_at_ms,
+        last_attempted_at_ms, failure_count, last_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_summary_key) DO UPDATE SET
+         session_id = excluded.session_id,
+         summary_text = excluded.summary_text,
+         summary_search_text = excluded.summary_search_text,
+         summary_source = excluded.summary_source,
+         summary_runner = excluded.summary_runner,
+         summary_model = excluded.summary_model,
+         summary_version = excluded.summary_version,
+         summary_generated_at_ms = excluded.summary_generated_at_ms,
+         projection_hash = excluded.projection_hash,
+         summary_input_hash = excluded.summary_input_hash,
+         summary_policy_hash = excluded.summary_policy_hash,
+         enriched_input_hash = excluded.enriched_input_hash,
+         enriched_message_count = excluded.enriched_message_count,
+         dirty = excluded.dirty,
+         dirty_reason_json = excluded.dirty_reason_json,
+         last_material_change_at_ms = excluded.last_material_change_at_ms,
+         last_attempted_at_ms = excluded.last_attempted_at_ms,
+         failure_count = excluded.failure_count,
+         last_error = excluded.last_error`,
     );
     const provenanceStmt = db.prepare(
       `INSERT INTO code_provenance
@@ -143,13 +207,19 @@ export function rebuildSessionSummaryProjections(opts?: {
 
       const sessionMeta = db
         .prepare(
-          `SELECT machine
+          `SELECT machine,
+                  started_at_ms,
+                  ended_at_ms,
+                  message_count
            FROM sessions
            WHERE session_id = ?`,
         )
         .get(session.session_id) as
         | {
             machine: string | null;
+            started_at_ms: number | null;
+            ended_at_ms: number | null;
+            message_count: number | null;
           }
         | undefined;
       const repoMeta = db
@@ -208,7 +278,17 @@ export function rebuildSessionSummaryProjections(opts?: {
       const summaryKey = sessionSummaryKey(session.session_id);
       const files = summarizeFiles(edits);
       const tools = summarizeTools(edits);
+      const nowMs = Date.now();
+      const lastActivityMs = maxTs([
+        sessionMeta?.started_at_ms,
+        sessionMeta?.ended_at_ms,
+        firstIntentTs,
+        lastIntentTs,
+        ...edits.map((edit) => edit.timestamp_ms),
+      ]);
       const docs = buildDeterministicSessionSummaryDocs({
+        sessionSummaryKey: summaryKey,
+        sessionId: session.session_id,
         title,
         status,
         repository,
@@ -218,6 +298,8 @@ export function rebuildSessionSummaryProjections(opts?: {
         editCount: edits.length,
         landedEditCount,
         openEditCount,
+        messageCount: sessionMeta?.message_count ?? 0,
+        lastActivityMs,
         intents: intents.map((intent) => intent.prompt_text),
         files,
         tools,
@@ -250,6 +332,56 @@ export function rebuildSessionSummaryProjections(opts?: {
         .prepare(`SELECT last_insert_rowid() AS id`)
         .get() as { id: number };
       sessionSummaries += 1;
+
+      const existingEnrichment =
+        (existingEnrichmentStmt.get(summaryKey) as
+          | SessionSummaryEnrichmentRow
+          | undefined) ?? null;
+      const mergedEnrichment = mergeSessionSummaryEnrichment(
+        existingEnrichment,
+        {
+          sessionSummaryKey: summaryKey,
+          sessionId: session.session_id,
+          title,
+          status,
+          repository,
+          cwd,
+          branch: repoMeta?.branch ?? null,
+          intentCount: intents.length,
+          editCount: edits.length,
+          landedEditCount,
+          openEditCount,
+          messageCount: sessionMeta?.message_count ?? 0,
+          lastActivityMs,
+          intents: intents.map((intent) => intent.prompt_text),
+          files,
+          tools,
+        },
+        runnerPolicy.policyHash,
+        nowMs,
+      );
+      upsertEnrichmentStmt.run(
+        mergedEnrichment.session_summary_key,
+        mergedEnrichment.session_id,
+        mergedEnrichment.summary_text,
+        mergedEnrichment.summary_search_text,
+        mergedEnrichment.summary_source,
+        mergedEnrichment.summary_runner,
+        mergedEnrichment.summary_model,
+        mergedEnrichment.summary_version,
+        mergedEnrichment.summary_generated_at_ms,
+        mergedEnrichment.projection_hash,
+        mergedEnrichment.summary_input_hash,
+        mergedEnrichment.summary_policy_hash,
+        mergedEnrichment.enriched_input_hash,
+        mergedEnrichment.enriched_message_count,
+        mergedEnrichment.dirty,
+        mergedEnrichment.dirty_reason_json,
+        mergedEnrichment.last_material_change_at_ms,
+        mergedEnrichment.last_attempted_at_ms,
+        mergedEnrichment.failure_count,
+        mergedEnrichment.last_error,
+      );
 
       for (const intent of intents) {
         membershipStmt.run(
@@ -325,6 +457,30 @@ export function rebuildSessionSummaryProjections(opts?: {
         );
         provenance += 1;
       }
+    }
+
+    if (opts?.sessionId) {
+      const key = sessionSummaryKey(opts.sessionId);
+      const stillExists = db
+        .prepare(
+          `SELECT 1
+           FROM session_summaries
+           WHERE session_summary_key = ?`,
+        )
+        .get(key);
+      if (!stillExists) {
+        db.prepare(
+          `DELETE FROM session_summary_enrichments
+           WHERE session_summary_key = ?`,
+        ).run(key);
+      }
+    } else {
+      db.prepare(
+        `DELETE FROM session_summary_enrichments
+         WHERE session_summary_key NOT IN (
+           SELECT session_summary_key FROM session_summaries
+         )`,
+      ).run();
     }
 
     return { sessionSummaries, memberships, provenance };

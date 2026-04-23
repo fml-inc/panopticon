@@ -190,8 +190,13 @@ export function listSessions(
                     s.edit_count,
                     s.landed_edit_count,
                     s.open_edit_count,
-                    s.summary_text
+                    COALESCE(e.summary_text, s.summary_text) AS summary_text,
+                    COALESCE(e.summary_source, 'deterministic') AS summary_source,
+                    e.summary_generated_at_ms,
+                    COALESCE(e.dirty, 0) AS summary_dirty
              FROM session_summaries s
+             LEFT JOIN session_summary_enrichments e
+               ON e.session_summary_key = s.session_summary_key
              WHERE s.session_id IN (${sessionIds.map(() => "?").join(",")})`,
           )
           .all(...sessionIds) as Array<{
@@ -210,6 +215,9 @@ export function listSessions(
           landed_edit_count: number;
           open_edit_count: number;
           summary_text: string | null;
+          summary_source: string | null;
+          summary_generated_at_ms: number | null;
+          summary_dirty: number;
         }>)
       : [];
 
@@ -260,6 +268,11 @@ export function listSessions(
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
       summaryText: row.summary_text,
+      summarySource: parseSummarySource(row.summary_source),
+      summaryGeneratedAt: row.summary_generated_at_ms
+        ? toIso(row.summary_generated_at_ms)
+        : null,
+      summaryDirty: row.summary_dirty === 1,
     });
   }
 
@@ -311,6 +324,12 @@ function formatExplicitSessionSummary(
       ? ` Top files: ${sessionSummary.topFiles.join(", ")}.`
       : "";
   return `${sessionSummary.title}. Status: ${sessionSummary.status}. ${sessionSummary.intentCount} intents, ${sessionSummary.editCount} edits, ${sessionSummary.landedEditCount} landed, ${sessionSummary.openEditCount} open.${files}`;
+}
+
+function parseSummarySource(
+  value: string | null,
+): SessionSummary["summarySource"] {
+  return value === "deterministic" || value === "llm" ? value : null;
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
@@ -739,7 +758,7 @@ export function search(opts: {
   const summarySql = sessionSummariesEnabled
     ? (() => {
         const summaryConditions: string[] = [
-          "(s.summary IS NOT NULL OR ss.summary_text IS NOT NULL OR ss.summary_search_text IS NOT NULL)",
+          "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL OR ss.summary_text IS NOT NULL OR ss.summary_search_text IS NOT NULL)",
         ];
         if (sinceMs) {
           summaryConditions.push("s.started_at_ms >= ?");
@@ -757,14 +776,16 @@ export function search(opts: {
             SELECT s.session_id,
                    s.started_at_ms as timestamp_ms,
                   CASE
-                     WHEN ss.summary_text LIKE ? THEN ss.summary_text
-                     WHEN ss.summary_search_text LIKE ? THEN ss.summary_search_text
+                     WHEN COALESCE(e.summary_text, ss.summary_text) LIKE ? THEN COALESCE(e.summary_text, ss.summary_text)
+                     WHEN COALESCE(e.summary_search_text, ss.summary_search_text) LIKE ? THEN COALESCE(e.summary_search_text, ss.summary_search_text)
                      WHEN s.summary LIKE ? THEN s.summary
                      ELSE NULL
                    END as payload
             FROM sessions s
             LEFT JOIN session_summaries ss
               ON ss.session_id = s.session_id
+            LEFT JOIN session_summary_enrichments e
+              ON e.session_summary_key = ss.session_summary_key
             WHERE ${summaryConditions.join(" AND ")}
           ) summary_matches
           WHERE summary_matches.payload IS NOT NULL

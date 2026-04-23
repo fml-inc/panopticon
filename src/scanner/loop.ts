@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
+import { config } from "../config.js";
 import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
@@ -12,6 +13,7 @@ import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
+import { refreshSessionSummaryEnrichmentsOnce } from "../session_summaries/enrichment.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { allTargets } from "../targets/registry.js";
 import type {
@@ -144,6 +146,19 @@ function formatMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
   if (ms >= 100) return `${Math.round(ms)}ms`;
   return `${ms.toFixed(1)}ms`;
+}
+
+function runSessionSummaryPass(logSummary: (msg: string) => void): {
+  updated: number;
+} {
+  let updated = 0;
+  if (config.enableSessionSummaryProjections) {
+    updated += refreshSessionSummaryEnrichmentsOnce({
+      log: logSummary,
+    }).updated;
+  }
+  updated += generateSummariesOnce(logSummary).updated;
+  return { updated };
 }
 
 function sortByDurationDesc<T extends { totalMs: number }>(rows: T[]): T[] {
@@ -846,7 +861,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       if (!hadWork && ready) {
         try {
           const summaryStartedAt = performance.now();
-          const result = generateSummariesOnce((msg) => log.scanner.debug(msg));
+          const result = runSessionSummaryPass((msg) => log.scanner.debug(msg));
           const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
           if (result.updated > 0) {
             log.scanner.info(summaryMessage);

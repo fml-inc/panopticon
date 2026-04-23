@@ -24,6 +24,12 @@ export interface SessionSummaryProjectionRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
+  summary_search_text: string | null;
+  summary_source: "deterministic" | "llm" | null;
+  summary_runner: string | null;
+  summary_model: string | null;
+  summary_generated_at_ms: number | null;
+  summary_dirty: boolean;
 }
 
 export interface SessionSummaryRow {
@@ -44,13 +50,21 @@ export interface SessionSummaryRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
+  summary_search_text: string | null;
+  summary_source: "deterministic" | "llm" | null;
+  summary_runner: string | null;
+  summary_model: string | null;
+  summary_generated_at_ms: number | null;
+  summary_dirty: boolean;
 }
 
 type RawSessionSummaryProjectionRow = Omit<
   SessionSummaryProjectionRow,
-  "repository"
+  "repository" | "summary_source" | "summary_dirty"
 > & {
   repository: string | null;
+  summary_source: string | null;
+  summary_dirty: number;
 };
 
 type SessionSummaryIntentRow = {
@@ -625,7 +639,16 @@ export function ensureSessionSummaryProjections(): void {
       c: number;
     }
   ).c;
-  if (sessionSummaryCount === 0 || membershipCount === 0) {
+  const enrichmentCount = (
+    db
+      .prepare(`SELECT COUNT(*) AS c FROM session_summary_enrichments`)
+      .get() as { c: number }
+  ).c;
+  if (
+    sessionSummaryCount === 0 ||
+    membershipCount === 0 ||
+    enrichmentCount === 0
+  ) {
     rebuildSessionSummaryProjections();
   }
 }
@@ -662,8 +685,16 @@ function listSessionSummaryProjections(opts?: {
            s.edit_count,
            s.landed_edit_count,
            s.open_edit_count,
-           s.summary_text
-    FROM session_summaries s`;
+           COALESCE(e.summary_text, s.summary_text) AS summary_text,
+           COALESCE(e.summary_search_text, s.summary_search_text) AS summary_search_text,
+           COALESCE(e.summary_source, 'deterministic') AS summary_source,
+           e.summary_runner,
+           e.summary_model,
+           e.summary_generated_at_ms,
+           COALESCE(e.dirty, 0) AS summary_dirty
+    FROM session_summaries s
+    LEFT JOIN session_summary_enrichments e
+      ON e.session_summary_key = s.session_summary_key`;
 
   if (opts?.path) {
     sql += `
@@ -731,8 +762,16 @@ function getSessionSummaryProjectionDetail(opts: {
               s.edit_count,
               s.landed_edit_count,
               s.open_edit_count,
-              s.summary_text
+              COALESCE(e.summary_text, s.summary_text) AS summary_text,
+              COALESCE(e.summary_search_text, s.summary_search_text) AS summary_search_text,
+              COALESCE(e.summary_source, 'deterministic') AS summary_source,
+              e.summary_runner,
+              e.summary_model,
+              e.summary_generated_at_ms,
+              COALESCE(e.dirty, 0) AS summary_dirty
        FROM session_summaries s
+       LEFT JOIN session_summary_enrichments e
+         ON e.session_summary_key = s.session_summary_key
        WHERE id = ?`,
     )
     .get(opts.session_summary_id) as RawSessionSummaryProjectionRow | undefined;
@@ -798,6 +837,12 @@ function toSessionSummaryRow(
     landed_edit_count: row.landed_edit_count,
     open_edit_count: row.open_edit_count,
     summary_text: row.summary_text,
+    summary_search_text: row.summary_search_text,
+    summary_source: row.summary_source,
+    summary_runner: row.summary_runner,
+    summary_model: row.summary_model,
+    summary_generated_at_ms: row.summary_generated_at_ms,
+    summary_dirty: row.summary_dirty,
   };
 }
 
@@ -811,7 +856,15 @@ function toSessionSummaryProjectionRow(
   return {
     ...row,
     repository: emptyToNull(row.repository),
+    summary_source: parseSummarySource(row.summary_source),
+    summary_dirty: row.summary_dirty === 1,
   };
+}
+
+function parseSummarySource(
+  value: string | null,
+): SessionSummaryProjectionRow["summary_source"] {
+  return value === "deterministic" || value === "llm" ? value : null;
 }
 
 function lookupRepositoryForPath(filePath: string): string | null {

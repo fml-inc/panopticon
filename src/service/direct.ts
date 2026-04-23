@@ -46,6 +46,7 @@ import {
   scanOnce,
 } from "../scanner/index.js";
 import { readScannerStatus } from "../scanner/status.js";
+import { refreshSessionSummaryEnrichmentsOnce } from "../session_summaries/enrichment.js";
 import {
   fileOverview,
   listSessionSummaries,
@@ -99,14 +100,26 @@ function isDerivedRebuildInProgress(): boolean {
 }
 
 function runSummaryGeneration(): number {
+  let updated = 0;
+  if (config.enableSessionSummaryProjections) {
+    try {
+      updated += refreshSessionSummaryEnrichmentsOnce({
+        log: (msg) => log.scanner.debug(msg),
+      }).updated;
+    } catch (err) {
+      log.scanner.error(
+        `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
   try {
-    return generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
+    updated += generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
   } catch (err) {
     log.scanner.error(
-      `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
+      `scan exec: legacy summary generation failed: ${err instanceof Error ? err.message : err}`,
     );
-    return 0;
   }
+  return updated;
 }
 
 function markComponentsCurrentIfFull(

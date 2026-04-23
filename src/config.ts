@@ -2,6 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+export const SESSION_SUMMARY_RUNNER_NAMES = ["claude", "codex"] as const;
+export type SessionSummaryRunnerName =
+  (typeof SESSION_SUMMARY_RUNNER_NAMES)[number];
+export const SESSION_SUMMARY_RUNNER_STRATEGIES = [
+  "same_as_session",
+  "fixed",
+] as const;
+export type SessionSummaryRunnerStrategy =
+  (typeof SESSION_SUMMARY_RUNNER_STRATEGIES)[number];
+
 function defaultDataDir(): string {
   switch (process.platform) {
     case "darwin":
@@ -32,6 +42,36 @@ function envBool(name: string, defaultValue = false): boolean {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+function parseSessionSummaryRunnerList(
+  raw: string | undefined,
+  fallback: SessionSummaryRunnerName[],
+): SessionSummaryRunnerName[] {
+  if (!raw) return fallback;
+  const allowed = new Set(SESSION_SUMMARY_RUNNER_NAMES);
+  const values = raw
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(
+      (value): value is SessionSummaryRunnerName =>
+        value.length > 0 && allowed.has(value as SessionSummaryRunnerName),
+    );
+  return values.length > 0 ? [...new Set(values)] : fallback;
+}
+
+function parseSessionSummaryRunner(
+  raw: string | undefined,
+  fallback: SessionSummaryRunnerName,
+): SessionSummaryRunnerName {
+  const [runner] = parseSessionSummaryRunnerList(raw, []);
+  return runner ?? fallback;
+}
+
+function parseSessionSummaryRunnerStrategy(
+  raw: string | undefined,
+): SessionSummaryRunnerStrategy {
+  return raw === "fixed" ? "fixed" : "same_as_session";
+}
+
 const DATA_DIR = resolveDataDir();
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
@@ -43,6 +83,10 @@ const MARKETPLACE_DIR = path.join(
 );
 
 const DEFAULT_PORT_BASE = 4318;
+const DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS: SessionSummaryRunnerName[] = [
+  "claude",
+  "codex",
+];
 
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
@@ -92,6 +136,25 @@ export const config = {
   useProjectionSessionSummaryText: envBool(
     "PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT",
   ),
+  sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
+    process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
+    DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,
+  ),
+  sessionSummaryRunnerStrategy: parseSessionSummaryRunnerStrategy(
+    process.env.PANOPTICON_SESSION_SUMMARY_RUNNER_STRATEGY,
+  ),
+  sessionSummaryFixedRunner: parseSessionSummaryRunner(
+    process.env.PANOPTICON_SESSION_SUMMARY_FIXED_RUNNER,
+    "claude",
+  ),
+  sessionSummaryFallbackRunners: parseSessionSummaryRunnerList(
+    process.env.PANOPTICON_SESSION_SUMMARY_FALLBACK_RUNNERS,
+    DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,
+  ),
+  sessionSummaryRunnerModels: {
+    claude: process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? "sonnet",
+    codex: process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null,
+  },
 } as const;
 
 export function ensureDataDir(): void {

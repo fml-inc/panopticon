@@ -852,9 +852,6 @@ export const MIGRATIONS: Migration[] = [
     id: 15,
     name: "flatten_session_summary_projection_storage",
     up: (db) => {
-      if (tableExists(db, "session_summary_enrichments")) {
-        db.exec(`DROP TABLE session_summary_enrichments`);
-      }
       if (!tableExists(db, "session_summaries")) {
         return;
       }

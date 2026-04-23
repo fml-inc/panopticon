@@ -1,0 +1,326 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Database } from "../db/driver.js";
+import { refreshSessionSummaryEnrichmentsOnce } from "./enrichment.js";
+import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
+
+const state = vi.hoisted(() => ({
+  db: null as Database | null,
+  inTx: false,
+  detectAgentMock: vi.fn(
+    (runner: string): string | null => `/usr/local/bin/${runner}`,
+  ),
+  invokeLlmMock: vi.fn(),
+}));
+
+vi.mock("../config.js", () => ({
+  config: {
+    sessionSummaryAllowedRunners: ["claude", "codex"],
+    sessionSummaryRunnerStrategy: "same_as_session",
+    sessionSummaryFixedRunner: "claude",
+    sessionSummaryFallbackRunners: ["claude", "codex"],
+    sessionSummaryRunnerModels: {
+      claude: "sonnet",
+      codex: null,
+    },
+  },
+}));
+
+vi.mock("../db/schema.js", () => ({
+  getDb: () => state.db,
+}));
+
+vi.mock("../summary/llm.js", () => ({
+  detectAgent: state.detectAgentMock,
+  invokeLlm: state.invokeLlmMock,
+}));
+
+describe("session summary enrichment refresh", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-enrich-refresh-"));
+    const dbPath = path.join(tempDir, "test.db");
+    state.db = new Database(dbPath);
+
+    const rawTransaction = state.db.transaction.bind(state.db);
+    state.inTx = false;
+    state.db.transaction = ((fn: (...args: unknown[]) => unknown) =>
+      rawTransaction((...args: unknown[]) => {
+        state.inTx = true;
+        try {
+          return fn(...args);
+        } finally {
+          state.inTx = false;
+        }
+      })) as typeof state.db.transaction;
+
+    state.db.exec(`
+      CREATE TABLE session_summary_enrichments (
+        session_summary_key TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        summary_text TEXT,
+        summary_search_text TEXT,
+        summary_source TEXT NOT NULL DEFAULT 'deterministic',
+        summary_runner TEXT,
+        summary_model TEXT,
+        summary_version INTEGER NOT NULL DEFAULT 1,
+        summary_generated_at_ms INTEGER,
+        projection_hash TEXT,
+        summary_input_hash TEXT,
+        summary_policy_hash TEXT,
+        enriched_input_hash TEXT,
+        enriched_message_count INTEGER,
+        dirty INTEGER NOT NULL DEFAULT 1,
+        dirty_reason_json TEXT,
+        last_material_change_at_ms INTEGER,
+        last_attempted_at_ms INTEGER,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+      );
+      CREATE TABLE session_summaries (
+        id INTEGER PRIMARY KEY,
+        session_summary_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        repository TEXT,
+        branch TEXT,
+        intent_count INTEGER NOT NULL,
+        edit_count INTEGER NOT NULL,
+        landed_edit_count INTEGER NOT NULL,
+        open_edit_count INTEGER NOT NULL,
+        last_intent_ts_ms INTEGER
+      );
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        target TEXT,
+        message_count INTEGER
+      );
+      CREATE TABLE intent_session_summaries (
+        session_summary_id INTEGER NOT NULL,
+        intent_unit_id INTEGER NOT NULL
+      );
+      CREATE TABLE intent_units (
+        id INTEGER PRIMARY KEY,
+        prompt_text TEXT NOT NULL,
+        prompt_ts_ms INTEGER
+      );
+      CREATE TABLE intent_edits (
+        intent_unit_id INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        landed INTEGER
+      );
+    `);
+
+    seedSummaryRow();
+  });
+
+  afterEach(() => {
+    state.db?.close();
+    state.db = null;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("runs the llm outside the database transaction and persists the result", () => {
+    const db = state.db!;
+    state.invokeLlmMock.mockImplementation(() => {
+      expect(state.inTx).toBe(false);
+      return "LLM summary text.";
+    });
+
+    const result = refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+      force: true,
+    });
+
+    const row = db
+      .prepare(
+        `SELECT summary_text, summary_source, summary_runner, summary_model,
+                dirty, failure_count, last_error
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          summary_text: string;
+          summary_source: string;
+          summary_runner: string | null;
+          summary_model: string | null;
+          dirty: number;
+          failure_count: number;
+          last_error: string | null;
+        }
+      | undefined;
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+    expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({
+      summary_text: "LLM summary text.",
+      summary_source: "llm",
+      summary_runner: "claude",
+      summary_model: "sonnet",
+      dirty: 0,
+      failure_count: 0,
+      last_error: null,
+    });
+  });
+
+  it("releases a stale claim instead of persisting outdated output", () => {
+    const db = state.db!;
+    state.invokeLlmMock.mockImplementation(() => {
+      expect(state.inTx).toBe(false);
+      db.prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_input_hash = ?, dirty = 1
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      ).run("hash-2");
+      return "stale summary";
+    });
+
+    const result = refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+      force: true,
+    });
+
+    const row = db
+      .prepare(
+        `SELECT summary_text, summary_source, summary_input_hash,
+                last_attempted_at_ms, dirty, failure_count, last_error
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          summary_text: string;
+          summary_source: string;
+          summary_input_hash: string | null;
+          last_attempted_at_ms: number | null;
+          dirty: number;
+          failure_count: number;
+          last_error: string | null;
+        }
+      | undefined;
+
+    expect(result).toEqual({ attempted: 1, updated: 0 });
+    expect(row).toMatchObject({
+      summary_text: "deterministic summary",
+      summary_source: "deterministic",
+      summary_input_hash: "hash-2",
+      last_attempted_at_ms: null,
+      dirty: 1,
+      failure_count: 0,
+      last_error: null,
+    });
+  });
+
+  it("skips cleanly when no allowed runner is available", () => {
+    state.detectAgentMock.mockReturnValue(null);
+
+    const result = refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+    });
+
+    const row = state
+      .db!.prepare(
+        `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          last_attempted_at_ms: number | null;
+          failure_count: number;
+          last_error: string | null;
+          dirty: number;
+        }
+      | undefined;
+
+    expect(result).toEqual({ attempted: 0, updated: 0 });
+    expect(row).toMatchObject({
+      last_attempted_at_ms: null,
+      failure_count: 0,
+      last_error: null,
+      dirty: 1,
+    });
+  });
+});
+
+function seedSummaryRow(): void {
+  const db = state.db!;
+  db.prepare(
+    `INSERT INTO session_summaries
+     (id, session_summary_key, session_id, title, status, repository, branch,
+      intent_count, edit_count, landed_edit_count, open_edit_count,
+      last_intent_ts_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    1,
+    "ss:local:session-1",
+    "session-1",
+    "diagnose summary lock",
+    "mixed",
+    "/repo",
+    "main",
+    1,
+    1,
+    1,
+    0,
+    1_000,
+  );
+
+  db.prepare(
+    `INSERT INTO sessions (session_id, target, message_count)
+     VALUES (?, ?, ?)`,
+  ).run("session-1", "claude", 7);
+
+  db.prepare(
+    `INSERT INTO intent_units (id, prompt_text, prompt_ts_ms)
+     VALUES (?, ?, ?)`,
+  ).run(10, "fix the summary contention bug", 900);
+
+  db.prepare(
+    `INSERT INTO intent_session_summaries (session_summary_id, intent_unit_id)
+     VALUES (?, ?)`,
+  ).run(1, 10);
+
+  db.prepare(
+    `INSERT INTO intent_edits (intent_unit_id, file_path, landed)
+     VALUES (?, ?, ?)`,
+  ).run(10, "src/session_summaries/enrichment.ts", 1);
+
+  db.prepare(
+    `INSERT INTO session_summary_enrichments
+     (session_summary_key, session_id, summary_text, summary_search_text,
+      summary_source, summary_runner, summary_model, summary_version,
+      summary_generated_at_ms, projection_hash, summary_input_hash,
+      summary_policy_hash, enriched_input_hash, enriched_message_count,
+      dirty, dirty_reason_json, last_material_change_at_ms,
+      last_attempted_at_ms, failure_count, last_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "ss:local:session-1",
+    "session-1",
+    "deterministic summary",
+    "Title: diagnose summary lock",
+    "deterministic",
+    null,
+    null,
+    SESSION_SUMMARY_ENRICHMENT_VERSION,
+    500,
+    "projection-hash",
+    "hash-1",
+    "policy-hash",
+    null,
+    null,
+    1,
+    JSON.stringify({ reasons: ["session_cold", "refresh_pending"] }),
+    600,
+    null,
+    0,
+    null,
+  );
+}
