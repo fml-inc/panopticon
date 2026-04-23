@@ -108,6 +108,7 @@ export function listSessions(
 ): SessionListResult {
   const db = getDb();
   const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  const useProjectionSummaryText = config.useProjectionSessionSummaryText;
   if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
@@ -181,21 +182,27 @@ export function listSessions(
     sessionSummariesEnabled && sessionSummaryKeys.length > 0
       ? (db
           .prepare(
-            `SELECT id,
-                    session_summary_key,
-                    title,
-                    status,
-                    repository,
-                    cwd,
-                    branch,
-                    first_intent_ts_ms,
-                    last_intent_ts_ms,
-                    intent_count,
-                    edit_count,
-                    landed_edit_count,
-                    open_edit_count
-             FROM session_summaries
-             WHERE session_summary_key IN (${sessionSummaryKeys.map(() => "?").join(",")})`,
+            `SELECT s.id AS id,
+                    s.session_summary_key,
+                    s.title,
+                    s.status,
+                    s.repository,
+                    s.cwd,
+                    s.branch,
+                    s.first_intent_ts_ms,
+                    s.last_intent_ts_ms,
+                    s.intent_count,
+                    s.edit_count,
+                    s.landed_edit_count,
+                    s.open_edit_count,
+                    e.summary_text,
+                    e.summary_source,
+                    e.summary_generated_at_ms,
+                    COALESCE(e.dirty, 1) AS summary_dirty
+             FROM session_summaries s
+             LEFT JOIN session_summary_enrichments e
+               ON e.session_summary_key = s.session_summary_key
+             WHERE s.session_summary_key IN (${sessionSummaryKeys.map(() => "?").join(",")})`,
           )
           .all(...sessionSummaryKeys) as Array<{
           id: number;
@@ -211,6 +218,10 @@ export function listSessions(
           edit_count: number;
           landed_edit_count: number;
           open_edit_count: number;
+          summary_text: string | null;
+          summary_source: SessionSummary["summarySource"];
+          summary_generated_at_ms: number | null;
+          summary_dirty: number;
         }>)
       : [];
 
@@ -262,6 +273,12 @@ export function listSessions(
       landedEditCount: row.landed_edit_count,
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
+      summaryText: row.summary_text,
+      summarySource: row.summary_source,
+      summaryGeneratedAt: row.summary_generated_at_ms
+        ? toIso(row.summary_generated_at_ms)
+        : null,
+      summaryDirty: row.summary_dirty === 1,
     });
   }
 
@@ -287,7 +304,10 @@ export function listSessions(
       })),
       parentSessionId: row.parent_session_id,
       relationshipType: row.relationship_type,
-      summary: formatExplicitSessionSummary(sessionSummary, row.summary),
+      summary: formatExplicitSessionSummary(
+        useProjectionSummaryText ? sessionSummary : null,
+        row.summary,
+      ),
       sessionSummary,
     };
   });
@@ -308,6 +328,7 @@ function formatExplicitSessionSummary(
   fallback: string | null,
 ): string | null {
   if (!sessionSummary) return fallback;
+  if (sessionSummary.summaryText) return sessionSummary.summaryText;
   const files =
     sessionSummary.topFiles.length > 0
       ? ` Top files: ${sessionSummary.topFiles.join(", ")}.`
@@ -648,6 +669,8 @@ export function search(opts: {
   fullPayloads?: boolean;
 }): SearchResult {
   const db = getDb();
+  const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const sinceMs = parseSince(opts.since);
@@ -735,11 +758,36 @@ export function search(opts: {
   `;
 
   // Session summary search
-  const summaryConditions: string[] = [
-    "s.summary IS NOT NULL",
-    "s.summary LIKE ?",
-  ];
-  const summaryParams: unknown[] = [pattern];
+  const summaryPayloadCol = sessionSummariesEnabled
+    ? truncate
+      ? `SUBSTR(
+           CASE
+             WHEN e.summary_text LIKE ? THEN e.summary_text
+             WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
+             WHEN s.summary LIKE ? THEN s.summary
+             ELSE COALESCE(e.summary_text, e.summary_search_text, s.summary)
+           END,
+           1,
+           500
+         )`
+      : `CASE
+           WHEN e.summary_text LIKE ? THEN e.summary_text
+           WHEN e.summary_search_text LIKE ? THEN e.summary_search_text
+           WHEN s.summary LIKE ? THEN s.summary
+           ELSE COALESCE(e.summary_text, e.summary_search_text, s.summary)
+         END`
+    : truncate
+      ? "SUBSTR(s.summary, 1, 500)"
+      : "s.summary";
+  const summaryConditions: string[] = sessionSummariesEnabled
+    ? [
+        "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR e.summary_search_text IS NOT NULL)",
+        "(s.summary LIKE ? OR e.summary_text LIKE ? OR e.summary_search_text LIKE ?)",
+      ]
+    : ["s.summary IS NOT NULL", "s.summary LIKE ?"];
+  const summaryParams: unknown[] = sessionSummariesEnabled
+    ? [pattern, pattern, pattern, pattern, pattern, pattern]
+    : [pattern];
   if (sinceMs) {
     summaryConditions.push("s.started_at_ms >= ?");
     summaryParams.push(sinceMs);
@@ -748,8 +796,14 @@ export function search(opts: {
   const summarySql = `
     SELECT 'summary' as source, s.session_id as id, s.session_id,
            'summary' as event_type, s.started_at_ms as timestamp_ms,
-           NULL as tool_name, NULL as cwd, SUBSTR(s.summary, 1, 500) as payload
+           NULL as tool_name, NULL as cwd, ${summaryPayloadCol} as payload
     FROM sessions s
+    ${
+      sessionSummariesEnabled
+        ? `LEFT JOIN session_summary_enrichments e
+             ON e.session_id = s.session_id`
+        : ""
+    }
     WHERE ${summaryConditions.join(" AND ")}
   `;
 

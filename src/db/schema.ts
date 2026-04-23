@@ -451,6 +451,29 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   reason_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS session_summary_enrichments (
+  session_summary_key TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  summary_text TEXT,
+  summary_search_text TEXT,
+  summary_source TEXT NOT NULL DEFAULT 'deterministic',
+  summary_runner TEXT,
+  summary_model TEXT,
+  summary_version INTEGER NOT NULL DEFAULT 1,
+  summary_generated_at_ms INTEGER,
+  projection_hash TEXT,
+  summary_input_hash TEXT,
+  summary_policy_hash TEXT,
+  enriched_input_hash TEXT,
+  enriched_message_count INTEGER,
+  dirty INTEGER NOT NULL DEFAULT 1,
+  dirty_reason_json TEXT,
+  last_material_change_at_ms INTEGER,
+  last_attempted_at_ms INTEGER,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS intent_session_summaries (
   intent_unit_id INTEGER NOT NULL,
   session_summary_id INTEGER NOT NULL,
@@ -493,6 +516,17 @@ CREATE TABLE IF NOT EXISTS watermarks (
   value INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS attempt_backoffs (
+  scope_kind TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_attempted_at_ms INTEGER,
+  next_attempt_at_ms INTEGER,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (scope_kind, scope_key)
+);
+
 -- ── Per-session sync state ─────────────────────────────────────────────────
 
 DROP TABLE IF EXISTS pending_session_sync;
@@ -515,6 +549,10 @@ CREATE TABLE IF NOT EXISTS target_session_sync (
 );
 
 -- ── Indexes ─────────────────────────────────────────────────────────────────
+
+-- attempt_backoffs
+CREATE INDEX IF NOT EXISTS idx_attempt_backoffs_next_attempt
+  ON attempt_backoffs(next_attempt_at_ms);
 
 -- otel_logs
 CREATE INDEX IF NOT EXISTS idx_logs_session ON otel_logs(session_id);
@@ -619,6 +657,12 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
+
+-- session_summary_enrichments
+CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
+  ON session_summary_enrichments(dirty, last_material_change_at_ms);
+CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_session
+  ON session_summary_enrichments(session_id);
 
 -- intent_session_summaries
 CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
