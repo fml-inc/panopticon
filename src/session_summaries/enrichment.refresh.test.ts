@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Database } from "../db/driver.js";
+import { refreshSessionSummaryEnrichmentsOnce } from "./enrichment.js";
+import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
 
 const state = vi.hoisted(() => ({
   db: null as Database | null,
@@ -36,10 +38,6 @@ vi.mock("../summary/llm.js", () => ({
 }));
 
 import { getAttemptBackoff } from "../attempt-backoff.js";
-import {
-  refreshSessionSummaryEnrichmentsOnce,
-  SESSION_SUMMARY_ENRICHMENT_VERSION,
-} from "./enrichment.js";
 
 describe("session summary enrichment refresh", () => {
   let tempDir: string;

@@ -36,7 +36,7 @@ import { config } from "../config.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
-import { getSessionSummaryRunnerPolicy } from "../session_summaries/enrichment.js";
+import { getSessionSummaryRunnerPolicy } from "../session_summaries/policy.js";
 import { listSessions, search } from "./query.js";
 import { closeDb, getDb } from "./schema.js";
 import {

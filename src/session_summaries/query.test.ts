@@ -41,7 +41,7 @@ import {
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
-import { getSessionSummaryRunnerPolicy } from "./enrichment.js";
+import { getSessionSummaryRunnerPolicy } from "./policy.js";
 import {
   listSessionSummaries,
   recentWorkOnPath,

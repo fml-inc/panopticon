@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { selectSessionSummaryRunner } from "./enrichment.js";
 import {
   buildDeterministicSessionSummaryDocs,
-  getSessionSummaryRunnerPolicy,
   mergeSessionSummaryEnrichment,
   SESSION_SUMMARY_ENRICHMENT_VERSION,
-  selectSessionSummaryRunner,
-} from "./enrichment.js";
+} from "./model.js";
+import { getSessionSummaryRunnerPolicy } from "./policy.js";
 
 const BASE_INPUT = {
   sessionSummaryKey: "ss:local:test-session",

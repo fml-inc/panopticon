@@ -5,10 +5,10 @@ import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
 import {
-  getSessionSummaryRunnerPolicy,
   mergeSessionSummaryEnrichment,
   type SessionSummaryEnrichmentRow,
-} from "./enrichment.js";
+} from "./model.js";
+import { getSessionSummaryRunnerPolicy } from "./policy.js";
 
 const MEMBERSHIP_SOURCE = "heuristic";
 const ORIGIN_SCOPE = "local";
