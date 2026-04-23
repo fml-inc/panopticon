@@ -855,6 +855,9 @@ export const MIGRATIONS: Migration[] = [
       if (tableExists(db, "session_summary_enrichments")) {
         db.exec(`DROP TABLE session_summary_enrichments`);
       }
+      if (!tableExists(db, "session_summaries")) {
+        return;
+      }
       addColumnIfMissing(
         db,
         "session_summaries",
