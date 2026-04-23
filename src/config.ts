@@ -125,6 +125,9 @@ export const config = {
   enableSessionSummaryProjections: envBool(
     "PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS",
   ),
+  useProjectionSessionSummaryText: envBool(
+    "PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT",
+  ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,

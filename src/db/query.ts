@@ -108,6 +108,7 @@ export function listSessions(
 ): SessionListResult {
   const db = getDb();
   const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  const useProjectionSummaryText = config.useProjectionSessionSummaryText;
   if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
@@ -303,7 +304,10 @@ export function listSessions(
       })),
       parentSessionId: row.parent_session_id,
       relationshipType: row.relationship_type,
-      summary: formatExplicitSessionSummary(sessionSummary, row.summary),
+      summary: formatExplicitSessionSummary(
+        useProjectionSummaryText ? sessionSummary : null,
+        row.summary,
+      ),
       sessionSummary,
     };
   });

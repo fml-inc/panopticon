@@ -99,19 +99,26 @@ function isDerivedRebuildInProgress(): boolean {
 }
 
 function runSummaryGeneration(): number {
-  try {
-    if (config.enableSessionSummaryProjections) {
-      return refreshSessionSummaryEnrichmentsOnce({
+  let updated = 0;
+  if (config.enableSessionSummaryProjections) {
+    try {
+      updated += refreshSessionSummaryEnrichmentsOnce({
         log: (msg) => log.scanner.debug(msg),
       }).updated;
+    } catch (err) {
+      log.scanner.error(
+        `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,
+      );
     }
-    return generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
+  }
+  try {
+    updated += generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
   } catch (err) {
     log.scanner.error(
-      `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
+      `scan exec: legacy summary generation failed: ${err instanceof Error ? err.message : err}`,
     );
-    return 0;
   }
+  return updated;
 }
 
 function markComponentsCurrentIfFull(

@@ -48,6 +48,31 @@ const SCAN_STATUS_EVERY_MS = 5_000;
 const MAX_PROFILE_DETAILS = 5;
 const SLOW_SCAN_DETAIL_MS = 250;
 
+function runSessionSummaryPass(logMessage: (msg: string) => void): {
+  updated: number;
+} {
+  let updated = 0;
+  if (config.enableSessionSummaryProjections) {
+    try {
+      updated += refreshSessionSummaryEnrichmentsOnce({
+        log: logMessage,
+      }).updated;
+    } catch (err) {
+      log.scanner.error(
+        `Session summary enrichment error: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+  try {
+    updated += generateSummariesOnce(logMessage).updated;
+  } catch (err) {
+    log.scanner.error(
+      `Legacy session summary error: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  return { updated };
+}
+
 interface ScanTargetProfile {
   source: string;
   filesDiscovered: number;
@@ -823,11 +848,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       if (!hadWork && ready) {
         try {
           const summaryStartedAt = performance.now();
-          const result = config.enableSessionSummaryProjections
-            ? refreshSessionSummaryEnrichmentsOnce({
-                log: (msg) => log.scanner.debug(msg),
-              })
-            : generateSummariesOnce((msg) => log.scanner.debug(msg));
+          const result = runSessionSummaryPass((msg) => log.scanner.debug(msg));
           const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
           if (result.updated > 0) {
             log.scanner.info(summaryMessage);

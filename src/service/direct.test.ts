@@ -58,6 +58,7 @@ vi.mock("../claims/integrity.js", () => ({
 vi.mock("../config.js", () => ({
   config: {
     enableSessionSummaryProjections: true,
+    useProjectionSessionSummaryText: false,
   },
 }));
 
@@ -200,7 +201,7 @@ describe("direct service scan", () => {
       projectedProvenance: 10,
       totalMs: 11,
     });
-    refreshSessionSummaryEnrichmentsOnceMock.mockReturnValue({ updated: 5 });
+    refreshSessionSummaryEnrichmentsOnceMock.mockReturnValue({ updated: 2 });
     generateSummariesOnceMock.mockReturnValue({ updated: 5 });
   });
 
@@ -213,10 +214,12 @@ describe("direct service scan", () => {
 
     expect(reparseAllMock).toHaveBeenCalledTimes(1);
     expect(scanOnceMock).not.toHaveBeenCalled();
+    expect(refreshSessionSummaryEnrichmentsOnceMock).toHaveBeenCalledTimes(1);
+    expect(generateSummariesOnceMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       filesScanned: 7,
       newTurns: 11,
-      summariesUpdated: 5,
+      summariesUpdated: 7,
     });
   });
 
@@ -230,10 +233,12 @@ describe("direct service scan", () => {
     expect(rebuildClaimsDerivedStateMock).toHaveBeenCalledTimes(1);
     expect(reparseAllMock).not.toHaveBeenCalled();
     expect(scanOnceMock).not.toHaveBeenCalled();
+    expect(refreshSessionSummaryEnrichmentsOnceMock).toHaveBeenCalledTimes(1);
+    expect(generateSummariesOnceMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       filesScanned: 0,
       newTurns: 0,
-      summariesUpdated: 5,
+      summariesUpdated: 7,
     });
   });
 
