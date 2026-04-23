@@ -41,6 +41,8 @@ import {
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { getSessionSummaryRunnerPolicy } from "./policy.js";
+import { rebuildSessionSummaryProjections } from "./project.js";
 import {
   fileOverview,
   listSessionSummaries,
@@ -290,6 +292,131 @@ describe("session_summaries", () => {
       summary_source: "llm",
       summary_runner: "claude",
       summary_model: "sonnet",
+      summary_dirty: false,
+      summary_generated_at_ms: 1_700_000_010_000,
+    });
+  });
+
+  it("preserves an existing llm enrichment during a targeted session rebuild", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "llm-summary-rebuild.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const seeded = getDb()
+      .prepare(
+        `SELECT summary_input_hash
+         FROM session_summary_enrichments
+         WHERE session_summary_key = ?`,
+      )
+      .get(sessionSummaryKeyForSession(SESSION)) as
+      | {
+          summary_input_hash: string | null;
+        }
+      | undefined;
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = 'llm',
+             summary_runner = ?,
+             summary_model = ?,
+             summary_generated_at_ms = ?,
+             summary_policy_hash = ?,
+             enriched_input_hash = ?,
+             enriched_message_count = ?,
+             dirty = 0,
+             refresh_now = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "LLM session summary.",
+        "claude",
+        "sonnet",
+        1_700_000_010_000,
+        getSessionSummaryRunnerPolicy().policyHash,
+        seeded?.summary_input_hash ?? null,
+        0,
+        sessionSummaryKeyForSession(SESSION),
+      );
+
+    rebuildSessionSummaryProjections({ sessionId: SESSION });
+
+    const row = getDb()
+      .prepare(
+        `SELECT summary_text, summary_source, summary_runner, summary_model,
+                summary_generated_at_ms, dirty, refresh_now
+         FROM session_summary_enrichments
+         WHERE session_summary_key = ?`,
+      )
+      .get(sessionSummaryKeyForSession(SESSION)) as
+      | {
+          summary_text: string | null;
+          summary_source: string | null;
+          summary_runner: string | null;
+          summary_model: string | null;
+          summary_generated_at_ms: number | null;
+          dirty: number;
+          refresh_now: number;
+        }
+      | undefined;
+
+    expect(row).toMatchObject({
+      summary_text: "LLM session summary.",
+      summary_source: "llm",
+      summary_runner: "claude",
+      summary_model: "sonnet",
+      summary_generated_at_ms: 1_700_000_010_000,
+      dirty: 0,
+      refresh_now: 0,
+    });
+
+    const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary).toMatchObject({
+      summary_text: "LLM session summary.",
+      summary_source: "llm",
       summary_dirty: false,
       summary_generated_at_ms: 1_700_000_010_000,
     });

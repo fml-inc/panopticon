@@ -79,10 +79,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         ).run(row.id);
         db.prepare(`DELETE FROM session_summaries WHERE id = ?`).run(row.id);
       }
-      db.prepare(
-        `DELETE FROM session_summary_enrichments
-         WHERE session_summary_key = ?`,
-      ).run(key);
     } else {
       db.prepare(`DELETE FROM code_provenance`).run();
       db.prepare(`DELETE FROM intent_session_summaries`).run();
