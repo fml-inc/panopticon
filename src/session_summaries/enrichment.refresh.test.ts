@@ -106,6 +106,14 @@ describe("session summary enrichment refresh", () => {
         ended_at_ms INTEGER,
         message_count INTEGER
       );
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        is_system INTEGER NOT NULL DEFAULT 0
+      );
       CREATE TABLE intent_session_summaries (
         session_summary_id INTEGER NOT NULL,
         intent_unit_id INTEGER NOT NULL
@@ -308,6 +316,93 @@ describe("session summary enrichment refresh", () => {
       dirty: 0,
     });
     expect(row?.last_attempted_at_ms).not.toBeNull();
+  });
+
+  it("includes recent message context when message growth triggers a refresh", () => {
+    const db = state.db!;
+    db.prepare(
+      `UPDATE session_summary_enrichments
+       SET summary_text = ?, summary_source = 'llm', summary_runner = 'claude',
+           summary_model = 'sonnet', summary_generated_at_ms = ?, enriched_input_hash = ?,
+           enriched_message_count = ?, dirty = 1, dirty_reason_json = ?,
+           last_material_change_at_ms = ?, last_attempted_at_ms = NULL
+       WHERE session_summary_key = 'ss:local:session-1'`,
+    ).run(
+      "older llm summary",
+      1_000,
+      "hash-1",
+      1,
+      JSON.stringify({
+        reasons: ["message_threshold_reached", "refresh_pending"],
+      }),
+      1_000,
+    );
+    db.prepare(
+      `UPDATE sessions
+       SET message_count = ?
+       WHERE session_id = 'session-1'`,
+    ).run(25);
+    db.prepare(
+      `INSERT INTO messages (id, session_id, ordinal, role, content, is_system)
+       VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "session-1",
+      0,
+      "user",
+      "Please verify the final patch behavior.",
+      0,
+      2,
+      "session-1",
+      1,
+      "assistant",
+      "I checked the edge cases and the output now stays stable.",
+      0,
+      3,
+      "session-1",
+      2,
+      "user",
+      "Confirm the retry path does not regress fixed-runner selection.",
+      0,
+    );
+
+    state.invokeLlmMock.mockImplementation((prompt: string) => {
+      expect(prompt).toContain("Counts: messages 25;");
+      expect(prompt).toContain("Recent messages:");
+      expect(prompt).toContain("user: Please verify the final patch behavior.");
+      expect(prompt).toContain(
+        "assistant: I checked the edge cases and the output now stays stable.",
+      );
+      return "LLM summary text.";
+    });
+
+    const result = refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+    });
+
+    const row = db
+      .prepare(
+        `SELECT summary_text, summary_source, dirty, enriched_message_count
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          summary_text: string | null;
+          summary_source: string;
+          dirty: number;
+          enriched_message_count: number | null;
+        }
+      | undefined;
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+    expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({
+      summary_text: "LLM summary text.",
+      summary_source: "llm",
+      dirty: 0,
+      enriched_message_count: 25,
+    });
   });
 });
 

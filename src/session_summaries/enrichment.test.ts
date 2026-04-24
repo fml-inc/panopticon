@@ -305,6 +305,24 @@ describe("session summary enrichment merge", () => {
     expect(selection.attemptedRunners[0]).toBe("claude");
   });
 
+  it("uses the fixed runner before any sticky runner", () => {
+    const selection = selectSessionSummaryRunner({
+      sessionTarget: "claude",
+      stickyRunner: "claude",
+      policy: {
+        ...getSessionSummaryRunnerPolicy(),
+        strategy: "fixed",
+        fixedRunner: "codex",
+        allowedRunners: ["claude", "codex"],
+        fallbackRunners: ["claude"],
+      },
+      detector: (runner) => `/usr/local/bin/${runner}`,
+    });
+
+    expect(selection.runner).toBe("codex");
+    expect(selection.attemptedRunners[0]).toBe("codex");
+  });
+
   it("falls back when the inferred session runner is unavailable", () => {
     const selection = selectSessionSummaryRunner({
       sessionTarget: "codex",

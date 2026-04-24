@@ -75,10 +75,10 @@ export function selectSessionSummaryRunner(opts: {
     attempted.push(runner);
   };
 
-  add(isSummaryRunnerName(opts.stickyRunner) ? opts.stickyRunner : null);
   if (policy.strategy === "fixed") {
     add(policy.fixedRunner);
   } else {
+    add(isSummaryRunnerName(opts.stickyRunner) ? opts.stickyRunner : null);
     add(inferRunnerFromSessionTarget(opts.sessionTarget));
   }
   for (const runner of policy.fallbackRunners) add(runner);
@@ -384,12 +384,14 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   target: string | null;
   repository: string | null;
   branch: string | null;
+  messageCount: number;
   intentCount: number;
   editCount: number;
   landedEditCount: number;
   openEditCount: number;
   intents: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
+  recentMessages: Array<{ role: string; content: string }>;
   summarySearchText: string | null;
 } | null {
   const db = getDb();
@@ -401,6 +403,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
               sess.target,
               s.repository,
               s.branch,
+              COALESCE(sess.message_count, 0) AS message_count,
               s.intent_count,
               s.edit_count,
               s.landed_edit_count,
@@ -419,6 +422,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
         target: string | null;
         repository: string | null;
         branch: string | null;
+        message_count: number;
         intent_count: number;
         edit_count: number;
         landed_edit_count: number;
@@ -436,6 +440,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   const files = summarizeFiles(
     loadSessionSummaryEditRows(summary.session_id),
   ).slice(0, 6);
+  const recentMessages = loadRecentMessageSnippets(summary.session_id);
 
   return {
     title: summary.title,
@@ -443,12 +448,14 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     target: summary.target,
     repository: summary.repository,
     branch: summary.branch,
+    messageCount: summary.message_count,
     intentCount: summary.intent_count,
     editCount: summary.edit_count,
     landedEditCount: summary.landed_edit_count,
     openEditCount: summary.open_edit_count,
     intents,
     files,
+    recentMessages,
     summarySearchText: summary.summary_search_text,
   };
 }
@@ -458,12 +465,14 @@ function buildLlmPrompt(context: {
   status: string;
   repository: string | null;
   branch: string | null;
+  messageCount: number;
   intentCount: number;
   editCount: number;
   landedEditCount: number;
   openEditCount: number;
   intents: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
+  recentMessages: Array<{ role: string; content: string }>;
   summarySearchText: string | null;
 }): string {
   const lines = [
@@ -471,7 +480,7 @@ function buildLlmPrompt(context: {
     `Status: ${context.status}`,
     context.repository ? `Repository: ${context.repository}` : null,
     context.branch ? `Branch: ${context.branch}` : null,
-    `Counts: intents ${context.intentCount}; edits ${context.editCount}; landed ${context.landedEditCount}; open ${context.openEditCount}`,
+    `Counts: messages ${context.messageCount}; intents ${context.intentCount}; edits ${context.editCount}; landed ${context.landedEditCount}; open ${context.openEditCount}`,
     context.files.length > 0
       ? `Files:\n${context.files
           .map(
@@ -483,10 +492,59 @@ function buildLlmPrompt(context: {
     context.intents.length > 0
       ? `Intent prompts:\n${context.intents.map((prompt) => `- ${prompt}`).join("\n")}`
       : null,
+    context.recentMessages.length > 0
+      ? `Recent messages:\n${context.recentMessages
+          .map((message) => `- ${message.role}: ${message.content}`)
+          .join("\n")}`
+      : null,
     context.summarySearchText
       ? `Deterministic retrieval document:\n${context.summarySearchText}`
       : null,
     "Write the per-session summary.",
   ].filter((value): value is string => Boolean(value));
   return lines.join("\n\n");
+}
+
+function loadRecentMessageSnippets(
+  sessionId: string,
+): Array<{ role: string; content: string }> {
+  const db = getDb();
+  const messagesTableExists = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'",
+    )
+    .get();
+  if (!messagesTableExists) return [];
+
+  return (
+    db
+      .prepare(
+        `SELECT role, content
+         FROM messages
+         WHERE session_id = ?
+           AND COALESCE(is_system, 0) = 0
+           AND TRIM(COALESCE(content, '')) <> ''
+         ORDER BY ordinal DESC, id DESC
+         LIMIT 6`,
+      )
+      .all(sessionId) as Array<{ role: string; content: string }>
+  )
+    .reverse()
+    .map((message) => ({
+      role: normalizeMessageRole(message.role),
+      content: compactMessageContent(message.content),
+    }))
+    .filter((message) => message.content.length > 0);
+}
+
+function normalizeMessageRole(role: string): string {
+  const normalized = role.trim().toLowerCase();
+  if (normalized === "user" || normalized === "assistant") return normalized;
+  return normalized || "message";
+}
+
+function compactMessageContent(content: string): string {
+  const compact = content.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  return compact.length > 180 ? `${compact.slice(0, 177)}...` : compact;
 }
