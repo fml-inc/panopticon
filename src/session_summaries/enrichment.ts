@@ -1,7 +1,18 @@
+import {
+  clearAttemptBackoff,
+  isAttemptBackoffActive,
+  recordAttemptBackoffFailure,
+} from "../attempt-backoff.js";
 import type { SessionSummaryRunnerName } from "../config.js";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { detectAgent, invokeLlm } from "../summary/llm.js";
+import {
+  SUMMARY_GLOBAL_BACKOFF_SCOPE,
+  SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
+  SUMMARY_ROW_BACKOFF_SCOPE,
+  SUMMARY_RUNNER_BACKOFF_SCOPE,
+} from "./backoff.js";
 import {
   SESSION_SUMMARY_ENRICHMENT_VERSION,
   shouldRefreshSessionSummaryNow,
@@ -20,7 +31,6 @@ import {
 
 const DEFAULT_ENRICH_LIMIT = 5;
 const DEFAULT_ENRICH_TIMEOUT_MS = 90_000;
-const DEFAULT_ENRICH_RETRY_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 // Prompt/template changes should bump SESSION_SUMMARY_ENRICHMENT_VERSION.
 // policyHash intentionally covers runner/config policy only, not prompt text.
@@ -105,20 +115,37 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     opts?.limit ?? config.sessionSummaryEnrichLimit ?? DEFAULT_ENRICH_LIMIT;
   const force = opts?.force === true;
   const log = opts?.log ?? (() => {});
-  const retryBackoffMs =
-    config.sessionSummaryEnrichRetryBackoffMs ??
-    DEFAULT_ENRICH_RETRY_BACKOFF_MS;
   const timeoutMs =
     config.sessionSummaryEnrichTimeoutMs ?? DEFAULT_ENRICH_TIMEOUT_MS;
+
+  if (
+    !force &&
+    isAttemptBackoffActive(
+      SUMMARY_GLOBAL_BACKOFF_SCOPE,
+      SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
+      nowMs,
+    )
+  ) {
+    log(
+      "Session summary enrichment skipped: runner availability backoff active",
+    );
+    return { attempted: 0, updated: 0 };
+  }
 
   const where: string[] = [];
   const params: unknown[] = [];
   if (!force) {
     where.push("e.dirty = 1");
     where.push(
-      "(e.last_attempted_at_ms IS NULL OR e.last_attempted_at_ms < ?)",
+      `NOT EXISTS (
+         SELECT 1
+         FROM attempt_backoffs ab
+         WHERE ab.scope_kind = ?
+           AND ab.scope_key = e.session_summary_key
+           AND ab.next_attempt_at_ms > ?
+       )`,
     );
-    params.push(nowMs - retryBackoffMs);
+    params.push(SUMMARY_ROW_BACKOFF_SCOPE, nowMs);
   }
   if (opts?.sessionId) {
     where.push("e.session_id = ?");
@@ -182,9 +209,24 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     (runner) => detectAgent(runner) !== null,
   );
   if (!availableRunner) {
+    recordAttemptBackoffFailure(
+      SUMMARY_GLOBAL_BACKOFF_SCOPE,
+      SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
+      "no allowed summary runner available",
+      nowMs,
+    );
     log(
       `Session summary enrichment skipped: ${candidates.length} dirty rows, no allowed runner`,
     );
+    return { attempted: 0, updated: 0 };
+  }
+  const readyRunner = policy.allowedRunners.some((runner) => {
+    if (detectAgent(runner) === null) return false;
+    if (force) return true;
+    return !isAttemptBackoffActive(SUMMARY_RUNNER_BACKOFF_SCOPE, runner, nowMs);
+  });
+  if (!readyRunner) {
+    log("Session summary enrichment skipped: runner backoff active");
     return { attempted: 0, updated: 0 };
   }
 
@@ -280,8 +322,19 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
   let updated = 0;
   for (const row of claimedRows) {
     const context = loadSummaryPromptContext(row.session_summary_key);
-    const finishAttempt = (error: string) => {
+    const finishAttempt = (
+      error: string,
+      backoff?: { scopeKind: string; scopeKey: string },
+    ) => {
       const finishedAtMs = Date.now();
+      if (backoff) {
+        recordAttemptBackoffFailure(
+          backoff.scopeKind,
+          backoff.scopeKey,
+          error,
+          finishedAtMs,
+        );
+      }
       const result = updateFailure.run(
         finishedAtMs,
         error,
@@ -301,7 +354,10 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     };
 
     if (!context) {
-      finishAttempt("summary projection missing");
+      finishAttempt("summary projection missing", {
+        scopeKind: SUMMARY_ROW_BACKOFF_SCOPE,
+        scopeKey: row.session_summary_key,
+      });
       continue;
     }
 
@@ -309,6 +365,17 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
       sessionTarget: context.target,
       stickyRunner: row.summary_runner,
       policy,
+      detector: (runner) => {
+        const detected = detectAgent(runner);
+        if (!detected) return null;
+        if (
+          !force &&
+          isAttemptBackoffActive(SUMMARY_RUNNER_BACKOFF_SCOPE, runner, nowMs)
+        ) {
+          return null;
+        }
+        return detected;
+      },
     });
     if (!selection.runner) {
       const cleared = clearClaim.run(
@@ -339,6 +406,10 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     if (!result) {
       finishAttempt(
         `summary enrichment invocation failed for ${selection.runner}`,
+        {
+          scopeKind: SUMMARY_RUNNER_BACKOFF_SCOPE,
+          scopeKey: selection.runner,
+        },
       );
       continue;
     }
@@ -360,6 +431,12 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
       row.summary_input_hash,
     );
     if (write.changes > 0) {
+      clearAttemptBackoff(
+        SUMMARY_GLOBAL_BACKOFF_SCOPE,
+        SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
+      );
+      clearAttemptBackoff(SUMMARY_RUNNER_BACKOFF_SCOPE, selection.runner);
+      clearAttemptBackoff(SUMMARY_ROW_BACKOFF_SCOPE, row.session_summary_key);
       updated += 1;
       continue;
     }

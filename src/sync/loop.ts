@@ -1,6 +1,11 @@
 declare const __PANOPTICON_VERSION__: string;
 
 import { execSync } from "node:child_process";
+import {
+  clearAttemptBackoff,
+  isAttemptBackoffActive,
+  recordAttemptBackoffFailure,
+} from "../attempt-backoff.js";
 import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
@@ -24,6 +29,7 @@ const DEFAULT_POST_BATCH_SIZE = 100;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 100;
 const DEFAULT_MAX_SESSIONS_PER_TICK = 10;
+const SYNC_TARGET_BACKOFF_SCOPE = "sync-target";
 
 /** Maps SESSION_READERS table name → target_session_sync column name. */
 const WM_COLUMNS = {
@@ -564,6 +570,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       : null;
 
     for (const target of opts.targets) {
+      if (isAttemptBackoffActive(SYNC_TARGET_BACKOFF_SCOPE, target.name)) {
+        log.sync.debug(
+          formatLog(`Skipping ${target.name}: target backoff active`),
+        );
+        continue;
+      }
       try {
         // Phase 1: Sync sessions (repo-filtered, backend confirms)
         if (await syncSessions(target, syncableSessionIds)) hasMore = true;
@@ -573,7 +585,13 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
         // Phase 3: Sync non-session tables
         if (await syncNonSessionTables(target)) hasMore = true;
+        clearAttemptBackoff(SYNC_TARGET_BACKOFF_SCOPE, target.name);
       } catch (err) {
+        recordAttemptBackoffFailure(
+          SYNC_TARGET_BACKOFF_SCOPE,
+          target.name,
+          err instanceof Error ? err.message : String(err),
+        );
         log.sync.error(
           `Error syncing to ${target.name}: ${err instanceof Error ? err.message : err}`,
         );

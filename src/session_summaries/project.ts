@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { clearAttemptBackoff } from "../attempt-backoff.js";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
+import { SUMMARY_ROW_BACKOFF_SCOPE } from "./backoff.js";
 import {
   buildDeterministicSessionSummaryDocs,
   mergeSessionSummaryEnrichment,
   type SessionSummaryEnrichmentRow,
+  shouldResetSessionSummaryRetryState,
 } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
 import {
@@ -320,6 +323,15 @@ export function rebuildSessionSummaryProjections(opts?: {
         runnerPolicy.policyHash,
         nowMs,
       );
+      if (
+        shouldResetSessionSummaryRetryState(
+          existingEnrichment,
+          { summaryInputHash: docs.summaryInputHash },
+          runnerPolicy.policyHash,
+        )
+      ) {
+        clearAttemptBackoff(SUMMARY_ROW_BACKOFF_SCOPE, summaryKey);
+      }
       upsertEnrichmentStmt.run(
         mergedEnrichment.session_summary_key,
         mergedEnrichment.session_id,

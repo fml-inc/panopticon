@@ -325,6 +325,32 @@ export function mergeSessionSummaryEnrichment(
   };
 }
 
+export function shouldResetSessionSummaryRetryState(
+  existing: Pick<
+    SessionSummaryEnrichmentRow,
+    | "summary_source"
+    | "summary_text"
+    | "summary_input_hash"
+    | "summary_policy_hash"
+    | "enriched_input_hash"
+    | "summary_version"
+  > | null,
+  nextDocs: Pick<SessionSummaryDeterministicDocs, "summaryInputHash">,
+  policyHash: string,
+): boolean {
+  if (!existing) return false;
+  const hasEnrichedSummary =
+    existing.summary_source === "llm" && !!existing.summary_text;
+  if (!hasEnrichedSummary) {
+    return existing.summary_input_hash !== nextDocs.summaryInputHash;
+  }
+  return (
+    existing.enriched_input_hash !== nextDocs.summaryInputHash ||
+    existing.summary_policy_hash !== policyHash ||
+    existing.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION
+  );
+}
+
 function hashStable(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }

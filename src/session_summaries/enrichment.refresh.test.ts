@@ -84,6 +84,16 @@ describe("session summary enrichment refresh", () => {
         failure_count INTEGER NOT NULL DEFAULT 0,
         last_error TEXT
       );
+      CREATE TABLE attempt_backoffs (
+        scope_kind TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        last_attempted_at_ms INTEGER,
+        next_attempt_at_ms INTEGER,
+        last_error TEXT,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (scope_kind, scope_key)
+      );
       CREATE TABLE session_summaries (
         id INTEGER PRIMARY KEY,
         session_summary_key TEXT NOT NULL,
@@ -243,34 +253,133 @@ describe("session summary enrichment refresh", () => {
   });
 
   it("skips cleanly when no allowed runner is available", () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(100_000));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
     state.detectAgentMock.mockReturnValue(null);
 
-    const result = refreshSessionSummaryEnrichmentsOnce({
-      sessionId: "session-1",
-    });
+    try {
+      const result = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+        force: true,
+      });
 
-    const row = state
-      .db!.prepare(
-        `SELECT last_attempted_at_ms, failure_count, last_error, dirty
-         FROM session_summary_enrichments
-         WHERE session_summary_key = 'ss:local:session-1'`,
-      )
-      .get() as
-      | {
-          last_attempted_at_ms: number | null;
-          failure_count: number;
-          last_error: string | null;
-          dirty: number;
-        }
-      | undefined;
+      const row = db
+        .prepare(
+          `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            last_attempted_at_ms: number | null;
+            failure_count: number;
+            last_error: string | null;
+            dirty: number;
+          }
+        | undefined;
+      const backoff = db
+        .prepare(
+          `SELECT failure_count, next_attempt_at_ms, last_error
+           FROM attempt_backoffs
+           WHERE scope_kind = 'session-summary-global'
+             AND scope_key = 'runner-availability'`,
+        )
+        .get() as
+        | {
+            failure_count: number;
+            next_attempt_at_ms: number | null;
+            last_error: string | null;
+          }
+        | undefined;
 
-    expect(result).toEqual({ attempted: 0, updated: 0 });
-    expect(row).toMatchObject({
-      last_attempted_at_ms: null,
-      failure_count: 0,
-      last_error: null,
-      dirty: 1,
-    });
+      expect(result).toEqual({ attempted: 0, updated: 0 });
+      expect(row).toMatchObject({
+        last_attempted_at_ms: null,
+        failure_count: 0,
+        last_error: null,
+        dirty: 1,
+      });
+      expect(backoff).toMatchObject({
+        failure_count: 1,
+        next_attempt_at_ms: 160_000,
+        last_error: "no allowed summary runner available",
+      });
+
+      const skipped = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+      });
+      expect(skipped).toEqual({ attempted: 0, updated: 0 });
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off runner retries after an invocation failure", () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(100_000));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    state.invokeLlmMock.mockReturnValue(null);
+
+    try {
+      const first = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+        force: true,
+      });
+      const row = db
+        .prepare(
+          `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            last_attempted_at_ms: number | null;
+            failure_count: number;
+            last_error: string | null;
+            dirty: number;
+          }
+        | undefined;
+      const backoff = db
+        .prepare(
+          `SELECT failure_count, next_attempt_at_ms, last_error
+           FROM attempt_backoffs
+           WHERE scope_kind = 'session-summary-runner'
+             AND scope_key = 'claude'`,
+        )
+        .get() as
+        | {
+            failure_count: number;
+            next_attempt_at_ms: number | null;
+            last_error: string | null;
+          }
+        | undefined;
+
+      expect(first).toEqual({ attempted: 1, updated: 0 });
+      expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+      expect(row).toMatchObject({
+        failure_count: 1,
+        last_error: "summary enrichment invocation failed for claude",
+        dirty: 1,
+      });
+      expect(backoff).toMatchObject({
+        failure_count: 1,
+        next_attempt_at_ms: 160_000,
+      });
+
+      state.invokeLlmMock.mockClear();
+      const skipped = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+      });
+      expect(skipped).toEqual({ attempted: 0, updated: 0 });
+      expect(state.invokeLlmMock).not.toHaveBeenCalled();
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("ages a hot dirty row into eligibility without requiring another rebuild", () => {

@@ -476,6 +476,17 @@ CREATE TABLE IF NOT EXISTS session_summary_enrichments (
   last_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS attempt_backoffs (
+  scope_kind TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_attempted_at_ms INTEGER,
+  next_attempt_at_ms INTEGER,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (scope_kind, scope_key)
+);
+
 CREATE TABLE IF NOT EXISTS intent_session_summaries (
   intent_unit_id INTEGER NOT NULL,
   session_summary_id INTEGER NOT NULL,
