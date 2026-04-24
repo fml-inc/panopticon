@@ -25,7 +25,10 @@ export interface SessionSummaryProjectionRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  summary_search_text: string | null;
+  projection_version: number;
+  projection_hash: string;
+  projected_at_ms: number;
+  source_last_seen_at_ms: number | null;
   summary_source: "deterministic" | null;
   enriched_summary_text: string | null;
   enriched_search_text: string | null;
@@ -54,7 +57,10 @@ export interface SessionSummaryRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  summary_search_text: string | null;
+  projection_version: number;
+  projection_hash: string;
+  projected_at_ms: number;
+  source_last_seen_at_ms: number | null;
   summary_source: "deterministic" | null;
   enriched_summary_text: string | null;
   enriched_search_text: string | null;
@@ -699,7 +705,10 @@ function listSessionSummaryProjections(opts?: {
            s.landed_edit_count,
            s.open_edit_count,
            s.summary_text AS summary_text,
-           COALESCE(dsearch.search_text, s.summary_search_text) AS summary_search_text,
+           s.projection_version,
+           s.projection_hash,
+           s.projected_at_ms,
+           s.source_last_seen_at_ms,
            'deterministic' AS summary_source,
            COALESCE(
              esummary.search_text,
@@ -726,9 +735,6 @@ function listSessionSummaryProjections(opts?: {
     FROM session_summaries s
     LEFT JOIN session_summary_enrichments e
       ON e.session_summary_key = s.session_summary_key
-    LEFT JOIN session_summary_search_index dsearch
-      ON dsearch.session_summary_key = s.session_summary_key
-     AND dsearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch}'
     LEFT JOIN session_summary_search_index esummary
       ON esummary.session_summary_key = s.session_summary_key
      AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
@@ -803,7 +809,10 @@ function getSessionSummaryProjectionDetail(opts: {
               s.landed_edit_count,
               s.open_edit_count,
               s.summary_text AS summary_text,
-              COALESCE(dsearch.search_text, s.summary_search_text) AS summary_search_text,
+              s.projection_version,
+              s.projection_hash,
+              s.projected_at_ms,
+              s.source_last_seen_at_ms,
               'deterministic' AS summary_source,
               COALESCE(
                 esummary.search_text,
@@ -830,9 +839,6 @@ function getSessionSummaryProjectionDetail(opts: {
        FROM session_summaries s
        LEFT JOIN session_summary_enrichments e
          ON e.session_summary_key = s.session_summary_key
-       LEFT JOIN session_summary_search_index dsearch
-         ON dsearch.session_summary_key = s.session_summary_key
-        AND dsearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch}'
        LEFT JOIN session_summary_search_index esummary
          ON esummary.session_summary_key = s.session_summary_key
         AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
@@ -904,7 +910,10 @@ function toSessionSummaryRow(
     landed_edit_count: row.landed_edit_count,
     open_edit_count: row.open_edit_count,
     summary_text: row.summary_text,
-    summary_search_text: row.summary_search_text,
+    projection_version: row.projection_version,
+    projection_hash: row.projection_hash,
+    projected_at_ms: row.projected_at_ms,
+    source_last_seen_at_ms: row.source_last_seen_at_ms,
     summary_source: row.summary_source,
     enriched_summary_text: row.enriched_summary_text,
     enriched_search_text: row.enriched_search_text,

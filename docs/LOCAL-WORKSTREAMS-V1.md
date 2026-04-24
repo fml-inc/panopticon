@@ -93,6 +93,7 @@ The current schema lives in `src/db/schema.ts` and includes:
 CREATE TABLE IF NOT EXISTS session_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_summary_key TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
   repository TEXT,
   cwd TEXT,
   branch TEXT,
@@ -108,8 +109,26 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   edit_count INTEGER NOT NULL DEFAULT 0,
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
-  reconciled_at_ms INTEGER,
+  summary_text TEXT,
+  projection_version INTEGER NOT NULL DEFAULT 1,
+  projection_hash TEXT NOT NULL,
+  projected_at_ms INTEGER NOT NULL,
+  source_last_seen_at_ms INTEGER,
   reason_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_summary_search_index (
+  session_summary_key TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  corpus_key TEXT NOT NULL,
+  source TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  search_text TEXT NOT NULL,
+  dirty INTEGER NOT NULL DEFAULT 0,
+  projection_hash TEXT,
+  enriched_input_hash TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_summary_key, corpus_key)
 );
 
 CREATE TABLE IF NOT EXISTS intent_session_summaries (

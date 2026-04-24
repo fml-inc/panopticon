@@ -531,7 +531,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   intents: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
   recentMessages: Array<{ role: string; content: string }>;
-  summarySearchText: string | null;
+  deterministicSearchCorpus: string | null;
 } | null {
   const db = getDb();
   const summary = db
@@ -546,8 +546,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
               s.intent_count,
               s.edit_count,
               s.landed_edit_count,
-              s.open_edit_count,
-              s.summary_search_text
+              s.open_edit_count
        FROM session_summaries s
        LEFT JOIN sessions sess
          ON sess.session_id = s.session_id
@@ -566,7 +565,6 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
         edit_count: number;
         landed_edit_count: number;
         open_edit_count: number;
-        summary_search_text: string | null;
       }
     | undefined;
   if (!summary) return null;
@@ -580,6 +578,8 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     loadSessionSummaryEditRows(summary.session_id),
   ).slice(0, 6);
   const recentMessages = loadRecentMessageSnippets(summary.session_id);
+  const deterministicSearchCorpus =
+    loadDeterministicSearchCorpus(sessionSummaryKey);
 
   return {
     title: summary.title,
@@ -595,7 +595,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     intents,
     files,
     recentMessages,
-    summarySearchText: summary.summary_search_text,
+    deterministicSearchCorpus,
   };
 }
 
@@ -612,7 +612,7 @@ function buildLlmPrompt(context: {
   intents: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
   recentMessages: Array<{ role: string; content: string }>;
-  summarySearchText: string | null;
+  deterministicSearchCorpus: string | null;
 }): string {
   const lines = [
     `Title: ${context.title}`,
@@ -636,12 +636,42 @@ function buildLlmPrompt(context: {
           .map((message) => `- ${message.role}: ${message.content}`)
           .join("\n")}`
       : null,
-    context.summarySearchText
-      ? `Deterministic retrieval document:\n${context.summarySearchText}`
+    context.deterministicSearchCorpus
+      ? `Deterministic search corpus:\n${context.deterministicSearchCorpus}`
       : null,
     "Write the per-session summary.",
   ].filter((value): value is string => Boolean(value));
   return lines.join("\n\n");
+}
+
+function loadDeterministicSearchCorpus(
+  sessionSummaryKey: string,
+): string | null {
+  const db = getDb();
+  const searchIndexExists = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_summary_search_index'",
+    )
+    .get();
+  if (!searchIndexExists) return null;
+
+  const rows = db
+    .prepare(
+      `SELECT corpus_key, search_text
+       FROM session_summary_search_index
+       WHERE session_summary_key = ?
+         AND source = 'deterministic'
+       ORDER BY priority DESC, corpus_key ASC`,
+    )
+    .all(sessionSummaryKey) as Array<{
+    corpus_key: string;
+    search_text: string;
+  }>;
+
+  if (rows.length === 0) return null;
+  return rows
+    .map((row) => `${row.corpus_key}:\n${row.search_text}`)
+    .join("\n\n");
 }
 
 function loadRecentMessageSnippets(

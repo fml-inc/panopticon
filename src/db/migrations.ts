@@ -867,12 +867,6 @@ export const MIGRATIONS: Migration[] = [
         "summary_text",
         "summary_text TEXT",
       );
-      addColumnIfMissing(
-        db,
-        "session_summaries",
-        "summary_search_text",
-        "summary_search_text TEXT",
-      );
       db.exec(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
           ON session_summaries(session_id)

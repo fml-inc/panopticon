@@ -192,7 +192,10 @@ export function listSessions(
                     s.landed_edit_count,
                     s.open_edit_count,
                     s.summary_text AS summary_text,
-                    COALESCE(dsearch.search_text, s.summary_search_text) AS summary_search_text,
+                    s.projection_version,
+                    s.projection_hash,
+                    s.projected_at_ms,
+                    s.source_last_seen_at_ms,
                     'deterministic' AS summary_source,
                     COALESCE(
                       esummary.search_text,
@@ -219,9 +222,6 @@ export function listSessions(
              FROM session_summaries s
              LEFT JOIN session_summary_enrichments e
                ON e.session_summary_key = s.session_summary_key
-             LEFT JOIN session_summary_search_index dsearch
-               ON dsearch.session_summary_key = s.session_summary_key
-              AND dsearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch}'
              LEFT JOIN session_summary_search_index esummary
                ON esummary.session_summary_key = s.session_summary_key
               AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
@@ -246,7 +246,10 @@ export function listSessions(
           landed_edit_count: number;
           open_edit_count: number;
           summary_text: string | null;
-          summary_search_text: string | null;
+          projection_version: number;
+          projection_hash: string;
+          projected_at_ms: number;
+          source_last_seen_at_ms: number | null;
           summary_source: string | null;
           enriched_summary_text: string | null;
           enriched_search_text: string | null;
@@ -316,7 +319,12 @@ export function listSessions(
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
       summaryText: row.summary_text,
-      summarySearchText: row.summary_search_text,
+      projectionVersion: row.projection_version,
+      projectionHash: row.projection_hash,
+      projectedAt: toIso(row.projected_at_ms),
+      sourceLastSeenAt: row.source_last_seen_at_ms
+        ? toIso(row.source_last_seen_at_ms)
+        : null,
       summarySource: parseSummarySource(row.summary_source),
       summaryGeneratedAt: enrichment.generatedAt,
       summaryDirty: enrichment.dirty,
@@ -821,7 +829,7 @@ export function search(opts: {
           summaryParams.push(pattern);
           if (sinceMs) summaryParams.push(sinceMs);
         };
-        for (let i = 0; i < 5; i += 1) {
+        for (let i = 0; i < 4; i += 1) {
           addSummaryMatchParams();
         }
         const payloadExpr = truncate
@@ -870,15 +878,6 @@ export function search(opts: {
                 JOIN session_summaries ss
                   ON ss.session_id = s.session_id
                 WHERE ss.summary_text LIKE ? ${sinceClause}
-                UNION ALL
-                SELECT s.session_id,
-                       s.started_at_ms AS timestamp_ms,
-                       ss.summary_search_text AS payload,
-                       30 AS priority
-                FROM sessions s
-                JOIN session_summaries ss
-                  ON ss.session_id = s.session_id
-                WHERE ss.summary_search_text LIKE ? ${sinceClause}
                 UNION ALL
                 SELECT s.session_id,
                        s.started_at_ms AS timestamp_ms,

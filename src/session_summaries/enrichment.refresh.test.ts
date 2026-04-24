@@ -119,7 +119,6 @@ describe("session summary enrichment refresh", () => {
         edit_count INTEGER NOT NULL,
         landed_edit_count INTEGER NOT NULL,
         open_edit_count INTEGER NOT NULL,
-        summary_search_text TEXT,
         last_intent_ts_ms INTEGER
       );
       CREATE TABLE sessions (
@@ -608,8 +607,8 @@ function seedSummaryRow(
     `INSERT INTO session_summaries
      (id, session_summary_key, session_id, title, status, repository, branch,
       intent_count, edit_count, landed_edit_count, open_edit_count,
-     summary_search_text, last_intent_ts_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      last_intent_ts_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     sessionSummaryKey,
@@ -622,7 +621,6 @@ function seedSummaryRow(
     1,
     1,
     0,
-    "Title: diagnose summary lock",
     lastIntentTsMs,
   );
 

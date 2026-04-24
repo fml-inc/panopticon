@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  SESSION_SUMMARY_SEARCH_CORPUS,
+  SESSION_SUMMARY_SEARCH_PRIORITY,
+} from "./search-index.js";
 
+export const SESSION_SUMMARY_PROJECTION_VERSION = 1;
 export const SESSION_SUMMARY_ENRICHMENT_VERSION = 1;
 
 const HOT_WINDOW_MS = 30 * 60 * 1000;
@@ -32,9 +37,16 @@ export interface SessionSummaryDeterministicInput {
 
 export interface SessionSummaryDeterministicDocs {
   summaryText: string;
-  summarySearchText: string;
+  searchCorpusRows: SessionSummarySearchCorpusRow[];
   projectionHash: string;
   summaryInputHash: string;
+}
+
+export interface SessionSummarySearchCorpusRow {
+  corpusKey: string;
+  source: "deterministic";
+  priority: number;
+  searchText: string;
 }
 
 export interface SessionSummaryEnrichmentRow {
@@ -132,7 +144,24 @@ export function buildDeterministicSessionSummaryDocs(
     prompts.length > 0 ? `Prompts: ${prompts.join(" | ")}` : null,
   ].filter((value): value is string => Boolean(value));
 
+  const deterministicSearchText = searchFields.join("\n");
+  const searchCorpusRows: SessionSummarySearchCorpusRow[] = [
+    {
+      corpusKey: SESSION_SUMMARY_SEARCH_CORPUS.deterministicSummary,
+      source: "deterministic",
+      priority: SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSummary,
+      searchText: summaryText,
+    },
+    {
+      corpusKey: SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch,
+      source: "deterministic",
+      priority: SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSearch,
+      searchText: deterministicSearchText,
+    },
+  ];
+
   const projectionEnvelope = {
+    projectionVersion: SESSION_SUMMARY_PROJECTION_VERSION,
     sessionSummaryKey: input.sessionSummaryKey,
     sessionId: input.sessionId,
     title: input.title,
@@ -144,6 +173,8 @@ export function buildDeterministicSessionSummaryDocs(
     editCount: input.editCount,
     landedEditCount: input.landedEditCount,
     openEditCount: input.openEditCount,
+    summaryText,
+    searchCorpusRows,
     topFiles,
   };
 
@@ -159,11 +190,12 @@ export function buildDeterministicSessionSummaryDocs(
     prompts,
     topFiles,
     tools,
+    searchCorpusRows,
   };
 
   return {
     summaryText,
-    summarySearchText: searchFields.join("\n"),
+    searchCorpusRows,
     projectionHash: hashStable(projectionEnvelope),
     summaryInputHash: hashStable(summaryInputEnvelope),
   };

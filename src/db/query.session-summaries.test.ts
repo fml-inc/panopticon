@@ -434,12 +434,12 @@ describe("listSessions session summaries", () => {
       ),
     ).toBe(true);
 
-    const summarySearchTextResult = search({
+    const deterministicSearchCorpusResult = search({
       query: "Prompts",
       limit: 10,
     });
     expect(
-      summarySearchTextResult.results.some(
+      deterministicSearchCorpusResult.results.some(
         (row) => row.sessionId === SESSION && row.matchType === "summary",
       ),
     ).toBe(true);

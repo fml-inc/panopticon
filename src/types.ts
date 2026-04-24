@@ -44,7 +44,10 @@ export interface SessionSummary {
   openEditCount: number;
   topFiles: string[];
   summaryText: string | null;
-  summarySearchText: string | null;
+  projectionVersion: number;
+  projectionHash: string;
+  projectedAt: string;
+  sourceLastSeenAt: string | null;
   summarySource: "deterministic" | null;
   summaryGeneratedAt: string | null;
   summaryDirty: boolean;

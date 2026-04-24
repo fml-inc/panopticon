@@ -8,6 +8,7 @@ import { SUMMARY_ROW_BACKOFF_SCOPE } from "./backoff.js";
 import {
   buildDeterministicSessionSummaryDocs,
   mergeSessionSummaryEnrichment,
+  SESSION_SUMMARY_PROJECTION_VERSION,
   type SessionSummaryEnrichmentRow,
   shouldResetSessionSummaryRetryState,
 } from "./model.js";
@@ -96,9 +97,9 @@ export function rebuildSessionSummaryProjections(opts?: {
        (session_summary_key, session_id, repository, cwd, branch, worktree,
         actor, machine, origin_scope, title, status, first_intent_ts_ms,
         last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
-        open_edit_count, summary_text, summary_search_text, reconciled_at_ms,
-        reason_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        open_edit_count, summary_text, projection_version, projection_hash,
+        projected_at_ms, source_last_seen_at_ms, reason_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const membershipStmt = db.prepare(
       `INSERT INTO intent_session_summaries
@@ -263,9 +264,6 @@ export function rebuildSessionSummaryProjections(opts?: {
             : landedEditCount === edits.length
               ? STATUS_LANDED
               : STATUS_MIXED;
-      const reconciledAtMs = maxTs(
-        intents.map((intent) => intent.next_prompt_ts_ms).filter(Boolean),
-      );
       const repository =
         repoMeta?.repository ??
         intents.map((intent) => intent.repository).find(Boolean) ??
@@ -335,8 +333,10 @@ export function rebuildSessionSummaryProjections(opts?: {
         landedEditCount,
         openEditCount,
         docs.summaryText,
-        docs.summarySearchText,
-        reconciledAtMs,
+        SESSION_SUMMARY_PROJECTION_VERSION,
+        docs.projectionHash,
+        nowMs,
+        lastActivityMs,
         JSON.stringify({ strategy: "session_id" }),
       );
       const sessionSummaryRow = db
@@ -401,30 +401,20 @@ export function rebuildSessionSummaryProjections(opts?: {
         mergedEnrichment.failure_count,
         mergedEnrichment.last_error,
       );
-      upsertSearchIndexStmt.run(
-        mergedEnrichment.session_summary_key,
-        mergedEnrichment.session_id,
-        SESSION_SUMMARY_SEARCH_CORPUS.deterministicSummary,
-        "deterministic",
-        SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSummary,
-        docs.summaryText,
-        0,
-        mergedEnrichment.projection_hash,
-        null,
-        nowMs,
-      );
-      upsertSearchIndexStmt.run(
-        mergedEnrichment.session_summary_key,
-        mergedEnrichment.session_id,
-        SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch,
-        "deterministic",
-        SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSearch,
-        docs.summarySearchText,
-        0,
-        mergedEnrichment.projection_hash,
-        null,
-        nowMs,
-      );
+      for (const row of docs.searchCorpusRows) {
+        upsertSearchIndexStmt.run(
+          mergedEnrichment.session_summary_key,
+          mergedEnrichment.session_id,
+          row.corpusKey,
+          row.source,
+          row.priority,
+          row.searchText,
+          0,
+          mergedEnrichment.projection_hash,
+          null,
+          nowMs,
+        );
+      }
       if (
         mergedEnrichment.summary_source === "llm" &&
         mergedEnrichment.summary_text

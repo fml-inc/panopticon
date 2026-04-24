@@ -449,8 +449,10 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
   summary_text TEXT,
-  summary_search_text TEXT,
-  reconciled_at_ms INTEGER,
+  projection_version INTEGER NOT NULL DEFAULT 1,
+  projection_hash TEXT NOT NULL,
+  projected_at_ms INTEGER NOT NULL,
+  source_last_seen_at_ms INTEGER,
   reason_json TEXT
 );
 
