@@ -664,7 +664,10 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         reconcileMs += sessionProfile.reconcileMs;
 
         phaseStartedAt = performance.now();
-        const projectionResult = rebuildIntentProjection({ sessionId });
+        const projectionResult = rebuildIntentProjection({
+          sessionId,
+          debounceSessionSummaries: true,
+        });
         sessionProfile.projectionMs = performance.now() - phaseStartedAt;
         sessionProfile.projectedIntents = projectionResult.intents;
         sessionProfile.projectedEdits = projectionResult.edits;

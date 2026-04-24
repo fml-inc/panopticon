@@ -567,6 +567,125 @@ describe("session_summaries", () => {
     expect(afterSecond?.id).toBe(before?.id);
   });
 
+  it("debounces deterministic summary refreshes during hot scanner rebuilds", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "debounced.ts");
+    fs.writeFileSync(file, "second implementation");
+    const db = getDb();
+
+    db.prepare(
+      `INSERT INTO intent_units
+       (id, intent_key, session_id, prompt_text, prompt_ts_ms,
+        next_prompt_ts_ms, cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "intent:first",
+      SESSION,
+      "first implementation",
+      1_000,
+      2_000,
+      cwd,
+      repo,
+    );
+    db.prepare(
+      `INSERT INTO intent_edits
+       (id, edit_key, intent_unit_id, session_id, timestamp_ms, file_path,
+        landed, new_string_snippet)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(1, "edit:first", 1, SESSION, 1_100, file, 1, "first implementation");
+
+    rebuildSessionSummaryProjections({ sessionId: SESSION, nowMs: 10_000 });
+    const before = db
+      .prepare(
+        `SELECT summary_text, projection_hash, projected_at_ms,
+                source_last_seen_at_ms, intent_count
+         FROM session_summaries
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as {
+      summary_text: string;
+      projection_hash: string;
+      projected_at_ms: number;
+      source_last_seen_at_ms: number | null;
+      intent_count: number;
+    };
+
+    db.prepare(
+      `INSERT INTO intent_units
+       (id, intent_key, session_id, prompt_text, prompt_ts_ms,
+        next_prompt_ts_ms, cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      2,
+      "intent:second",
+      SESSION,
+      "second implementation",
+      20_000,
+      21_000,
+      cwd,
+      repo,
+    );
+    db.prepare(
+      `INSERT INTO intent_edits
+       (id, edit_key, intent_unit_id, session_id, timestamp_ms, file_path,
+        landed, new_string_snippet)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      2,
+      "edit:second",
+      2,
+      SESSION,
+      20_100,
+      file,
+      1,
+      "second implementation",
+    );
+
+    rebuildSessionSummaryProjections({
+      sessionId: SESSION,
+      debounce: true,
+      nowMs: 20_500,
+    });
+    const debounced = db
+      .prepare(
+        `SELECT summary_text, projection_hash, projected_at_ms,
+                source_last_seen_at_ms, intent_count
+         FROM session_summaries
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as typeof before;
+    const membershipCount = (
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM intent_session_summaries`)
+        .get() as { count: number }
+    ).count;
+
+    expect(debounced).toEqual(before);
+    expect(membershipCount).toBe(2);
+
+    rebuildSessionSummaryProjections({
+      sessionId: SESSION,
+      debounce: true,
+      nowMs: 41_000,
+    });
+    const refreshed = db
+      .prepare(
+        `SELECT summary_text, projection_hash, projected_at_ms,
+                source_last_seen_at_ms, intent_count
+         FROM session_summaries
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as typeof before;
+
+    expect(refreshed.summary_text).not.toBe(before.summary_text);
+    expect(refreshed.projection_hash).not.toBe(before.projection_hash);
+    expect(refreshed.projected_at_ms).toBe(41_000);
+    expect(refreshed.source_last_seen_at_ms).toBe(21_000);
+    expect(refreshed.intent_count).toBe(2);
+  });
+
   it("excludes internal headless summary sessions from projections", () => {
     const db = getDb();
     const realSession = "real-work-session";

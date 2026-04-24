@@ -20,6 +20,7 @@ import {
 import {
   loadSessionSummaryEditRows,
   loadSessionSummaryIntentRows,
+  type SessionSummaryEditRow,
   summarizeFiles,
   summarizeTools,
 } from "./session-data.js";
@@ -37,8 +38,63 @@ interface FileSnapshot {
   hash: string;
 }
 
+interface ExistingSessionSummaryProjection {
+  id: number;
+  session_summary_key: string;
+  session_id: string;
+  repository: string | null;
+  cwd: string | null;
+  branch: string | null;
+  worktree: string | null;
+  actor: string | null;
+  machine: string;
+  origin_scope: string;
+  title: string;
+  status: string;
+  first_intent_ts_ms: number | null;
+  last_intent_ts_ms: number | null;
+  intent_count: number;
+  edit_count: number;
+  landed_edit_count: number;
+  open_edit_count: number;
+  summary_text: string | null;
+  projection_version: number;
+  projection_hash: string | null;
+  projected_at_ms: number | null;
+  source_last_seen_at_ms: number | null;
+  reason_json: string | null;
+}
+
+interface SessionSummaryProjectionValues {
+  session_summary_key: string;
+  session_id: string;
+  repository: string | null;
+  cwd: string | null;
+  branch: string | null;
+  worktree: string | null;
+  actor: string | null;
+  machine: string;
+  origin_scope: string;
+  title: string;
+  status: string;
+  first_intent_ts_ms: number | null;
+  last_intent_ts_ms: number | null;
+  intent_count: number;
+  edit_count: number;
+  landed_edit_count: number;
+  open_edit_count: number;
+  summary_text: string | null;
+  projection_version: number;
+  projection_hash: string;
+  projected_at_ms: number;
+  source_last_seen_at_ms: number | null;
+  reason_json: string | null;
+}
+
 export function rebuildSessionSummaryProjections(opts?: {
   sessionId?: string;
+  debounce?: boolean;
+  nowMs?: number;
 }): {
   sessionSummaries: number;
   memberships: number;
@@ -54,24 +110,50 @@ export function rebuildSessionSummaryProjections(opts?: {
   const db = getDb();
   const runnerPolicy = getSessionSummaryRunnerPolicy();
   const tx = db.transaction(() => {
+    const existingSummaryByKey = new Map<
+      string,
+      ExistingSessionSummaryProjection
+    >();
     if (opts?.sessionId) {
       const key = sessionSummaryKey(opts.sessionId);
       const row = db
         .prepare(
-          `SELECT id FROM session_summaries WHERE session_summary_key = ?`,
+          `SELECT id,
+                  session_summary_key,
+                  session_id,
+                  repository,
+                  cwd,
+                  branch,
+                  worktree,
+                  actor,
+                  machine,
+                  origin_scope,
+                  title,
+                  status,
+                  first_intent_ts_ms,
+                  last_intent_ts_ms,
+                  intent_count,
+                  edit_count,
+                  landed_edit_count,
+                  open_edit_count,
+                  summary_text,
+                  projection_version,
+                  projection_hash,
+                  projected_at_ms,
+                  source_last_seen_at_ms,
+                  reason_json
+           FROM session_summaries
+           WHERE session_summary_key = ?`,
         )
-        .get(key) as { id: number } | undefined;
+        .get(key) as ExistingSessionSummaryProjection | undefined;
       if (row) {
+        existingSummaryByKey.set(key, row);
         db.prepare(
           `DELETE FROM code_provenance WHERE session_summary_id = ?`,
         ).run(row.id);
         db.prepare(
           `DELETE FROM intent_session_summaries WHERE session_summary_id = ?`,
         ).run(row.id);
-        db.prepare(
-          `DELETE FROM session_summary_search_index
-           WHERE session_summary_key = ?`,
-        ).run(key);
         db.prepare(`DELETE FROM session_summaries WHERE id = ?`).run(row.id);
       }
     } else {
@@ -128,6 +210,12 @@ export function rebuildSessionSummaryProjections(opts?: {
               last_error
        FROM session_summary_enrichments
        WHERE session_summary_key = ?`,
+    );
+    const deterministicSearchCorpusCountStmt = db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM session_summary_search_index
+       WHERE session_summary_key = ?
+         AND corpus_key IN (?, ?)`,
     );
     const upsertEnrichmentStmt = db.prepare(
       `INSERT INTO session_summary_enrichments
@@ -287,7 +375,7 @@ export function rebuildSessionSummaryProjections(opts?: {
       const summaryKey = sessionSummaryKey(session.session_id);
       const files = summarizeFiles(edits);
       const tools = summarizeTools(edits);
-      const nowMs = Date.now();
+      const nowMs = opts?.nowMs ?? Date.now();
       const lastActivityMs = maxTs([
         sessionMeta?.started_at_ms,
         sessionMeta?.ended_at_ms,
@@ -314,40 +402,111 @@ export function rebuildSessionSummaryProjections(opts?: {
         tools,
       });
 
-      sessionSummaryStmt.run(
-        summaryKey,
-        session.session_id,
+      const existingSummary = existingSummaryByKey.get(summaryKey) ?? null;
+      const existingEnrichment =
+        (existingEnrichmentStmt.get(summaryKey) as
+          | SessionSummaryEnrichmentRow
+          | undefined) ?? null;
+      const deterministicCorpusCount = (
+        deterministicSearchCorpusCountStmt.get(
+          summaryKey,
+          SESSION_SUMMARY_SEARCH_CORPUS.deterministicSummary,
+          SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch,
+        ) as { count: number }
+      ).count;
+      const deferDeterministicProjection = shouldDeferDeterministicProjection({
+        debounce: opts?.debounce === true,
+        existingSummary,
+        existingEnrichment,
+        deterministicCorpusCount,
+        nextProjectionHash: docs.projectionHash,
+        nowMs,
+      });
+      const currentProjectionValues: SessionSummaryProjectionValues = {
+        session_summary_key: summaryKey,
+        session_id: session.session_id,
         repository,
         cwd,
-        repoMeta?.branch ?? null,
-        null,
-        repoMeta?.git_user_name ?? null,
-        sessionMeta?.machine ?? "local",
-        ORIGIN_SCOPE,
+        branch: repoMeta?.branch ?? null,
+        worktree: null,
+        actor: repoMeta?.git_user_name ?? null,
+        machine: sessionMeta?.machine ?? "local",
+        origin_scope: ORIGIN_SCOPE,
         title,
         status,
-        firstIntentTs,
-        lastIntentTs,
-        intents.length,
-        edits.length,
-        landedEditCount,
-        openEditCount,
-        docs.summaryText,
-        SESSION_SUMMARY_PROJECTION_VERSION,
-        docs.projectionHash,
-        nowMs,
-        lastActivityMs,
-        JSON.stringify({ strategy: "session_id" }),
+        first_intent_ts_ms: firstIntentTs,
+        last_intent_ts_ms: lastIntentTs,
+        intent_count: intents.length,
+        edit_count: edits.length,
+        landed_edit_count: landedEditCount,
+        open_edit_count: openEditCount,
+        summary_text: docs.summaryText,
+        projection_version: SESSION_SUMMARY_PROJECTION_VERSION,
+        projection_hash: docs.projectionHash,
+        projected_at_ms: nowMs,
+        source_last_seen_at_ms: lastActivityMs,
+        reason_json: JSON.stringify({ strategy: "session_id" }),
+      };
+      const projectionValues =
+        deferDeterministicProjection && existingSummary
+          ? existingSummaryProjectionValues(existingSummary)
+          : currentProjectionValues;
+
+      sessionSummaryStmt.run(
+        projectionValues.session_summary_key,
+        projectionValues.session_id,
+        projectionValues.repository,
+        projectionValues.cwd,
+        projectionValues.branch,
+        projectionValues.worktree,
+        projectionValues.actor,
+        projectionValues.machine,
+        projectionValues.origin_scope,
+        projectionValues.title,
+        projectionValues.status,
+        projectionValues.first_intent_ts_ms,
+        projectionValues.last_intent_ts_ms,
+        projectionValues.intent_count,
+        projectionValues.edit_count,
+        projectionValues.landed_edit_count,
+        projectionValues.open_edit_count,
+        projectionValues.summary_text,
+        projectionValues.projection_version,
+        projectionValues.projection_hash,
+        projectionValues.projected_at_ms,
+        projectionValues.source_last_seen_at_ms,
+        projectionValues.reason_json,
       );
       const sessionSummaryRow = db
         .prepare(`SELECT last_insert_rowid() AS id`)
         .get() as { id: number };
       sessionSummaries += 1;
 
-      const existingEnrichment =
-        (existingEnrichmentStmt.get(summaryKey) as
-          | SessionSummaryEnrichmentRow
-          | undefined) ?? null;
+      if (deferDeterministicProjection) {
+        for (const intent of intents) {
+          membershipStmt.run(
+            intent.intent_unit_id,
+            sessionSummaryRow.id,
+            "primary",
+            MEMBERSHIP_SOURCE,
+            1,
+            JSON.stringify({ strategy: "session_id" }),
+          );
+          memberships += 1;
+        }
+        provenance += rebuildCodeProvenance({
+          provenanceStmt,
+          sessionSummaryId: sessionSummaryRow.id,
+          edits,
+          repository,
+          actor: repoMeta?.git_user_name ?? null,
+          machine: sessionMeta?.machine ?? "local",
+          firstIntentTs,
+          fileCache: new Map<string, FileSnapshot | null>(),
+        });
+        continue;
+      }
+
       const mergedEnrichment = mergeSessionSummaryEnrichment(
         existingEnrichment,
         {
@@ -463,68 +622,16 @@ export function rebuildSessionSummaryProjections(opts?: {
         memberships += 1;
       }
 
-      const fileCache = new Map<string, FileSnapshot | null>();
-      for (const edit of edits) {
-        const snapshot = readFileSnapshot(edit.file_path, fileCache);
-        if (!snapshot && edit.landed !== 0) continue;
-
-        const snippet = cleanSnippet(edit.new_string_snippet);
-        let bindingLevel: "file" | "span" = "file";
-        let startLine: number | null = null;
-        let endLine: number | null = null;
-        let statusValue: "current" | "ambiguous" | "stale";
-        let confidence = edit.landed === 1 ? 0.72 : 0.45;
-
-        if (edit.landed === 0) {
-          statusValue = "stale";
-          confidence = 0.2;
-        } else if (
-          snapshot &&
-          snippet &&
-          snippet.length >= MIN_SPAN_SNIPPET_LEN
-        ) {
-          const matches = findMatches(snapshot.text, snippet, 2);
-          if (matches.length === 1) {
-            bindingLevel = "span";
-            startLine = lineNumberAt(snapshot.text, matches[0].startIndex);
-            endLine = startLine + countNewlines(snippet);
-            statusValue = "current";
-            confidence = edit.landed === 1 ? 0.95 : 0.82;
-          } else if (matches.length > 1) {
-            statusValue = "ambiguous";
-            confidence = edit.landed === 1 ? 0.55 : 0.4;
-          } else {
-            statusValue = edit.landed === 1 ? "current" : "ambiguous";
-          }
-        } else {
-          statusValue = edit.landed === null ? "ambiguous" : "current";
-        }
-
-        provenanceStmt.run(
-          repository ?? "",
-          edit.file_path,
-          bindingLevel,
-          startLine,
-          endLine,
-          edit.new_string_hash ?? null,
-          snippet ?? null,
-          inferLanguage(edit.file_path),
-          null,
-          null,
-          repoMeta?.git_user_name ?? null,
-          sessionMeta?.machine ?? "local",
-          ORIGIN_SCOPE,
-          edit.intent_unit_id,
-          edit.intent_edit_id,
-          sessionSummaryRow.id,
-          statusValue,
-          confidence,
-          snapshot?.hash ?? null,
-          edit.timestamp_ms ?? firstIntentTs ?? Date.now(),
-          Date.now(),
-        );
-        provenance += 1;
-      }
+      provenance += rebuildCodeProvenance({
+        provenanceStmt,
+        sessionSummaryId: sessionSummaryRow.id,
+        edits,
+        repository,
+        actor: repoMeta?.git_user_name ?? null,
+        machine: sessionMeta?.machine ?? "local",
+        firstIntentTs,
+        fileCache: new Map<string, FileSnapshot | null>(),
+      });
     }
 
     if (opts?.sessionId) {
@@ -627,6 +734,135 @@ function isInternalSummaryPrompt(value: string | null): boolean {
         ". Start by calling the timeline tool with sessionId ",
       ))
   );
+}
+
+function existingSummaryProjectionValues(
+  existing: ExistingSessionSummaryProjection,
+): SessionSummaryProjectionValues {
+  return {
+    session_summary_key: existing.session_summary_key,
+    session_id: existing.session_id,
+    repository: existing.repository,
+    cwd: existing.cwd,
+    branch: existing.branch,
+    worktree: existing.worktree,
+    actor: existing.actor,
+    machine: existing.machine,
+    origin_scope: existing.origin_scope,
+    title: existing.title,
+    status: existing.status,
+    first_intent_ts_ms: existing.first_intent_ts_ms,
+    last_intent_ts_ms: existing.last_intent_ts_ms,
+    intent_count: existing.intent_count,
+    edit_count: existing.edit_count,
+    landed_edit_count: existing.landed_edit_count,
+    open_edit_count: existing.open_edit_count,
+    summary_text: existing.summary_text,
+    projection_version: existing.projection_version,
+    projection_hash: existing.projection_hash ?? "",
+    projected_at_ms: existing.projected_at_ms ?? Date.now(),
+    source_last_seen_at_ms: existing.source_last_seen_at_ms,
+    reason_json: existing.reason_json,
+  };
+}
+
+function shouldDeferDeterministicProjection(input: {
+  debounce: boolean;
+  existingSummary: ExistingSessionSummaryProjection | null;
+  existingEnrichment: SessionSummaryEnrichmentRow | null;
+  deterministicCorpusCount: number;
+  nextProjectionHash: string;
+  nowMs: number;
+}): boolean {
+  if (!input.debounce) return false;
+  if (!input.existingSummary || !input.existingEnrichment) return false;
+  if (!input.existingSummary.summary_text) return false;
+  if (!input.existingSummary.projection_hash) return false;
+  if (!input.existingSummary.projected_at_ms) return false;
+  if (
+    input.existingSummary.projection_version !==
+    SESSION_SUMMARY_PROJECTION_VERSION
+  ) {
+    return false;
+  }
+  if (input.deterministicCorpusCount < 2) return false;
+  if (input.existingSummary.projection_hash === input.nextProjectionHash) {
+    return true;
+  }
+
+  const debounceMs = config.sessionSummaryProjectionDebounceMs ?? 30_000;
+  return input.nowMs - input.existingSummary.projected_at_ms < debounceMs;
+}
+
+function rebuildCodeProvenance(opts: {
+  provenanceStmt: { run: (...params: unknown[]) => unknown };
+  sessionSummaryId: number;
+  edits: SessionSummaryEditRow[];
+  repository: string | null;
+  actor: string | null;
+  machine: string;
+  firstIntentTs: number | null;
+  fileCache: Map<string, FileSnapshot | null>;
+}): number {
+  let provenance = 0;
+  for (const edit of opts.edits) {
+    const snapshot = readFileSnapshot(edit.file_path, opts.fileCache);
+    if (!snapshot && edit.landed !== 0) continue;
+
+    const snippet = cleanSnippet(edit.new_string_snippet);
+    let bindingLevel: "file" | "span" = "file";
+    let startLine: number | null = null;
+    let endLine: number | null = null;
+    let statusValue: "current" | "ambiguous" | "stale";
+    let confidence = edit.landed === 1 ? 0.72 : 0.45;
+
+    if (edit.landed === 0) {
+      statusValue = "stale";
+      confidence = 0.2;
+    } else if (snapshot && snippet && snippet.length >= MIN_SPAN_SNIPPET_LEN) {
+      const matches = findMatches(snapshot.text, snippet, 2);
+      if (matches.length === 1) {
+        bindingLevel = "span";
+        startLine = lineNumberAt(snapshot.text, matches[0].startIndex);
+        endLine = startLine + countNewlines(snippet);
+        statusValue = "current";
+        confidence = edit.landed === 1 ? 0.95 : 0.82;
+      } else if (matches.length > 1) {
+        statusValue = "ambiguous";
+        confidence = edit.landed === 1 ? 0.55 : 0.4;
+      } else {
+        statusValue = edit.landed === 1 ? "current" : "ambiguous";
+      }
+    } else {
+      statusValue = edit.landed === null ? "ambiguous" : "current";
+    }
+
+    opts.provenanceStmt.run(
+      opts.repository ?? "",
+      edit.file_path,
+      bindingLevel,
+      startLine,
+      endLine,
+      edit.new_string_hash ?? null,
+      snippet ?? null,
+      inferLanguage(edit.file_path),
+      null,
+      null,
+      opts.actor,
+      opts.machine,
+      ORIGIN_SCOPE,
+      edit.intent_unit_id,
+      edit.intent_edit_id,
+      opts.sessionSummaryId,
+      statusValue,
+      confidence,
+      snapshot?.hash ?? null,
+      edit.timestamp_ms ?? opts.firstIntentTs ?? Date.now(),
+      Date.now(),
+    );
+    provenance += 1;
+  }
+  return provenance;
 }
 
 function readFileSnapshot(

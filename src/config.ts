@@ -206,6 +206,10 @@ export const config = {
     "PANOPTICON_SESSION_SUMMARY_SCANNER_ENRICH_LIMIT",
     1,
   ),
+  sessionSummaryProjectionDebounceMs: envInt(
+    "PANOPTICON_SESSION_SUMMARY_PROJECTION_DEBOUNCE_MS",
+    30_000,
+  ),
   sessionSummaryEnrichTimeoutMs: envInt(
     "PANOPTICON_SESSION_SUMMARY_ENRICH_TIMEOUT_MS",
     90_000,
