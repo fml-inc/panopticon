@@ -1,5 +1,5 @@
 ---
-name: pr-review
+name: panopticon-review
 description: "Review the current branch as if reviewing a PR. Returns the review inline; queries panopticon for author-intent follow-ups only after the review is drafted."
 ---
 
@@ -29,7 +29,7 @@ Fall back to raw SQL via `panopticon query "<SQL>"` (prints JSON to stdout) for 
 - `sessions` — one row per agent session. Useful columns: `session_id`, `started_at_ms`, `first_prompt`, `model`, `machine`, `parent_session_id`, `relationship_type`. (`target` is almost always `'claude'` — not discriminative.) Note: `sessions.cwd` is always NULL; cwd is stored in the `session_cwds` junction table below.
 - `session_cwds(session_id, cwd, first_seen_ms)` — one row per (session, cwd). The canonical cwd lookup for any session that ever emitted one. Prefer this over `hook_events.cwd`.
 - `hook_events` — per-event stream. Columns include `session_id`, `event_type`, `timestamp_ms`, `cwd`, `tool_name`, `user_prompt`, `target`. Only populated when hooks fired — scanner-only sessions will have zero rows here.
-- `messages` — user/assistant turns with content. `messages_fts` is a contentless FTS5 virtual table (single `content` column, no metadata, `snippet()` returns NULL) — join it to `messages` by rowid: `SELECT m.session_id, substr(m.content,1,200) FROM messages_fts f JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH 'foo bar'`. **FTS footgun: hyphens are NOT operators.** `MATCH 'pr-review'` fails with `no such column: review`. Quote hyphenated terms: `MATCH '"pr-review"'`.
+- `messages` — user/assistant turns with content. `messages_fts` is a contentless FTS5 virtual table (single `content` column, no metadata, `snippet()` returns NULL) — join it to `messages` by rowid: `SELECT m.session_id, substr(m.content,1,200) FROM messages_fts f JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH 'foo bar'`. **FTS footgun: hyphens are NOT operators.** `MATCH 'panopticon-review'` fails with `no such column: review`. Quote hyphenated terms: `MATCH '"panopticon-review"'`.
 - `tool_calls` — tool invocations linked to messages. Columns include `tool_name`, `input_json`, `result_content`.
 - `scanner_turns` — token-level turn stats from local session files.
 
