@@ -39,6 +39,7 @@ import {
   CLAIM_DERIVED_COMPONENTS,
   ensureDataVersionsTable,
   markDataComponentsStaleInDb,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
 } from "./data-versions.js";
 import type { Database } from "./driver.js";
 import {
@@ -432,6 +433,187 @@ function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
   // Let startup rebuild scanner state from raw files instead of trying to
   // infer watermark session IDs from possibly incomplete historical rows.
   markDataComponentsStaleInDb(db, ALL_DATA_COMPONENTS);
+}
+
+function resetSessionSummaryProjectionStorage(db: Database): void {
+  if (tableExists(db, "code_provenance")) {
+    db.exec("DROP TABLE code_provenance");
+  }
+  if (tableExists(db, "intent_session_summaries")) {
+    db.exec("DROP TABLE intent_session_summaries");
+  }
+  if (tableExists(db, "session_summary_search_index")) {
+    db.exec("DROP TABLE session_summary_search_index");
+  }
+  if (tableExists(db, "session_summary_enrichments")) {
+    db.exec("DROP TABLE session_summary_enrichments");
+  }
+  if (tableExists(db, "session_summaries")) {
+    db.exec("DROP TABLE session_summaries");
+  }
+
+  db.exec(`
+    CREATE TABLE session_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_summary_key TEXT NOT NULL UNIQUE,
+      session_id TEXT NOT NULL,
+      repository TEXT,
+      cwd TEXT,
+      branch TEXT,
+      worktree TEXT,
+      actor TEXT,
+      machine TEXT NOT NULL DEFAULT 'local',
+      origin_scope TEXT NOT NULL DEFAULT 'local',
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      first_intent_ts_ms INTEGER,
+      last_intent_ts_ms INTEGER,
+      intent_count INTEGER NOT NULL DEFAULT 0,
+      edit_count INTEGER NOT NULL DEFAULT 0,
+      landed_edit_count INTEGER NOT NULL DEFAULT 0,
+      open_edit_count INTEGER NOT NULL DEFAULT 0,
+      summary_text TEXT,
+      projection_hash TEXT NOT NULL,
+      projected_at_ms INTEGER NOT NULL,
+      source_last_seen_at_ms INTEGER,
+      reason_json TEXT
+    )
+  `);
+  db.exec(`
+    CREATE TABLE session_summary_enrichments (
+      session_summary_key TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      summary_text TEXT,
+      summary_source TEXT NOT NULL DEFAULT 'deterministic',
+      summary_runner TEXT,
+      summary_model TEXT,
+      summary_version INTEGER NOT NULL DEFAULT 1,
+      summary_generated_at_ms INTEGER,
+      projection_hash TEXT,
+      summary_input_hash TEXT,
+      summary_policy_hash TEXT,
+      enriched_input_hash TEXT,
+      enriched_message_count INTEGER,
+      dirty INTEGER NOT NULL DEFAULT 1,
+      dirty_reason_json TEXT,
+      last_material_change_at_ms INTEGER,
+      last_attempted_at_ms INTEGER,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
+    )
+  `);
+  db.exec(`
+    CREATE TABLE session_summary_search_index (
+      session_summary_key TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      corpus_key TEXT NOT NULL,
+      source TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      search_text TEXT NOT NULL,
+      dirty INTEGER NOT NULL DEFAULT 0,
+      projection_hash TEXT,
+      enriched_input_hash TEXT,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (session_summary_key, corpus_key)
+    )
+  `);
+  db.exec(`
+    CREATE TABLE intent_session_summaries (
+      intent_unit_id INTEGER NOT NULL,
+      session_summary_id INTEGER NOT NULL,
+      membership_kind TEXT NOT NULL,
+      source TEXT NOT NULL,
+      score REAL NOT NULL DEFAULT 1.0,
+      reason_json TEXT,
+      UNIQUE(intent_unit_id, session_summary_id)
+    )
+  `);
+  db.exec(`
+    CREATE TABLE code_provenance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repository TEXT NOT NULL DEFAULT '',
+      file_path TEXT NOT NULL,
+      binding_level TEXT NOT NULL,
+      start_line INTEGER,
+      end_line INTEGER,
+      snippet_hash TEXT,
+      snippet_preview TEXT,
+      language TEXT,
+      symbol_kind TEXT,
+      symbol_name TEXT,
+      actor TEXT,
+      machine TEXT NOT NULL DEFAULT 'local',
+      origin_scope TEXT NOT NULL DEFAULT 'local',
+      intent_unit_id INTEGER NOT NULL,
+      intent_edit_id INTEGER,
+      session_summary_id INTEGER,
+      status TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 1.0,
+      file_hash TEXT,
+      established_at_ms INTEGER NOT NULL,
+      verified_at_ms INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_repo
+      ON session_summaries(repository)
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+      ON session_summaries(session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_status
+      ON session_summaries(status)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts
+      ON session_summaries(last_intent_ts_ms)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
+      ON session_summary_enrichments(dirty, last_material_change_at_ms)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_session
+      ON session_summary_enrichments(session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_session
+      ON session_summary_search_index(session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_source_priority
+      ON session_summary_search_index(source, priority)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
+      ON intent_session_summaries(intent_unit_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_session_summary
+      ON intent_session_summaries(session_summary_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_repo_file
+      ON code_provenance(repository, file_path)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_session_summary
+      ON code_provenance(session_summary_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
+      ON code_provenance(intent_unit_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_status
+      ON code_provenance(status)
+  `);
+
+  ensureDataVersionsTable(db);
+  markDataComponentsStaleInDb(db, [SESSION_SUMMARY_PROJECTION_COMPONENT]);
 }
 
 // ---------------------------------------------------------------------------
@@ -855,25 +1037,7 @@ export const MIGRATIONS: Migration[] = [
       if (!tableExists(db, "session_summaries")) {
         return;
       }
-      addColumnIfMissing(
-        db,
-        "session_summaries",
-        "session_id",
-        "session_id TEXT",
-      );
-      addColumnIfMissing(
-        db,
-        "session_summaries",
-        "summary_text",
-        "summary_text TEXT",
-      );
-      db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
-          ON session_summaries(session_id)
-      `);
-      deleteAllRowsIfTableExists(db, "code_provenance");
-      deleteAllRowsIfTableExists(db, "intent_session_summaries");
-      deleteAllRowsIfTableExists(db, "session_summaries");
+      resetSessionSummaryProjectionStorage(db);
     },
   },
   {

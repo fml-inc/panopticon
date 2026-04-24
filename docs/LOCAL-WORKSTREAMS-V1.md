@@ -78,10 +78,11 @@ Deterministic refresh behavior:
 - scanner catch-up still rebuilds intent projection, session-summary membership,
   and code provenance even when deterministic summary text is deferred
 
-This branch has not shipped to anyone else. Do not add a migration just for the
-local schema churn in this PR. If resuming with a local DB created from an
-earlier build of this branch, repair or recreate the DB directly before running
-the daemon.
+This branch has not shipped to anyone else. During branch validation, copied
+developer DBs could be repaired directly instead of carrying every intermediate
+branch-only schema step. The final landing shape should ship one direct
+migration from released `v0.2.10` to the final session-summary storage model,
+not preserve the intermediate PR-only table layouts.
 
 Verification run for the current PR state:
 
@@ -98,8 +99,7 @@ fail on stale local schemas from prior branch runs before executing tests.
 Remaining tasks before merging:
 
 - Run the branch against the real local daemon after the latest schema cleanup.
-- Rebuild or repair the developer DB directly; do not add a migration for this
-  unshipped branch-only schema churn.
+- Validate the direct `v0.2.10 -> final` migration against a real local DB copy.
 - Re-enable LLM enrichment and verify that new `llm_summary` / `llm_search`
   rows are generated in `session_summary_search_index`.
 - Inspect generated summaries/search rows for a few recent real sessions.

@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ALL_DATA_COMPONENTS, targetDataVersion } from "./data-versions.js";
+import {
+  ALL_DATA_COMPONENTS,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
+  targetDataVersion,
+} from "./data-versions.js";
 import { Database } from "./driver.js";
 import { MIGRATIONS, type Migration, runMigrations } from "./migrations.js";
 import { SCHEMA_SQL } from "./schema.js";
@@ -1238,6 +1242,165 @@ describe("runMigrations — existing DB", () => {
       [...ALL_DATA_COMPONENTS]
         .sort((a, b) => a.localeCompare(b))
         .map((component) => ({ component, version: 0 })),
+    );
+  });
+
+  it("upgrades a 0.2.10-style session summary schema to the split storage model", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE data_versions (
+        component TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+      CREATE TABLE session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_summary_key TEXT NOT NULL UNIQUE,
+        repository TEXT,
+        cwd TEXT,
+        branch TEXT,
+        worktree TEXT,
+        actor TEXT,
+        machine TEXT NOT NULL DEFAULT 'local',
+        origin_scope TEXT NOT NULL DEFAULT 'local',
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        first_intent_ts_ms INTEGER,
+        last_intent_ts_ms INTEGER,
+        intent_count INTEGER NOT NULL DEFAULT 0,
+        edit_count INTEGER NOT NULL DEFAULT 0,
+        landed_edit_count INTEGER NOT NULL DEFAULT 0,
+        open_edit_count INTEGER NOT NULL DEFAULT 0,
+        reconciled_at_ms INTEGER,
+        reason_json TEXT
+      );
+      CREATE TABLE intent_session_summaries (
+        intent_unit_id INTEGER NOT NULL,
+        session_summary_id INTEGER NOT NULL,
+        membership_kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        score REAL NOT NULL DEFAULT 1.0,
+        reason_json TEXT,
+        UNIQUE(intent_unit_id, session_summary_id)
+      );
+      CREATE TABLE code_provenance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repository TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        binding_level TEXT NOT NULL,
+        start_line INTEGER,
+        end_line INTEGER,
+        snippet_hash TEXT,
+        snippet_preview TEXT,
+        language TEXT,
+        symbol_kind TEXT,
+        symbol_name TEXT,
+        actor TEXT,
+        machine TEXT NOT NULL DEFAULT 'local',
+        origin_scope TEXT NOT NULL DEFAULT 'local',
+        intent_unit_id INTEGER NOT NULL,
+        intent_edit_id INTEGER,
+        session_summary_id INTEGER,
+        status TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        file_hash TEXT,
+        established_at_ms INTEGER NOT NULL,
+        verified_at_ms INTEGER NOT NULL
+      );
+    `);
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 15) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+    const insertDataVersion = db.prepare(
+      `INSERT INTO data_versions (component, version, updated_at_ms)
+       VALUES (?, ?, ?)`,
+    );
+    for (const component of ALL_DATA_COMPONENTS) {
+      if (component === SESSION_SUMMARY_PROJECTION_COMPONENT) continue;
+      insertDataVersion.run(component, targetDataVersion(component), 1000);
+    }
+    db.prepare(
+      `INSERT INTO session_summaries (
+         id, session_summary_key, title, status, reconciled_at_ms
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(1, "summary:test", "Old summary", "active", 1000);
+    db.prepare(
+      `INSERT INTO intent_session_summaries (
+         intent_unit_id, session_summary_id, membership_kind, source
+       ) VALUES (?, ?, ?, ?)`,
+    ).run(1, 1, "primary", "heuristic");
+    db.prepare(
+      `INSERT INTO code_provenance (
+         repository, file_path, binding_level, intent_unit_id, status,
+         established_at_ms, verified_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("/tmp/repo", "/tmp/file.ts", "file", 1, "current", 1000, 1000);
+
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const summaryCols = db
+      .prepare("PRAGMA table_info(session_summaries)")
+      .all() as Array<{ name: string }>;
+    expect(summaryCols.map((col) => col.name)).toContain("session_id");
+    expect(summaryCols.map((col) => col.name)).toContain("summary_text");
+    expect(summaryCols.map((col) => col.name)).toContain("projection_hash");
+    expect(summaryCols.map((col) => col.name)).toContain("projected_at_ms");
+    expect(summaryCols.map((col) => col.name)).toContain(
+      "source_last_seen_at_ms",
+    );
+    expect(summaryCols.map((col) => col.name)).not.toContain(
+      "reconciled_at_ms",
+    );
+
+    const summaryCount = (
+      db.prepare(`SELECT COUNT(*) AS count FROM session_summaries`).get() as {
+        count: number;
+      }
+    ).count;
+    const membershipCount = (
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM intent_session_summaries`)
+        .get() as { count: number }
+    ).count;
+    const provenanceCount = (
+      db.prepare(`SELECT COUNT(*) AS count FROM code_provenance`).get() as {
+        count: number;
+      }
+    ).count;
+    expect(summaryCount).toBe(0);
+    expect(membershipCount).toBe(0);
+    expect(provenanceCount).toBe(0);
+
+    const tables = db
+      .prepare(
+        `SELECT name
+         FROM sqlite_master
+         WHERE type = 'table'
+           AND name IN (
+             'session_summary_enrichments',
+             'session_summary_search_index',
+             'attempt_backoffs'
+           )
+         ORDER BY name ASC`,
+      )
+      .all() as Array<{ name: string }>;
+    expect(tables).toEqual([
+      { name: "attempt_backoffs" },
+      { name: "session_summary_enrichments" },
+      { name: "session_summary_search_index" },
+    ]);
+
+    const dataVersion = db
+      .prepare(`SELECT version FROM data_versions WHERE component = ?`)
+      .get(SESSION_SUMMARY_PROJECTION_COMPONENT) as { version: number };
+    expect(dataVersion.version).toBe(0);
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
     );
   });
 

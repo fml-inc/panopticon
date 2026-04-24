@@ -670,8 +670,6 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 
 -- session_summaries
 CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
-  ON session_summaries(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
 
@@ -716,6 +714,10 @@ CREATE INDEX IF NOT EXISTS idx_evidence_refs_trace_span ON evidence_refs(trace_i
 CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_ref ON evidence_ref_paths(evidence_ref_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_file ON evidence_ref_paths(file_path);
+
+-- session_summaries
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+  ON session_summaries(session_id);
 `;
 
 /**
