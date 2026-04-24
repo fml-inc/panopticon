@@ -278,7 +278,10 @@ if [ -n "$HAS_GEMINI" ]; then
 
   for i in 0 1; do
     log_info "Gemini session $((i + 1))/2: ${TASKS[$i]:0:60}..."
-    gemini -p "${TASKS[$i]}" --yolo --model gemini-2.0-flash 2>&1 || log_info "Gemini session $((i + 1)) exited"
+    # Gemini now enforces trusted workspaces in headless mode.
+    GEMINI_CLI_TRUST_WORKSPACE=true \
+      gemini -p "${TASKS[$i]}" --yolo --model gemini-2.0-flash 2>&1 \
+      || log_info "Gemini session $((i + 1)) exited"
     sleep 3
     SESSIONS_RUN=$((SESSIONS_RUN + 1))
   done
