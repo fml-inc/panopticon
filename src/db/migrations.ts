@@ -375,7 +375,6 @@ function resetDerivedStateForEvidenceRefCutover(db: Database): void {
   // raw scanner session files plus preserved hook/OTel tables after reparse.
   deleteAllRowsIfTableExists(db, "code_provenance");
   deleteAllRowsIfTableExists(db, "intent_session_summaries");
-  deleteAllRowsIfTableExists(db, "session_summary_search_index");
   deleteAllRowsIfTableExists(db, "session_summaries");
   deleteAllRowsIfTableExists(db, "intent_edits");
   deleteAllRowsIfTableExists(db, "intent_units_fts");
@@ -401,7 +400,6 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
 
   deleteAllRowsIfTableExists(db, "code_provenance");
   deleteAllRowsIfTableExists(db, "intent_session_summaries");
-  deleteAllRowsIfTableExists(db, "session_summary_search_index");
   deleteAllRowsIfTableExists(db, "session_summaries");
   deleteAllRowsIfTableExists(db, "intent_edits");
   deleteAllRowsIfTableExists(db, "intent_units_fts");
@@ -881,7 +879,6 @@ export const MIGRATIONS: Migration[] = [
       `);
       deleteAllRowsIfTableExists(db, "code_provenance");
       deleteAllRowsIfTableExists(db, "intent_session_summaries");
-      deleteAllRowsIfTableExists(db, "session_summary_search_index");
       deleteAllRowsIfTableExists(db, "session_summaries");
     },
   },
