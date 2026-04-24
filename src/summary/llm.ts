@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +11,7 @@ const LLM_TIMEOUT_MS = 180_000;
 const DEFAULT_RUNNER: SessionSummaryRunnerName = "claude";
 const CLAUDE_HEADLESS_CWD_NAME = "claude-headless";
 const CODEX_HEADLESS_CWD_NAME = "codex-headless";
-const CODEX_OUTPUT_FILE_NAME = "last-message.txt";
+const CODEX_OUTPUT_FILE_PREFIX = "last-message";
 const MCP_ALLOWED_TOOLS = [
   "mcp__panopticon__timeline",
   "mcp__panopticon__get",
@@ -86,6 +87,13 @@ function getHeadlessCwd(runner: SessionSummaryRunnerName): string {
   );
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function getCodexOutputPath(cwd: string): string {
+  return path.join(
+    cwd,
+    `${CODEX_OUTPUT_FILE_PREFIX}-${process.pid}-${Date.now()}-${randomUUID()}.txt`,
+  );
 }
 
 /** Get the path to the panopticon MCP server script. */
@@ -325,7 +333,7 @@ function invokeCodexLlm(
     model?: string | null;
   },
 ): string | null {
-  const outputPath = path.join(opts.cwd, CODEX_OUTPUT_FILE_NAME);
+  const outputPath = getCodexOutputPath(opts.cwd);
   try {
     fs.rmSync(outputPath, { force: true });
   } catch {}

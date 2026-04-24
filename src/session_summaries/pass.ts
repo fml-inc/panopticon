@@ -6,6 +6,7 @@ export function runSessionSummaryPass(opts: {
   log: (msg: string) => void;
   onEnrichmentError: (err: unknown) => void;
   onLegacySummaryError: (err: unknown) => void;
+  enrichmentLimit?: number;
 }): {
   updated: number;
 } {
@@ -14,6 +15,7 @@ export function runSessionSummaryPass(opts: {
     try {
       updated += refreshSessionSummaryEnrichmentsOnce({
         log: opts.log,
+        limit: opts.enrichmentLimit,
       }).updated;
     } catch (err) {
       opts.onEnrichmentError(err);

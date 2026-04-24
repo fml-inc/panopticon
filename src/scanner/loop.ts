@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
+import { config } from "../config.js";
 import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
@@ -151,6 +152,7 @@ function runSessionSummaryPass(logSummary: (msg: string) => void): {
 } {
   return runSessionSummaryPassSafe({
     log: logSummary,
+    enrichmentLimit: config.sessionSummaryScannerEnrichLimit ?? 1,
     onEnrichmentError: (err) => {
       log.scanner.error(
         `Session summary enrichment error: ${err instanceof Error ? err.message : err}`,

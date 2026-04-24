@@ -1,4 +1,5 @@
 import type { SessionSummaryRunnerName } from "../config.js";
+import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { detectAgent, invokeLlm } from "../summary/llm.js";
 import {
@@ -12,10 +13,12 @@ import {
   type SessionSummaryRunnerPolicy,
 } from "./policy.js";
 
-const ENRICH_LIMIT = 5;
-const ENRICH_TIMEOUT_MS = 90_000;
-const ENRICH_RETRY_BACKOFF_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_ENRICH_LIMIT = 5;
+const DEFAULT_ENRICH_TIMEOUT_MS = 90_000;
+const DEFAULT_ENRICH_RETRY_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
+// Prompt/template changes should bump SESSION_SUMMARY_ENRICHMENT_VERSION.
+// policyHash intentionally covers runner/config policy only, not prompt text.
 const SYSTEM_PROMPT = `You are enriching a per-session coding summary for retrieval.
 
 Rules:
@@ -93,9 +96,15 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
 }): SessionSummaryEnrichmentRefreshResult {
   const db = getDb();
   const nowMs = Date.now();
-  const limit = opts?.limit ?? ENRICH_LIMIT;
+  const limit =
+    opts?.limit ?? config.sessionSummaryEnrichLimit ?? DEFAULT_ENRICH_LIMIT;
   const force = opts?.force === true;
   const log = opts?.log ?? (() => {});
+  const retryBackoffMs =
+    config.sessionSummaryEnrichRetryBackoffMs ??
+    DEFAULT_ENRICH_RETRY_BACKOFF_MS;
+  const timeoutMs =
+    config.sessionSummaryEnrichTimeoutMs ?? DEFAULT_ENRICH_TIMEOUT_MS;
 
   const where: string[] = [];
   const params: unknown[] = [];
@@ -104,7 +113,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     where.push(
       "(e.last_attempted_at_ms IS NULL OR e.last_attempted_at_ms < ?)",
     );
-    params.push(nowMs - ENRICH_RETRY_BACKOFF_MS);
+    params.push(nowMs - retryBackoffMs);
   }
   if (opts?.sessionId) {
     where.push("e.session_id = ?");
@@ -317,7 +326,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     const prompt = buildLlmPrompt(context);
     const result = invokeLlm(prompt, {
       runner: selection.runner,
-      timeoutMs: ENRICH_TIMEOUT_MS,
+      timeoutMs,
       withMcp: false,
       systemPrompt: SYSTEM_PROMPT,
       model: selection.model,

@@ -42,6 +42,13 @@ function envBool(name: string, defaultValue = false): boolean {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
 function parseSessionSummaryRunnerList(
   raw: string | undefined,
   fallback: SessionSummaryRunnerName[],
@@ -155,6 +162,22 @@ export const config = {
     claude: process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? "sonnet",
     codex: process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null,
   },
+  sessionSummaryEnrichLimit: envInt(
+    "PANOPTICON_SESSION_SUMMARY_ENRICH_LIMIT",
+    5,
+  ),
+  sessionSummaryScannerEnrichLimit: envInt(
+    "PANOPTICON_SESSION_SUMMARY_SCANNER_ENRICH_LIMIT",
+    1,
+  ),
+  sessionSummaryEnrichTimeoutMs: envInt(
+    "PANOPTICON_SESSION_SUMMARY_ENRICH_TIMEOUT_MS",
+    90_000,
+  ),
+  sessionSummaryEnrichRetryBackoffMs: envInt(
+    "PANOPTICON_SESSION_SUMMARY_ENRICH_RETRY_BACKOFF_MS",
+    6 * 60 * 60 * 1000,
+  ),
 } as const;
 
 export function ensureDataDir(): void {

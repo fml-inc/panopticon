@@ -101,6 +101,7 @@ function isDerivedRebuildInProgress(): boolean {
 function runSummaryGeneration(): number {
   return runSessionSummaryPass({
     log: (msg) => log.scanner.debug(msg),
+    enrichmentLimit: config.sessionSummaryEnrichLimit ?? 5,
     onEnrichmentError: (err) => {
       log.scanner.error(
         `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,

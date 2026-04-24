@@ -295,5 +295,9 @@ describe("summary llm wrapper", () => {
     expect(options.cwd).toBe(
       path.join("/tmp/panopticon-summary-tests", "codex-headless"),
     );
+    const outputPath = args[args.indexOf("--output-last-message") + 1];
+    expect(outputPath).toEqual(
+      expect.stringMatching(/last-message-\d+-\d+-.*\.txt$/),
+    );
   });
 });
