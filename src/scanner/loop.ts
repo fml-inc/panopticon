@@ -153,6 +153,7 @@ function runSessionSummaryPass(logSummary: (msg: string) => void): {
 } {
   return runSessionSummaryPassSafe({
     log: logSummary,
+    enrichmentLog: (msg) => log.scanner.info(msg),
     enrichmentLimit: config.sessionSummaryScannerEnrichLimit ?? 1,
     onEnrichmentError: (err) => {
       log.scanner.error(

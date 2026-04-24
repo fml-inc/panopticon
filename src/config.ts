@@ -49,6 +49,25 @@ function envInt(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
+function envRatio(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return defaultValue;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+    ? parsed
+    : defaultValue;
+}
+
+function envIntList(name: string, defaultValue: readonly number[]): number[] {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return [...defaultValue];
+  const values = raw
+    .split(",")
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return values.length > 0 ? values : [...defaultValue];
+}
+
 function parseSessionSummaryRunnerList(
   raw: string | undefined,
   fallback: SessionSummaryRunnerName[],
@@ -94,6 +113,19 @@ const DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS: SessionSummaryRunnerName[] = [
   "claude",
   "codex",
 ];
+const DEFAULT_ATTEMPT_BACKOFF_SCHEDULE_MS = [
+  60_000,
+  2 * 60_000,
+  4 * 60_000,
+  8 * 60_000,
+  16 * 60_000,
+  32 * 60_000,
+  60 * 60_000,
+  2 * 60 * 60_000,
+  4 * 60 * 60_000,
+  6 * 60 * 60_000,
+] as const;
+const DEFAULT_ATTEMPT_BACKOFF_JITTER_RATIO = 0.1;
 
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
@@ -139,6 +171,10 @@ export const config = {
   proxyIdleSessionMs: 30 * 60 * 1000,
   enableSessionSummaryProjections: envBool(
     "PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS",
+    true,
+  ),
+  enableSessionSummaryEnrichment: envBool(
+    "PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT",
   ),
   useProjectionSessionSummaryText: envBool(
     "PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT",
@@ -174,9 +210,13 @@ export const config = {
     "PANOPTICON_SESSION_SUMMARY_ENRICH_TIMEOUT_MS",
     90_000,
   ),
-  sessionSummaryEnrichRetryBackoffMs: envInt(
-    "PANOPTICON_SESSION_SUMMARY_ENRICH_RETRY_BACKOFF_MS",
-    6 * 60 * 60 * 1000,
+  attemptBackoffScheduleMs: envIntList(
+    "PANOPTICON_ATTEMPT_BACKOFF_SCHEDULE_MS",
+    DEFAULT_ATTEMPT_BACKOFF_SCHEDULE_MS,
+  ),
+  attemptBackoffJitterRatio: envRatio(
+    "PANOPTICON_ATTEMPT_BACKOFF_JITTER_RATIO",
+    DEFAULT_ATTEMPT_BACKOFF_JITTER_RATIO,
   ),
 } as const;
 

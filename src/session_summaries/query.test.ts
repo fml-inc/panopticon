@@ -76,6 +76,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_search_index").run();
   db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
@@ -198,10 +199,14 @@ describe("session_summaries", () => {
     expect(rows[0].title).toContain("draft implementation");
     expect(rows[0].intent_count).toBe(2);
     expect(rows[0].status).toBe("mixed");
-    expect(rows[0].summary_text).toContain("Status: mixed");
+    expect(rows[0].summary_text).toContain(
+      "Mixed: 2 intents, 1/2 edits landed",
+    );
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
-    expect(detail?.session_summary?.summary_text).toContain("Status: mixed");
+    expect(detail?.session_summary?.summary_text).toContain(
+      "Mixed: 2 intents, 1/2 edits landed",
+    );
     expect(detail?.intents).toHaveLength(2);
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
@@ -275,23 +280,31 @@ describe("session_summaries", () => {
       );
 
     const rows = listSessionSummaries({ repository: repo });
+    expect(rows[0].summary_text).toContain("draft implementation");
     expect(rows[0]).toMatchObject({
-      summary_text: "LLM session summary.",
-      summary_source: "llm",
-      summary_runner: "claude",
-      summary_model: "sonnet",
-      summary_dirty: false,
-      summary_generated_at_ms: 1_700_000_010_000,
+      summary_source: "deterministic",
+      enriched_summary_text: "LLM session summary.",
+      enriched_search_text: "LLM session summary.",
+      enrichment_source: "llm",
+      enrichment_runner: "claude",
+      enrichment_model: "sonnet",
+      enrichment_dirty: false,
+      enrichment_generated_at_ms: 1_700_000_010_000,
     });
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toContain(
+      "draft implementation",
+    );
     expect(detail?.session_summary).toMatchObject({
-      summary_text: "LLM session summary.",
-      summary_source: "llm",
-      summary_runner: "claude",
-      summary_model: "sonnet",
-      summary_dirty: false,
-      summary_generated_at_ms: 1_700_000_010_000,
+      summary_source: "deterministic",
+      enriched_summary_text: "LLM session summary.",
+      enriched_search_text: "LLM session summary.",
+      enrichment_source: "llm",
+      enrichment_runner: "claude",
+      enrichment_model: "sonnet",
+      enrichment_dirty: false,
+      enrichment_generated_at_ms: 1_700_000_010_000,
     });
   });
 
@@ -409,11 +422,15 @@ describe("session_summaries", () => {
     });
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
+    expect(detail?.session_summary?.summary_text).toContain(
+      "draft implementation",
+    );
     expect(detail?.session_summary).toMatchObject({
-      summary_text: "LLM session summary.",
-      summary_source: "llm",
-      summary_dirty: false,
-      summary_generated_at_ms: 1_700_000_010_000,
+      summary_source: "deterministic",
+      enriched_summary_text: "LLM session summary.",
+      enrichment_source: "llm",
+      enrichment_dirty: false,
+      enrichment_generated_at_ms: 1_700_000_010_000,
     });
   });
 
@@ -550,6 +567,116 @@ describe("session_summaries", () => {
     expect(afterSecond?.id).toBe(before?.id);
   });
 
+  it("excludes internal headless summary sessions from projections", () => {
+    const db = getDb();
+    const realSession = "real-work-session";
+    const headlessSession = "headless-summary-session";
+    const legacySummarySession = "legacy-summary-session";
+    const headlessCwd = path.join(config.dataDir, "claude-headless");
+
+    db.prepare(
+      `INSERT INTO sessions
+       (session_id, target, project, cwd, first_prompt, started_at_ms,
+        ended_at_ms, machine, message_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      realSession,
+      "claude",
+      "fml-inc/panopticon",
+      scratchDir,
+      "implement useful projection",
+      1_000,
+      2_000,
+      "local",
+      4,
+      headlessSession,
+      "claude",
+      "claude-headless",
+      headlessCwd,
+      "Summarize this coding session segment in 1-2 sentences.",
+      3_000,
+      4_000,
+      "local",
+      2,
+      legacySummarySession,
+      "claude",
+      "tmp",
+      "/private/tmp",
+      `Summarize session ${realSession}. Start by calling the timeline tool with sessionId "${realSession}" and limit 50.`,
+      5_000,
+      6_000,
+      "local",
+      2,
+    );
+    db.prepare(
+      `INSERT INTO session_cwds (session_id, cwd, first_seen_ms)
+       VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)`,
+    ).run(
+      realSession,
+      scratchDir,
+      1_000,
+      headlessSession,
+      headlessCwd,
+      3_000,
+      legacySummarySession,
+      "/private/tmp",
+      5_000,
+    );
+    db.prepare(
+      `INSERT INTO intent_units
+       (intent_key, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms,
+        cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "intent:real",
+      realSession,
+      "implement useful projection",
+      1_100,
+      1_900,
+      scratchDir,
+      scratchDir,
+      "intent:headless",
+      headlessSession,
+      "Summarize this coding session segment in 1-2 sentences.",
+      3_100,
+      3_900,
+      headlessCwd,
+      null,
+      "intent:legacy-summary",
+      legacySummarySession,
+      `Summarize session ${realSession}. Start by calling the timeline tool with sessionId "${realSession}" and limit 50.`,
+      5_100,
+      5_900,
+      "/private/tmp",
+      null,
+    );
+
+    const result = rebuildSessionSummaryProjections();
+    const summaries = db
+      .prepare(
+        `SELECT session_id, title
+         FROM session_summaries
+         ORDER BY session_id`,
+      )
+      .all() as Array<{ session_id: string; title: string }>;
+    const enrichmentRows = db
+      .prepare(
+        `SELECT session_id
+         FROM session_summary_enrichments
+         ORDER BY session_id`,
+      )
+      .all() as Array<{ session_id: string }>;
+
+    expect(result.sessionSummaries).toBe(1);
+    expect(summaries).toEqual([
+      {
+        session_id: realSession,
+        title: "implement useful projection",
+      },
+    ]);
+    expect(enrichmentRows).toEqual([{ session_id: realSession }]);
+  });
+
   it("exposes explicit session summary detail by session id", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
@@ -626,7 +753,9 @@ describe("session_summaries", () => {
 
     const detail = sessionSummaryDetail({ session_id: SESSION });
     expect(detail?.session_summary?.session_id).toBe(SESSION);
-    expect(detail?.session_summary?.summary_text).toContain("Status: mixed");
+    expect(detail?.session_summary?.summary_text).toContain(
+      "Mixed: 2 intents, 1/2 edits landed",
+    );
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);

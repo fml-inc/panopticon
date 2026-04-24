@@ -27,9 +27,9 @@ Phase 2 wording in a few places:
     `file/in-repository`, `intent/in-repository`, and `edit/touches-file`
   - `intent_for_code` prefers normalized file-subject relations and falls back
     to the legacy `intent_edits.file_path` path
-- The local `session_summaries` / `code_provenance` projection exists, but it
-  is feature-gated behind
-  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1` and is currently tracked
+- The local `session_summaries` / `code_provenance` projection exists and is
+  enabled by default. It can be disabled with
+  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` and is currently tracked
   under the shared `claims.projection` data-version component rather than its
   own versioned components.
 

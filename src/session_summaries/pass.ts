@@ -4,6 +4,7 @@ import { refreshSessionSummaryEnrichmentsOnce } from "./enrichment.js";
 
 export function runSessionSummaryPass(opts: {
   log: (msg: string) => void;
+  enrichmentLog?: (msg: string) => void;
   onEnrichmentError: (err: unknown) => void;
   onLegacySummaryError: (err: unknown) => void;
   enrichmentLimit?: number;
@@ -11,10 +12,13 @@ export function runSessionSummaryPass(opts: {
   updated: number;
 } {
   let updated = 0;
-  if (config.enableSessionSummaryProjections) {
+  if (
+    config.enableSessionSummaryProjections &&
+    config.enableSessionSummaryEnrichment
+  ) {
     try {
       updated += refreshSessionSummaryEnrichmentsOnce({
-        log: opts.log,
+        log: opts.enrichmentLog ?? opts.log,
         limit: opts.enrichmentLimit,
       }).updated;
     } catch (err) {

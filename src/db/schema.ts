@@ -476,6 +476,20 @@ CREATE TABLE IF NOT EXISTS session_summary_enrichments (
   last_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS session_summary_search_index (
+  session_summary_key TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  corpus_key TEXT NOT NULL,
+  source TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  search_text TEXT NOT NULL,
+  dirty INTEGER NOT NULL DEFAULT 0,
+  projection_hash TEXT,
+  enriched_input_hash TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_summary_key, corpus_key)
+);
+
 CREATE TABLE IF NOT EXISTS attempt_backoffs (
   scope_kind TEXT NOT NULL,
   scope_key TEXT NOT NULL,
@@ -663,6 +677,12 @@ CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
   ON session_summary_enrichments(dirty, last_material_change_at_ms);
 CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_session
   ON session_summary_enrichments(session_id);
+
+-- session_summary_search_index
+CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_session
+  ON session_summary_search_index(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_source_priority
+  ON session_summary_search_index(source, priority);
 
 -- intent_session_summaries
 CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent

@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 export const SESSION_SUMMARY_ENRICHMENT_VERSION = 1;
 
 const HOT_WINDOW_MS = 30 * 60 * 1000;
-const COLD_WINDOW_MS = 6 * 60 * 60 * 1000;
-const MESSAGE_THRESHOLD = 20;
-const PENDING_AGE_THRESHOLD_MS = 30 * 60 * 1000;
+export const SESSION_SUMMARY_COLD_WINDOW_MS = 6 * 60 * 60 * 1000;
+export const SESSION_SUMMARY_MESSAGE_THRESHOLD = 20;
+export const SESSION_SUMMARY_PENDING_AGE_THRESHOLD_MS = 30 * 60 * 1000;
 
 export interface SessionSummaryDeterministicInput {
   sessionSummaryKey: string;
@@ -82,9 +82,9 @@ export function shouldRefreshSessionSummaryNow(
       : nowMs - input.lastActivityMs;
 
   return (
-    lastActivityAgeMs > COLD_WINDOW_MS ||
-    messageDelta >= MESSAGE_THRESHOLD ||
-    pendingAgeMs >= PENDING_AGE_THRESHOLD_MS
+    lastActivityAgeMs > SESSION_SUMMARY_COLD_WINDOW_MS ||
+    messageDelta >= SESSION_SUMMARY_MESSAGE_THRESHOLD ||
+    pendingAgeMs >= SESSION_SUMMARY_PENDING_AGE_THRESHOLD_MS
   );
 }
 
@@ -101,10 +101,10 @@ export function buildDeterministicSessionSummaryDocs(
   const prompts = normalizeItems(input.intents, 4);
   const tools = normalizeItems(input.tools, 6);
 
+  const statusLabel = `${input.status[0]?.toUpperCase() ?? ""}${input.status.slice(1)}`;
   const summaryTextParts = [
     input.title,
-    `Status: ${input.status}`,
-    `${input.intentCount} intents, ${input.editCount} edits, ${input.landedEditCount} landed, ${input.openEditCount} open`,
+    `${statusLabel}: ${input.intentCount} ${pluralize("intent", input.intentCount)}, ${summarizeEditOutcome(input)}`,
   ];
   if (topFiles.length > 0) {
     summaryTextParts.push(
@@ -207,7 +207,7 @@ export function summaryDirtyReasons(
   const stale =
     inputChanged || policyChanged || versionChanged || messageDelta > 0;
   const pendingSinceMs = stale
-    ? (existing?.last_material_change_at_ms ?? nowMs)
+    ? materialChangeTimestamp(existing, input, hasEnrichedSummary, nowMs)
     : null;
   const pendingAgeMs = pendingSinceMs === null ? 0 : nowMs - pendingSinceMs;
   const lastActivityAgeMs =
@@ -234,11 +234,11 @@ export function summaryDirtyReasons(
     reasons.push("summary_policy_changed");
   }
   if (stale) {
-    if (lastActivityAgeMs > COLD_WINDOW_MS) {
+    if (lastActivityAgeMs > SESSION_SUMMARY_COLD_WINDOW_MS) {
       reasons.push("session_cold");
-    } else if (messageDelta >= MESSAGE_THRESHOLD) {
+    } else if (messageDelta >= SESSION_SUMMARY_MESSAGE_THRESHOLD) {
       reasons.push("message_threshold_reached");
-    } else if (pendingAgeMs >= PENDING_AGE_THRESHOLD_MS) {
+    } else if (pendingAgeMs >= SESSION_SUMMARY_PENDING_AGE_THRESHOLD_MS) {
       reasons.push("pending_age_threshold_reached");
     } else if (lastActivityAgeMs <= HOT_WINDOW_MS) {
       reasons.push("session_hot");
@@ -284,7 +284,7 @@ export function mergeSessionSummaryEnrichment(
     inputChanged || policyChanged || versionChanged || messageDelta > 0;
   const materialChange = inputChanged || policyChanged || versionChanged;
   const pendingSinceMs = stale
-    ? (existing?.last_material_change_at_ms ?? nowMs)
+    ? materialChangeTimestamp(existing, input, hasEnrichedSummary, nowMs)
     : null;
   const reasons = summaryDirtyReasons(existing, docs, input, policyHash, nowMs);
   const dirtyReasonJson =
@@ -353,6 +353,46 @@ export function shouldResetSessionSummaryRetryState(
 
 function hashStable(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function pluralize(noun: string, count: number): string {
+  return count === 1 ? noun : `${noun}s`;
+}
+
+function summarizeEditOutcome(
+  input: Pick<
+    SessionSummaryDeterministicInput,
+    "editCount" | "landedEditCount" | "openEditCount"
+  >,
+): string {
+  if (input.editCount === 0) return "no edits recorded";
+  if (input.openEditCount > 0) {
+    return `${input.landedEditCount}/${input.editCount} edits landed, ${input.openEditCount} open`;
+  }
+  if (input.landedEditCount === input.editCount) {
+    return `all ${input.editCount} ${pluralize("edit", input.editCount)} landed`;
+  }
+  if (input.landedEditCount === 0) {
+    return `${input.editCount} ${pluralize("edit", input.editCount)} recorded, none landed`;
+  }
+  return `${input.landedEditCount}/${input.editCount} edits landed`;
+}
+
+function materialChangeTimestamp(
+  existing: Pick<
+    SessionSummaryEnrichmentRow,
+    "last_material_change_at_ms"
+  > | null,
+  input: Pick<SessionSummaryDeterministicInput, "lastActivityMs">,
+  hasEnrichedSummary: boolean,
+  nowMs: number,
+): number {
+  if (!hasEnrichedSummary) {
+    return (
+      input.lastActivityMs ?? existing?.last_material_change_at_ms ?? nowMs
+    );
+  }
+  return existing?.last_material_change_at_ms ?? input.lastActivityMs ?? nowMs;
 }
 
 function normalizeItems(values: string[], limit: number): string[] {

@@ -14,8 +14,10 @@ import {
   SUMMARY_RUNNER_BACKOFF_SCOPE,
 } from "./backoff.js";
 import {
+  SESSION_SUMMARY_COLD_WINDOW_MS,
   SESSION_SUMMARY_ENRICHMENT_VERSION,
-  shouldRefreshSessionSummaryNow,
+  SESSION_SUMMARY_MESSAGE_THRESHOLD,
+  SESSION_SUMMARY_PENDING_AGE_THRESHOLD_MS,
 } from "./model.js";
 import {
   getSessionSummaryRunnerPolicy,
@@ -24,6 +26,10 @@ import {
   type SessionSummaryRunnerPolicy,
 } from "./policy.js";
 import {
+  SESSION_SUMMARY_SEARCH_CORPUS,
+  SESSION_SUMMARY_SEARCH_PRIORITY,
+} from "./search-index.js";
+import {
   loadSessionSummaryEditRows,
   loadSessionSummaryIntentRows,
   summarizeFiles,
@@ -31,6 +37,11 @@ import {
 
 const DEFAULT_ENRICH_LIMIT = 5;
 const DEFAULT_ENRICH_TIMEOUT_MS = 90_000;
+const LAST_ACTIVITY_SQL = `MAX(
+  COALESCE(sess.started_at_ms, 0),
+  COALESCE(sess.ended_at_ms, 0),
+  COALESCE(s.last_intent_ts_ms, 0)
+)`;
 
 // Prompt/template changes should bump SESSION_SUMMARY_ENRICHMENT_VERSION.
 // policyHash intentionally covers runner/config policy only, not prompt text.
@@ -146,6 +157,21 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
        )`,
     );
     params.push(SUMMARY_ROW_BACKOFF_SCOPE, nowMs);
+    where.push(
+      `(
+         (? - ${LAST_ACTIVITY_SQL}) > ?
+         OR MAX(0, COALESCE(sess.message_count, 0) - COALESCE(e.enriched_message_count, 0)) >= ?
+         OR (? - COALESCE(e.last_material_change_at_ms, ?)) >= ?
+       )`,
+    );
+    params.push(
+      nowMs,
+      SESSION_SUMMARY_COLD_WINDOW_MS,
+      SESSION_SUMMARY_MESSAGE_THRESHOLD,
+      nowMs,
+      nowMs,
+      SESSION_SUMMARY_PENDING_AGE_THRESHOLD_MS,
+    );
   }
   if (opts?.sessionId) {
     where.push("e.session_id = ?");
@@ -162,11 +188,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
               e.last_material_change_at_ms,
               e.last_attempted_at_ms,
               COALESCE(sess.message_count, 0) AS message_count,
-              MAX(
-                COALESCE(sess.started_at_ms, 0),
-                COALESCE(sess.ended_at_ms, 0),
-                COALESCE(s.last_intent_ts_ms, 0)
-              ) AS last_activity_ms
+              ${LAST_ACTIVITY_SQL} AS last_activity_ms
        FROM session_summary_enrichments e
        JOIN session_summaries s
          ON s.session_summary_key = e.session_summary_key
@@ -180,25 +202,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     )
     .all(...params, limit) as SessionSummaryRefreshCandidate[];
 
-  const candidates =
-    force === true
-      ? rows
-      : rows.filter((row) =>
-          shouldRefreshSessionSummaryNow(
-            {
-              enriched_message_count: row.enriched_message_count,
-              last_material_change_at_ms: row.last_material_change_at_ms,
-            },
-            {
-              messageCount: row.message_count,
-              lastActivityMs:
-                row.last_activity_ms && row.last_activity_ms > 0
-                  ? row.last_activity_ms
-                  : null,
-            },
-            nowMs,
-          ),
-        );
+  const candidates = rows;
 
   if (candidates.length === 0) {
     return { attempted: 0, updated: 0 };
@@ -284,6 +288,28 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
          OR (summary_input_hash IS NULL AND ? IS NULL)
        )`,
   );
+  const searchIndexExists = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_summary_search_index'",
+    )
+    .get();
+  const updateSearchIndexSuccess = searchIndexExists
+    ? db.prepare(
+        `INSERT INTO session_summary_search_index
+         (session_summary_key, session_id, corpus_key, source, priority,
+          search_text, dirty, projection_hash, enriched_input_hash,
+          updated_at_ms)
+         VALUES (?, ?, ?, 'llm', ?, ?, 0, NULL, ?, ?)
+         ON CONFLICT(session_summary_key, corpus_key) DO UPDATE SET
+           session_id = excluded.session_id,
+           source = excluded.source,
+           priority = excluded.priority,
+           search_text = excluded.search_text,
+           dirty = excluded.dirty,
+           enriched_input_hash = excluded.enriched_input_hash,
+           updated_at_ms = excluded.updated_at_ms`,
+      )
+    : null;
   const updateFailure = db.prepare(
     `UPDATE session_summary_enrichments
      SET last_attempted_at_ms = ?,
@@ -396,6 +422,10 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     }
 
     const prompt = buildLlmPrompt(context);
+    const startedAtMs = Date.now();
+    log(
+      `Session summary enrichment start: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} messages=${row.message_count}`,
+    );
     const result = invokeLlm(prompt, {
       runner: selection.runner,
       timeoutMs,
@@ -404,6 +434,10 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
       model: selection.model,
     });
     if (!result) {
+      const durationMs = Date.now() - startedAtMs;
+      log(
+        `Session summary enrichment failed: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} duration=${formatDurationMs(durationMs)}`,
+      );
       finishAttempt(
         `summary enrichment invocation failed for ${selection.runner}`,
         {
@@ -415,6 +449,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     }
 
     const finishedAtMs = Date.now();
+    const durationMs = finishedAtMs - startedAtMs;
     const write = updateSuccess.run(
       result,
       selection.runner,
@@ -431,12 +466,33 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
       row.summary_input_hash,
     );
     if (write.changes > 0) {
+      updateSearchIndexSuccess?.run(
+        row.session_summary_key,
+        row.session_id,
+        SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
+        SESSION_SUMMARY_SEARCH_PRIORITY.llmSummary,
+        result,
+        row.summary_input_hash,
+        finishedAtMs,
+      );
+      updateSearchIndexSuccess?.run(
+        row.session_summary_key,
+        row.session_id,
+        SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
+        SESSION_SUMMARY_SEARCH_PRIORITY.llmSearch,
+        result,
+        row.summary_input_hash,
+        finishedAtMs,
+      );
       clearAttemptBackoff(
         SUMMARY_GLOBAL_BACKOFF_SCOPE,
         SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
       );
       clearAttemptBackoff(SUMMARY_RUNNER_BACKOFF_SCOPE, selection.runner);
       clearAttemptBackoff(SUMMARY_ROW_BACKOFF_SCOPE, row.session_summary_key);
+      log(
+        `Session summary enrichment success: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} duration=${formatDurationMs(durationMs)} messages=${row.message_count} chars=${result.length}`,
+      );
       updated += 1;
       continue;
     }
@@ -453,6 +509,12 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     log(`Enriched ${updated} session summaries with LLM output`);
   }
   return { attempted: claimedRows.length, updated };
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  if (ms >= 100) return `${Math.round(ms)}ms`;
+  return `${ms.toFixed(1)}ms`;
 }
 
 function loadSummaryPromptContext(sessionSummaryKey: string): {

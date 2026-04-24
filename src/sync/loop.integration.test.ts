@@ -22,6 +22,19 @@ vi.mock("../config.js", () => {
     config: {
       dataDir: tmpDir,
       dbPath: path.join(tmpDir, "data.db"),
+      attemptBackoffScheduleMs: [
+        60_000,
+        2 * 60_000,
+        4 * 60_000,
+        8 * 60_000,
+        16 * 60_000,
+        32 * 60_000,
+        60 * 60_000,
+        2 * 60 * 60_000,
+        4 * 60 * 60_000,
+        6 * 60 * 60_000,
+      ],
+      attemptBackoffJitterRatio: 0.1,
     },
     ensureDataDir: () => fs.mkdirSync(tmpDir, { recursive: true }),
   };

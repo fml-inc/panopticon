@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { ensureSessionSummaryProjections } from "../session_summaries/query.js";
+import { SESSION_SUMMARY_SEARCH_CORPUS } from "../session_summaries/search-index.js";
 import { allTargets } from "../targets/index.js";
 import type {
   ActivitySessionDetail,
@@ -190,13 +191,43 @@ export function listSessions(
                     s.edit_count,
                     s.landed_edit_count,
                     s.open_edit_count,
-                    COALESCE(e.summary_text, s.summary_text) AS summary_text,
-                    COALESCE(e.summary_source, 'deterministic') AS summary_source,
-                    e.summary_generated_at_ms,
-                    COALESCE(e.dirty, 0) AS summary_dirty
+                    s.summary_text AS summary_text,
+                    COALESCE(dsearch.search_text, s.summary_search_text) AS summary_search_text,
+                    'deterministic' AS summary_source,
+                    COALESCE(
+                      esummary.search_text,
+                      CASE
+                        WHEN e.summary_source = 'llm' THEN e.summary_text
+                        ELSE NULL
+                      END
+                    ) AS enriched_summary_text,
+                    COALESCE(
+                      esearch.search_text,
+                      CASE
+                        WHEN e.summary_source = 'llm' THEN e.summary_text
+                        ELSE NULL
+                      END
+                    ) AS enriched_search_text,
+                    CASE
+                      WHEN e.summary_source = 'llm' AND e.summary_text IS NOT NULL THEN 'llm'
+                      ELSE NULL
+                    END AS enrichment_source,
+                    e.summary_runner AS enrichment_runner,
+                    e.summary_model AS enrichment_model,
+                    e.summary_generated_at_ms AS enrichment_generated_at_ms,
+                    COALESCE(e.dirty, 0) AS enrichment_dirty
              FROM session_summaries s
              LEFT JOIN session_summary_enrichments e
                ON e.session_summary_key = s.session_summary_key
+             LEFT JOIN session_summary_search_index dsearch
+               ON dsearch.session_summary_key = s.session_summary_key
+              AND dsearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch}'
+             LEFT JOIN session_summary_search_index esummary
+               ON esummary.session_summary_key = s.session_summary_key
+              AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
+             LEFT JOIN session_summary_search_index esearch
+               ON esearch.session_summary_key = s.session_summary_key
+              AND esearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSearch}'
              WHERE s.session_id IN (${sessionIds.map(() => "?").join(",")})`,
           )
           .all(...sessionIds) as Array<{
@@ -215,9 +246,15 @@ export function listSessions(
           landed_edit_count: number;
           open_edit_count: number;
           summary_text: string | null;
+          summary_search_text: string | null;
           summary_source: string | null;
-          summary_generated_at_ms: number | null;
-          summary_dirty: number;
+          enriched_summary_text: string | null;
+          enriched_search_text: string | null;
+          enrichment_source: string | null;
+          enrichment_runner: string | null;
+          enrichment_model: string | null;
+          enrichment_generated_at_ms: number | null;
+          enrichment_dirty: number;
         }>)
       : [];
 
@@ -251,6 +288,17 @@ export function listSessions(
 
   const summariesBySession = new Map<string, SessionSummary>();
   for (const row of sessionSummaryRows) {
+    const enrichment = {
+      summaryText: row.enriched_summary_text,
+      searchText: row.enriched_search_text,
+      source: parseEnrichmentSource(row.enrichment_source),
+      runner: row.enrichment_runner,
+      model: row.enrichment_model,
+      generatedAt: row.enrichment_generated_at_ms
+        ? toIso(row.enrichment_generated_at_ms)
+        : null,
+      dirty: row.enrichment_dirty === 1,
+    };
     summariesBySession.set(row.session_id, {
       sessionId: row.session_id,
       title: row.title,
@@ -268,11 +316,11 @@ export function listSessions(
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
       summaryText: row.summary_text,
+      summarySearchText: row.summary_search_text,
       summarySource: parseSummarySource(row.summary_source),
-      summaryGeneratedAt: row.summary_generated_at_ms
-        ? toIso(row.summary_generated_at_ms)
-        : null,
-      summaryDirty: row.summary_dirty === 1,
+      summaryGeneratedAt: enrichment.generatedAt,
+      summaryDirty: enrichment.dirty,
+      enrichment,
     });
   }
 
@@ -318,6 +366,9 @@ function formatExplicitSessionSummary(
   fallback: string | null,
 ): string | null {
   if (!sessionSummary) return fallback;
+  if (sessionSummary.enrichment?.summaryText) {
+    return sessionSummary.enrichment.summaryText;
+  }
   if (sessionSummary.summaryText) return sessionSummary.summaryText;
   const files =
     sessionSummary.topFiles.length > 0
@@ -329,7 +380,13 @@ function formatExplicitSessionSummary(
 function parseSummarySource(
   value: string | null,
 ): SessionSummary["summarySource"] {
-  return value === "deterministic" || value === "llm" ? value : null;
+  return value === "deterministic" ? value : null;
+}
+
+function parseEnrichmentSource(
+  value: string | null,
+): NonNullable<SessionSummary["enrichment"]>["source"] {
+  return value === "llm" ? value : null;
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
@@ -665,7 +722,9 @@ export function search(opts: {
   fullPayloads?: boolean;
 }): SearchResult {
   const db = getDb();
-  const sessionSummariesEnabled = config.enableSessionSummaryProjections;
+  const sessionSummariesEnabled =
+    config.enableSessionSummaryProjections &&
+    config.useProjectionSessionSummaryText;
   if (sessionSummariesEnabled) ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
@@ -757,39 +816,80 @@ export function search(opts: {
   const summaryParams: unknown[] = [];
   const summarySql = sessionSummariesEnabled
     ? (() => {
-        const summaryConditions: string[] = [
-          "(s.summary IS NOT NULL OR e.summary_text IS NOT NULL OR ss.summary_text IS NOT NULL OR ss.summary_search_text IS NOT NULL)",
-        ];
-        if (sinceMs) {
-          summaryConditions.push("s.started_at_ms >= ?");
-          summaryParams.push(sinceMs);
+        const sinceClause = sinceMs ? "AND s.started_at_ms >= ?" : "";
+        const addSummaryMatchParams = () => {
+          summaryParams.push(pattern);
+          if (sinceMs) summaryParams.push(sinceMs);
+        };
+        for (let i = 0; i < 5; i += 1) {
+          addSummaryMatchParams();
         }
         const payloadExpr = truncate
           ? "SUBSTR(summary_matches.payload, 1, 500)"
           : "summary_matches.payload";
-        summaryParams.unshift(pattern, pattern, pattern, pattern);
         return `
           SELECT 'summary' as source, summary_matches.session_id as id, summary_matches.session_id,
                  'summary' as event_type, summary_matches.timestamp_ms,
                  NULL as tool_name, NULL as cwd, ${payloadExpr} as payload
           FROM (
-            SELECT s.session_id,
-                   s.started_at_ms as timestamp_ms,
-                  CASE
-                     WHEN e.summary_text LIKE ? THEN e.summary_text
-                     WHEN ss.summary_text LIKE ? THEN ss.summary_text
-                     WHEN ss.summary_search_text LIKE ? THEN ss.summary_search_text
-                     WHEN s.summary LIKE ? THEN s.summary
-                     ELSE NULL
-                   END as payload
-            FROM sessions s
-            LEFT JOIN session_summaries ss
-              ON ss.session_id = s.session_id
-            LEFT JOIN session_summary_enrichments e
-              ON e.session_summary_key = ss.session_summary_key
-            WHERE ${summaryConditions.join(" AND ")}
+            SELECT ranked.session_id,
+                   ranked.timestamp_ms,
+                   ranked.payload
+            FROM (
+              SELECT raw_matches.*,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY raw_matches.session_id
+                       ORDER BY raw_matches.priority DESC, raw_matches.timestamp_ms DESC
+                     ) AS rank
+              FROM (
+                SELECT s.session_id,
+                       s.started_at_ms AS timestamp_ms,
+                       si.search_text AS payload,
+                       si.priority
+                FROM sessions s
+                JOIN session_summary_search_index si
+                  ON si.session_id = s.session_id
+                WHERE si.search_text LIKE ? ${sinceClause}
+                UNION ALL
+                SELECT s.session_id,
+                       s.started_at_ms AS timestamp_ms,
+                       e.summary_text AS payload,
+                       80 AS priority
+                FROM sessions s
+                JOIN session_summaries ss
+                  ON ss.session_id = s.session_id
+                JOIN session_summary_enrichments e
+                  ON e.session_summary_key = ss.session_summary_key
+                WHERE e.summary_text LIKE ? ${sinceClause}
+                UNION ALL
+                SELECT s.session_id,
+                       s.started_at_ms AS timestamp_ms,
+                       ss.summary_text AS payload,
+                       40 AS priority
+                FROM sessions s
+                JOIN session_summaries ss
+                  ON ss.session_id = s.session_id
+                WHERE ss.summary_text LIKE ? ${sinceClause}
+                UNION ALL
+                SELECT s.session_id,
+                       s.started_at_ms AS timestamp_ms,
+                       ss.summary_search_text AS payload,
+                       30 AS priority
+                FROM sessions s
+                JOIN session_summaries ss
+                  ON ss.session_id = s.session_id
+                WHERE ss.summary_search_text LIKE ? ${sinceClause}
+                UNION ALL
+                SELECT s.session_id,
+                       s.started_at_ms AS timestamp_ms,
+                       s.summary AS payload,
+                       0 AS priority
+                FROM sessions s
+                WHERE s.summary LIKE ? ${sinceClause}
+              ) raw_matches
+            ) ranked
+            WHERE ranked.rank = 1
           ) summary_matches
-          WHERE summary_matches.payload IS NOT NULL
         `;
       })()
     : (() => {

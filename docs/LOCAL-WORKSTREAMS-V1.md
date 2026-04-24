@@ -10,8 +10,8 @@ As of `main` on April 22, 2026:
 - `session_summaries`, `intent_session_summaries`, and `code_provenance` are in
   the core schema.
 - `rebuildIntentProjection()` rebuilds these projections through
-  `rebuildSessionSummaryProjections()` when
-  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`.
+  `rebuildSessionSummaryProjections()` by default. Set
+  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` to disable them.
 - The current grouping rule is intentionally simple: one derived session summary
   row per `session_id`, keyed as `ss:local:<session_id>`.
 - The exposed service and MCP tool names are:
@@ -20,7 +20,8 @@ As of `main` on April 22, 2026:
   - `why_code`
   - `recent_work_on_path`
   - `file_overview`
-- Those tools are feature-gated behind the same environment flag.
+- Those tools are enabled by default and hidden when the same environment flag
+  is set to `0`/`false`.
 - `listSessions()` also enriches session results with session-summary metadata
   when the flag is enabled.
 - `why_code`, `recent_work_on_path`, and `file_overview` are deterministic
@@ -288,8 +289,8 @@ The current transport layer exposes:
     service.fileOverview(asType<FileOverviewInput>(params)),
 ```
 
-These tools are only registered when
-`PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`.
+These tools are registered by default. Set
+`PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` to hide them.
 
 ## API Contract
 

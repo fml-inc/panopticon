@@ -17,6 +17,19 @@ vi.mock("./config.js", () => {
     config: {
       dataDir: tmpDir,
       dbPath: path.join(tmpDir, "data.db"),
+      attemptBackoffScheduleMs: [
+        60_000,
+        2 * 60_000,
+        4 * 60_000,
+        8 * 60_000,
+        16 * 60_000,
+        32 * 60_000,
+        60 * 60_000,
+        2 * 60 * 60_000,
+        4 * 60 * 60_000,
+        6 * 60 * 60_000,
+      ],
+      attemptBackoffJitterRatio: 0.1,
     },
     ensureDataDir: () => fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -30,6 +43,7 @@ import {
   isAttemptBackoffActive,
   recordAttemptBackoffFailure,
 } from "./attempt-backoff.js";
+import { config } from "./config.js";
 import { closeDb, getDb } from "./db/schema.js";
 
 describe("attempt backoff", () => {
@@ -69,6 +83,25 @@ describe("attempt backoff", () => {
     expect(applyAttemptBackoffJitter(60_000, () => 0)).toBe(54_000);
     expect(applyAttemptBackoffJitter(60_000, () => 0.5)).toBe(60_000);
     expect(applyAttemptBackoffJitter(60_000, () => 1)).toBe(66_000);
+  });
+
+  it("uses configured defaults for schedule and jitter", () => {
+    const mutableConfig = config as {
+      attemptBackoffScheduleMs: number[];
+      attemptBackoffJitterRatio: number;
+    };
+    const originalSchedule = mutableConfig.attemptBackoffScheduleMs;
+    const originalJitter = mutableConfig.attemptBackoffJitterRatio;
+    try {
+      mutableConfig.attemptBackoffScheduleMs = [5, 10];
+      mutableConfig.attemptBackoffJitterRatio = 0;
+
+      expect(computeAttemptBackoffDelayMs(3)).toBe(10);
+      expect(applyAttemptBackoffJitter(100, () => 0)).toBe(100);
+    } finally {
+      mutableConfig.attemptBackoffScheduleMs = originalSchedule;
+      mutableConfig.attemptBackoffJitterRatio = originalJitter;
+    }
   });
 
   it("persists and clears backoff state by scope", () => {

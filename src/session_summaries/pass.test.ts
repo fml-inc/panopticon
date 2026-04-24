@@ -9,6 +9,7 @@ const { refreshSessionSummaryEnrichmentsOnceMock, generateSummariesOnceMock } =
 vi.mock("../config.js", () => ({
   config: {
     enableSessionSummaryProjections: true,
+    enableSessionSummaryEnrichment: true,
   },
 }));
 
@@ -21,11 +22,15 @@ vi.mock("../summary/index.js", () => ({
   generateSummariesOnce: generateSummariesOnceMock,
 }));
 
+import { config } from "../config.js";
 import { runSessionSummaryPass } from "./pass.js";
 
 describe("runSessionSummaryPass", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (
+      config as { enableSessionSummaryEnrichment: boolean }
+    ).enableSessionSummaryEnrichment = true;
     refreshSessionSummaryEnrichmentsOnceMock.mockReturnValue({ updated: 0 });
     generateSummariesOnceMock.mockReturnValue({ updated: 0 });
   });
@@ -48,5 +53,22 @@ describe("runSessionSummaryPass", () => {
     expect(onEnrichmentError).toHaveBeenCalledOnce();
     expect(onLegacySummaryError).not.toHaveBeenCalled();
     expect(result).toEqual({ updated: 3 });
+  });
+
+  it("leaves llm enrichment idle when the enrichment flag is disabled", () => {
+    (
+      config as { enableSessionSummaryEnrichment: boolean }
+    ).enableSessionSummaryEnrichment = false;
+    generateSummariesOnceMock.mockReturnValue({ updated: 2 });
+
+    const result = runSessionSummaryPass({
+      log: vi.fn(),
+      onEnrichmentError: vi.fn(),
+      onLegacySummaryError: vi.fn(),
+    });
+
+    expect(refreshSessionSummaryEnrichmentsOnceMock).not.toHaveBeenCalled();
+    expect(generateSummariesOnceMock).toHaveBeenCalledOnce();
+    expect(result).toEqual({ updated: 2 });
   });
 });

@@ -13,6 +13,10 @@ import {
 } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
 import {
+  SESSION_SUMMARY_SEARCH_CORPUS,
+  SESSION_SUMMARY_SEARCH_PRIORITY,
+} from "./search-index.js";
+import {
   loadSessionSummaryEditRows,
   loadSessionSummaryIntentRows,
   summarizeFiles,
@@ -63,11 +67,16 @@ export function rebuildSessionSummaryProjections(opts?: {
         db.prepare(
           `DELETE FROM intent_session_summaries WHERE session_summary_id = ?`,
         ).run(row.id);
+        db.prepare(
+          `DELETE FROM session_summary_search_index
+           WHERE session_summary_key = ?`,
+        ).run(key);
         db.prepare(`DELETE FROM session_summaries WHERE id = ?`).run(row.id);
       }
     } else {
       db.prepare(`DELETE FROM code_provenance`).run();
       db.prepare(`DELETE FROM intent_session_summaries`).run();
+      db.prepare(`DELETE FROM session_summary_search_index`).run();
       db.prepare(`DELETE FROM session_summaries`).run();
     }
 
@@ -148,6 +157,26 @@ export function rebuildSessionSummaryProjections(opts?: {
          failure_count = excluded.failure_count,
          last_error = excluded.last_error`,
     );
+    const upsertSearchIndexStmt = db.prepare(
+      `INSERT INTO session_summary_search_index
+       (session_summary_key, session_id, corpus_key, source, priority,
+        search_text, dirty, projection_hash, enriched_input_hash, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_summary_key, corpus_key) DO UPDATE SET
+         session_id = excluded.session_id,
+         source = excluded.source,
+         priority = excluded.priority,
+         search_text = excluded.search_text,
+         dirty = excluded.dirty,
+         projection_hash = excluded.projection_hash,
+         enriched_input_hash = excluded.enriched_input_hash,
+         updated_at_ms = excluded.updated_at_ms`,
+    );
+    const deleteSearchIndexCorpusStmt = db.prepare(
+      `DELETE FROM session_summary_search_index
+       WHERE session_summary_key = ?
+         AND corpus_key IN (?, ?)`,
+    );
     const provenanceStmt = db.prepare(
       `INSERT INTO code_provenance
        (repository, file_path, binding_level, start_line, end_line,
@@ -171,6 +200,10 @@ export function rebuildSessionSummaryProjections(opts?: {
       const sessionMeta = db
         .prepare(
           `SELECT machine,
+                  target,
+                  project,
+                  cwd,
+                  first_prompt,
                   started_at_ms,
                   ended_at_ms,
                   message_count
@@ -180,6 +213,10 @@ export function rebuildSessionSummaryProjections(opts?: {
         .get(session.session_id) as
         | {
             machine: string | null;
+            target: string | null;
+            project: string | null;
+            cwd: string | null;
+            first_prompt: string | null;
             started_at_ms: number | null;
             ended_at_ms: number | null;
             message_count: number | null;
@@ -235,9 +272,20 @@ export function rebuildSessionSummaryProjections(opts?: {
         null;
       const cwd =
         cwdMeta?.cwd ??
+        sessionMeta?.cwd ??
         intents.map((intent) => intent.cwd).find(Boolean) ??
         null;
       const title = buildTitle(intents[0]?.prompt_text ?? "");
+      if (
+        isInternalSummarySession({
+          cwd,
+          project: sessionMeta?.project ?? null,
+          promptText: intents[0]?.prompt_text ?? sessionMeta?.first_prompt,
+          title,
+        })
+      ) {
+        continue;
+      }
       const summaryKey = sessionSummaryKey(session.session_id);
       const files = summarizeFiles(edits);
       const tools = summarizeTools(edits);
@@ -353,6 +401,65 @@ export function rebuildSessionSummaryProjections(opts?: {
         mergedEnrichment.failure_count,
         mergedEnrichment.last_error,
       );
+      upsertSearchIndexStmt.run(
+        mergedEnrichment.session_summary_key,
+        mergedEnrichment.session_id,
+        SESSION_SUMMARY_SEARCH_CORPUS.deterministicSummary,
+        "deterministic",
+        SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSummary,
+        docs.summaryText,
+        0,
+        mergedEnrichment.projection_hash,
+        null,
+        nowMs,
+      );
+      upsertSearchIndexStmt.run(
+        mergedEnrichment.session_summary_key,
+        mergedEnrichment.session_id,
+        SESSION_SUMMARY_SEARCH_CORPUS.deterministicSearch,
+        "deterministic",
+        SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSearch,
+        docs.summarySearchText,
+        0,
+        mergedEnrichment.projection_hash,
+        null,
+        nowMs,
+      );
+      if (
+        mergedEnrichment.summary_source === "llm" &&
+        mergedEnrichment.summary_text
+      ) {
+        upsertSearchIndexStmt.run(
+          mergedEnrichment.session_summary_key,
+          mergedEnrichment.session_id,
+          SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
+          "llm",
+          SESSION_SUMMARY_SEARCH_PRIORITY.llmSummary,
+          mergedEnrichment.summary_text,
+          mergedEnrichment.dirty,
+          mergedEnrichment.projection_hash,
+          mergedEnrichment.enriched_input_hash,
+          nowMs,
+        );
+        upsertSearchIndexStmt.run(
+          mergedEnrichment.session_summary_key,
+          mergedEnrichment.session_id,
+          SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
+          "llm",
+          SESSION_SUMMARY_SEARCH_PRIORITY.llmSearch,
+          mergedEnrichment.summary_text,
+          mergedEnrichment.dirty,
+          mergedEnrichment.projection_hash,
+          mergedEnrichment.enriched_input_hash,
+          nowMs,
+        );
+      } else {
+        deleteSearchIndexCorpusStmt.run(
+          mergedEnrichment.session_summary_key,
+          SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
+          SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
+        );
+      }
 
       for (const intent of intents) {
         membershipStmt.run(
@@ -444,10 +551,20 @@ export function rebuildSessionSummaryProjections(opts?: {
           `DELETE FROM session_summary_enrichments
            WHERE session_summary_key = ?`,
         ).run(key);
+        db.prepare(
+          `DELETE FROM session_summary_search_index
+           WHERE session_summary_key = ?`,
+        ).run(key);
       }
     } else {
       db.prepare(
         `DELETE FROM session_summary_enrichments
+         WHERE session_summary_key NOT IN (
+           SELECT session_summary_key FROM session_summaries
+         )`,
+      ).run();
+      db.prepare(
+        `DELETE FROM session_summary_search_index
          WHERE session_summary_key NOT IN (
            SELECT session_summary_key FROM session_summaries
          )`,
@@ -482,6 +599,44 @@ function buildTitle(promptText: string): string {
   const compact = promptText.replace(/\s+/g, " ").trim();
   if (!compact) return "untitled session summary";
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function isInternalSummarySession(input: {
+  cwd: string | null;
+  project: string | null;
+  promptText: string | null;
+  title: string;
+}): boolean {
+  const project = input.project?.trim().toLowerCase() ?? "";
+  if (project === "claude-headless" || project === "codex-headless") {
+    return true;
+  }
+  if (isPanopticonHeadlessCwd(input.cwd)) return true;
+  return (
+    isInternalSummaryPrompt(input.promptText) ||
+    isInternalSummaryPrompt(input.title)
+  );
+}
+
+function isPanopticonHeadlessCwd(cwd: string | null): boolean {
+  const normalized = cwd?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+  return (
+    normalized.endsWith("/panopticon/claude-headless") ||
+    normalized.endsWith("/panopticon/codex-headless")
+  );
+}
+
+function isInternalSummaryPrompt(value: string | null): boolean {
+  const text = value?.replace(/\s+/g, " ").trim() ?? "";
+  const normalized = text.startsWith("Title: ") ? text.slice(7).trim() : text;
+  return (
+    normalized.startsWith("Summarize this coding session segment ") ||
+    normalized.startsWith("Combine these 5 session phase summaries ") ||
+    (normalized.startsWith("Summarize session ") &&
+      normalized.includes(
+        ". Start by calling the timeline tool with sessionId ",
+      ))
+  );
 }
 
 function readFileSnapshot(

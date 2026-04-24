@@ -1,18 +1,5 @@
+import { config } from "./config.js";
 import { getDb } from "./db/schema.js";
-
-const ATTEMPT_BACKOFF_SCHEDULE_MS = [
-  60_000,
-  2 * 60_000,
-  4 * 60_000,
-  8 * 60_000,
-  16 * 60_000,
-  32 * 60_000,
-  60 * 60_000,
-  2 * 60 * 60_000,
-  4 * 60 * 60_000,
-  6 * 60 * 60_000,
-] as const;
-const ATTEMPT_BACKOFF_JITTER_RATIO = 0.1;
 
 export interface AttemptBackoffRow {
   scope_kind: string;
@@ -24,23 +11,24 @@ export interface AttemptBackoffRow {
   updated_at_ms: number;
 }
 
-export function computeAttemptBackoffDelayMs(failureCount: number): number {
+export function computeAttemptBackoffDelayMs(
+  failureCount: number,
+  scheduleMs: readonly number[] = config.attemptBackoffScheduleMs,
+): number {
   if (failureCount <= 0) return 0;
-  return ATTEMPT_BACKOFF_SCHEDULE_MS[
-    Math.min(failureCount - 1, ATTEMPT_BACKOFF_SCHEDULE_MS.length - 1)
-  ];
+  if (scheduleMs.length === 0) return 0;
+  return scheduleMs[Math.min(failureCount - 1, scheduleMs.length - 1)];
 }
 
 export function applyAttemptBackoffJitter(
   delayMs: number,
   random = Math.random,
+  jitterRatio = config.attemptBackoffJitterRatio,
 ): number {
   if (delayMs <= 0) return 0;
   const sample = Math.min(1, Math.max(0, random()));
-  const factor =
-    1 -
-    ATTEMPT_BACKOFF_JITTER_RATIO +
-    sample * (2 * ATTEMPT_BACKOFF_JITTER_RATIO);
+  const boundedJitterRatio = Math.min(1, Math.max(0, jitterRatio));
+  const factor = 1 - boundedJitterRatio + sample * (2 * boundedJitterRatio);
   return Math.max(1, Math.round(delayMs * factor));
 }
 

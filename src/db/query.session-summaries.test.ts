@@ -72,6 +72,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_search_index").run();
   db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
@@ -238,7 +239,7 @@ describe("listSessions session summaries", () => {
       openEditCount: 0,
     });
     expect(result.sessions[0].sessionSummary?.summaryText).toContain(
-      "Status: mixed",
+      "Mixed: 2 intents, 1/2 edits landed",
     );
     expect(result.sessions[0].summary).toBe("legacy weak summary");
   });
@@ -329,10 +330,12 @@ describe("listSessions session summaries", () => {
     ).useProjectionSessionSummaryText = true;
 
     const projected = listSessions({ limit: 5 });
-    expect(projected.sessions[0].summary).toContain("Status: mixed");
+    expect(projected.sessions[0].summary).toContain(
+      "Mixed: 2 intents, 1/2 edits landed",
+    );
     expect(projected.sessions[0].summary).toContain(file);
     expect(projected.sessions[0].sessionSummary?.summaryText).toContain(
-      "Status: mixed",
+      "Mixed: 2 intents, 1/2 edits landed",
     );
   });
 
@@ -416,6 +419,10 @@ describe("listSessions session summaries", () => {
     });
 
     rebuildLocalReadModels();
+
+    (
+      config as { useProjectionSessionSummaryText: boolean }
+    ).useProjectionSessionSummaryText = true;
 
     const summaryTextResult = search({
       query: "mixed",
@@ -519,11 +526,33 @@ describe("listSessions session summaries", () => {
     const result = listSessions({ limit: 5 });
     expect(result.sessions[0].summary).toBe("legacy weak summary");
     expect(result.sessions[0].sessionSummary).toMatchObject({
-      summaryText: "LLM outcome summary.",
-      summarySource: "llm",
+      summarySource: "deterministic",
       summaryGeneratedAt: new Date(1_700_000_010_000).toISOString(),
       summaryDirty: false,
+      enrichment: {
+        summaryText: "LLM outcome summary.",
+        searchText: "LLM outcome summary.",
+        source: "llm",
+        runner: "claude",
+        model: "sonnet",
+        generatedAt: new Date(1_700_000_010_000).toISOString(),
+        dirty: false,
+      },
     });
+
+    const legacySearchResult = search({
+      query: "LLM outcome",
+      limit: 10,
+    });
+    expect(
+      legacySearchResult.results.some(
+        (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(false);
+
+    (
+      config as { useProjectionSessionSummaryText: boolean }
+    ).useProjectionSessionSummaryText = true;
 
     const searchResult = search({
       query: "LLM outcome",
