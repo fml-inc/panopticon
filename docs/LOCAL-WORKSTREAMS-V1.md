@@ -150,7 +150,7 @@ V1 is meant to answer:
 2. What explicit session summary does this intent belong to?
 3. What recently touched this path?
 4. What is the current local overview of this file and what else changed with it?
-5. What session summaries are active, landed, mixed, or abandoned on this machine?
+5. What session summaries are active, landed, mixed, read-only, or unlanded on this machine?
 
 ## Addressability Model
 
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   machine TEXT NOT NULL DEFAULT 'local',
   origin_scope TEXT NOT NULL DEFAULT 'local',
   title TEXT NOT NULL,
-  status TEXT NOT NULL, -- active | landed | mixed | abandoned
+  status TEXT NOT NULL, -- active | landed | mixed | read-only | unlanded
   first_intent_ts_ms INTEGER,
   last_intent_ts_ms INTEGER,
   intent_count INTEGER NOT NULL DEFAULT 0,
@@ -188,7 +188,6 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
   summary_text TEXT,
-  projection_version INTEGER NOT NULL DEFAULT 1,
   projection_hash TEXT NOT NULL,
   projected_at_ms INTEGER NOT NULL,
   source_last_seen_at_ms INTEGER,
@@ -294,7 +293,8 @@ Current status derivation:
 - `active`: has unreconciled edits or fresh intents with unknown outcome
 - `landed`: all known edits landed and no open edits remain
 - `mixed`: some landed, some churned/reverted, no open edits remain
-- `abandoned`: no landed edits and no open edits remain
+- `read-only`: no edits were recorded for the session
+- `unlanded`: edits were recorded, but none landed and no open edits remain
 
 ### `intent_session_summaries`
 
@@ -335,7 +335,7 @@ The current service surface in `src/service/types.ts` exposes:
 export interface ListSessionSummariesInput {
   repository?: string;
   cwd?: string;
-  status?: "active" | "landed" | "mixed" | "abandoned";
+  status?: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   path?: string;
   since?: string;
   limit?: number;

@@ -1,5 +1,5 @@
 import { config } from "../config.js";
-import { getDb } from "../db/schema.js";
+import { getDb, needsSessionSummaryProjectionRebuild } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import { resolveFilePathFromCwd } from "../paths.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
@@ -10,7 +10,7 @@ export interface SessionSummaryProjectionRow {
   session_summary_key: string;
   session_id: string;
   title: string;
-  status: "active" | "landed" | "mixed" | "abandoned";
+  status: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   repository: string | null;
   cwd: string | null;
   branch: string | null;
@@ -25,7 +25,6 @@ export interface SessionSummaryProjectionRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  projection_version: number;
   projection_hash: string;
   projected_at_ms: number;
   source_last_seen_at_ms: number | null;
@@ -42,7 +41,7 @@ export interface SessionSummaryProjectionRow {
 export interface SessionSummaryRow {
   session_id: string;
   title: string;
-  status: "active" | "landed" | "mixed" | "abandoned";
+  status: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   repository: string | null;
   cwd: string | null;
   branch: string | null;
@@ -57,7 +56,6 @@ export interface SessionSummaryRow {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  projection_version: number;
   projection_hash: string;
   projected_at_ms: number;
   source_last_seen_at_ms: number | null;
@@ -211,7 +209,7 @@ export interface FileOverviewResult {
 export function listSessionSummaries(opts?: {
   repository?: string;
   cwd?: string;
-  status?: "active" | "landed" | "mixed" | "abandoned";
+  status?: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   path?: string;
   since?: string;
   limit?: number;
@@ -637,6 +635,10 @@ export function fileOverview(opts: {
 
 export function ensureSessionSummaryProjections(): void {
   if (!config.enableSessionSummaryProjections) return;
+  if (needsSessionSummaryProjectionRebuild()) {
+    rebuildSessionSummaryProjections();
+    return;
+  }
   const db = getDb();
   const intentCount = (
     db.prepare(`SELECT COUNT(*) AS c FROM intent_units`).get() as { c: number }
@@ -675,7 +677,7 @@ export function ensureSessionSummaryProjections(): void {
 function listSessionSummaryProjections(opts?: {
   repository?: string;
   cwd?: string;
-  status?: "active" | "landed" | "mixed" | "abandoned";
+  status?: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   path?: string;
   since?: string;
   limit?: number;
@@ -705,7 +707,6 @@ function listSessionSummaryProjections(opts?: {
            s.landed_edit_count,
            s.open_edit_count,
            s.summary_text AS summary_text,
-           s.projection_version,
            s.projection_hash,
            s.projected_at_ms,
            s.source_last_seen_at_ms,
@@ -809,7 +810,6 @@ function getSessionSummaryProjectionDetail(opts: {
               s.landed_edit_count,
               s.open_edit_count,
               s.summary_text AS summary_text,
-              s.projection_version,
               s.projection_hash,
               s.projected_at_ms,
               s.source_last_seen_at_ms,
@@ -910,7 +910,6 @@ function toSessionSummaryRow(
     landed_edit_count: row.landed_edit_count,
     open_edit_count: row.open_edit_count,
     summary_text: row.summary_text,
-    projection_version: row.projection_version,
     projection_hash: row.projection_hash,
     projected_at_ms: row.projected_at_ms,
     source_last_seen_at_ms: row.source_last_seen_at_ms,

@@ -30,8 +30,7 @@ Phase 2 wording in a few places:
 - The local `session_summaries` / `code_provenance` projection exists and is
   enabled by default. It can be disabled with
   `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` and is currently tracked
-  under the shared `claims.projection` data-version component rather than its
-  own versioned components.
+  under its own `session_summaries.projection` data-version component.
 
 ## Why This Comes First
 
@@ -133,9 +132,8 @@ typed-ref shape, landed core cutover, and optional extension notes.
 2. Continue adding richer file-centric query paths on top of the normalized
    repo/file relations. `file_overview` is now landed as the first aggregate
    file-centric query in this slice.
-3. Decide whether local projection tables should remain under the shared
-   `claims.projection` component or get explicit versioned components:
-   - session summaries
+3. Decide whether local projection tables should remain grouped under
+   `session_summaries.projection` or split further:
    - code provenance
    - any future materialized repo/file views
 4. Revisit the `messages` ordinal fallback for UUID-less rows before later
@@ -188,13 +186,19 @@ Current components:
 - `intent.landed_from_disk`
 - `claims.active`
 - `claims.projection`
+- `session_summaries.projection`
 
 `claims.projection` currently covers:
 
 - `intent_units`
 - `intent_edits`
-- and, when session-summary projections are enabled,
-  `session_summaries`, `intent_session_summaries`, and `code_provenance`
+
+`session_summaries.projection` currently covers:
+
+- `session_summaries`
+- `session_summary_search_index`
+- `intent_session_summaries`
+- `code_provenance`
 
 That enables startup to distinguish:
 

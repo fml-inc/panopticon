@@ -368,7 +368,7 @@ if (config.enableSessionSummaryProjections) {
         .describe("Filter to a repository path or identifier"),
       cwd: z.string().optional().describe("Filter to a working directory"),
       status: z
-        .enum(["active", "landed", "mixed", "abandoned"])
+        .enum(["active", "landed", "mixed", "read-only", "unlanded"])
         .optional()
         .describe("Filter by derived session-summary status"),
       path: z

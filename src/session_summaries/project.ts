@@ -2,13 +2,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { clearAttemptBackoff } from "../attempt-backoff.js";
 import { config } from "../config.js";
-import { getDb } from "../db/schema.js";
+import { getDb, markSessionSummaryProjectionComplete } from "../db/schema.js";
 import { canUseLocalPathApis } from "../paths.js";
 import { SUMMARY_ROW_BACKOFF_SCOPE } from "./backoff.js";
 import {
   buildDeterministicSessionSummaryDocs,
   mergeSessionSummaryEnrichment,
-  SESSION_SUMMARY_PROJECTION_VERSION,
   type SessionSummaryEnrichmentRow,
   shouldResetSessionSummaryRetryState,
 } from "./model.js";
@@ -30,7 +29,8 @@ const ORIGIN_SCOPE = "local";
 const STATUS_ACTIVE = "active";
 const STATUS_LANDED = "landed";
 const STATUS_MIXED = "mixed";
-const STATUS_ABANDONED = "abandoned";
+const STATUS_READ_ONLY = "read-only";
+const STATUS_UNLANDED = "unlanded";
 const MIN_SPAN_SNIPPET_LEN = 8;
 
 interface FileSnapshot {
@@ -58,7 +58,6 @@ interface ExistingSessionSummaryProjection {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  projection_version: number;
   projection_hash: string | null;
   projected_at_ms: number | null;
   source_last_seen_at_ms: number | null;
@@ -84,7 +83,6 @@ interface SessionSummaryProjectionValues {
   landed_edit_count: number;
   open_edit_count: number;
   summary_text: string | null;
-  projection_version: number;
   projection_hash: string;
   projected_at_ms: number;
   source_last_seen_at_ms: number | null;
@@ -137,7 +135,6 @@ export function rebuildSessionSummaryProjections(opts?: {
                   landed_edit_count,
                   open_edit_count,
                   summary_text,
-                  projection_version,
                   projection_hash,
                   projected_at_ms,
                   source_last_seen_at_ms,
@@ -177,11 +174,11 @@ export function rebuildSessionSummaryProjections(opts?: {
     const sessionSummaryStmt = db.prepare(
       `INSERT INTO session_summaries
        (session_summary_key, session_id, repository, cwd, branch, worktree,
-        actor, machine, origin_scope, title, status, first_intent_ts_ms,
-        last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
-        open_edit_count, summary_text, projection_version, projection_hash,
+       actor, machine, origin_scope, title, status, first_intent_ts_ms,
+       last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
+        open_edit_count, summary_text, projection_hash,
         projected_at_ms, source_last_seen_at_ms, reason_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const membershipStmt = db.prepare(
       `INSERT INTO intent_session_summaries
@@ -347,11 +344,13 @@ export function rebuildSessionSummaryProjections(opts?: {
       const status =
         openEditCount > 0
           ? STATUS_ACTIVE
-          : edits.length === 0 || landedEditCount === 0
-            ? STATUS_ABANDONED
-            : landedEditCount === edits.length
-              ? STATUS_LANDED
-              : STATUS_MIXED;
+          : edits.length === 0
+            ? STATUS_READ_ONLY
+            : landedEditCount === 0
+              ? STATUS_UNLANDED
+              : landedEditCount === edits.length
+                ? STATUS_LANDED
+                : STATUS_MIXED;
       const repository =
         repoMeta?.repository ??
         intents.map((intent) => intent.repository).find(Boolean) ??
@@ -441,7 +440,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         landed_edit_count: landedEditCount,
         open_edit_count: openEditCount,
         summary_text: docs.summaryText,
-        projection_version: SESSION_SUMMARY_PROJECTION_VERSION,
         projection_hash: docs.projectionHash,
         projected_at_ms: nowMs,
         source_last_seen_at_ms: lastActivityMs,
@@ -471,7 +469,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         projectionValues.landed_edit_count,
         projectionValues.open_edit_count,
         projectionValues.summary_text,
-        projectionValues.projection_version,
         projectionValues.projection_hash,
         projectionValues.projected_at_ms,
         projectionValues.source_last_seen_at_ms,
@@ -671,7 +668,11 @@ export function rebuildSessionSummaryProjections(opts?: {
     return { sessionSummaries, memberships, provenance };
   });
 
-  return tx();
+  const result = tx();
+  if (!opts?.sessionId) {
+    markSessionSummaryProjectionComplete();
+  }
+  return result;
 }
 
 export function sessionSummaryKey(sessionId: string): string {
@@ -758,7 +759,6 @@ function existingSummaryProjectionValues(
     landed_edit_count: existing.landed_edit_count,
     open_edit_count: existing.open_edit_count,
     summary_text: existing.summary_text,
-    projection_version: existing.projection_version,
     projection_hash: existing.projection_hash ?? "",
     projected_at_ms: existing.projected_at_ms ?? Date.now(),
     source_last_seen_at_ms: existing.source_last_seen_at_ms,
@@ -779,12 +779,6 @@ function shouldDeferDeterministicProjection(input: {
   if (!input.existingSummary.summary_text) return false;
   if (!input.existingSummary.projection_hash) return false;
   if (!input.existingSummary.projected_at_ms) return false;
-  if (
-    input.existingSummary.projection_version !==
-    SESSION_SUMMARY_PROJECTION_VERSION
-  ) {
-    return false;
-  }
   if (input.deterministicCorpusCount < 2) return false;
   if (input.existingSummary.projection_hash === input.nextProjectionHash) {
     return true;

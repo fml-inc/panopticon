@@ -333,7 +333,7 @@ describe("listSessions session summaries", () => {
     expect(projected.sessions[0].summary).toContain(
       "Mixed: 2 intents, 1/2 edits landed",
     );
-    expect(projected.sessions[0].summary).toContain(file);
+    expect(projected.sessions[0].summary).toContain(path.basename(file));
     expect(projected.sessions[0].sessionSummary?.summaryText).toContain(
       "Mixed: 2 intents, 1/2 edits landed",
     );

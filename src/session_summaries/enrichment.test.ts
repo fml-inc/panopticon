@@ -31,6 +31,66 @@ const BASE_INPUT = {
 };
 
 describe("session summary enrichment merge", () => {
+  it("removes absolute workspace paths from deterministic docs", () => {
+    const docs = buildDeterministicSessionSummaryDocs({
+      ...BASE_INPUT,
+      repository: "/Users/gus/workspace/panopticon",
+      cwd: "/Users/gus/workspace/panopticon",
+      files: [
+        {
+          filePath:
+            "/Users/gus/workspace/panopticon/src/session_summaries/model.ts",
+          editCount: 2,
+          landedCount: 1,
+        },
+      ],
+    });
+
+    const deterministicSearch = docs.searchCorpusRows.find(
+      (row) => row.corpusKey === "deterministic_search",
+    );
+
+    expect(docs.summaryText).toContain("src/session_summaries/model.ts");
+    expect(docs.summaryText).not.toContain("/Users/gus/workspace/panopticon");
+    expect(deterministicSearch?.searchText).toContain("Repository: panopticon");
+    expect(deterministicSearch?.searchText).toContain(
+      "Files: src/session_summaries/model.ts (2 edits, 1 landed)",
+    );
+    expect(deterministicSearch?.searchText).not.toContain("Cwd:");
+    expect(deterministicSearch?.searchText).not.toContain(
+      "/Users/gus/workspace/panopticon",
+    );
+  });
+
+  it("strips ephemeral worktree prefixes from deterministic file paths", () => {
+    const docs = buildDeterministicSessionSummaryDocs({
+      ...BASE_INPUT,
+      repository: "fml-inc/panopticon",
+      cwd: "/Users/gus/workspace/panopticon",
+      files: [
+        {
+          filePath:
+            "/Users/gus/workspace/panopticon/.worktrees/pr193/src/db/schema.ts",
+          editCount: 3,
+          landedCount: 1,
+        },
+      ],
+    });
+
+    const deterministicSearch = docs.searchCorpusRows.find(
+      (row) => row.corpusKey === "deterministic_search",
+    );
+
+    expect(docs.summaryText).toContain("src/db/schema.ts");
+    expect(docs.summaryText).not.toContain(".worktrees/pr193");
+    expect(deterministicSearch?.searchText).toContain(
+      "Files: src/db/schema.ts (3 edits, 1 landed)",
+    );
+    expect(deterministicSearch?.searchText).toContain(
+      "Repository: fml-inc/panopticon",
+    );
+  });
+
   it("marks a hot session stale without making it immediately refreshable", () => {
     const merged = mergeSessionSummaryEnrichment(
       null,

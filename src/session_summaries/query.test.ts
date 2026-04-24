@@ -32,7 +32,12 @@ vi.mock("../config.js", () => {
 
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
-import { closeDb, getDb } from "../db/schema.js";
+import { Database } from "../db/driver.js";
+import {
+  closeDb,
+  getDb,
+  needsSessionSummaryProjectionRebuild,
+} from "../db/schema.js";
 import {
   insertHookEvent,
   upsertSessionCwd,
@@ -211,6 +216,99 @@ describe("session_summaries", () => {
     expect(detail?.files).toEqual([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
+  });
+
+  it("marks prompt-only sessions as read-only", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "investigate flaky tests", session_id: SESSION },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("read-only");
+    expect(rows[0].summary_text).toContain(
+      "Read-only: 1 intent, no edits recorded",
+    );
+  });
+
+  it("marks sessions with only non-landed edits as unlanded", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "unlanded-summary.ts");
+    fs.writeFileSync(file, "baseline");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "try a speculative patch", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "attempted implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("unlanded");
+    expect(rows[0].summary_text).toContain(
+      "Unlanded: 1 intent, 1 edit recorded, none landed",
+    );
   });
 
   it("returns llm enrichment metadata when present", () => {
@@ -684,6 +782,92 @@ describe("session_summaries", () => {
     expect(refreshed.projected_at_ms).toBe(41_000);
     expect(refreshed.source_last_seen_at_ms).toBe(21_000);
     expect(refreshed.intent_count).toBe(2);
+  });
+
+  it("rebuilds session summaries when the summary projection component is stale", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "stale-summary.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1_000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1_100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2_000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const before = getDb()
+      .prepare(
+        `SELECT projected_at_ms
+         FROM session_summaries
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as { projected_at_ms: number };
+
+    closeDb();
+    const raw = new Database(config.dbPath);
+    raw
+      .prepare(
+        `UPDATE data_versions
+         SET version = ?, updated_at_ms = ?
+         WHERE component = ?`,
+      )
+      .run(0, Date.now(), "session_summaries.projection");
+    raw.close();
+
+    const reopened = getDb();
+    expect(needsSessionSummaryProjectionRebuild()).toBe(true);
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].session_id).toBe(SESSION);
+
+    const after = reopened
+      .prepare(
+        `SELECT projected_at_ms
+         FROM session_summaries
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as { projected_at_ms: number };
+    expect(after.projected_at_ms).toBeGreaterThanOrEqual(
+      before.projected_at_ms,
+    );
+    expect(needsSessionSummaryProjectionRebuild()).toBe(false);
   });
 
   it("excludes internal headless summary sessions from projections", () => {

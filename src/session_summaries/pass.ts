@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { generateSummariesOnce } from "../summary/index.js";
 import { refreshSessionSummaryEnrichmentsOnce } from "./enrichment.js";
+import { ensureSessionSummaryProjections } from "./query.js";
 
 export function runSessionSummaryPass(opts: {
   log: (msg: string) => void;
@@ -12,6 +13,10 @@ export function runSessionSummaryPass(opts: {
   updated: number;
 } {
   let updated = 0;
+  if (config.enableSessionSummaryProjections) {
+    ensureSessionSummaryProjections();
+  }
+
   if (
     config.enableSessionSummaryProjections &&
     config.enableSessionSummaryEnrichment

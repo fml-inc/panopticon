@@ -8,6 +8,8 @@ import {
   ensureDataVersionsInitialized,
   markDataComponentsCurrentInDb,
   RAW_SCANNER_COMPONENT,
+  RESYNC_DATA_COMPONENTS,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
   staleDataComponentsInDb,
   targetDataVersion,
 } from "./data-versions.js";
@@ -449,7 +451,6 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
   summary_text TEXT,
-  projection_version INTEGER NOT NULL DEFAULT 1,
   projection_hash TEXT NOT NULL,
   projected_at_ms INTEGER NOT NULL,
   source_last_seen_at_ms INTEGER,
@@ -781,7 +782,9 @@ export function needsResync(): boolean {
   if (!_db) {
     getDb();
   }
-  return _staleDataComponents.size > 0;
+  return RESYNC_DATA_COMPONENTS.some((component) =>
+    _staleDataComponents.has(component),
+  );
 }
 
 export function staleDataComponents(): DataComponent[] {
@@ -807,6 +810,13 @@ export function needsClaimsRebuild(): boolean {
   );
 }
 
+export function needsSessionSummaryProjectionRebuild(): boolean {
+  if (!_db) {
+    getDb();
+  }
+  return _staleDataComponents.has(SESSION_SUMMARY_PROJECTION_COMPONENT);
+}
+
 export function markDataComponentsCurrent(
   components: readonly DataComponent[],
 ): void {
@@ -822,6 +832,10 @@ export function markResyncComplete(): void {
 
 export function markClaimsRebuildComplete(): void {
   markDataComponentsCurrent(CLAIM_DATA_COMPONENTS);
+}
+
+export function markSessionSummaryProjectionComplete(): void {
+  markDataComponentsCurrent([SESSION_SUMMARY_PROJECTION_COMPONENT]);
 }
 
 export function markAllDataRebuildsComplete(): void {

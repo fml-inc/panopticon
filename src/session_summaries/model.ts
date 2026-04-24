@@ -1,22 +1,30 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
+import {
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
+  targetDataVersion,
+} from "../db/data-versions.js";
 import {
   SESSION_SUMMARY_SEARCH_CORPUS,
   SESSION_SUMMARY_SEARCH_PRIORITY,
 } from "./search-index.js";
 
-export const SESSION_SUMMARY_PROJECTION_VERSION = 1;
 export const SESSION_SUMMARY_ENRICHMENT_VERSION = 1;
+const SESSION_SUMMARY_PROJECTION_DATA_VERSION = targetDataVersion(
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
+);
 
 const HOT_WINDOW_MS = 30 * 60 * 1000;
 export const SESSION_SUMMARY_COLD_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const SESSION_SUMMARY_MESSAGE_THRESHOLD = 20;
 export const SESSION_SUMMARY_PENDING_AGE_THRESHOLD_MS = 30 * 60 * 1000;
+const DISPLAY_PATH_SEGMENTS = 4;
 
 export interface SessionSummaryDeterministicInput {
   sessionSummaryKey: string;
   sessionId: string;
   title: string;
-  status: "active" | "landed" | "mixed" | "abandoned";
+  status: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   repository: string | null;
   cwd: string | null;
   branch: string | null;
@@ -110,17 +118,22 @@ export function buildDeterministicSessionSummaryDocs(
         b.editCount - a.editCount || a.filePath.localeCompare(b.filePath),
     )
     .slice(0, 5);
+  const displayTopFiles = topFiles.map((file) => ({
+    ...file,
+    displayPath: displayFilePath(file.filePath, input.repository, input.cwd),
+  }));
   const prompts = normalizeItems(input.intents, 4);
   const tools = normalizeItems(input.tools, 6);
+  const repositoryLabel = displayRepositoryLabel(input.repository);
 
   const statusLabel = `${input.status[0]?.toUpperCase() ?? ""}${input.status.slice(1)}`;
   const summaryTextParts = [
     input.title,
     `${statusLabel}: ${input.intentCount} ${pluralize("intent", input.intentCount)}, ${summarizeEditOutcome(input)}`,
   ];
-  if (topFiles.length > 0) {
+  if (displayTopFiles.length > 0) {
     summaryTextParts.push(
-      `Top files: ${topFiles.map((file) => file.filePath).join(", ")}`,
+      `Top files: ${displayTopFiles.map((file) => file.displayPath).join(", ")}`,
     );
   }
   const summaryText = `${summaryTextParts.join(". ")}.`;
@@ -128,15 +141,14 @@ export function buildDeterministicSessionSummaryDocs(
   const searchFields = [
     `Title: ${input.title}`,
     `Status: ${input.status}`,
-    input.repository ? `Repository: ${input.repository}` : null,
+    repositoryLabel ? `Repository: ${repositoryLabel}` : null,
     input.branch ? `Branch: ${input.branch}` : null,
-    input.cwd ? `Cwd: ${input.cwd}` : null,
     `Counts: intents ${input.intentCount}; edits ${input.editCount}; landed ${input.landedEditCount}; open ${input.openEditCount}`,
-    topFiles.length > 0
-      ? `Files: ${topFiles
+    displayTopFiles.length > 0
+      ? `Files: ${displayTopFiles
           .map(
             (file) =>
-              `${file.filePath} (${file.editCount} edits, ${file.landedCount} landed)`,
+              `${file.displayPath} (${file.editCount} edits, ${file.landedCount} landed)`,
           )
           .join("; ")}`
       : null,
@@ -161,7 +173,7 @@ export function buildDeterministicSessionSummaryDocs(
   ];
 
   const projectionEnvelope = {
-    projectionVersion: SESSION_SUMMARY_PROJECTION_VERSION,
+    projectionVersion: SESSION_SUMMARY_PROJECTION_DATA_VERSION,
     sessionSummaryKey: input.sessionSummaryKey,
     sessionId: input.sessionId,
     title: input.title,
@@ -438,4 +450,71 @@ function normalizeItems(values: string[], limit: number): string[] {
     if (normalized.length >= limit) break;
   }
   return normalized;
+}
+
+function displayRepositoryLabel(repository: string | null): string | null {
+  if (!repository) return null;
+  const normalized = normalizePathForDisplay(repository);
+  return isAbsolutePathLike(repository)
+    ? trailingPathSegments(normalized, 1)
+    : normalized;
+}
+
+function displayFilePath(
+  filePath: string,
+  repository: string | null,
+  cwd: string | null,
+): string {
+  const normalized = normalizePathForDisplay(filePath);
+  if (!isAbsolutePathLike(filePath)) return normalized;
+
+  for (const basePath of [repository, cwd]) {
+    if (!basePath || !isAbsolutePathLike(basePath)) continue;
+    const relativePath = normalizePathForDisplay(
+      path.relative(basePath, filePath),
+    );
+    if (!isUsableRelativePath(relativePath)) continue;
+    return trimEphemeralWorktreePrefix(relativePath);
+  }
+
+  return trailingPathSegments(normalized, DISPLAY_PATH_SEGMENTS);
+}
+
+function normalizePathForDisplay(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+
+function trailingPathSegments(value: string, count: number): string {
+  const segments = value.split("/").filter(Boolean);
+  if (segments.length === 0) return value;
+  return segments.slice(-Math.min(count, segments.length)).join("/");
+}
+
+function trimEphemeralWorktreePrefix(value: string): string {
+  const segments = value.split("/").filter(Boolean);
+  if (segments[0] === ".worktrees" && segments.length > 2) {
+    return segments.slice(2).join("/");
+  }
+  if (
+    segments[0] === ".claude" &&
+    segments[1] === "worktrees" &&
+    segments.length > 3
+  ) {
+    return segments.slice(3).join("/");
+  }
+  return value;
+}
+
+function isUsableRelativePath(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value !== "." &&
+    value !== ".." &&
+    !value.startsWith("../") &&
+    !path.isAbsolute(value)
+  );
+}
+
+function isAbsolutePathLike(value: string): boolean {
+  return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
 }

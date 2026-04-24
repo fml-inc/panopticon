@@ -245,8 +245,9 @@ claims.active|1
 claims.projection|1
 intent.from_hooks|2
 intent.from_scanner|2
-intent.landed_from_disk|2
+intent.landed_from_disk|3
 scanner.raw|3
+session_summaries.projection|1
 ```
 
 Compare sessions in the rebuilt copy against the original production DB:

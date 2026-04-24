@@ -192,7 +192,6 @@ export function listSessions(
                     s.landed_edit_count,
                     s.open_edit_count,
                     s.summary_text AS summary_text,
-                    s.projection_version,
                     s.projection_hash,
                     s.projected_at_ms,
                     s.source_last_seen_at_ms,
@@ -246,7 +245,6 @@ export function listSessions(
           landed_edit_count: number;
           open_edit_count: number;
           summary_text: string | null;
-          projection_version: number;
           projection_hash: string;
           projected_at_ms: number;
           source_last_seen_at_ms: number | null;
@@ -319,7 +317,6 @@ export function listSessions(
       openEditCount: row.open_edit_count,
       topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
       summaryText: row.summary_text,
-      projectionVersion: row.projection_version,
       projectionHash: row.projection_hash,
       projectedAt: toIso(row.projected_at_ms),
       sourceLastSeenAt: row.source_last_seen_at_ms

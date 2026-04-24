@@ -5,6 +5,9 @@ const { refreshSessionSummaryEnrichmentsOnceMock, generateSummariesOnceMock } =
     refreshSessionSummaryEnrichmentsOnceMock: vi.fn(),
     generateSummariesOnceMock: vi.fn(),
   }));
+const { ensureSessionSummaryProjectionsMock } = vi.hoisted(() => ({
+  ensureSessionSummaryProjectionsMock: vi.fn(),
+}));
 
 vi.mock("../config.js", () => ({
   config: {
@@ -16,6 +19,10 @@ vi.mock("../config.js", () => ({
 vi.mock("./enrichment.js", () => ({
   refreshSessionSummaryEnrichmentsOnce:
     refreshSessionSummaryEnrichmentsOnceMock,
+}));
+
+vi.mock("./query.js", () => ({
+  ensureSessionSummaryProjections: ensureSessionSummaryProjectionsMock,
 }));
 
 vi.mock("../summary/index.js", () => ({
@@ -49,6 +56,7 @@ describe("runSessionSummaryPass", () => {
       onLegacySummaryError,
     });
 
+    expect(ensureSessionSummaryProjectionsMock).toHaveBeenCalledOnce();
     expect(generateSummariesOnceMock).toHaveBeenCalledOnce();
     expect(onEnrichmentError).toHaveBeenCalledOnce();
     expect(onLegacySummaryError).not.toHaveBeenCalled();
@@ -67,6 +75,7 @@ describe("runSessionSummaryPass", () => {
       onLegacySummaryError: vi.fn(),
     });
 
+    expect(ensureSessionSummaryProjectionsMock).toHaveBeenCalledOnce();
     expect(refreshSessionSummaryEnrichmentsOnceMock).not.toHaveBeenCalled();
     expect(generateSummariesOnceMock).toHaveBeenCalledOnce();
     expect(result).toEqual({ updated: 2 });

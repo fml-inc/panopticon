@@ -36,7 +36,7 @@
 
 import {
   ALL_DATA_COMPONENTS,
-  CLAIM_DATA_COMPONENTS,
+  CLAIM_DERIVED_COMPONENTS,
   ensureDataVersionsTable,
   markDataComponentsStaleInDb,
 } from "./data-versions.js";
@@ -409,7 +409,7 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   deleteAllRowsIfTableExists(db, "ingestion_cursors");
   deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
 
-  markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
+  markDataComponentsStaleInDb(db, CLAIM_DERIVED_COMPONENTS);
 }
 
 function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
