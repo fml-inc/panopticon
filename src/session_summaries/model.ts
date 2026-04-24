@@ -41,7 +41,6 @@ export interface SessionSummaryEnrichmentRow {
   session_summary_key: string;
   session_id: string;
   summary_text: string | null;
-  summary_search_text: string | null;
   summary_source: string | null;
   summary_runner: string | null;
   summary_model: string | null;
@@ -295,7 +294,6 @@ export function mergeSessionSummaryEnrichment(
     session_summary_key: input.sessionSummaryKey,
     session_id: input.sessionId,
     summary_text: hasEnrichedSummary ? existing.summary_text : null,
-    summary_search_text: null,
     summary_source: hasEnrichedSummary ? "llm" : "deterministic",
     summary_runner: hasEnrichedSummary ? existing.summary_runner : null,
     summary_model: hasEnrichedSummary ? existing.summary_model : null,

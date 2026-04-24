@@ -42,7 +42,6 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_source).toBe("deterministic");
     expect(merged.summary_version).toBe(SESSION_SUMMARY_ENRICHMENT_VERSION);
     expect(merged.summary_text).toBeNull();
-    expect(merged.summary_search_text).toBeNull();
     expect(merged.dirty).toBe(1);
     expect(merged.dirty_reason_json).toContain("missing");
     expect(merged.dirty_reason_json).toContain("session_hot");
@@ -97,7 +96,6 @@ describe("session summary enrichment merge", () => {
         session_summary_key: BASE_INPUT.sessionSummaryKey,
         session_id: BASE_INPUT.sessionId,
         summary_text: "LLM summary text.",
-        summary_search_text: "stale search text",
         summary_source: "llm",
         summary_runner: "claude",
         summary_model: "sonnet",
@@ -123,7 +121,6 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.summary_source).toBe("llm");
     expect(merged.dirty).toBe(0);
-    expect(merged.summary_search_text).toBeNull();
   });
 
   it("keeps the last llm summary visible while a hot material change is still below refresh thresholds", () => {
@@ -134,7 +131,6 @@ describe("session summary enrichment merge", () => {
         session_summary_key: BASE_INPUT.sessionSummaryKey,
         session_id: BASE_INPUT.sessionId,
         summary_text: "LLM summary text.",
-        summary_search_text: docs.summarySearchText,
         summary_source: "llm",
         summary_runner: "claude",
         summary_model: "sonnet",
@@ -171,7 +167,6 @@ describe("session summary enrichment merge", () => {
     expect(merged.dirty).toBe(1);
     expect(merged.dirty_reason_json).toContain("summary_input_changed");
     expect(merged.dirty_reason_json).toContain("session_hot");
-    expect(merged.summary_search_text).toBeNull();
     expect(merged.last_attempted_at_ms).toBeNull();
     expect(merged.failure_count).toBe(0);
     expect(merged.last_error).toBeNull();
@@ -198,7 +193,6 @@ describe("session summary enrichment merge", () => {
         session_summary_key: BASE_INPUT.sessionSummaryKey,
         session_id: BASE_INPUT.sessionId,
         summary_text: "LLM summary text.",
-        summary_search_text: docs.summarySearchText,
         summary_source: "llm",
         summary_runner: "claude",
         summary_model: "sonnet",
@@ -254,7 +248,6 @@ describe("session summary enrichment merge", () => {
         session_summary_key: BASE_INPUT.sessionSummaryKey,
         session_id: BASE_INPUT.sessionId,
         summary_text: "LLM summary text.",
-        summary_search_text: docs.summarySearchText,
         summary_source: "llm",
         summary_runner: "claude",
         summary_model: "sonnet",

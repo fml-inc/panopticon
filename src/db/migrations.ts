@@ -898,22 +898,6 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
-  {
-    id: 17,
-    name: "restore_session_summary_dirty_index_after_refresh_state",
-    up: (db) => {
-      if (!tableExists(db, "session_summary_enrichments")) {
-        return;
-      }
-      db.exec(`
-        DROP INDEX IF EXISTS idx_session_summary_enrichments_refresh
-      `);
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
-          ON session_summary_enrichments(dirty, last_material_change_at_ms)
-      `);
-    },
-  },
 ];
 
 // ---------------------------------------------------------------------------

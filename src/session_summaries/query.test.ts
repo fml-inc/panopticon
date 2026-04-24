@@ -259,7 +259,6 @@ describe("session_summaries", () => {
       .prepare(
         `UPDATE session_summary_enrichments
          SET summary_text = ?,
-             summary_search_text = ?,
              summary_source = 'llm',
              summary_runner = ?,
              summary_model = ?,
@@ -269,7 +268,6 @@ describe("session_summaries", () => {
       )
       .run(
         "LLM session summary.",
-        "LLM session summary.\nDeterministic retrieval document.",
         "claude",
         "sonnet",
         1_700_000_010_000,

@@ -501,7 +501,6 @@ describe("listSessions session summaries", () => {
       .prepare(
         `UPDATE session_summary_enrichments
          SET summary_text = ?,
-             summary_search_text = ?,
              summary_source = 'llm',
              summary_runner = ?,
              summary_model = ?,
@@ -511,7 +510,6 @@ describe("listSessions session summaries", () => {
       )
       .run(
         "LLM outcome summary.",
-        "LLM outcome summary.\nDeterministic retrieval document.",
         "claude",
         "sonnet",
         1_700_000_010_000,

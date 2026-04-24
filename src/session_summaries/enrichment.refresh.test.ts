@@ -67,7 +67,6 @@ describe("session summary enrichment refresh", () => {
         session_summary_key TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         summary_text TEXT,
-        summary_search_text TEXT,
         summary_source TEXT NOT NULL DEFAULT 'deterministic',
         summary_runner TEXT,
         summary_model TEXT,
@@ -347,17 +346,16 @@ function seedSummaryRow(): void {
 
   db.prepare(
     `INSERT INTO session_summary_enrichments
-     (session_summary_key, session_id, summary_text, summary_search_text,
+     (session_summary_key, session_id, summary_text,
       summary_source, summary_runner, summary_model, summary_version,
       summary_generated_at_ms, projection_hash, summary_input_hash,
       summary_policy_hash, enriched_input_hash, enriched_message_count,
       dirty, dirty_reason_json, last_material_change_at_ms,
       last_attempted_at_ms, failure_count, last_error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     "ss:local:session-1",
     "session-1",
-    null,
     null,
     "deterministic",
     null,

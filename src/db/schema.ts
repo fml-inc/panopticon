@@ -458,7 +458,6 @@ CREATE TABLE IF NOT EXISTS session_summary_enrichments (
   session_summary_key TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
   summary_text TEXT,
-  summary_search_text TEXT,
   summary_source TEXT NOT NULL DEFAULT 'deterministic',
   summary_runner TEXT,
   summary_model TEXT,

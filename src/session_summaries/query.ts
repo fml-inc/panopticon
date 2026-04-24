@@ -639,16 +639,7 @@ export function ensureSessionSummaryProjections(): void {
       c: number;
     }
   ).c;
-  const enrichmentCount = (
-    db
-      .prepare(`SELECT COUNT(*) AS c FROM session_summary_enrichments`)
-      .get() as { c: number }
-  ).c;
-  if (
-    sessionSummaryCount === 0 ||
-    membershipCount === 0 ||
-    enrichmentCount === 0
-  ) {
+  if (sessionSummaryCount === 0 || membershipCount === 0) {
     rebuildSessionSummaryProjections();
   }
 }

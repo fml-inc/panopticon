@@ -114,7 +114,6 @@ export function rebuildSessionSummaryProjections(opts?: {
       `SELECT session_summary_key,
               session_id,
               summary_text,
-              summary_search_text,
               summary_source,
               summary_runner,
               summary_model,
@@ -136,17 +135,16 @@ export function rebuildSessionSummaryProjections(opts?: {
     );
     const upsertEnrichmentStmt = db.prepare(
       `INSERT INTO session_summary_enrichments
-       (session_summary_key, session_id, summary_text, summary_search_text,
+       (session_summary_key, session_id, summary_text,
         summary_source, summary_runner, summary_model, summary_version,
         summary_generated_at_ms, projection_hash, summary_input_hash,
         summary_policy_hash, enriched_input_hash, enriched_message_count,
         dirty, dirty_reason_json, last_material_change_at_ms,
         last_attempted_at_ms, failure_count, last_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_summary_key) DO UPDATE SET
          session_id = excluded.session_id,
          summary_text = excluded.summary_text,
-         summary_search_text = excluded.summary_search_text,
          summary_source = excluded.summary_source,
          summary_runner = excluded.summary_runner,
          summary_model = excluded.summary_model,
@@ -360,7 +358,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         mergedEnrichment.session_summary_key,
         mergedEnrichment.session_id,
         mergedEnrichment.summary_text,
-        mergedEnrichment.summary_search_text,
         mergedEnrichment.summary_source,
         mergedEnrichment.summary_runner,
         mergedEnrichment.summary_model,
