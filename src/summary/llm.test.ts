@@ -300,4 +300,23 @@ describe("summary llm wrapper", () => {
       expect.stringMatching(/last-message-\d+-\d+-.*\.txt$/),
     );
   });
+
+  it("logs debug context if stale codex output cleanup fails", async () => {
+    execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
+      if (args[0] === "codex") return "/usr/local/bin/codex";
+      return "/usr/local/bin/claude";
+    });
+    rmSyncMock.mockImplementationOnce(() => {
+      throw new Error("permission denied");
+    });
+    const { invokeLlm } = await loadLlm();
+
+    expect(invokeLlm("Summarize this", { runner: "codex" })).toBe("OK");
+
+    expect(debugMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "runner=codex failed removing stale output-last-message: permission denied",
+      ),
+    );
+  });
 });

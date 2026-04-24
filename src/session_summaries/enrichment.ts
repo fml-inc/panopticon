@@ -12,6 +12,11 @@ import {
   isSummaryRunnerName,
   type SessionSummaryRunnerPolicy,
 } from "./policy.js";
+import {
+  loadSessionSummaryEditRows,
+  loadSessionSummaryIntentRows,
+  summarizeFiles,
+} from "./session-data.js";
 
 const DEFAULT_ENRICH_LIMIT = 5;
 const DEFAULT_ENRICH_TIMEOUT_MS = 90_000;
@@ -392,6 +397,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     .prepare(
       `SELECT s.title,
               s.status,
+              s.session_id,
               sess.target,
               s.repository,
               s.branch,
@@ -409,6 +415,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     | {
         title: string;
         status: string;
+        session_id: string;
         target: string | null;
         repository: string | null;
         branch: string | null;
@@ -421,51 +428,14 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     | undefined;
   if (!summary) return null;
 
-  const intents = (
-    db
-      .prepare(
-        `SELECT u.prompt_text
-         FROM session_summaries s
-         JOIN intent_session_summaries iss
-           ON iss.session_summary_id = s.id
-         JOIN intent_units u
-           ON u.id = iss.intent_unit_id
-         WHERE s.session_summary_key = ?
-         ORDER BY COALESCE(u.prompt_ts_ms, 0) ASC, u.id ASC`,
-      )
-      .all(sessionSummaryKey) as Array<{ prompt_text: string }>
-  )
+  const intents = loadSessionSummaryIntentRows(summary.session_id)
     .map((row) => row.prompt_text)
     .filter((value) => value.trim().length > 0)
     .slice(0, 6);
 
-  const files = (
-    db
-      .prepare(
-        `SELECT e.file_path,
-                COUNT(*) AS edit_count,
-                SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS landed_count
-         FROM session_summaries s
-         JOIN intent_session_summaries iss
-           ON iss.session_summary_id = s.id
-         JOIN intent_edits e
-           ON e.intent_unit_id = iss.intent_unit_id
-         WHERE s.session_summary_key = ?
-         GROUP BY e.file_path
-         ORDER BY edit_count DESC, e.file_path ASC`,
-      )
-      .all(sessionSummaryKey) as Array<{
-      file_path: string;
-      edit_count: number;
-      landed_count: number;
-    }>
-  )
-    .map((row) => ({
-      filePath: row.file_path,
-      editCount: row.edit_count,
-      landedCount: row.landed_count,
-    }))
-    .slice(0, 6);
+  const files = summarizeFiles(
+    loadSessionSummaryEditRows(summary.session_id),
+  ).slice(0, 6);
 
   return {
     title: summary.title,

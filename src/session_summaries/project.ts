@@ -9,6 +9,12 @@ import {
   type SessionSummaryEnrichmentRow,
 } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
+import {
+  loadSessionSummaryEditRows,
+  loadSessionSummaryIntentRows,
+  summarizeFiles,
+  summarizeTools,
+} from "./session-data.js";
 
 const MEMBERSHIP_SOURCE = "heuristic";
 const ORIGIN_SCOPE = "local";
@@ -17,29 +23,6 @@ const STATUS_LANDED = "landed";
 const STATUS_MIXED = "mixed";
 const STATUS_ABANDONED = "abandoned";
 const MIN_SPAN_SNIPPET_LEN = 8;
-
-interface IntentRow {
-  intent_unit_id: number;
-  session_id: string;
-  prompt_text: string;
-  prompt_ts_ms: number | null;
-  next_prompt_ts_ms: number | null;
-  repository: string | null;
-  cwd: string | null;
-}
-
-interface EditRow {
-  intent_edit_id: number;
-  intent_unit_id: number;
-  session_id: string;
-  file_path: string;
-  tool_name: string | null;
-  timestamp_ms: number | null;
-  landed: number | null;
-  landed_reason: string | null;
-  new_string_hash: string | null;
-  new_string_snippet: string | null;
-}
 
 interface FileSnapshot {
   text: string;
@@ -177,27 +160,10 @@ export function rebuildSessionSummaryProjections(opts?: {
     let provenance = 0;
 
     for (const session of sessionRows) {
-      const intents = db
-        .prepare(
-          `SELECT id AS intent_unit_id, session_id, prompt_text, prompt_ts_ms,
-                  next_prompt_ts_ms, repository, cwd
-           FROM intent_units
-           WHERE session_id = ?
-           ORDER BY COALESCE(prompt_ts_ms, 0) ASC, id ASC`,
-        )
-        .all(session.session_id) as IntentRow[];
+      const intents = loadSessionSummaryIntentRows(session.session_id);
       if (intents.length === 0) continue;
 
-      const edits = db
-        .prepare(
-          `SELECT id AS intent_edit_id, intent_unit_id, session_id, file_path,
-                  tool_name, timestamp_ms, landed, landed_reason,
-                  new_string_hash, new_string_snippet
-           FROM intent_edits
-           WHERE session_id = ?
-           ORDER BY COALESCE(timestamp_ms, 0) ASC, id ASC`,
-        )
-        .all(session.session_id) as EditRow[];
+      const edits = loadSessionSummaryEditRows(session.session_id);
 
       const sessionMeta = db
         .prepare(
@@ -504,39 +470,6 @@ function buildTitle(promptText: string): string {
   const compact = promptText.replace(/\s+/g, " ").trim();
   if (!compact) return "untitled session summary";
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
-}
-
-function summarizeFiles(
-  edits: EditRow[],
-): Array<{ filePath: string; editCount: number; landedCount: number }> {
-  const files = new Map<
-    string,
-    { filePath: string; editCount: number; landedCount: number }
-  >();
-  for (const edit of edits) {
-    const current = files.get(edit.file_path) ?? {
-      filePath: edit.file_path,
-      editCount: 0,
-      landedCount: 0,
-    };
-    current.editCount += 1;
-    if (edit.landed === 1) current.landedCount += 1;
-    files.set(edit.file_path, current);
-  }
-  return [...files.values()].sort(
-    (a, b) => b.editCount - a.editCount || a.filePath.localeCompare(b.filePath),
-  );
-}
-
-function summarizeTools(edits: EditRow[]): string[] {
-  const counts = new Map<string, number>();
-  for (const edit of edits) {
-    if (!edit.tool_name) continue;
-    counts.set(edit.tool_name, (counts.get(edit.tool_name) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([toolName]) => toolName);
 }
 
 function readFileSnapshot(

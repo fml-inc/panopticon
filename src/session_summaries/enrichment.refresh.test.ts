@@ -112,13 +112,24 @@ describe("session summary enrichment refresh", () => {
       );
       CREATE TABLE intent_units (
         id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
         prompt_text TEXT NOT NULL,
-        prompt_ts_ms INTEGER
+        prompt_ts_ms INTEGER,
+        next_prompt_ts_ms INTEGER,
+        repository TEXT,
+        cwd TEXT
       );
       CREATE TABLE intent_edits (
+        id INTEGER PRIMARY KEY,
         intent_unit_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
         file_path TEXT NOT NULL,
-        landed INTEGER
+        tool_name TEXT,
+        timestamp_ms INTEGER,
+        landed INTEGER,
+        landed_reason TEXT,
+        new_string_hash TEXT,
+        new_string_snippet TEXT
       );
     `);
 
@@ -330,9 +341,18 @@ function seedSummaryRow(): void {
   ).run("session-1", "claude", 500, 1_000, 7);
 
   db.prepare(
-    `INSERT INTO intent_units (id, prompt_text, prompt_ts_ms)
-     VALUES (?, ?, ?)`,
-  ).run(10, "fix the summary contention bug", 900);
+    `INSERT INTO intent_units
+     (id, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms, repository, cwd)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    10,
+    "session-1",
+    "fix the summary contention bug",
+    900,
+    null,
+    "/repo",
+    "/repo",
+  );
 
   db.prepare(
     `INSERT INTO intent_session_summaries (session_summary_id, intent_unit_id)
@@ -340,9 +360,22 @@ function seedSummaryRow(): void {
   ).run(1, 10);
 
   db.prepare(
-    `INSERT INTO intent_edits (intent_unit_id, file_path, landed)
-     VALUES (?, ?, ?)`,
-  ).run(10, "src/session_summaries/enrichment.ts", 1);
+    `INSERT INTO intent_edits
+     (id, intent_unit_id, session_id, file_path, tool_name, timestamp_ms, landed,
+      landed_reason, new_string_hash, new_string_snippet)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    1,
+    10,
+    "session-1",
+    "src/session_summaries/enrichment.ts",
+    "Edit",
+    950,
+    1,
+    null,
+    null,
+    null,
+  );
 
   db.prepare(
     `INSERT INTO session_summary_enrichments

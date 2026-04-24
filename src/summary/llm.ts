@@ -24,7 +24,8 @@ const _agentPaths = new Map<SessionSummaryRunnerName, string | null>();
 
 /**
  * Detect whether the requested CLI is available on this machine.
- * Result is cached for the lifetime of the process.
+ * Result is cached for the lifetime of the process, so installing or removing
+ * a runner mid-process requires a restart before detection changes.
  */
 export function detectAgent(
   runner: SessionSummaryRunnerName = DEFAULT_RUNNER,
@@ -94,6 +95,16 @@ function getCodexOutputPath(cwd: string): string {
     cwd,
     `${CODEX_OUTPUT_FILE_PREFIX}-${process.pid}-${Date.now()}-${randomUUID()}.txt`,
   );
+}
+
+function removeCodexOutputFile(outputPath: string, phase: string): void {
+  try {
+    fs.rmSync(outputPath, { force: true });
+  } catch (error) {
+    log.llm.debug(
+      `runner=codex failed removing ${phase} output-last-message: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 /** Get the path to the panopticon MCP server script. */
@@ -334,9 +345,7 @@ function invokeCodexLlm(
   },
 ): string | null {
   const outputPath = getCodexOutputPath(opts.cwd);
-  try {
-    fs.rmSync(outputPath, { force: true });
-  } catch {}
+  removeCodexOutputFile(outputPath, "stale");
 
   const fullPrompt = opts.systemPrompt
     ? `${opts.systemPrompt}\n\n${prompt}`
@@ -405,8 +414,6 @@ function invokeCodexLlm(
     );
     return null;
   } finally {
-    try {
-      fs.rmSync(outputPath, { force: true });
-    } catch {}
+    removeCodexOutputFile(outputPath, "final");
   }
 }
