@@ -34,6 +34,9 @@ export interface SessionSummary {
   openEditCount: number;
   topFiles: string[];
   summaryText: string | null;
+  summarySource: "deterministic" | "llm" | null;
+  summaryGeneratedAt: string | null;
+  summaryDirty: boolean;
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────

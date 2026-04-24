@@ -46,6 +46,7 @@ import {
   scanOnce,
 } from "../scanner/index.js";
 import { readScannerStatus } from "../scanner/status.js";
+import { runSessionSummaryPass } from "../session_summaries/pass.js";
 import {
   fileOverview,
   listSessionSummaries,
@@ -53,7 +54,6 @@ import {
   sessionSummaryDetail,
   whyCode,
 } from "../session_summaries/query.js";
-import { generateSummariesOnce } from "../summary/index.js";
 import { addTarget, listTargets, removeTarget } from "../sync/config.js";
 import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
 import type { SyncTarget } from "../sync/types.js";
@@ -99,14 +99,20 @@ function isDerivedRebuildInProgress(): boolean {
 }
 
 function runSummaryGeneration(): number {
-  try {
-    return generateSummariesOnce((msg) => log.scanner.debug(msg)).updated;
-  } catch (err) {
-    log.scanner.error(
-      `scan exec: summary generation failed: ${err instanceof Error ? err.message : err}`,
-    );
-    return 0;
-  }
+  return runSessionSummaryPass({
+    log: (msg) => log.scanner.debug(msg),
+    enrichmentLimit: config.sessionSummaryEnrichLimit ?? 5,
+    onEnrichmentError: (err) => {
+      log.scanner.error(
+        `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,
+      );
+    },
+    onLegacySummaryError: (err) => {
+      log.scanner.error(
+        `scan exec: legacy summary generation failed: ${err instanceof Error ? err.message : err}`,
+      );
+    },
+  }).updated;
 }
 
 function markComponentsCurrentIfFull(

@@ -852,9 +852,6 @@ export const MIGRATIONS: Migration[] = [
     id: 15,
     name: "flatten_session_summary_projection_storage",
     up: (db) => {
-      if (tableExists(db, "session_summary_enrichments")) {
-        db.exec(`DROP TABLE session_summary_enrichments`);
-      }
       if (!tableExists(db, "session_summaries")) {
         return;
       }
@@ -883,6 +880,22 @@ export const MIGRATIONS: Migration[] = [
       deleteAllRowsIfTableExists(db, "code_provenance");
       deleteAllRowsIfTableExists(db, "intent_session_summaries");
       deleteAllRowsIfTableExists(db, "session_summaries");
+    },
+  },
+  {
+    id: 16,
+    name: "restore_session_summary_dirty_index",
+    up: (db) => {
+      if (!tableExists(db, "session_summary_enrichments")) {
+        return;
+      }
+      db.exec(`
+        DROP INDEX IF EXISTS idx_session_summary_enrichments_refresh
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
+          ON session_summary_enrichments(dirty, last_material_change_at_ms)
+      `);
     },
   },
 ];

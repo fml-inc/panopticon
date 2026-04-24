@@ -72,6 +72,7 @@ beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM evidence_ref_paths").run();
@@ -433,6 +434,107 @@ describe("listSessions session summaries", () => {
     expect(
       summarySearchTextResult.results.some(
         (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(true);
+  });
+
+  it("prefers llm enrichment text and exposes enrichment metadata", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "enriched-summary.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "draft implementation",
+      turn_count: 4,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    getDb()
+      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
+      .run("legacy weak summary", SESSION);
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "draft implementation", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = 'llm',
+             summary_runner = ?,
+             summary_model = ?,
+             summary_generated_at_ms = ?,
+             dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "LLM outcome summary.",
+        "claude",
+        "sonnet",
+        1_700_000_010_000,
+        `ss:local:${SESSION}`,
+      );
+
+    const result = listSessions({ limit: 5 });
+    expect(result.sessions[0].summary).toBe("legacy weak summary");
+    expect(result.sessions[0].sessionSummary).toMatchObject({
+      summaryText: "LLM outcome summary.",
+      summarySource: "llm",
+      summaryGeneratedAt: new Date(1_700_000_010_000).toISOString(),
+      summaryDirty: false,
+    });
+
+    const searchResult = search({
+      query: "LLM outcome",
+      limit: 10,
+    });
+    expect(
+      searchResult.results.some(
+        (row) =>
+          row.sessionId === SESSION &&
+          row.matchType === "summary" &&
+          row.matchSnippet.includes("LLM outcome summary."),
       ),
     ).toBe(true);
   });
