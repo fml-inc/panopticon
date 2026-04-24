@@ -30,6 +30,84 @@ As of `main` on April 22, 2026:
 Historical "workstream" terminology elsewhere in this doc should be read as
 "session summary". Cross-session grouping is still follow-up work.
 
+## PR 193 Handoff
+
+As of April 24, 2026, active work is on PR 193,
+`split/pr3-attempt-backoff`.
+
+The branch currently includes:
+
+- persisted retry backoff for sync and session-summary enrichment attempts
+- deterministic session-summary projections enabled by default
+- LLM session-summary enrichment behind
+  `PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT`
+- projection-backed session search/list cutover behind
+  `PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT`
+- scanner-triggered deterministic summary refresh debounced by
+  `PANOPTICON_SESSION_SUMMARY_PROJECTION_DEBOUNCE_MS` with a default of 30s
+
+The summary storage model has been split into three responsibilities:
+
+- `session_summaries`: deterministic facts, deterministic display summary, and
+  deterministic projection freshness metadata
+- `session_summary_enrichments`: LLM display summary plus LLM refresh, dirty,
+  attempt, failure, and policy/input hash metadata
+- `session_summary_search_index`: row-based search corpus with explicit source
+  and priority
+
+`session_summaries.summary_search_text` was intentionally removed. Search text
+now belongs only in `session_summary_search_index`.
+
+Current search corpus rows:
+
+| corpus_key | source | priority | owner |
+| --- | --- | ---: | --- |
+| `llm_summary` | `llm` | 100 | enrichment success path |
+| `llm_search` | `llm` | 90 | enrichment success path, currently same text as `llm_summary` |
+| `deterministic_summary` | `deterministic` | 40 | deterministic projection rebuild |
+| `deterministic_search` | `deterministic` | 30 | deterministic projection rebuild |
+
+Deterministic refresh behavior:
+
+- explicit and full projection rebuilds are eager
+- query self-healing rebuilds are eager when projection tables are missing or
+  incomplete
+- hook/direct rebuild paths remain eager
+- scanner catch-up rebuilds debounce deterministic summary/search-corpus
+  refreshes for hot sessions
+- scanner catch-up still rebuilds intent projection, session-summary membership,
+  and code provenance even when deterministic summary text is deferred
+
+This branch has not shipped to anyone else. Do not add a migration just for the
+local schema churn in this PR. If resuming with a local DB created from an
+earlier build of this branch, repair or recreate the DB directly before running
+the daemon.
+
+Verification run for the current PR state:
+
+```sh
+npm run check
+npm run typecheck
+./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/worktrees/**' src/session_summaries/query.test.ts src/session_summaries/enrichment.test.ts src/session_summaries/enrichment.refresh.test.ts src/db/query.session-summaries.test.ts src/session_summaries/pass.test.ts src/sync/loop.integration.test.ts src/scanner/loop.test.ts src/db/migrations.test.ts
+./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/**' --exclude 'src/db/sessions.test.ts' --exclude 'src/claims/store.test.ts'
+```
+
+Known test caveat: the two excluded suites use fixed temp DB locations and can
+fail on stale local schemas from prior branch runs before executing tests.
+
+Remaining tasks before merging:
+
+- Run the branch against the real local daemon after the latest schema cleanup.
+- Rebuild or repair the developer DB directly; do not add a migration for this
+  unshipped branch-only schema churn.
+- Re-enable LLM enrichment and verify that new `llm_summary` / `llm_search`
+  rows are generated in `session_summary_search_index`.
+- Inspect generated summaries/search rows for a few recent real sessions.
+- Decide whether `llm_search` should become a distinct LLM-generated context
+  card in this PR or a follow-up PR. It is currently seeded with the LLM display
+  summary.
+- Re-run PR checks after any daemon/live DB validation changes.
+
 The current implementation scope is deliberately narrow:
 
 - answer "why is this code here?" for local work
