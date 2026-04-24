@@ -1,7 +1,10 @@
 import type { SessionSummaryRunnerName } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { detectAgent, invokeLlm } from "../summary/llm.js";
-import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
+import {
+  SESSION_SUMMARY_ENRICHMENT_VERSION,
+  shouldRefreshSessionSummaryNow,
+} from "./model.js";
 import {
   getSessionSummaryRunnerPolicy,
   inferRunnerFromSessionTarget,
@@ -36,6 +39,9 @@ interface SessionSummaryRefreshCandidate {
   session_id: string;
   summary_runner: string | null;
   summary_input_hash: string | null;
+  enriched_message_count: number | null;
+  last_material_change_at_ms: number | null;
+  last_activity_ms: number | null;
   message_count: number;
   last_attempted_at_ms: number | null;
 }
@@ -94,7 +100,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
   const where: string[] = [];
   const params: unknown[] = [];
   if (!force) {
-    where.push("e.refresh_now = 1");
+    where.push("e.dirty = 1");
     where.push(
       "(e.last_attempted_at_ms IS NULL OR e.last_attempted_at_ms < ?)",
     );
@@ -111,8 +117,15 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
               e.session_id,
               e.summary_runner,
               e.summary_input_hash,
+              e.enriched_message_count,
+              e.last_material_change_at_ms,
               e.last_attempted_at_ms,
-              COALESCE(sess.message_count, 0) AS message_count
+              COALESCE(sess.message_count, 0) AS message_count,
+              MAX(
+                COALESCE(sess.started_at_ms, 0),
+                COALESCE(sess.ended_at_ms, 0),
+                COALESCE(s.last_intent_ts_ms, 0)
+              ) AS last_activity_ms
        FROM session_summary_enrichments e
        JOIN session_summaries s
          ON s.session_summary_key = e.session_summary_key
@@ -126,7 +139,27 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     )
     .all(...params, limit) as SessionSummaryRefreshCandidate[];
 
-  if (rows.length === 0) {
+  const candidates =
+    force === true
+      ? rows
+      : rows.filter((row) =>
+          shouldRefreshSessionSummaryNow(
+            {
+              enriched_message_count: row.enriched_message_count,
+              last_material_change_at_ms: row.last_material_change_at_ms,
+            },
+            {
+              messageCount: row.message_count,
+              lastActivityMs:
+                row.last_activity_ms && row.last_activity_ms > 0
+                  ? row.last_activity_ms
+                  : null,
+            },
+            nowMs,
+          ),
+        );
+
+  if (candidates.length === 0) {
     return { attempted: 0, updated: 0 };
   }
 
@@ -136,7 +169,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
   );
   if (!availableRunner) {
     log(
-      `Session summary enrichment skipped: ${rows.length} dirty rows, no allowed runner`,
+      `Session summary enrichment skipped: ${candidates.length} dirty rows, no allowed runner`,
     );
     return { attempted: 0, updated: 0 };
   }
@@ -145,7 +178,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     `UPDATE session_summary_enrichments
      SET last_attempted_at_ms = ?
      WHERE session_summary_key = ?
-       AND (? = 1 OR refresh_now = 1)
+       AND (? = 1 OR dirty = 1)
        AND (
          (last_attempted_at_ms = ?)
          OR (last_attempted_at_ms IS NULL AND ? IS NULL)
@@ -183,7 +216,6 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
          enriched_input_hash = ?,
          enriched_message_count = ?,
          dirty = 0,
-         refresh_now = 0,
          dirty_reason_json = NULL,
          last_material_change_at_ms = NULL,
          last_attempted_at_ms = ?,
@@ -226,7 +258,7 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
       return claimed;
     },
   );
-  const claimedRows = claimRows(rows);
+  const claimedRows = claimRows(candidates);
   if (claimedRows.length === 0) {
     return { attempted: 0, updated: 0 };
   }

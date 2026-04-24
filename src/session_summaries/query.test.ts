@@ -367,8 +367,7 @@ describe("session_summaries", () => {
              summary_policy_hash = ?,
              enriched_input_hash = ?,
              enriched_message_count = ?,
-             dirty = 0,
-             refresh_now = 0
+             dirty = 0
          WHERE session_summary_key = ?`,
       )
       .run(
@@ -387,7 +386,7 @@ describe("session_summaries", () => {
     const row = getDb()
       .prepare(
         `SELECT summary_text, summary_source, summary_runner, summary_model,
-                summary_generated_at_ms, dirty, refresh_now
+                summary_generated_at_ms, dirty
          FROM session_summary_enrichments
          WHERE session_summary_key = ?`,
       )
@@ -399,7 +398,6 @@ describe("session_summaries", () => {
           summary_model: string | null;
           summary_generated_at_ms: number | null;
           dirty: number;
-          refresh_now: number;
         }
       | undefined;
 
@@ -410,7 +408,6 @@ describe("session_summaries", () => {
       summary_model: "sonnet",
       summary_generated_at_ms: 1_700_000_010_000,
       dirty: 0,
-      refresh_now: 0,
     });
 
     const detail = sessionSummaryDetail({ session_id: SESSION });

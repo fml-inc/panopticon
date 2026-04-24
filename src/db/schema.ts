@@ -470,7 +470,6 @@ CREATE TABLE IF NOT EXISTS session_summary_enrichments (
   enriched_input_hash TEXT,
   enriched_message_count INTEGER,
   dirty INTEGER NOT NULL DEFAULT 1,
-  refresh_now INTEGER NOT NULL DEFAULT 0,
   dirty_reason_json TEXT,
   last_material_change_at_ms INTEGER,
   last_attempted_at_ms INTEGER,
@@ -650,8 +649,8 @@ CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(sta
 CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
 
 -- session_summary_enrichments
-CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_refresh
-  ON session_summary_enrichments(refresh_now, last_material_change_at_ms);
+CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
+  ON session_summary_enrichments(dirty, last_material_change_at_ms);
 CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_session
   ON session_summary_enrichments(session_id);
 

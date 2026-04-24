@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { config } from "../config.js";
 import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
@@ -13,8 +12,7 @@ import "../targets/gemini.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
-import { refreshSessionSummaryEnrichmentsOnce } from "../session_summaries/enrichment.js";
-import { generateSummariesOnce } from "../summary/index.js";
+import { runSessionSummaryPass as runSessionSummaryPassSafe } from "../session_summaries/pass.js";
 import { allTargets } from "../targets/registry.js";
 import type {
   DiscoveredFile,
@@ -151,14 +149,19 @@ function formatMs(ms: number): string {
 function runSessionSummaryPass(logSummary: (msg: string) => void): {
   updated: number;
 } {
-  let updated = 0;
-  if (config.enableSessionSummaryProjections) {
-    updated += refreshSessionSummaryEnrichmentsOnce({
-      log: logSummary,
-    }).updated;
-  }
-  updated += generateSummariesOnce(logSummary).updated;
-  return { updated };
+  return runSessionSummaryPassSafe({
+    log: logSummary,
+    onEnrichmentError: (err) => {
+      log.scanner.error(
+        `Session summary enrichment error: ${err instanceof Error ? err.message : err}`,
+      );
+    },
+    onLegacySummaryError: (err) => {
+      log.scanner.error(
+        `Session summary error: ${err instanceof Error ? err.message : err}`,
+      );
+    },
+  });
 }
 
 function sortByDurationDesc<T extends { totalMs: number }>(rows: T[]): T[] {

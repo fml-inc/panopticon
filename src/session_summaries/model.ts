@@ -53,12 +53,40 @@ export interface SessionSummaryEnrichmentRow {
   enriched_input_hash: string | null;
   enriched_message_count: number | null;
   dirty: number;
-  refresh_now: number;
   dirty_reason_json: string | null;
   last_material_change_at_ms: number | null;
   last_attempted_at_ms: number | null;
   failure_count: number;
   last_error: string | null;
+}
+
+export function shouldRefreshSessionSummaryNow(
+  existing: Pick<
+    SessionSummaryEnrichmentRow,
+    "enriched_message_count" | "last_material_change_at_ms"
+  > | null,
+  input: Pick<
+    SessionSummaryDeterministicInput,
+    "messageCount" | "lastActivityMs"
+  >,
+  nowMs: number,
+): boolean {
+  const messageDelta = Math.max(
+    0,
+    input.messageCount - (existing?.enriched_message_count ?? 0),
+  );
+  const pendingSinceMs = existing?.last_material_change_at_ms ?? nowMs;
+  const pendingAgeMs = nowMs - pendingSinceMs;
+  const lastActivityAgeMs =
+    input.lastActivityMs === null
+      ? Number.POSITIVE_INFINITY
+      : nowMs - input.lastActivityMs;
+
+  return (
+    lastActivityAgeMs > COLD_WINDOW_MS ||
+    messageDelta >= MESSAGE_THRESHOLD ||
+    pendingAgeMs >= PENDING_AGE_THRESHOLD_MS
+  );
 }
 
 export function buildDeterministicSessionSummaryDocs(
@@ -255,19 +283,10 @@ export function mergeSessionSummaryEnrichment(
     existing?.summary_version !== SESSION_SUMMARY_ENRICHMENT_VERSION;
   const stale =
     inputChanged || policyChanged || versionChanged || messageDelta > 0;
+  const materialChange = inputChanged || policyChanged || versionChanged;
   const pendingSinceMs = stale
     ? (existing?.last_material_change_at_ms ?? nowMs)
     : null;
-  const pendingAgeMs = pendingSinceMs === null ? 0 : nowMs - pendingSinceMs;
-  const lastActivityAgeMs =
-    input.lastActivityMs === null
-      ? Number.POSITIVE_INFINITY
-      : nowMs - input.lastActivityMs;
-  const shouldRefreshNow =
-    stale &&
-    (lastActivityAgeMs > COLD_WINDOW_MS ||
-      messageDelta >= MESSAGE_THRESHOLD ||
-      pendingAgeMs >= PENDING_AGE_THRESHOLD_MS);
   const reasons = summaryDirtyReasons(existing, docs, input, policyHash, nowMs);
   const dirtyReasonJson =
     reasons.length > 0 ? JSON.stringify({ reasons }) : null;
@@ -298,12 +317,13 @@ export function mergeSessionSummaryEnrichment(
       ? existing.enriched_message_count
       : null,
     dirty: stale ? 1 : 0,
-    refresh_now: shouldRefreshNow ? 1 : 0,
     dirty_reason_json: dirtyReasonJson,
     last_material_change_at_ms: pendingSinceMs,
-    last_attempted_at_ms: existing?.last_attempted_at_ms ?? null,
-    failure_count: existing?.failure_count ?? 0,
-    last_error: existing?.last_error ?? null,
+    last_attempted_at_ms: materialChange
+      ? null
+      : (existing?.last_attempted_at_ms ?? null),
+    failure_count: materialChange ? 0 : (existing?.failure_count ?? 0),
+    last_error: materialChange ? null : (existing?.last_error ?? null),
   };
 }
 

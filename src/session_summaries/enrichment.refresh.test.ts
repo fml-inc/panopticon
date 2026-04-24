@@ -42,6 +42,10 @@ describe("session summary enrichment refresh", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    state.detectAgentMock.mockImplementation(
+      (runner: string): string | null => `/usr/local/bin/${runner}`,
+    );
+    state.invokeLlmMock.mockReset();
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-enrich-refresh-"));
     const dbPath = path.join(tempDir, "test.db");
     state.db = new Database(dbPath);
@@ -75,7 +79,6 @@ describe("session summary enrichment refresh", () => {
         enriched_input_hash TEXT,
         enriched_message_count INTEGER,
         dirty INTEGER NOT NULL DEFAULT 1,
-        refresh_now INTEGER NOT NULL DEFAULT 0,
         dirty_reason_json TEXT,
         last_material_change_at_ms INTEGER,
         last_attempted_at_ms INTEGER,
@@ -100,6 +103,8 @@ describe("session summary enrichment refresh", () => {
       CREATE TABLE sessions (
         session_id TEXT PRIMARY KEY,
         target TEXT,
+        started_at_ms INTEGER,
+        ended_at_ms INTEGER,
         message_count INTEGER
       );
       CREATE TABLE intent_session_summaries (
@@ -177,7 +182,7 @@ describe("session summary enrichment refresh", () => {
       expect(state.inTx).toBe(false);
       db.prepare(
         `UPDATE session_summary_enrichments
-         SET summary_input_hash = ?, dirty = 1, refresh_now = 1
+         SET summary_input_hash = ?, dirty = 1
          WHERE session_summary_key = 'ss:local:session-1'`,
       ).run("hash-2");
       return "stale summary";
@@ -249,6 +254,51 @@ describe("session summary enrichment refresh", () => {
       dirty: 1,
     });
   });
+
+  it("ages a hot dirty row into eligibility without requiring another rebuild", () => {
+    const db = state.db!;
+    const now = Date.now();
+    db.prepare(
+      `UPDATE session_summary_enrichments
+       SET last_material_change_at_ms = ?, dirty = 1
+       WHERE session_summary_key = 'ss:local:session-1'`,
+    ).run(now - 31 * 60 * 1000);
+    db.prepare(
+      `UPDATE session_summaries
+       SET last_intent_ts_ms = ?
+       WHERE session_summary_key = 'ss:local:session-1'`,
+    ).run(now - 5 * 60 * 1000);
+
+    state.invokeLlmMock.mockReturnValue("LLM summary text.");
+
+    const result = refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+    });
+
+    const row = db
+      .prepare(
+        `SELECT summary_text, summary_source, dirty, last_attempted_at_ms
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          summary_text: string | null;
+          summary_source: string;
+          dirty: number;
+          last_attempted_at_ms: number | null;
+        }
+      | undefined;
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+    expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({
+      summary_text: "LLM summary text.",
+      summary_source: "llm",
+      dirty: 0,
+    });
+    expect(row?.last_attempted_at_ms).not.toBeNull();
+  });
 });
 
 function seedSummaryRow(): void {
@@ -276,9 +326,9 @@ function seedSummaryRow(): void {
   );
 
   db.prepare(
-    `INSERT INTO sessions (session_id, target, message_count)
-     VALUES (?, ?, ?)`,
-  ).run("session-1", "claude", 7);
+    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, message_count)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run("session-1", "claude", 500, 1_000, 7);
 
   db.prepare(
     `INSERT INTO intent_units (id, prompt_text, prompt_ts_ms)
@@ -301,9 +351,9 @@ function seedSummaryRow(): void {
       summary_source, summary_runner, summary_model, summary_version,
       summary_generated_at_ms, projection_hash, summary_input_hash,
       summary_policy_hash, enriched_input_hash, enriched_message_count,
-      dirty, refresh_now, dirty_reason_json, last_material_change_at_ms,
+      dirty, dirty_reason_json, last_material_change_at_ms,
       last_attempted_at_ms, failure_count, last_error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     "ss:local:session-1",
     "session-1",
@@ -319,7 +369,6 @@ function seedSummaryRow(): void {
     null,
     null,
     null,
-    1,
     1,
     JSON.stringify({ reasons: ["session_cold", "refresh_pending"] }),
     600,

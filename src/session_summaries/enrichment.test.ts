@@ -4,6 +4,7 @@ import {
   buildDeterministicSessionSummaryDocs,
   mergeSessionSummaryEnrichment,
   SESSION_SUMMARY_ENRICHMENT_VERSION,
+  shouldRefreshSessionSummaryNow,
 } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
 
@@ -43,9 +44,18 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_text).toBeNull();
     expect(merged.summary_search_text).toBeNull();
     expect(merged.dirty).toBe(1);
-    expect(merged.refresh_now).toBe(0);
     expect(merged.dirty_reason_json).toContain("missing");
     expect(merged.dirty_reason_json).toContain("session_hot");
+    expect(
+      shouldRefreshSessionSummaryNow(
+        {
+          enriched_message_count: merged.enriched_message_count,
+          last_material_change_at_ms: merged.last_material_change_at_ms,
+        },
+        BASE_INPUT,
+        1234,
+      ),
+    ).toBe(false);
   });
 
   it("marks a cold session dirty even when it is still small", () => {
@@ -62,8 +72,21 @@ describe("session summary enrichment merge", () => {
 
     expect(merged.summary_source).toBe("deterministic");
     expect(merged.dirty).toBe(1);
-    expect(merged.refresh_now).toBe(1);
     expect(merged.dirty_reason_json).toContain("session_cold");
+    expect(
+      shouldRefreshSessionSummaryNow(
+        {
+          enriched_message_count: merged.enriched_message_count,
+          last_material_change_at_ms: merged.last_material_change_at_ms,
+        },
+        {
+          ...BASE_INPUT,
+          lastActivityMs: 0,
+          messageCount: 6,
+        },
+        7 * 60 * 60 * 1000,
+      ),
+    ).toBe(true);
   });
 
   it("preserves an llm summary when the summary input hash is unchanged", () => {
@@ -86,7 +109,6 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: BASE_INPUT.messageCount,
         dirty: 0,
-        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: null,
         last_attempted_at_ms: 1000,
@@ -101,7 +123,6 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.summary_source).toBe("llm");
     expect(merged.dirty).toBe(0);
-    expect(merged.refresh_now).toBe(0);
     expect(merged.summary_search_text).toBeNull();
   });
 
@@ -125,7 +146,6 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: 4,
         dirty: 0,
-        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: 1000,
         last_attempted_at_ms: 1000,
@@ -149,10 +169,25 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_input_hash).not.toBe(docs.summaryInputHash);
     expect(merged.summary_policy_hash).toBe(policyHash);
     expect(merged.dirty).toBe(1);
-    expect(merged.refresh_now).toBe(0);
     expect(merged.dirty_reason_json).toContain("summary_input_changed");
     expect(merged.dirty_reason_json).toContain("session_hot");
     expect(merged.summary_search_text).toBeNull();
+    expect(merged.last_attempted_at_ms).toBeNull();
+    expect(merged.failure_count).toBe(0);
+    expect(merged.last_error).toBeNull();
+    expect(
+      shouldRefreshSessionSummaryNow(
+        {
+          enriched_message_count: merged.enriched_message_count,
+          last_material_change_at_ms: merged.last_material_change_at_ms,
+        },
+        {
+          messageCount: 5,
+          lastActivityMs: BASE_INPUT.lastActivityMs,
+        },
+        3010,
+      ),
+    ).toBe(false);
   });
 
   it("marks a changed hot session dirty after the message threshold", () => {
@@ -175,7 +210,6 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: 2,
         dirty: 0,
-        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: 1000,
         last_attempted_at_ms: 1000,
@@ -196,8 +230,20 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_source).toBe("llm");
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.dirty).toBe(1);
-    expect(merged.refresh_now).toBe(1);
     expect(merged.dirty_reason_json).toContain("message_threshold_reached");
+    expect(
+      shouldRefreshSessionSummaryNow(
+        {
+          enriched_message_count: merged.enriched_message_count,
+          last_material_change_at_ms: merged.last_material_change_at_ms,
+        },
+        {
+          messageCount: 25,
+          lastActivityMs: BASE_INPUT.lastActivityMs,
+        },
+        3010,
+      ),
+    ).toBe(true);
   });
 
   it("marks message-only growth dirty once the llm summary crosses the threshold", () => {
@@ -220,7 +266,6 @@ describe("session summary enrichment merge", () => {
         enriched_input_hash: docs.summaryInputHash,
         enriched_message_count: BASE_INPUT.messageCount,
         dirty: 0,
-        refresh_now: 0,
         dirty_reason_json: null,
         last_material_change_at_ms: null,
         last_attempted_at_ms: 1000,
@@ -238,9 +283,21 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_source).toBe("llm");
     expect(merged.summary_text).toBe("LLM summary text.");
     expect(merged.dirty).toBe(1);
-    expect(merged.refresh_now).toBe(1);
     expect(merged.dirty_reason_json).toContain("message_threshold_reached");
     expect(merged.dirty_reason_json).toContain("refresh_pending");
+    expect(
+      shouldRefreshSessionSummaryNow(
+        {
+          enriched_message_count: merged.enriched_message_count,
+          last_material_change_at_ms: merged.last_material_change_at_ms,
+        },
+        {
+          messageCount: BASE_INPUT.messageCount + 20,
+          lastActivityMs: BASE_INPUT.lastActivityMs,
+        },
+        2000,
+      ),
+    ).toBe(true);
   });
 
   it("prefers the sticky accepted runner before same-as-session inference", () => {

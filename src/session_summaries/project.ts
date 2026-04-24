@@ -126,7 +126,6 @@ export function rebuildSessionSummaryProjections(opts?: {
               enriched_input_hash,
               enriched_message_count,
               dirty,
-              refresh_now,
               dirty_reason_json,
               last_material_change_at_ms,
               last_attempted_at_ms,
@@ -141,9 +140,9 @@ export function rebuildSessionSummaryProjections(opts?: {
         summary_source, summary_runner, summary_model, summary_version,
         summary_generated_at_ms, projection_hash, summary_input_hash,
         summary_policy_hash, enriched_input_hash, enriched_message_count,
-        dirty, refresh_now, dirty_reason_json, last_material_change_at_ms,
+        dirty, dirty_reason_json, last_material_change_at_ms,
         last_attempted_at_ms, failure_count, last_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_summary_key) DO UPDATE SET
          session_id = excluded.session_id,
          summary_text = excluded.summary_text,
@@ -159,7 +158,6 @@ export function rebuildSessionSummaryProjections(opts?: {
          enriched_input_hash = excluded.enriched_input_hash,
          enriched_message_count = excluded.enriched_message_count,
          dirty = excluded.dirty,
-         refresh_now = excluded.refresh_now,
          dirty_reason_json = excluded.dirty_reason_json,
          last_material_change_at_ms = excluded.last_material_change_at_ms,
          last_attempted_at_ms = excluded.last_attempted_at_ms,
@@ -374,7 +372,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         mergedEnrichment.enriched_input_hash,
         mergedEnrichment.enriched_message_count,
         mergedEnrichment.dirty,
-        mergedEnrichment.refresh_now,
         mergedEnrichment.dirty_reason_json,
         mergedEnrichment.last_material_change_at_ms,
         mergedEnrichment.last_attempted_at_ms,

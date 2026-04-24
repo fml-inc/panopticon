@@ -16,7 +16,7 @@ const {
   rebuildIntentProjectionMock,
   reconcileLandedClaimsFromDiskMock,
   readScannerStatusMock,
-  generateSummariesOnceMock,
+  runSessionSummaryPassMock,
 } = vi.hoisted(() => ({
   needsResyncMock: vi.fn(),
   needsRawDataResyncMock: vi.fn(),
@@ -42,7 +42,7 @@ const {
   })),
   reconcileLandedClaimsFromDiskMock: vi.fn(() => ({ checked: 5 })),
   readScannerStatusMock: vi.fn(),
-  generateSummariesOnceMock: vi.fn(),
+  runSessionSummaryPassMock: vi.fn(),
 }));
 
 vi.mock("../claims/canonicalize.js", () => ({
@@ -139,8 +139,8 @@ vi.mock("../session_summaries/query.js", () => ({
   whyCode: vi.fn(),
 }));
 
-vi.mock("../summary/index.js", () => ({
-  generateSummariesOnce: generateSummariesOnceMock,
+vi.mock("../session_summaries/pass.js", () => ({
+  runSessionSummaryPass: runSessionSummaryPassMock,
 }));
 
 vi.mock("../sync/config.js", () => ({
@@ -194,7 +194,7 @@ describe("direct service scan", () => {
       projectedProvenance: 10,
       totalMs: 11,
     });
-    generateSummariesOnceMock.mockReturnValue({ updated: 5 });
+    runSessionSummaryPassMock.mockReturnValue({ updated: 5 });
   });
 
   it("triggers atomic reparse when raw data needs resync", async () => {
@@ -255,7 +255,7 @@ describe("direct service scan", () => {
       logDetails: true,
     });
     expect(reparseAllMock).not.toHaveBeenCalled();
-    expect(generateSummariesOnceMock).not.toHaveBeenCalled();
+    expect(runSessionSummaryPassMock).not.toHaveBeenCalled();
     expect(result).toEqual({
       filesScanned: 2,
       newTurns: 3,
