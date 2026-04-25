@@ -47,7 +47,7 @@ vi.mock("../db/schema.js", () => ({
 
 vi.mock("../summary/llm.js", () => ({
   detectAgent: state.detectAgentMock,
-  invokeLlm: state.invokeLlmMock,
+  invokeLlmAsync: state.invokeLlmMock,
 }));
 
 describe("session summary enrichment refresh", () => {
@@ -172,14 +172,14 @@ describe("session summary enrichment refresh", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("runs the llm outside the database transaction and persists the result", () => {
+  it("runs the llm outside the database transaction and persists the result", async () => {
     const db = state.db!;
-    state.invokeLlmMock.mockImplementation(() => {
+    state.invokeLlmMock.mockImplementation(async () => {
       expect(state.inTx).toBe(false);
       return "LLM summary text.";
     });
 
-    const result = refreshSessionSummaryEnrichmentsOnce({
+    const result = await refreshSessionSummaryEnrichmentsOnce({
       sessionId: "session-1",
       force: true,
     });
@@ -216,9 +216,9 @@ describe("session summary enrichment refresh", () => {
     });
   });
 
-  it("releases a stale claim instead of persisting outdated output", () => {
+  it("releases a stale claim instead of persisting outdated output", async () => {
     const db = state.db!;
-    state.invokeLlmMock.mockImplementation(() => {
+    state.invokeLlmMock.mockImplementation(async () => {
       expect(state.inTx).toBe(false);
       db.prepare(
         `UPDATE session_summary_enrichments
@@ -228,7 +228,7 @@ describe("session summary enrichment refresh", () => {
       return "stale summary";
     });
 
-    const result = refreshSessionSummaryEnrichmentsOnce({
+    const result = await refreshSessionSummaryEnrichmentsOnce({
       sessionId: "session-1",
       force: true,
     });
@@ -264,7 +264,7 @@ describe("session summary enrichment refresh", () => {
     });
   });
 
-  it("skips cleanly when no allowed runner is available", () => {
+  it("skips cleanly when no allowed runner is available", async () => {
     const db = state.db!;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(100_000));
@@ -272,7 +272,7 @@ describe("session summary enrichment refresh", () => {
     state.detectAgentMock.mockReturnValue(null);
 
     try {
-      const result = refreshSessionSummaryEnrichmentsOnce({
+      const result = await refreshSessionSummaryEnrichmentsOnce({
         sessionId: "session-1",
         force: true,
       });
@@ -319,7 +319,7 @@ describe("session summary enrichment refresh", () => {
         last_error: "no allowed summary runner available",
       });
 
-      const skipped = refreshSessionSummaryEnrichmentsOnce({
+      const skipped = await refreshSessionSummaryEnrichmentsOnce({
         sessionId: "session-1",
       });
       expect(skipped).toEqual({ attempted: 0, updated: 0 });
@@ -329,7 +329,7 @@ describe("session summary enrichment refresh", () => {
     }
   });
 
-  it("backs off runner retries after an invocation failure", () => {
+  it("backs off runner retries after an invocation failure", async () => {
     const db = state.db!;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(100_000));
@@ -337,7 +337,7 @@ describe("session summary enrichment refresh", () => {
     state.invokeLlmMock.mockReturnValue(null);
 
     try {
-      const first = refreshSessionSummaryEnrichmentsOnce({
+      const first = await refreshSessionSummaryEnrichmentsOnce({
         sessionId: "session-1",
         force: true,
       });
@@ -383,7 +383,7 @@ describe("session summary enrichment refresh", () => {
       });
 
       state.invokeLlmMock.mockClear();
-      const skipped = refreshSessionSummaryEnrichmentsOnce({
+      const skipped = await refreshSessionSummaryEnrichmentsOnce({
         sessionId: "session-1",
       });
       expect(skipped).toEqual({ attempted: 0, updated: 0 });
@@ -394,7 +394,7 @@ describe("session summary enrichment refresh", () => {
     }
   });
 
-  it("ages a hot dirty row into eligibility without requiring another rebuild", () => {
+  it("ages a hot dirty row into eligibility without requiring another rebuild", async () => {
     const db = state.db!;
     const now = Date.now();
     db.prepare(
@@ -408,9 +408,9 @@ describe("session summary enrichment refresh", () => {
        WHERE session_summary_key = 'ss:local:session-1'`,
     ).run(now - 5 * 60 * 1000);
 
-    state.invokeLlmMock.mockReturnValue("LLM summary text.");
+    state.invokeLlmMock.mockResolvedValue("LLM summary text.");
 
-    const result = refreshSessionSummaryEnrichmentsOnce({
+    const result = await refreshSessionSummaryEnrichmentsOnce({
       sessionId: "session-1",
     });
 
@@ -439,7 +439,7 @@ describe("session summary enrichment refresh", () => {
     expect(row?.last_attempted_at_ms).not.toBeNull();
   });
 
-  it("applies the limit after eligibility so a hot row does not block older work", () => {
+  it("applies the limit after eligibility so a hot row does not block older work", async () => {
     const db = state.db!;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_700_000_000_000));
@@ -471,9 +471,9 @@ describe("session summary enrichment refresh", () => {
         messageCount: 2,
       });
 
-      state.invokeLlmMock.mockReturnValue("LLM summary text.");
+      state.invokeLlmMock.mockResolvedValue("LLM summary text.");
 
-      const result = refreshSessionSummaryEnrichmentsOnce({ limit: 1 });
+      const result = await refreshSessionSummaryEnrichmentsOnce({ limit: 1 });
 
       const rows = db
         .prepare(
@@ -498,7 +498,7 @@ describe("session summary enrichment refresh", () => {
     }
   });
 
-  it("includes recent message context when message growth triggers a refresh", () => {
+  it("includes recent message context when message growth triggers a refresh", async () => {
     const db = state.db!;
     db.prepare(
       `UPDATE session_summary_enrichments
@@ -546,7 +546,7 @@ describe("session summary enrichment refresh", () => {
       0,
     );
 
-    state.invokeLlmMock.mockImplementation((prompt: string) => {
+    state.invokeLlmMock.mockImplementation(async (prompt: string) => {
       expect(prompt).toContain("Counts: messages 25;");
       expect(prompt).toContain("Recent messages:");
       expect(prompt).toContain("user: Please verify the final patch behavior.");
@@ -556,7 +556,7 @@ describe("session summary enrichment refresh", () => {
       return "LLM summary text.";
     });
 
-    const result = refreshSessionSummaryEnrichmentsOnce({
+    const result = await refreshSessionSummaryEnrichmentsOnce({
       sessionId: "session-1",
     });
 
@@ -583,6 +583,142 @@ describe("session summary enrichment refresh", () => {
       dirty: 0,
       enriched_message_count: 25,
     });
+  });
+
+  it("processes multiple claimed rows up to the configured concurrency", async () => {
+    const db = state.db!;
+    seedAdditionalSummaryRow();
+
+    let active = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    state.invokeLlmMock.mockImplementation(async (prompt: string) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => {
+        releases.push(() => {
+          active -= 1;
+          resolve();
+        });
+      });
+      return prompt.includes("session-2")
+        ? "Second LLM summary text."
+        : "First LLM summary text.";
+    });
+
+    const refreshPromise = refreshSessionSummaryEnrichmentsOnce({
+      limit: 2,
+      concurrency: 2,
+      force: true,
+    });
+    await vi.waitFor(() => {
+      expect(state.invokeLlmMock).toHaveBeenCalledTimes(2);
+    });
+    for (const release of releases.splice(0)) {
+      release();
+    }
+    const result = await refreshPromise;
+
+    const rows = db
+      .prepare(
+        `SELECT session_summary_key, summary_text, dirty
+         FROM session_summary_enrichments
+         WHERE session_summary_key IN ('ss:local:session-1', 'ss:local:session-2')
+         ORDER BY session_summary_key ASC`,
+      )
+      .all() as Array<{
+      session_summary_key: string;
+      summary_text: string | null;
+      dirty: number;
+    }>;
+
+    expect(result).toEqual({ attempted: 2, updated: 2 });
+    expect(peak).toBe(2);
+    expect(rows).toEqual([
+      {
+        session_summary_key: "ss:local:session-1",
+        summary_text: "First LLM summary text.",
+        dirty: 0,
+      },
+      {
+        session_summary_key: "ss:local:session-2",
+        summary_text: "Second LLM summary text.",
+        dirty: 0,
+      },
+    ]);
+  });
+
+  it("processes multiple concurrent enrichment batches across repeated rounds", async () => {
+    const db = state.db!;
+    seedAdditionalSummaryRow();
+
+    let maxPeak = 0;
+    for (const round of [1, 2, 3]) {
+      let active = 0;
+      let peak = 0;
+      const releases: Array<() => void> = [];
+      state.invokeLlmMock.mockReset();
+      state.invokeLlmMock.mockImplementation(async (prompt: string) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        maxPeak = Math.max(maxPeak, peak);
+        const label = prompt.includes("session-2") ? "session-2" : "session-1";
+        await new Promise<void>((resolve) => {
+          releases.push(() => {
+            active -= 1;
+            resolve();
+          });
+        });
+        return `round-${round}-${label}`;
+      });
+
+      const refreshPromise = refreshSessionSummaryEnrichmentsOnce({
+        limit: 2,
+        concurrency: 2,
+        force: true,
+      });
+      await vi.waitFor(() => {
+        expect(state.invokeLlmMock).toHaveBeenCalledTimes(2);
+      });
+      for (const release of releases.splice(0)) {
+        release();
+      }
+
+      const result = await refreshPromise;
+      const rows = db
+        .prepare(
+          `SELECT session_summary_key, summary_text, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key IN ('ss:local:session-1', 'ss:local:session-2')
+           ORDER BY session_summary_key ASC`,
+        )
+        .all() as Array<{
+        session_summary_key: string;
+        summary_text: string | null;
+        dirty: number;
+      }>;
+
+      expect(result).toEqual({ attempted: 2, updated: 2 });
+      expect(peak).toBe(2);
+      expect(rows).toEqual([
+        {
+          session_summary_key: "ss:local:session-1",
+          summary_text: `round-${round}-session-1`,
+          dirty: 0,
+        },
+        {
+          session_summary_key: "ss:local:session-2",
+          summary_text: `round-${round}-session-2`,
+          dirty: 0,
+        },
+      ]);
+
+      if (round < 3) {
+        prepareRowsForAnotherRound(round);
+      }
+    }
+
+    expect(maxPeak).toBe(2);
   });
 });
 
@@ -701,5 +837,138 @@ function seedSummaryRow(
     null,
     0,
     null,
+  );
+}
+
+function seedAdditionalSummaryRow(): void {
+  const db = state.db!;
+  db.prepare(
+    `INSERT INTO session_summaries
+     (id, session_summary_key, session_id, title, status, repository, branch,
+      intent_count, edit_count, landed_edit_count, open_edit_count,
+      last_intent_ts_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    2,
+    "ss:local:session-2",
+    "session-2",
+    "session-2 concurrency check",
+    "landed",
+    "/repo",
+    "main",
+    1,
+    1,
+    1,
+    0,
+    1_500,
+  );
+
+  db.prepare(
+    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, message_count)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run("session-2", "claude", 1_100, 1_500, 8);
+
+  db.prepare(
+    `INSERT INTO intent_units
+     (id, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms, repository, cwd)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    20,
+    "session-2",
+    "summarize the second session row",
+    1_200,
+    null,
+    "/repo",
+    "/repo",
+  );
+
+  db.prepare(
+    `INSERT INTO intent_session_summaries (session_summary_id, intent_unit_id)
+     VALUES (?, ?)`,
+  ).run(2, 20);
+
+  db.prepare(
+    `INSERT INTO intent_edits
+     (id, intent_unit_id, session_id, file_path, tool_name, timestamp_ms, landed,
+      landed_reason, new_string_hash, new_string_snippet)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    2,
+    20,
+    "session-2",
+    "src/session_summaries/pass.ts",
+    "Edit",
+    1_250,
+    1,
+    null,
+    null,
+    null,
+  );
+
+  db.prepare(
+    `INSERT INTO session_summary_enrichments
+     (session_summary_key, session_id, summary_text,
+      summary_source, summary_runner, summary_model, summary_version,
+      summary_generated_at_ms, projection_hash, summary_input_hash,
+      summary_policy_hash, enriched_input_hash, enriched_message_count,
+      dirty, dirty_reason_json, last_material_change_at_ms,
+      last_attempted_at_ms, failure_count, last_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "ss:local:session-2",
+    "session-2",
+    null,
+    "deterministic",
+    null,
+    null,
+    SESSION_SUMMARY_ENRICHMENT_VERSION,
+    null,
+    "projection-hash-2",
+    "hash-2",
+    null,
+    null,
+    null,
+    1,
+    JSON.stringify({ reasons: ["session_cold", "refresh_pending"] }),
+    1_200,
+    null,
+    0,
+    null,
+  );
+}
+
+function prepareRowsForAnotherRound(round: number): void {
+  const db = state.db!;
+  db.prepare(
+    `UPDATE session_summary_enrichments
+     SET dirty = 1,
+         dirty_reason_json = ?,
+         last_material_change_at_ms = ?,
+         last_attempted_at_ms = NULL,
+         summary_input_hash = ?,
+         enriched_input_hash = NULL,
+         enriched_message_count = NULL
+     WHERE session_summary_key = ?`,
+  ).run(
+    JSON.stringify({ reasons: ["refresh_pending", `round_${round}_rerun`] }),
+    2_000 + round,
+    `hash-1-round-${round}`,
+    "ss:local:session-1",
+  );
+  db.prepare(
+    `UPDATE session_summary_enrichments
+     SET dirty = 1,
+         dirty_reason_json = ?,
+         last_material_change_at_ms = ?,
+         last_attempted_at_ms = NULL,
+         summary_input_hash = ?,
+         enriched_input_hash = NULL,
+         enriched_message_count = NULL
+     WHERE session_summary_key = ?`,
+  ).run(
+    JSON.stringify({ reasons: ["refresh_pending", `round_${round}_rerun`] }),
+    3_000 + round,
+    `hash-2-round-${round}`,
+    "ss:local:session-2",
   );
 }

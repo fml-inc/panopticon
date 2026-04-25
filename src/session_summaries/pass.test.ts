@@ -31,16 +31,16 @@ describe("runSessionSummaryPass", () => {
     (
       config as { enableSessionSummaryEnrichment: boolean }
     ).enableSessionSummaryEnrichment = true;
-    refreshSessionSummaryEnrichmentsOnceMock.mockReturnValue({ updated: 0 });
+    refreshSessionSummaryEnrichmentsOnceMock.mockResolvedValue({ updated: 0 });
   });
 
-  it("still ensures projections when enrichment throws", () => {
-    refreshSessionSummaryEnrichmentsOnceMock.mockImplementation(() => {
-      throw new Error("enrichment failed");
-    });
+  it("still ensures projections when enrichment throws", async () => {
+    refreshSessionSummaryEnrichmentsOnceMock.mockRejectedValue(
+      new Error("enrichment failed"),
+    );
     const onEnrichmentError = vi.fn();
 
-    const result = runSessionSummaryPass({
+    const result = await runSessionSummaryPass({
       log: vi.fn(),
       onEnrichmentError,
     });
@@ -50,12 +50,12 @@ describe("runSessionSummaryPass", () => {
     expect(result).toEqual({ updated: 0 });
   });
 
-  it("leaves llm enrichment idle when the enrichment flag is disabled", () => {
+  it("leaves llm enrichment idle when the enrichment flag is disabled", async () => {
     (
       config as { enableSessionSummaryEnrichment: boolean }
     ).enableSessionSummaryEnrichment = false;
 
-    const result = runSessionSummaryPass({
+    const result = await runSessionSummaryPass({
       log: vi.fn(),
       onEnrichmentError: vi.fn(),
     });

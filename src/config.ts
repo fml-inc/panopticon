@@ -126,6 +126,7 @@ const DEFAULT_ATTEMPT_BACKOFF_SCHEDULE_MS = [
   6 * 60 * 60_000,
 ] as const;
 const DEFAULT_ATTEMPT_BACKOFF_JITTER_RATIO = 0.1;
+const DEFAULT_SESSION_SUMMARY_ENRICH_CONCURRENCY = 2;
 
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
@@ -195,9 +196,13 @@ export const config = {
     "PANOPTICON_SESSION_SUMMARY_ENRICH_LIMIT",
     5,
   ),
+  sessionSummaryEnrichConcurrency: envInt(
+    "PANOPTICON_SESSION_SUMMARY_ENRICH_CONCURRENCY",
+    DEFAULT_SESSION_SUMMARY_ENRICH_CONCURRENCY,
+  ),
   sessionSummaryScannerEnrichLimit: envInt(
     "PANOPTICON_SESSION_SUMMARY_SCANNER_ENRICH_LIMIT",
-    1,
+    DEFAULT_SESSION_SUMMARY_ENRICH_CONCURRENCY,
   ),
   sessionSummaryProjectionDebounceMs: envInt(
     "PANOPTICON_SESSION_SUMMARY_PROJECTION_DEBOUNCE_MS",

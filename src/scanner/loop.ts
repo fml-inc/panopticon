@@ -148,9 +148,11 @@ function formatMs(ms: number): string {
   return `${ms.toFixed(1)}ms`;
 }
 
-function runSessionSummaryPass(logSummary: (msg: string) => void): {
+async function runSessionSummaryPass(
+  logSummary: (msg: string) => void,
+): Promise<{
   updated: number;
-} {
+}> {
   return runSessionSummaryPassSafe({
     log: logSummary,
     enrichmentLog: (msg) => log.scanner.info(msg),
@@ -779,6 +781,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
+  let ticking = false;
   let reparseChecked = false;
   let ready = false;
   let startedAt = 0;
@@ -786,114 +789,116 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   function scheduleNext(hadWork: boolean): void {
     if (stopping) return;
     const delay = hadWork ? catchUpMs : idleMs;
-    timer = setTimeout(() => tick(), delay);
+    timer = setTimeout(() => {
+      void tick();
+    }, delay);
     if (!opts.keepAlive && timer.unref) {
       timer.unref();
     }
   }
 
-  function tick(): void {
-    if (stopping) return;
+  async function tick(): Promise<void> {
+    if (stopping || ticking) return;
+    ticking = true;
 
-    // On first tick, check if data version requires a full reparse
-    if (!reparseChecked) {
-      reparseChecked = true;
-      if (needsRawDataResync()) {
-        log.scanner.info("Data version outdated — running atomic reparse...");
-        import("./reparse.js")
-          .then(({ reparseAll }) => {
-            try {
-              const result = reparseAll((msg) => log.scanner.debug(msg));
-              clearScannerStatus();
-              if (!result.success) {
-                log.scanner.error(
-                  `Reparse failed: ${result.error ?? "unknown"}`,
-                );
-              }
-            } catch (err) {
-              clearScannerStatus();
-              log.scanner.error(
-                `Reparse error: ${err instanceof Error ? err.message : err}`,
-              );
+    try {
+      // On first tick, check if data version requires a full reparse
+      if (!reparseChecked) {
+        reparseChecked = true;
+        if (needsRawDataResync()) {
+          log.scanner.info("Data version outdated — running atomic reparse...");
+          try {
+            const { reparseAll } = await import("./reparse.js");
+            const result = reparseAll((msg) => log.scanner.debug(msg));
+            clearScannerStatus();
+            if (!result.success) {
+              log.scanner.error(`Reparse failed: ${result.error ?? "unknown"}`);
             }
-            scheduleNext(true);
-          })
-          .catch((err) => {
+          } catch (err) {
             clearScannerStatus();
             log.scanner.error(
-              `Reparse import error: ${err instanceof Error ? err.message : err}`,
+              `Reparse error: ${err instanceof Error ? err.message : err}`,
             );
-            scheduleNext(false);
-          });
-        return;
-      }
-      if (needsClaimsRebuild()) {
-        log.scanner.info(
-          "Claims data outdated — rebuilding from local raw data...",
-        );
-        try {
-          rebuildClaimsDerivedState((msg) => log.scanner.info(msg));
-          clearScannerStatus();
-        } catch (err) {
-          log.scanner.error(
-            `Claims rebuild error: ${err instanceof Error ? err.message : err}`,
-          );
-        }
-        scheduleNext(true);
-        return;
-      }
-    }
-
-    let hadWork = false;
-    try {
-      const isStartupScan = !ready;
-      const scanStatusStartedAtMs = Date.now();
-      writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan);
-      const { newTurns } = scanOnce({
-        profileLabel: isStartupScan ? "startup scan" : "scan",
-        logDetails: isStartupScan,
-        progressEveryMs: SCAN_STATUS_EVERY_MS,
-        onProgress: (progress) => {
-          writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan, progress);
-        },
-      });
-      hadWork = newTurns > 0;
-      clearScannerStatus();
-
-      if (!ready) {
-        ready = true;
-        clearScannerStatus();
-        log.scanner.info(
-          `Scanner ready in ${formatMs(performance.now() - startedAt)}`,
-        );
-        opts.onReady?.();
-      }
-
-      // Only generate summaries when idle and scanner is ready.
-      if (!hadWork && ready) {
-        try {
-          const summaryStartedAt = performance.now();
-          const result = runSessionSummaryPass((msg) => log.scanner.debug(msg));
-          const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
-          if (result.updated > 0) {
-            log.scanner.info(summaryMessage);
-          } else {
-            log.scanner.debug(summaryMessage);
           }
-        } catch (err) {
-          log.scanner.error(
-            `Session summary error: ${err instanceof Error ? err.message : err}`,
+          scheduleNext(true);
+          return;
+        }
+        if (needsClaimsRebuild()) {
+          log.scanner.info(
+            "Claims data outdated — rebuilding from local raw data...",
           );
+          try {
+            rebuildClaimsDerivedState((msg) => log.scanner.info(msg));
+            clearScannerStatus();
+          } catch (err) {
+            log.scanner.error(
+              `Claims rebuild error: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+          scheduleNext(true);
+          return;
         }
       }
-    } catch (err) {
-      clearScannerStatus();
-      log.scanner.error(
-        `Scan error: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-    if (!stopping) {
-      scheduleNext(hadWork);
+
+      let hadWork = false;
+      try {
+        const isStartupScan = !ready;
+        const scanStatusStartedAtMs = Date.now();
+        writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan);
+        const { newTurns } = scanOnce({
+          profileLabel: isStartupScan ? "startup scan" : "scan",
+          logDetails: isStartupScan,
+          progressEveryMs: SCAN_STATUS_EVERY_MS,
+          onProgress: (progress) => {
+            writeActiveScanStatus(
+              scanStatusStartedAtMs,
+              isStartupScan,
+              progress,
+            );
+          },
+        });
+        hadWork = newTurns > 0;
+        clearScannerStatus();
+
+        if (!ready) {
+          ready = true;
+          clearScannerStatus();
+          log.scanner.info(
+            `Scanner ready in ${formatMs(performance.now() - startedAt)}`,
+          );
+          opts.onReady?.();
+        }
+
+        // Only generate summaries when idle and scanner is ready.
+        if (!hadWork && ready) {
+          try {
+            const summaryStartedAt = performance.now();
+            const result = await runSessionSummaryPass((msg) =>
+              log.scanner.debug(msg),
+            );
+            const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
+            if (result.updated > 0) {
+              log.scanner.info(summaryMessage);
+            } else {
+              log.scanner.debug(summaryMessage);
+            }
+          } catch (err) {
+            log.scanner.error(
+              `Session summary error: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        }
+      } catch (err) {
+        clearScannerStatus();
+        log.scanner.error(
+          `Scan error: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      if (!stopping) {
+        scheduleNext(hadWork);
+      }
+    } finally {
+      ticking = false;
     }
   }
 
@@ -904,7 +909,7 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       startedAt = performance.now();
       clearScannerStatus();
       log.scanner.info("Starting scanner");
-      tick();
+      void tick();
     },
     stop() {
       stopping = true;

@@ -93,17 +93,19 @@ function isDerivedRebuildInProgress(): boolean {
   return phase ? ACTIVE_DERIVED_REBUILD_PHASES.has(phase) : false;
 }
 
-function runSummaryGeneration(): number {
-  return runSessionSummaryPass({
-    log: (msg) => log.scanner.debug(msg),
-    enrichmentLog: (msg) => log.scanner.info(msg),
-    enrichmentLimit: config.sessionSummaryEnrichLimit ?? 5,
-    onEnrichmentError: (err) => {
-      log.scanner.error(
-        `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,
-      );
-    },
-  }).updated;
+async function runSummaryGeneration(): Promise<number> {
+  return (
+    await runSessionSummaryPass({
+      log: (msg) => log.scanner.debug(msg),
+      enrichmentLog: (msg) => log.scanner.info(msg),
+      enrichmentLimit: config.sessionSummaryEnrichLimit ?? 5,
+      onEnrichmentError: (err) => {
+        log.scanner.error(
+          `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,
+        );
+      },
+    })
+  ).updated;
 }
 
 function markComponentsCurrentIfFull(
@@ -208,7 +210,7 @@ export function createDirectPanopticonService(): PanopticonService {
             filesScanned: result.filesScanned,
             newTurns: result.newTurns,
             summariesUpdated:
-              opts?.summaries === false ? 0 : runSummaryGeneration(),
+              opts?.summaries === false ? 0 : await runSummaryGeneration(),
           };
         }
         if (needsClaimsRebuild()) {
@@ -217,14 +219,14 @@ export function createDirectPanopticonService(): PanopticonService {
             filesScanned: 0,
             newTurns: 0,
             summariesUpdated:
-              opts?.summaries === false ? 0 : runSummaryGeneration(),
+              opts?.summaries === false ? 0 : await runSummaryGeneration(),
           };
         }
         return {
           filesScanned: 0,
           newTurns: 0,
           summariesUpdated:
-            opts?.summaries === false ? 0 : runSummaryGeneration(),
+            opts?.summaries === false ? 0 : await runSummaryGeneration(),
         };
       }
 
@@ -236,7 +238,7 @@ export function createDirectPanopticonService(): PanopticonService {
         filesScanned: result.filesScanned,
         newTurns: result.newTurns,
         summariesUpdated:
-          opts?.summaries === false ? 0 : runSummaryGeneration(),
+          opts?.summaries === false ? 0 : await runSummaryGeneration(),
       };
     },
     async syncReset(target?: string) {
