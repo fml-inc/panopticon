@@ -36,9 +36,10 @@
 
 import {
   ALL_DATA_COMPONENTS,
-  CLAIM_DATA_COMPONENTS,
+  CLAIM_DERIVED_COMPONENTS,
   ensureDataVersionsTable,
   markDataComponentsStaleInDb,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
 } from "./data-versions.js";
 import type { Database } from "./driver.js";
 import {
@@ -409,7 +410,7 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   deleteAllRowsIfTableExists(db, "ingestion_cursors");
   deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
 
-  markDataComponentsStaleInDb(db, CLAIM_DATA_COMPONENTS);
+  markDataComponentsStaleInDb(db, CLAIM_DERIVED_COMPONENTS);
 }
 
 function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
@@ -432,6 +433,330 @@ function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
   // Let startup rebuild scanner state from raw files instead of trying to
   // infer watermark session IDs from possibly incomplete historical rows.
   markDataComponentsStaleInDb(db, ALL_DATA_COMPONENTS);
+}
+
+function resetSessionSummaryProjectionStorage(db: Database): void {
+  if (tableExists(db, "code_provenance")) {
+    db.exec("DROP TABLE code_provenance");
+  }
+  if (tableExists(db, "intent_session_summaries")) {
+    db.exec("DROP TABLE intent_session_summaries");
+  }
+  if (tableExists(db, "session_summary_search_index")) {
+    db.exec("DROP TABLE session_summary_search_index");
+  }
+  if (tableExists(db, "session_summary_enrichments")) {
+    db.exec("DROP TABLE session_summary_enrichments");
+  }
+  if (tableExists(db, "session_summaries")) {
+    db.exec("DROP TABLE session_summaries");
+  }
+
+  db.exec(`
+    CREATE TABLE session_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_summary_key TEXT NOT NULL UNIQUE,
+      session_id TEXT NOT NULL,
+      repository TEXT,
+      cwd TEXT,
+      branch TEXT,
+      worktree TEXT,
+      actor TEXT,
+      machine TEXT NOT NULL DEFAULT 'local',
+      origin_scope TEXT NOT NULL DEFAULT 'local',
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      first_intent_ts_ms INTEGER,
+      last_intent_ts_ms INTEGER,
+      intent_count INTEGER NOT NULL DEFAULT 0,
+      edit_count INTEGER NOT NULL DEFAULT 0,
+      landed_edit_count INTEGER NOT NULL DEFAULT 0,
+      open_edit_count INTEGER NOT NULL DEFAULT 0,
+      summary_text TEXT,
+      projection_hash TEXT NOT NULL,
+      projected_at_ms INTEGER NOT NULL,
+      source_last_seen_at_ms INTEGER,
+      reason_json TEXT
+    )
+  `);
+  db.exec(`
+    CREATE TABLE session_summary_enrichments (
+      session_summary_key TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      summary_text TEXT,
+      summary_source TEXT NOT NULL DEFAULT 'deterministic',
+      summary_runner TEXT,
+      summary_model TEXT,
+      summary_version INTEGER NOT NULL DEFAULT 1,
+      summary_generated_at_ms INTEGER,
+      projection_hash TEXT,
+      summary_input_hash TEXT,
+      summary_policy_hash TEXT,
+      enriched_input_hash TEXT,
+      enriched_message_count INTEGER,
+      dirty INTEGER NOT NULL DEFAULT 1,
+      dirty_reason_json TEXT,
+      last_material_change_at_ms INTEGER,
+      last_attempted_at_ms INTEGER,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
+    )
+  `);
+  db.exec(`
+    CREATE TABLE session_summary_search_index (
+      session_summary_key TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      corpus_key TEXT NOT NULL,
+      source TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      search_text TEXT NOT NULL,
+      dirty INTEGER NOT NULL DEFAULT 0,
+      projection_hash TEXT,
+      enriched_input_hash TEXT,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (session_summary_key, corpus_key)
+    )
+  `);
+  db.exec(`
+    CREATE TABLE intent_session_summaries (
+      intent_unit_id INTEGER NOT NULL,
+      session_summary_id INTEGER NOT NULL,
+      membership_kind TEXT NOT NULL,
+      source TEXT NOT NULL,
+      score REAL NOT NULL DEFAULT 1.0,
+      reason_json TEXT,
+      UNIQUE(intent_unit_id, session_summary_id)
+    )
+  `);
+  db.exec(`
+    CREATE TABLE code_provenance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repository TEXT NOT NULL DEFAULT '',
+      file_path TEXT NOT NULL,
+      binding_level TEXT NOT NULL,
+      start_line INTEGER,
+      end_line INTEGER,
+      snippet_hash TEXT,
+      snippet_preview TEXT,
+      language TEXT,
+      symbol_kind TEXT,
+      symbol_name TEXT,
+      actor TEXT,
+      machine TEXT NOT NULL DEFAULT 'local',
+      origin_scope TEXT NOT NULL DEFAULT 'local',
+      intent_unit_id INTEGER NOT NULL,
+      intent_edit_id INTEGER,
+      session_summary_id INTEGER,
+      status TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 1.0,
+      file_hash TEXT,
+      established_at_ms INTEGER NOT NULL,
+      verified_at_ms INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_repo
+      ON session_summaries(repository)
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+      ON session_summaries(session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_status
+      ON session_summaries(status)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts
+      ON session_summaries(last_intent_ts_ms)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
+      ON session_summary_enrichments(dirty, last_material_change_at_ms)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_session
+      ON session_summary_enrichments(session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_session
+      ON session_summary_search_index(session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_source_priority
+      ON session_summary_search_index(source, priority)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
+      ON intent_session_summaries(intent_unit_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_session_summary
+      ON intent_session_summaries(session_summary_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_repo_file
+      ON code_provenance(repository, file_path)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_session_summary
+      ON code_provenance(session_summary_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
+      ON code_provenance(intent_unit_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_code_provenance_status
+      ON code_provenance(status)
+  `);
+
+  ensureDataVersionsTable(db);
+  markDataComponentsStaleInDb(db, [SESSION_SUMMARY_PROJECTION_COMPONENT]);
+}
+
+function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
+  if (!tableExists(db, "sessions")) return;
+  if (
+    !tableHasColumn(db, "sessions", "summary") &&
+    !tableHasColumn(db, "sessions", "summary_version")
+  ) {
+    return;
+  }
+
+  // One-time unreleased-branch cleanup: released v0.2.10 still has the legacy
+  // sessions.summary columns, but none of the intermediate PR-only summary
+  // table shapes shipped, so we rebuild directly to the final sessions schema.
+  const sessionValueExpr = (column: string, fallbackSql = "NULL"): string => {
+    return tableHasColumn(db, "sessions", column) ? column : fallbackSql;
+  };
+
+  db.exec(`
+    CREATE TABLE sessions_new (
+      session_id TEXT PRIMARY KEY,
+      target TEXT,
+      started_at_ms INTEGER,
+      ended_at_ms INTEGER,
+      cwd TEXT,
+      first_prompt TEXT,
+      permission_mode TEXT,
+      agent_version TEXT,
+      model TEXT,
+      cli_version TEXT,
+      scanner_file_path TEXT,
+      total_input_tokens INTEGER DEFAULT 0,
+      total_output_tokens INTEGER DEFAULT 0,
+      total_cache_read_tokens INTEGER DEFAULT 0,
+      total_cache_creation_tokens INTEGER DEFAULT 0,
+      total_reasoning_tokens INTEGER DEFAULT 0,
+      turn_count INTEGER DEFAULT 0,
+      otel_input_tokens INTEGER DEFAULT 0,
+      otel_output_tokens INTEGER DEFAULT 0,
+      otel_cache_read_tokens INTEGER DEFAULT 0,
+      otel_cache_creation_tokens INTEGER DEFAULT 0,
+      models TEXT,
+      has_hooks INTEGER DEFAULT 0,
+      has_otel INTEGER DEFAULT 0,
+      has_scanner INTEGER DEFAULT 0,
+      sync_dirty INTEGER DEFAULT 0,
+      sync_seq INTEGER DEFAULT 0,
+      tool_counts JSON DEFAULT '{}',
+      hook_tool_counts JSON DEFAULT '{}',
+      event_type_counts JSON DEFAULT '{}',
+      hook_event_type_counts JSON DEFAULT '{}',
+      project TEXT,
+      machine TEXT NOT NULL DEFAULT 'local',
+      message_count INTEGER DEFAULT 0,
+      user_message_count INTEGER DEFAULT 0,
+      parent_session_id TEXT,
+      relationship_type TEXT DEFAULT '',
+      is_automated INTEGER DEFAULT 0,
+      created_at INTEGER
+    )
+  `);
+
+  db.exec(`
+    INSERT INTO sessions_new (
+      session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+      permission_mode, agent_version, model, cli_version, scanner_file_path,
+      total_input_tokens, total_output_tokens, total_cache_read_tokens,
+      total_cache_creation_tokens, total_reasoning_tokens, turn_count,
+      otel_input_tokens, otel_output_tokens, otel_cache_read_tokens,
+      otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner,
+      sync_dirty, sync_seq, tool_counts, hook_tool_counts, event_type_counts,
+      hook_event_type_counts, project, machine, message_count,
+      user_message_count, parent_session_id, relationship_type, is_automated,
+      created_at
+    )
+    SELECT
+      ${sessionValueExpr("session_id")},
+      ${sessionValueExpr("target")},
+      ${sessionValueExpr("started_at_ms", "NULL")},
+      ${sessionValueExpr("ended_at_ms", "NULL")},
+      ${sessionValueExpr("cwd")},
+      ${sessionValueExpr("first_prompt")},
+      ${sessionValueExpr("permission_mode")},
+      ${sessionValueExpr("agent_version")},
+      ${sessionValueExpr("model")},
+      ${sessionValueExpr("cli_version")},
+      ${sessionValueExpr("scanner_file_path")},
+      ${sessionValueExpr("total_input_tokens", "0")},
+      ${sessionValueExpr("total_output_tokens", "0")},
+      ${sessionValueExpr("total_cache_read_tokens", "0")},
+      ${sessionValueExpr("total_cache_creation_tokens", "0")},
+      ${sessionValueExpr("total_reasoning_tokens", "0")},
+      ${sessionValueExpr("turn_count", "0")},
+      ${sessionValueExpr("otel_input_tokens", "0")},
+      ${sessionValueExpr("otel_output_tokens", "0")},
+      ${sessionValueExpr("otel_cache_read_tokens", "0")},
+      ${sessionValueExpr("otel_cache_creation_tokens", "0")},
+      ${sessionValueExpr("models")},
+      ${sessionValueExpr("has_hooks", "0")},
+      ${sessionValueExpr("has_otel", "0")},
+      ${sessionValueExpr("has_scanner", "0")},
+      ${sessionValueExpr("sync_dirty", "0")},
+      ${sessionValueExpr("sync_seq", "0")},
+      ${sessionValueExpr("tool_counts", "'{}'")},
+      ${sessionValueExpr("hook_tool_counts", "'{}'")},
+      ${sessionValueExpr("event_type_counts", "'{}'")},
+      ${sessionValueExpr("hook_event_type_counts", "'{}'")},
+      ${sessionValueExpr("project")},
+      ${sessionValueExpr("machine", "'local'")},
+      ${sessionValueExpr("message_count", "0")},
+      ${sessionValueExpr("user_message_count", "0")},
+      ${sessionValueExpr("parent_session_id")},
+      ${sessionValueExpr("relationship_type", "''")},
+      ${sessionValueExpr("is_automated", "0")},
+      ${sessionValueExpr("created_at", "NULL")}
+    FROM sessions
+  `);
+
+  db.exec("DROP TABLE sessions");
+  db.exec("ALTER TABLE sessions_new RENAME TO sessions");
+
+  db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target)");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_scanner_file_target
+      ON sessions(scanner_file_path, target)
+      WHERE scanner_file_path IS NOT NULL
+  `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_sync_seq ON sessions(sync_seq)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_machine ON sessions(machine)",
+  );
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)
+      WHERE parent_session_id IS NOT NULL
+  `);
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +796,7 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 3,
     name: "drop_session_summary_deltas",
-    // #115 (Apr 2) replaced delta summaries with a single sessions.summary
+    // #115 (Apr 2) replaced delta summaries with a single legacy sessions.summary
     // column but left the table in the schema and never wrote to it. The
     // prune/MCP/e2e references have been cleaned up; this migration removes
     // the dead table for DBs that were created before the rewrite.
@@ -855,31 +1180,7 @@ export const MIGRATIONS: Migration[] = [
       if (!tableExists(db, "session_summaries")) {
         return;
       }
-      addColumnIfMissing(
-        db,
-        "session_summaries",
-        "session_id",
-        "session_id TEXT",
-      );
-      addColumnIfMissing(
-        db,
-        "session_summaries",
-        "summary_text",
-        "summary_text TEXT",
-      );
-      addColumnIfMissing(
-        db,
-        "session_summaries",
-        "summary_search_text",
-        "summary_search_text TEXT",
-      );
-      db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
-          ON session_summaries(session_id)
-      `);
-      deleteAllRowsIfTableExists(db, "code_provenance");
-      deleteAllRowsIfTableExists(db, "intent_session_summaries");
-      deleteAllRowsIfTableExists(db, "session_summaries");
+      resetSessionSummaryProjectionStorage(db);
     },
   },
   {
@@ -896,6 +1197,13 @@ export const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
           ON session_summary_enrichments(dirty, last_material_change_at_ms)
       `);
+    },
+  },
+  {
+    id: 17,
+    name: "drop_legacy_sessions_summary_columns",
+    up: (db) => {
+      rebuildSessionsTableWithoutLegacySummary(db);
     },
   },
 ];
@@ -950,12 +1258,15 @@ export function runMigrations(
     if (!hasData) {
       // Fresh database: SCHEMA_SQL already created everything.
       // Stamp all migrations as applied without executing them.
-      const stamp = db.prepare(
-        "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
-      );
-      for (const m of migrations) {
-        stamp.run(m.id, m.name);
-      }
+      const stampFreshDb = db.transaction(() => {
+        const stamp = db.prepare(
+          "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+        );
+        for (const m of migrations) {
+          stamp.run(m.id, m.name);
+        }
+      });
+      stampFreshDb();
       return;
     }
     // Pre-migration-system DB: fall through to run migrations normally

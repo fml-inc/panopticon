@@ -1,11 +1,13 @@
 import { performance } from "node:perf_hooks";
-import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { resolveFilePathFromCwd } from "../paths.js";
 import { rebuildSessionSummaryProjections } from "../session_summaries/project.js";
 import { loadActiveEdits, loadActiveIntents } from "./claimViews.js";
 
-export function rebuildIntentProjection(opts?: { sessionId?: string }): {
+export function rebuildIntentProjection(opts?: {
+  sessionId?: string;
+  debounceSessionSummaries?: boolean;
+}): {
   intents: number;
   edits: number;
   sessionSummaries: number;
@@ -184,13 +186,10 @@ export function rebuildIntentProjection(opts?: { sessionId?: string }): {
   });
   tx();
 
-  const local = config.enableSessionSummaryProjections
-    ? rebuildSessionSummaryProjections(opts)
-    : {
-        sessionSummaries: 0,
-        memberships: 0,
-        provenance: 0,
-      };
+  const local = rebuildSessionSummaryProjections({
+    sessionId: opts?.sessionId,
+    debounce: opts?.debounceSessionSummaries,
+  });
 
   return {
     intents: intents.size,

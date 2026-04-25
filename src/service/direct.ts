@@ -75,11 +75,6 @@ import type {
   SyncTargetAddInput,
 } from "./types.js";
 
-function assertSessionSummaryProjectionsEnabled(): void {
-  if (config.enableSessionSummaryProjections) return;
-  throw new Error("Session summary projections are disabled");
-}
-
 const ACTIVE_DERIVED_REBUILD_PHASES = new Set([
   "claims_rebuild_init",
   "claims_rebuild_claims",
@@ -101,15 +96,11 @@ function isDerivedRebuildInProgress(): boolean {
 function runSummaryGeneration(): number {
   return runSessionSummaryPass({
     log: (msg) => log.scanner.debug(msg),
+    enrichmentLog: (msg) => log.scanner.info(msg),
     enrichmentLimit: config.sessionSummaryEnrichLimit ?? 5,
     onEnrichmentError: (err) => {
       log.scanner.error(
         `scan exec: session summary enrichment failed: ${err instanceof Error ? err.message : err}`,
-      );
-    },
-    onLegacySummaryError: (err) => {
-      log.scanner.error(
-        `scan exec: legacy summary generation failed: ${err instanceof Error ? err.message : err}`,
       );
     },
   }).updated;
@@ -174,11 +165,9 @@ export function createDirectPanopticonService(): PanopticonService {
       return outcomesForIntent(opts);
     },
     async listSessionSummaries(opts) {
-      assertSessionSummaryProjectionsEnabled();
       return listSessionSummaries(opts);
     },
     async sessionSummaryDetail(opts) {
-      assertSessionSummaryProjectionsEnabled();
       return sessionSummaryDetail(opts);
     },
     async whyCode(opts) {

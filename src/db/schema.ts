@@ -8,6 +8,8 @@ import {
   ensureDataVersionsInitialized,
   markDataComponentsCurrentInDb,
   RAW_SCANNER_COMPONENT,
+  RESYNC_DATA_COMPONENTS,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
   staleDataComponentsInDb,
   targetDataVersion,
 } from "./data-versions.js";
@@ -122,8 +124,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   has_hooks INTEGER DEFAULT 0,
   has_otel INTEGER DEFAULT 0,
   has_scanner INTEGER DEFAULT 0,
-  summary TEXT,
-  summary_version INTEGER DEFAULT 0,
   sync_dirty INTEGER DEFAULT 0,
   sync_seq INTEGER DEFAULT 0,
   tool_counts JSON DEFAULT '{}',
@@ -449,8 +449,9 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
   summary_text TEXT,
-  summary_search_text TEXT,
-  reconciled_at_ms INTEGER,
+  projection_hash TEXT NOT NULL,
+  projected_at_ms INTEGER NOT NULL,
+  source_last_seen_at_ms INTEGER,
   reason_json TEXT
 );
 
@@ -474,6 +475,31 @@ CREATE TABLE IF NOT EXISTS session_summary_enrichments (
   last_attempted_at_ms INTEGER,
   failure_count INTEGER NOT NULL DEFAULT 0,
   last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_summary_search_index (
+  session_summary_key TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  corpus_key TEXT NOT NULL,
+  source TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  search_text TEXT NOT NULL,
+  dirty INTEGER NOT NULL DEFAULT 0,
+  projection_hash TEXT,
+  enriched_input_hash TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_summary_key, corpus_key)
+);
+
+CREATE TABLE IF NOT EXISTS attempt_backoffs (
+  scope_kind TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_attempted_at_ms INTEGER,
+  next_attempt_at_ms INTEGER,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (scope_kind, scope_key)
 );
 
 CREATE TABLE IF NOT EXISTS intent_session_summaries (
@@ -642,8 +668,6 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 
 -- session_summaries
 CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
-  ON session_summaries(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
 
@@ -652,6 +676,12 @@ CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
   ON session_summary_enrichments(dirty, last_material_change_at_ms);
 CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_session
   ON session_summary_enrichments(session_id);
+
+-- session_summary_search_index
+CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_session
+  ON session_summary_search_index(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_summary_search_index_source_priority
+  ON session_summary_search_index(source, priority);
 
 -- intent_session_summaries
 CREATE INDEX IF NOT EXISTS idx_intent_session_summaries_intent
@@ -682,6 +712,10 @@ CREATE INDEX IF NOT EXISTS idx_evidence_refs_trace_span ON evidence_refs(trace_i
 CREATE INDEX IF NOT EXISTS idx_evidence_refs_file ON evidence_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_ref ON evidence_ref_paths(evidence_ref_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_file ON evidence_ref_paths(file_path);
+
+-- session_summaries
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
+  ON session_summaries(session_id);
 `;
 
 /**
@@ -748,7 +782,9 @@ export function needsResync(): boolean {
   if (!_db) {
     getDb();
   }
-  return _staleDataComponents.size > 0;
+  return RESYNC_DATA_COMPONENTS.some((component) =>
+    _staleDataComponents.has(component),
+  );
 }
 
 export function staleDataComponents(): DataComponent[] {
@@ -774,6 +810,13 @@ export function needsClaimsRebuild(): boolean {
   );
 }
 
+export function needsSessionSummaryProjectionRebuild(): boolean {
+  if (!_db) {
+    getDb();
+  }
+  return _staleDataComponents.has(SESSION_SUMMARY_PROJECTION_COMPONENT);
+}
+
 export function markDataComponentsCurrent(
   components: readonly DataComponent[],
 ): void {
@@ -789,6 +832,10 @@ export function markResyncComplete(): void {
 
 export function markClaimsRebuildComplete(): void {
   markDataComponentsCurrent(CLAIM_DATA_COMPONENTS);
+}
+
+export function markSessionSummaryProjectionComplete(): void {
+  markDataComponentsCurrent([SESSION_SUMMARY_PROJECTION_COMPONENT]);
 }
 
 export function markAllDataRebuildsComplete(): void {

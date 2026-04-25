@@ -22,6 +22,19 @@ vi.mock("../config.js", () => {
     config: {
       dataDir: tmpDir,
       dbPath: path.join(tmpDir, "data.db"),
+      attemptBackoffScheduleMs: [
+        60_000,
+        2 * 60_000,
+        4 * 60_000,
+        8 * 60_000,
+        16 * 60_000,
+        32 * 60_000,
+        60 * 60_000,
+        2 * 60 * 60_000,
+        4 * 60 * 60_000,
+        6 * 60 * 60_000,
+      ],
+      attemptBackoffJitterRatio: 0.1,
     },
     ensureDataDir: () => fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -56,6 +69,16 @@ function insertSessionRepo(sessionId: string, repository = "org/repo"): void {
     `INSERT OR IGNORE INTO session_repositories (session_id, repository, first_seen_ms)
      VALUES (?, ?, 0)`,
   ).run(sessionId, repository);
+}
+
+function insertSessionSummary(sessionId: string, summaryText: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO session_summaries (
+       session_summary_key, session_id, title, status, summary_text,
+       projection_hash, projected_at_ms
+     ) VALUES (?, ?, 'Test summary', 'read-only', ?, 'hash', 0)`,
+  ).run(`summary:${sessionId}`, sessionId, summaryText);
 }
 
 function insertMessage(sessionId: string, ordinal: number): number {
@@ -134,6 +157,20 @@ function getTss(sessionId: string, target: string) {
       "SELECT * FROM target_session_sync WHERE session_id = ? AND target = ?",
     )
     .get(sessionId, target) as Record<string, number | string> | undefined;
+}
+
+function getAttemptBackoff(scopeKind: string, scopeKey: string) {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT scope_kind, scope_key, failure_count, last_attempted_at_ms,
+              next_attempt_at_ms, last_error, updated_at_ms
+       FROM attempt_backoffs
+       WHERE scope_kind = ? AND scope_key = ?`,
+    )
+    .get(scopeKind, scopeKey) as
+    | Record<string, number | string | null>
+    | undefined;
 }
 
 function insertTargetSessionSync(
@@ -223,6 +260,10 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM target_session_sync").run();
+  db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_search_index").run();
+  db.prepare("DELETE FROM session_summary_enrichments").run();
+  db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM sessions").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM messages").run();
@@ -232,8 +273,10 @@ beforeEach(() => {
   db.prepare("DELETE FROM otel_metrics").run();
   db.prepare("DELETE FROM otel_spans").run();
   db.prepare("DELETE FROM watermarks").run();
+  db.prepare("DELETE FROM attempt_backoffs").run();
   mockedPostSync.mockReset();
   ackEverything();
+  vi.useRealTimers();
 });
 
 afterAll(() => {
@@ -284,6 +327,31 @@ async function waitForPostedTable(table: string): Promise<void> {
 
 describe("createSyncLoop integration", () => {
   describe("Phase 1: session discovery", () => {
+    it("posts deterministic summaries on the sessions payload", async () => {
+      insertSession("with-repo", 1);
+      insertSessionRepo("with-repo");
+      insertSessionSummary("with-repo", "Deterministic sync summary.");
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      const sessionCalls = mockedPostSync.mock.calls.filter(
+        ([, body]) => body.table === "sessions",
+      );
+      expect(sessionCalls).toHaveLength(1);
+
+      const rows = sessionCalls[0][1].rows as Array<{
+        sessionId: string;
+        summary: string | null;
+      }>;
+      expect(rows).toEqual([
+        expect.objectContaining({
+          sessionId: "with-repo",
+          summary: "Deterministic sync summary.",
+        }),
+      ]);
+    });
+
     it("posts new sessions with repo and records them as confirmed", async () => {
       insertSession("with-repo", 1);
       insertSessionRepo("with-repo");
@@ -402,6 +470,44 @@ describe("createSyncLoop integration", () => {
 
       expect(getTss("good", "fml")).toBeDefined();
       expect(getTss("bad", "fml")).toBeUndefined();
+    });
+
+    it("backs off target retries after a sync failure instead of hammering every run", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+      try {
+        insertSession("blocked", 1);
+        insertSessionRepo("blocked");
+
+        mockedPostSync.mockRejectedValue(new Error("HTTP 503"));
+
+        const handle = createSyncLoop({ targets: [makeTarget()] });
+        await handle.runOnce();
+
+        expect(mockedPostSync).toHaveBeenCalledTimes(1);
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 1,
+          last_error: "HTTP 503",
+          next_attempt_at_ms: 60_000,
+        });
+
+        mockedPostSync.mockClear();
+        await handle.runOnce();
+        expect(mockedPostSync).not.toHaveBeenCalled();
+
+        vi.setSystemTime(new Date(60_000));
+        await handle.runOnce();
+        expect(mockedPostSync).toHaveBeenCalledTimes(1);
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 2,
+          next_attempt_at_ms: 180_000,
+        });
+      } finally {
+        randomSpy.mockRestore();
+        vi.useRealTimers();
+      }
     });
   });
 

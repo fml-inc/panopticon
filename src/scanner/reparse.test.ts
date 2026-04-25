@@ -32,7 +32,6 @@ vi.mock("../config.js", () => {
       port: 14318,
       host: "127.0.0.1",
       serverPidFile: "",
-      enableSessionSummaryProjections: false,
     },
     ensureDataDir: () => _fs.mkdirSync(dir, { recursive: true }),
   };

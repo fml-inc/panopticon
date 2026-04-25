@@ -19,10 +19,20 @@ export interface Repository {
   gitUserEmail: string | null;
 }
 
+export interface SessionSummaryEnrichment {
+  summaryText: string | null;
+  searchText: string | null;
+  source: "llm" | null;
+  runner: string | null;
+  model: string | null;
+  generatedAt: string | null;
+  dirty: boolean;
+}
+
 export interface SessionSummary {
   sessionId: string;
   title: string;
-  status: "active" | "landed" | "mixed" | "abandoned";
+  status: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   repository: string | null;
   cwd: string | null;
   branch: string | null;
@@ -34,9 +44,13 @@ export interface SessionSummary {
   openEditCount: number;
   topFiles: string[];
   summaryText: string | null;
-  summarySource: "deterministic" | "llm" | null;
+  projectionHash: string;
+  projectedAt: string;
+  sourceLastSeenAt: string | null;
+  summarySource: "deterministic" | null;
   summaryGeneratedAt: string | null;
   summaryDirty: boolean;
+  enrichment: SessionSummaryEnrichment | null;
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────

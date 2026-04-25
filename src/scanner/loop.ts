@@ -153,15 +153,11 @@ function runSessionSummaryPass(logSummary: (msg: string) => void): {
 } {
   return runSessionSummaryPassSafe({
     log: logSummary,
+    enrichmentLog: (msg) => log.scanner.info(msg),
     enrichmentLimit: config.sessionSummaryScannerEnrichLimit ?? 1,
     onEnrichmentError: (err) => {
       log.scanner.error(
         `Session summary enrichment error: ${err instanceof Error ? err.message : err}`,
-      );
-    },
-    onLegacySummaryError: (err) => {
-      log.scanner.error(
-        `Session summary error: ${err instanceof Error ? err.message : err}`,
       );
     },
   });
@@ -663,7 +659,10 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         reconcileMs += sessionProfile.reconcileMs;
 
         phaseStartedAt = performance.now();
-        const projectionResult = rebuildIntentProjection({ sessionId });
+        const projectionResult = rebuildIntentProjection({
+          sessionId,
+          debounceSessionSummaries: true,
+        });
         sessionProfile.projectionMs = performance.now() - phaseStartedAt;
         sessionProfile.projectedIntents = projectionResult.intents;
         sessionProfile.projectedEdits = projectionResult.edits;

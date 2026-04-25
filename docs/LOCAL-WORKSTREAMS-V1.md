@@ -10,8 +10,7 @@ As of `main` on April 22, 2026:
 - `session_summaries`, `intent_session_summaries`, and `code_provenance` are in
   the core schema.
 - `rebuildIntentProjection()` rebuilds these projections through
-  `rebuildSessionSummaryProjections()` when
-  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`.
+  `rebuildSessionSummaryProjections()`.
 - The current grouping rule is intentionally simple: one derived session summary
   row per `session_id`, keyed as `ss:local:<session_id>`.
 - The exposed service and MCP tool names are:
@@ -20,14 +19,87 @@ As of `main` on April 22, 2026:
   - `why_code`
   - `recent_work_on_path`
   - `file_overview`
-- Those tools are feature-gated behind the same environment flag.
 - `listSessions()` also enriches session results with session-summary metadata
-  when the flag is enabled.
+  by default.
 - `why_code`, `recent_work_on_path`, and `file_overview` are deterministic
   structured queries. They do not currently call an LLM.
 
 Historical "workstream" terminology elsewhere in this doc should be read as
 "session summary". Cross-session grouping is still follow-up work.
+
+## PR 193 Handoff
+
+As of April 24, 2026, active work is on PR 193,
+`split/pr3-attempt-backoff`.
+
+The branch currently includes:
+
+- persisted retry backoff for sync and session-summary enrichment attempts
+- deterministic session-summary projections enabled unconditionally
+- LLM session-summary enrichment behind
+  `PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT`
+- projection-backed session search/list cut over by default
+- scanner-triggered deterministic summary refresh debounced by
+  `PANOPTICON_SESSION_SUMMARY_PROJECTION_DEBOUNCE_MS` with a default of 30s
+
+The summary storage model has been split into three responsibilities:
+
+- `session_summaries`: deterministic facts, deterministic display summary, and
+  deterministic projection freshness metadata
+- `session_summary_enrichments`: LLM display summary plus LLM refresh, dirty,
+  attempt, failure, and policy/input hash metadata
+- `session_summary_search_index`: row-based search corpus with explicit source
+  and priority
+
+`session_summaries.summary_search_text` was intentionally removed. Search text
+now belongs only in `session_summary_search_index`.
+
+Current search corpus rows:
+
+| corpus_key | source | priority | owner |
+| --- | --- | ---: | --- |
+| `llm_summary` | `llm` | 100 | enrichment success path |
+| `llm_search` | `llm` | 90 | enrichment success path, currently same text as `llm_summary` |
+| `deterministic_summary` | `deterministic` | 40 | deterministic projection rebuild |
+| `deterministic_search` | `deterministic` | 30 | deterministic projection rebuild |
+
+Deterministic refresh behavior:
+
+- explicit and full projection rebuilds are eager
+- query self-healing rebuilds are eager when projection tables are missing or
+  incomplete
+- hook/direct rebuild paths remain eager
+- scanner catch-up rebuilds debounce deterministic summary/search-corpus
+  refreshes for hot sessions
+- scanner catch-up still rebuilds intent projection, session-summary membership,
+  and code provenance even when deterministic summary text is deferred
+
+This branch has not shipped to anyone else. During branch validation, copied
+developer DBs could be repaired directly instead of carrying every intermediate
+branch-only schema step. The final landing shape should ship one direct
+migration from released `v0.2.10` to the final session-summary storage model,
+not preserve the intermediate PR-only table layouts.
+
+Verification run for the current PR state:
+
+```sh
+npm run check
+npm run typecheck
+./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/worktrees/**' src/session_summaries/query.test.ts src/session_summaries/enrichment.test.ts src/session_summaries/enrichment.refresh.test.ts src/db/query.session-summaries.test.ts src/session_summaries/pass.test.ts src/sync/loop.integration.test.ts src/scanner/loop.test.ts src/db/migrations.test.ts
+./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/**'
+```
+
+Remaining tasks before merging:
+
+- Run the branch against the real local daemon after the latest schema cleanup.
+- Validate the direct `v0.2.10 -> final` migration against a real local DB copy.
+- Re-enable LLM enrichment and verify that new `llm_summary` / `llm_search`
+  rows are generated in `session_summary_search_index`.
+- Inspect generated summaries/search rows for a few recent real sessions.
+- Decide whether `llm_search` should become a distinct LLM-generated context
+  card in this PR or a follow-up PR. It is currently seeded with the LLM display
+  summary.
+- Re-run PR checks after any daemon/live DB validation changes.
 
 The current implementation scope is deliberately narrow:
 
@@ -71,7 +143,7 @@ V1 is meant to answer:
 2. What explicit session summary does this intent belong to?
 3. What recently touched this path?
 4. What is the current local overview of this file and what else changed with it?
-5. What session summaries are active, landed, mixed, or abandoned on this machine?
+5. What session summaries are active, landed, mixed, read-only, or unlanded on this machine?
 
 ## Addressability Model
 
@@ -92,6 +164,7 @@ The current schema lives in `src/db/schema.ts` and includes:
 CREATE TABLE IF NOT EXISTS session_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_summary_key TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
   repository TEXT,
   cwd TEXT,
   branch TEXT,
@@ -100,15 +173,32 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   machine TEXT NOT NULL DEFAULT 'local',
   origin_scope TEXT NOT NULL DEFAULT 'local',
   title TEXT NOT NULL,
-  status TEXT NOT NULL, -- active | landed | mixed | abandoned
+  status TEXT NOT NULL, -- active | landed | mixed | read-only | unlanded
   first_intent_ts_ms INTEGER,
   last_intent_ts_ms INTEGER,
   intent_count INTEGER NOT NULL DEFAULT 0,
   edit_count INTEGER NOT NULL DEFAULT 0,
   landed_edit_count INTEGER NOT NULL DEFAULT 0,
   open_edit_count INTEGER NOT NULL DEFAULT 0,
-  reconciled_at_ms INTEGER,
+  summary_text TEXT,
+  projection_hash TEXT NOT NULL,
+  projected_at_ms INTEGER NOT NULL,
+  source_last_seen_at_ms INTEGER,
   reason_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_summary_search_index (
+  session_summary_key TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  corpus_key TEXT NOT NULL,
+  source TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  search_text TEXT NOT NULL,
+  dirty INTEGER NOT NULL DEFAULT 0,
+  projection_hash TEXT,
+  enriched_input_hash TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_summary_key, corpus_key)
 );
 
 CREATE TABLE IF NOT EXISTS intent_session_summaries (
@@ -196,7 +286,8 @@ Current status derivation:
 - `active`: has unreconciled edits or fresh intents with unknown outcome
 - `landed`: all known edits landed and no open edits remain
 - `mixed`: some landed, some churned/reverted, no open edits remain
-- `abandoned`: no landed edits and no open edits remain
+- `read-only`: no edits were recorded for the session
+- `unlanded`: edits were recorded, but none landed and no open edits remain
 
 ### `intent_session_summaries`
 
@@ -237,7 +328,7 @@ The current service surface in `src/service/types.ts` exposes:
 export interface ListSessionSummariesInput {
   repository?: string;
   cwd?: string;
-  status?: "active" | "landed" | "mixed" | "abandoned";
+  status?: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   path?: string;
   since?: string;
   limit?: number;
@@ -288,8 +379,7 @@ The current transport layer exposes:
     service.fileOverview(asType<FileOverviewInput>(params)),
 ```
 
-These tools are only registered when
-`PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`.
+These tools are registered by default.
 
 ## API Contract
 

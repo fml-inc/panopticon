@@ -67,7 +67,7 @@ export interface OutcomesForIntentInput {
 export interface ListSessionSummariesInput {
   repository?: string;
   cwd?: string;
-  status?: "active" | "landed" | "mixed" | "abandoned";
+  status?: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   path?: string;
   since?: string;
   limit?: number;

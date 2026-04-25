@@ -24,8 +24,6 @@ vi.mock("../config.js", () => {
       port: 4318,
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
-      enableSessionSummaryProjections: true,
-      useProjectionSessionSummaryText: false,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -63,15 +61,10 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  (
-    config as { enableSessionSummaryProjections: boolean }
-  ).enableSessionSummaryProjections = true;
-  (
-    config as { useProjectionSessionSummaryText: boolean }
-  ).useProjectionSessionSummaryText = false;
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_search_index").run();
   db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM claim_evidence").run();
@@ -91,6 +84,7 @@ beforeEach(() => {
 });
 
 function ingest(opts: {
+  session_id?: string;
   event_type: string;
   ts: number;
   payload: Record<string, unknown>;
@@ -99,7 +93,7 @@ function ingest(opts: {
   tool_name?: string;
 }): void {
   insertHookEvent({
-    session_id: SESSION,
+    session_id: opts.session_id ?? SESSION,
     event_type: opts.event_type,
     timestamp_ms: opts.ts,
     cwd: opts.cwd,
@@ -110,16 +104,16 @@ function ingest(opts: {
   });
 }
 
-function rebuildLocalReadModels(): void {
-  rebuildIntentClaimsFromHooks({ sessionId: SESSION });
+function rebuildLocalReadModels(sessionId = SESSION): void {
+  rebuildIntentClaimsFromHooks({ sessionId });
   rebuildActiveClaims();
-  reconcileLandedClaimsFromDisk({ sessionId: SESSION });
+  reconcileLandedClaimsFromDisk({ sessionId });
   rebuildActiveClaims();
-  rebuildIntentProjection({ sessionId: SESSION });
+  rebuildIntentProjection({ sessionId });
 }
 
 describe("listSessions session summaries", () => {
-  it("leaves the legacy summary untouched when session summary projections are disabled", () => {
+  it("returns null summary text when no deterministic session summary exists yet", () => {
     upsertSession({
       session_id: SESSION,
       target: "claude",
@@ -129,21 +123,14 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    getDb()
-      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
-      .run("legacy weak summary", SESSION);
-
-    (
-      config as { enableSessionSummaryProjections: boolean }
-    ).enableSessionSummaryProjections = false;
 
     const result = listSessions({ limit: 5 });
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0].sessionSummary).toBeNull();
-    expect(result.sessions[0].summary).toBe("legacy weak summary");
+    expect(result.sessions[0].summary).toBeNull();
   });
 
-  it("keeps the legacy summary text by default while exposing projection data separately", () => {
+  it("returns projection-backed summary text by default", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
     const file = path.join(scratchDir, "derived-summary.ts");
@@ -158,9 +145,6 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    getDb()
-      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
-      .run("legacy weak summary", SESSION);
     upsertSessionRepository(
       SESSION,
       repo,
@@ -238,102 +222,12 @@ describe("listSessions session summaries", () => {
       openEditCount: 0,
     });
     expect(result.sessions[0].sessionSummary?.summaryText).toContain(
-      "Status: mixed",
+      "Mixed: 2 intents, 1/2 edits landed",
     );
-    expect(result.sessions[0].summary).toBe("legacy weak summary");
-  });
-
-  it("switches listSessions summary text to projection-backed output when enabled", () => {
-    const repo = scratchDir;
-    const cwd = scratchDir;
-    const file = path.join(scratchDir, "projected-summary.ts");
-    fs.writeFileSync(file, "latest implementation");
-
-    upsertSession({
-      session_id: SESSION,
-      target: "claude",
-      started_at_ms: 1_700_000_000_000,
-      first_prompt: "draft implementation",
-      turn_count: 4,
-      total_input_tokens: 100,
-      total_output_tokens: 200,
-    });
-    getDb()
-      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
-      .run("legacy weak summary", SESSION);
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
+    expect(result.sessions[0].summary).toContain(
+      "Mixed: 2 intents, 1/2 edits landed",
     );
-    upsertSessionCwd(SESSION, cwd, 900);
-
-    ingest({
-      event_type: "UserPromptSubmit",
-      ts: 1000,
-      cwd,
-      repository: repo,
-      payload: { prompt: "draft implementation", session_id: SESSION },
-    });
-    ingest({
-      event_type: "PostToolUse",
-      ts: 1100,
-      cwd,
-      repository: repo,
-      tool_name: "Edit",
-      payload: {
-        tool_name: "Edit",
-        tool_input: {
-          file_path: file,
-          old_string: "x",
-          new_string: "draft implementation",
-        },
-      },
-    });
-    ingest({
-      event_type: "UserPromptSubmit",
-      ts: 2000,
-      cwd,
-      repository: repo,
-      payload: { prompt: "finish implementation", session_id: SESSION },
-    });
-    ingest({
-      event_type: "PostToolUse",
-      ts: 2100,
-      cwd,
-      repository: repo,
-      tool_name: "Edit",
-      payload: {
-        tool_name: "Edit",
-        tool_input: {
-          file_path: file,
-          old_string: "x",
-          new_string: "latest implementation",
-        },
-      },
-    });
-    ingest({
-      event_type: "Stop",
-      ts: 3000,
-      cwd,
-      repository: repo,
-      payload: { session_id: SESSION },
-    });
-
-    rebuildLocalReadModels();
-
-    (
-      config as { useProjectionSessionSummaryText: boolean }
-    ).useProjectionSessionSummaryText = true;
-
-    const projected = listSessions({ limit: 5 });
-    expect(projected.sessions[0].summary).toContain("Status: mixed");
-    expect(projected.sessions[0].summary).toContain(file);
-    expect(projected.sessions[0].sessionSummary?.summaryText).toContain(
-      "Status: mixed",
-    );
+    expect(result.sessions[0].summary).toContain(path.basename(file));
   });
 
   it("searches projection summary text and summary search text", () => {
@@ -351,9 +245,6 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    getDb()
-      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
-      .run("legacy weak summary", SESSION);
     upsertSessionRepository(
       SESSION,
       repo,
@@ -427,15 +318,213 @@ describe("listSessions session summaries", () => {
       ),
     ).toBe(true);
 
-    const summarySearchTextResult = search({
+    const deterministicSearchCorpusResult = search({
       query: "Prompts",
       limit: 10,
     });
     expect(
-      summarySearchTextResult.results.some(
+      deterministicSearchCorpusResult.results.some(
         (row) => row.sessionId === SESSION && row.matchType === "summary",
       ),
     ).toBe(true);
+  });
+
+  it("handles punctuation queries without FTS syntax failures", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "schema.ts");
+    fs.writeFileSync(file, "latest implementation");
+
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "update schema.ts search handling",
+      turn_count: 4,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: {
+        prompt: "update schema.ts search handling",
+        session_id: SESSION,
+      },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "latest implementation",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 3000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const result = search({
+      query: "schema.ts",
+      limit: 10,
+    });
+    expect(
+      result.results.some(
+        (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches read-only summaries for spaced and hyphenated queries", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+
+    upsertSession({
+      session_id: SESSION,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: "inspect deployment state",
+      turn_count: 2,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "inspect deployment state", session_id: SESSION },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildLocalReadModels();
+
+    const spaced = search({
+      query: "read only",
+      limit: 10,
+    });
+    expect(
+      spaced.results.some(
+        (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(true);
+
+    const hyphenated = search({
+      query: "read-only",
+      limit: 10,
+    });
+    expect(
+      hyphenated.results.some(
+        (row) => row.sessionId === SESSION && row.matchType === "summary",
+      ),
+    ).toBe(true);
+  });
+
+  it("ranks summary matches ahead of newer raw event noise", () => {
+    const summarySession = SESSION;
+    const noisySession = "session-summary-search-noise";
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const needle = "cd pupeline";
+
+    upsertSession({
+      session_id: summarySession,
+      target: "claude",
+      started_at_ms: 1_700_000_000_000,
+      first_prompt: needle,
+      turn_count: 2,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    upsertSessionRepository(
+      summarySession,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(summarySession, cwd, 900);
+    ingest({
+      session_id: summarySession,
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: needle, session_id: summarySession },
+    });
+    ingest({
+      session_id: summarySession,
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: summarySession },
+    });
+    rebuildLocalReadModels(summarySession);
+
+    upsertSession({
+      session_id: noisySession,
+      target: "claude",
+      started_at_ms: 1_700_000_100_000,
+      first_prompt: needle,
+      turn_count: 1,
+      total_input_tokens: 100,
+      total_output_tokens: 200,
+    });
+    ingest({
+      session_id: noisySession,
+      event_type: "UserPromptSubmit",
+      ts: 1_700_000_100_000,
+      cwd,
+      repository: repo,
+      payload: { prompt: needle, session_id: noisySession },
+    });
+
+    const result = search({
+      query: needle,
+      limit: 10,
+    });
+    expect(result.results[0]?.sessionId).toBe(summarySession);
+    expect(result.results[0]?.matchType).toBe("summary");
   });
 
   it("prefers llm enrichment text and exposes enrichment metadata", () => {
@@ -453,9 +542,6 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    getDb()
-      .prepare("UPDATE sessions SET summary = ? WHERE session_id = ?")
-      .run("legacy weak summary", SESSION);
     upsertSessionRepository(
       SESSION,
       repo,
@@ -517,12 +603,20 @@ describe("listSessions session summaries", () => {
       );
 
     const result = listSessions({ limit: 5 });
-    expect(result.sessions[0].summary).toBe("legacy weak summary");
+    expect(result.sessions[0].summary).toBe("LLM outcome summary.");
     expect(result.sessions[0].sessionSummary).toMatchObject({
-      summaryText: "LLM outcome summary.",
-      summarySource: "llm",
+      summarySource: "deterministic",
       summaryGeneratedAt: new Date(1_700_000_010_000).toISOString(),
       summaryDirty: false,
+      enrichment: {
+        summaryText: "LLM outcome summary.",
+        searchText: "LLM outcome summary.",
+        source: "llm",
+        runner: "claude",
+        model: "sonnet",
+        generatedAt: new Date(1_700_000_010_000).toISOString(),
+        dirty: false,
+      },
     });
 
     const searchResult = search({

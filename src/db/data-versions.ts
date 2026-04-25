@@ -6,6 +6,8 @@ export const INTENT_FROM_HOOKS_COMPONENT = "intent.from_hooks";
 export const LANDED_FROM_DISK_COMPONENT = "intent.landed_from_disk";
 export const CLAIMS_ACTIVE_COMPONENT = "claims.active";
 export const CLAIMS_PROJECTION_COMPONENT = "claims.projection";
+export const SESSION_SUMMARY_PROJECTION_COMPONENT =
+  "session_summaries.projection";
 
 export const DATA_COMPONENT_VERSIONS = {
   [RAW_SCANNER_COMPONENT]: 3,
@@ -14,6 +16,7 @@ export const DATA_COMPONENT_VERSIONS = {
   [LANDED_FROM_DISK_COMPONENT]: 3,
   [CLAIMS_ACTIVE_COMPONENT]: 1,
   [CLAIMS_PROJECTION_COMPONENT]: 1,
+  [SESSION_SUMMARY_PROJECTION_COMPONENT]: 1,
 } as const;
 
 export type DataComponent = keyof typeof DATA_COMPONENT_VERSIONS;
@@ -26,15 +29,25 @@ export const CLAIM_DATA_COMPONENTS = [
   CLAIMS_PROJECTION_COMPONENT,
 ] as const satisfies readonly DataComponent[];
 
+export const CLAIM_DERIVED_COMPONENTS = [
+  ...CLAIM_DATA_COMPONENTS,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
+] as const satisfies readonly DataComponent[];
+
 export const CLAIM_SOURCE_COMPONENTS = [
   INTENT_FROM_SCANNER_COMPONENT,
   INTENT_FROM_HOOKS_COMPONENT,
   LANDED_FROM_DISK_COMPONENT,
 ] as const satisfies readonly DataComponent[];
 
-export const ALL_DATA_COMPONENTS = [
+export const RESYNC_DATA_COMPONENTS = [
   RAW_SCANNER_COMPONENT,
   ...CLAIM_DATA_COMPONENTS,
+] as const satisfies readonly DataComponent[];
+
+export const ALL_DATA_COMPONENTS = [
+  ...RESYNC_DATA_COMPONENTS,
+  SESSION_SUMMARY_PROJECTION_COMPONENT,
 ] as const satisfies readonly DataComponent[];
 
 const DATA_VERSIONS_SQL = `

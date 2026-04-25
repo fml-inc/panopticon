@@ -44,6 +44,16 @@ function insertSessionRepo(sessionId: string, repository = "org/repo"): void {
   ).run(sessionId, repository);
 }
 
+function insertSessionSummary(sessionId: string, summaryText: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO session_summaries (
+       session_summary_key, session_id, title, status, summary_text,
+       projection_hash, projected_at_ms
+     ) VALUES (?, ?, 'Test summary', 'read-only', ?, 'hash', 0)`,
+  ).run(`summary:${sessionId}`, sessionId, summaryText);
+}
+
 function insertMessage(
   sessionId: string,
   ordinal: number,
@@ -174,6 +184,10 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM target_session_sync").run();
+  db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_search_index").run();
+  db.prepare("DELETE FROM session_summary_enrichments").run();
+  db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM sessions").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM messages").run();
@@ -448,6 +462,7 @@ describe("target_session_sync", () => {
     it("readSessionsByIds returns correct records", () => {
       insertSession("sess-1", 3);
       insertSession("sess-2", 7);
+      insertSessionSummary("sess-1", "Deterministic summary text.");
 
       const rows = readSessionsByIds(["sess-1", "sess-2"]);
       expect(rows).toHaveLength(2);
@@ -455,6 +470,10 @@ describe("target_session_sync", () => {
       const ids = rows.map((r) => r.sessionId);
       expect(ids).toContain("sess-1");
       expect(ids).toContain("sess-2");
+      expect(rows.find((r) => r.sessionId === "sess-1")?.summary).toBe(
+        "Deterministic summary text.",
+      );
+      expect(rows.find((r) => r.sessionId === "sess-2")?.summary).toBeNull();
     });
 
     it("readSessionsByIds returns empty for empty input", () => {

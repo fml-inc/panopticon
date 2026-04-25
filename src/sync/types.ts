@@ -228,6 +228,8 @@ export interface SessionSyncRecord {
   totalReasoningTokens: number | null;
   turnCount: number | null;
   models: string | null;
+  // Sync compatibility field populated from deterministic session summaries
+  // until the split session-summary tables are synced end-to-end.
   summary: string | null;
   toolCounts: Record<string, number>;
   hookToolCounts: Record<string, number>;

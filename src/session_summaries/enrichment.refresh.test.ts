@@ -25,6 +25,19 @@ vi.mock("../config.js", () => ({
       claude: "sonnet",
       codex: null,
     },
+    attemptBackoffScheduleMs: [
+      60_000,
+      2 * 60_000,
+      4 * 60_000,
+      8 * 60_000,
+      16 * 60_000,
+      32 * 60_000,
+      60 * 60_000,
+      2 * 60 * 60_000,
+      4 * 60 * 60_000,
+      6 * 60 * 60_000,
+    ],
+    attemptBackoffJitterRatio: 0.1,
   },
 }));
 
@@ -84,6 +97,16 @@ describe("session summary enrichment refresh", () => {
         failure_count INTEGER NOT NULL DEFAULT 0,
         last_error TEXT
       );
+      CREATE TABLE attempt_backoffs (
+        scope_kind TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        last_attempted_at_ms INTEGER,
+        next_attempt_at_ms INTEGER,
+        last_error TEXT,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (scope_kind, scope_key)
+      );
       CREATE TABLE session_summaries (
         id INTEGER PRIMARY KEY,
         session_summary_key TEXT NOT NULL,
@@ -96,7 +119,6 @@ describe("session summary enrichment refresh", () => {
         edit_count INTEGER NOT NULL,
         landed_edit_count INTEGER NOT NULL,
         open_edit_count INTEGER NOT NULL,
-        summary_search_text TEXT,
         last_intent_ts_ms INTEGER
       );
       CREATE TABLE sessions (
@@ -243,34 +265,133 @@ describe("session summary enrichment refresh", () => {
   });
 
   it("skips cleanly when no allowed runner is available", () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(100_000));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
     state.detectAgentMock.mockReturnValue(null);
 
-    const result = refreshSessionSummaryEnrichmentsOnce({
-      sessionId: "session-1",
-    });
+    try {
+      const result = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+        force: true,
+      });
 
-    const row = state
-      .db!.prepare(
-        `SELECT last_attempted_at_ms, failure_count, last_error, dirty
-         FROM session_summary_enrichments
-         WHERE session_summary_key = 'ss:local:session-1'`,
-      )
-      .get() as
-      | {
-          last_attempted_at_ms: number | null;
-          failure_count: number;
-          last_error: string | null;
-          dirty: number;
-        }
-      | undefined;
+      const row = db
+        .prepare(
+          `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            last_attempted_at_ms: number | null;
+            failure_count: number;
+            last_error: string | null;
+            dirty: number;
+          }
+        | undefined;
+      const backoff = db
+        .prepare(
+          `SELECT failure_count, next_attempt_at_ms, last_error
+           FROM attempt_backoffs
+           WHERE scope_kind = 'session-summary-global'
+             AND scope_key = 'runner-availability'`,
+        )
+        .get() as
+        | {
+            failure_count: number;
+            next_attempt_at_ms: number | null;
+            last_error: string | null;
+          }
+        | undefined;
 
-    expect(result).toEqual({ attempted: 0, updated: 0 });
-    expect(row).toMatchObject({
-      last_attempted_at_ms: null,
-      failure_count: 0,
-      last_error: null,
-      dirty: 1,
-    });
+      expect(result).toEqual({ attempted: 0, updated: 0 });
+      expect(row).toMatchObject({
+        last_attempted_at_ms: null,
+        failure_count: 0,
+        last_error: null,
+        dirty: 1,
+      });
+      expect(backoff).toMatchObject({
+        failure_count: 1,
+        next_attempt_at_ms: 160_000,
+        last_error: "no allowed summary runner available",
+      });
+
+      const skipped = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+      });
+      expect(skipped).toEqual({ attempted: 0, updated: 0 });
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off runner retries after an invocation failure", () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(100_000));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    state.invokeLlmMock.mockReturnValue(null);
+
+    try {
+      const first = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+        force: true,
+      });
+      const row = db
+        .prepare(
+          `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            last_attempted_at_ms: number | null;
+            failure_count: number;
+            last_error: string | null;
+            dirty: number;
+          }
+        | undefined;
+      const backoff = db
+        .prepare(
+          `SELECT failure_count, next_attempt_at_ms, last_error
+           FROM attempt_backoffs
+           WHERE scope_kind = 'session-summary-runner'
+             AND scope_key = 'claude'`,
+        )
+        .get() as
+        | {
+            failure_count: number;
+            next_attempt_at_ms: number | null;
+            last_error: string | null;
+          }
+        | undefined;
+
+      expect(first).toEqual({ attempted: 1, updated: 0 });
+      expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+      expect(row).toMatchObject({
+        failure_count: 1,
+        last_error: "summary enrichment invocation failed for claude",
+        dirty: 1,
+      });
+      expect(backoff).toMatchObject({
+        failure_count: 1,
+        next_attempt_at_ms: 160_000,
+      });
+
+      state.invokeLlmMock.mockClear();
+      const skipped = refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+      });
+      expect(skipped).toEqual({ attempted: 0, updated: 0 });
+      expect(state.invokeLlmMock).not.toHaveBeenCalled();
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("ages a hot dirty row into eligibility without requiring another rebuild", () => {
@@ -316,6 +437,65 @@ describe("session summary enrichment refresh", () => {
       dirty: 0,
     });
     expect(row?.last_attempted_at_ms).not.toBeNull();
+  });
+
+  it("applies the limit after eligibility so a hot row does not block older work", () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_000_000_000));
+
+    try {
+      const now = Date.now();
+      db.prepare(
+        `UPDATE session_summary_enrichments
+         SET last_material_change_at_ms = ?, dirty = 1
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      ).run(now);
+      db.prepare(
+        `UPDATE session_summaries
+         SET last_intent_ts_ms = ?
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      ).run(now);
+      db.prepare(
+        `UPDATE sessions
+         SET started_at_ms = ?, ended_at_ms = ?, message_count = ?
+         WHERE session_id = 'session-1'`,
+      ).run(now, now, 1);
+
+      seedSummaryRow({
+        id: 2,
+        sessionId: "session-2",
+        sessionSummaryKey: "ss:local:session-2",
+        lastIntentTsMs: now - 7 * 60 * 60 * 1000,
+        lastMaterialChangeAtMs: now - 60 * 60 * 1000,
+        messageCount: 2,
+      });
+
+      state.invokeLlmMock.mockReturnValue("LLM summary text.");
+
+      const result = refreshSessionSummaryEnrichmentsOnce({ limit: 1 });
+
+      const rows = db
+        .prepare(
+          `SELECT session_id, summary_source, dirty
+           FROM session_summary_enrichments
+           ORDER BY session_id`,
+        )
+        .all() as Array<{
+        session_id: string;
+        summary_source: string;
+        dirty: number;
+      }>;
+
+      expect(result).toEqual({ attempted: 1, updated: 1 });
+      expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+      expect(rows).toEqual([
+        { session_id: "session-1", summary_source: "deterministic", dirty: 1 },
+        { session_id: "session-2", summary_source: "llm", dirty: 0 },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("includes recent message context when message growth triggers a refresh", () => {
@@ -406,18 +586,33 @@ describe("session summary enrichment refresh", () => {
   });
 });
 
-function seedSummaryRow(): void {
+function seedSummaryRow(
+  opts: {
+    id?: number;
+    sessionId?: string;
+    sessionSummaryKey?: string;
+    lastIntentTsMs?: number;
+    lastMaterialChangeAtMs?: number;
+    messageCount?: number;
+  } = {},
+): void {
   const db = state.db!;
+  const id = opts.id ?? 1;
+  const sessionId = opts.sessionId ?? "session-1";
+  const sessionSummaryKey = opts.sessionSummaryKey ?? "ss:local:session-1";
+  const lastIntentTsMs = opts.lastIntentTsMs ?? 1_000;
+  const lastMaterialChangeAtMs = opts.lastMaterialChangeAtMs ?? 600;
+  const messageCount = opts.messageCount ?? 7;
   db.prepare(
     `INSERT INTO session_summaries
      (id, session_summary_key, session_id, title, status, repository, branch,
       intent_count, edit_count, landed_edit_count, open_edit_count,
-      summary_search_text, last_intent_ts_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      last_intent_ts_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    1,
-    "ss:local:session-1",
-    "session-1",
+    id,
+    sessionSummaryKey,
+    sessionId,
     "diagnose summary lock",
     "mixed",
     "/repo",
@@ -426,24 +621,29 @@ function seedSummaryRow(): void {
     1,
     1,
     0,
-    "Title: diagnose summary lock",
-    1_000,
+    lastIntentTsMs,
   );
 
   db.prepare(
     `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, message_count)
      VALUES (?, ?, ?, ?, ?)`,
-  ).run("session-1", "claude", 500, 1_000, 7);
+  ).run(
+    sessionId,
+    "claude",
+    lastIntentTsMs - 500,
+    lastIntentTsMs,
+    messageCount,
+  );
 
   db.prepare(
     `INSERT INTO intent_units
      (id, session_id, prompt_text, prompt_ts_ms, next_prompt_ts_ms, repository, cwd)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    10,
-    "session-1",
+    id * 10,
+    sessionId,
     "fix the summary contention bug",
-    900,
+    lastIntentTsMs - 100,
     null,
     "/repo",
     "/repo",
@@ -452,7 +652,7 @@ function seedSummaryRow(): void {
   db.prepare(
     `INSERT INTO intent_session_summaries (session_summary_id, intent_unit_id)
      VALUES (?, ?)`,
-  ).run(1, 10);
+  ).run(id, id * 10);
 
   db.prepare(
     `INSERT INTO intent_edits
@@ -460,12 +660,12 @@ function seedSummaryRow(): void {
       landed_reason, new_string_hash, new_string_snippet)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    1,
-    10,
-    "session-1",
+    id,
+    id * 10,
+    sessionId,
     "src/session_summaries/enrichment.ts",
     "Edit",
-    950,
+    lastIntentTsMs - 50,
     1,
     null,
     null,
@@ -479,11 +679,11 @@ function seedSummaryRow(): void {
       summary_generated_at_ms, projection_hash, summary_input_hash,
       summary_policy_hash, enriched_input_hash, enriched_message_count,
       dirty, dirty_reason_json, last_material_change_at_ms,
-      last_attempted_at_ms, failure_count, last_error)
+     last_attempted_at_ms, failure_count, last_error)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    "ss:local:session-1",
-    "session-1",
+    sessionSummaryKey,
+    sessionId,
     null,
     "deterministic",
     null,
@@ -497,7 +697,7 @@ function seedSummaryRow(): void {
     null,
     1,
     JSON.stringify({ reasons: ["session_cold", "refresh_pending"] }),
-    600,
+    lastMaterialChangeAtMs,
     null,
     0,
     null,

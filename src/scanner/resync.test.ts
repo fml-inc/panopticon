@@ -27,9 +27,11 @@ import {
   getDb,
   markClaimsRebuildComplete,
   markResyncComplete,
+  markSessionSummaryProjectionComplete,
   needsClaimsRebuild,
   needsRawDataResync,
   needsResync,
+  needsSessionSummaryProjectionRebuild,
   SCANNER_DATA_VERSION,
   staleDataComponents,
 } from "../db/schema.js";
@@ -54,6 +56,7 @@ describe("data version registry", () => {
     expect(needsResync()).toBe(false);
     expect(needsRawDataResync()).toBe(false);
     expect(needsClaimsRebuild()).toBe(false);
+    expect(needsSessionSummaryProjectionRebuild()).toBe(false);
     expect(staleDataComponents()).toEqual([]);
   });
 
@@ -78,6 +81,7 @@ describe("data version registry", () => {
       "intent.landed_from_disk",
       "claims.active",
       "claims.projection",
+      "session_summaries.projection",
     ]);
   });
 
@@ -135,6 +139,37 @@ describe("data version registry", () => {
     expect(needsRawDataResync()).toBe(false);
     expect(needsClaimsRebuild()).toBe(true);
     expect(staleDataComponents()).toContain("intent.landed_from_disk");
+  });
+
+  it("treats stale session summary projection data separately from resync", () => {
+    getDb();
+    markClaimsRebuildComplete();
+    markSessionSummaryProjectionComplete();
+    closeDb();
+
+    const raw = new Database(config.dbPath);
+    raw
+      .prepare(
+        `UPDATE data_versions
+         SET version = ?, updated_at_ms = ?
+         WHERE component = ?`,
+      )
+      .run(0, Date.now(), "session_summaries.projection");
+    raw.close();
+    closeDb();
+
+    getDb();
+
+    expect(needsResync()).toBe(false);
+    expect(needsClaimsRebuild()).toBe(false);
+    expect(needsRawDataResync()).toBe(false);
+    expect(needsSessionSummaryProjectionRebuild()).toBe(true);
+    expect(staleDataComponents()).toContain("session_summaries.projection");
+
+    markSessionSummaryProjectionComplete();
+
+    expect(needsSessionSummaryProjectionRebuild()).toBe(false);
+    expect(needsResync()).toBe(false);
   });
 
   it("markResyncComplete stamps the raw scanner component current", () => {

@@ -31,6 +31,66 @@ const BASE_INPUT = {
 };
 
 describe("session summary enrichment merge", () => {
+  it("removes absolute workspace paths from deterministic docs", () => {
+    const docs = buildDeterministicSessionSummaryDocs({
+      ...BASE_INPUT,
+      repository: "/Users/gus/workspace/panopticon",
+      cwd: "/Users/gus/workspace/panopticon",
+      files: [
+        {
+          filePath:
+            "/Users/gus/workspace/panopticon/src/session_summaries/model.ts",
+          editCount: 2,
+          landedCount: 1,
+        },
+      ],
+    });
+
+    const deterministicSearch = docs.searchCorpusRows.find(
+      (row) => row.corpusKey === "deterministic_search",
+    );
+
+    expect(docs.summaryText).toContain("src/session_summaries/model.ts");
+    expect(docs.summaryText).not.toContain("/Users/gus/workspace/panopticon");
+    expect(deterministicSearch?.searchText).toContain("Repository: panopticon");
+    expect(deterministicSearch?.searchText).toContain(
+      "Files: src/session_summaries/model.ts (2 edits, 1 landed)",
+    );
+    expect(deterministicSearch?.searchText).not.toContain("Cwd:");
+    expect(deterministicSearch?.searchText).not.toContain(
+      "/Users/gus/workspace/panopticon",
+    );
+  });
+
+  it("strips ephemeral worktree prefixes from deterministic file paths", () => {
+    const docs = buildDeterministicSessionSummaryDocs({
+      ...BASE_INPUT,
+      repository: "fml-inc/panopticon",
+      cwd: "/Users/gus/workspace/panopticon",
+      files: [
+        {
+          filePath:
+            "/Users/gus/workspace/panopticon/.worktrees/pr193/src/db/schema.ts",
+          editCount: 3,
+          landedCount: 1,
+        },
+      ],
+    });
+
+    const deterministicSearch = docs.searchCorpusRows.find(
+      (row) => row.corpusKey === "deterministic_search",
+    );
+
+    expect(docs.summaryText).toContain("src/db/schema.ts");
+    expect(docs.summaryText).not.toContain(".worktrees/pr193");
+    expect(deterministicSearch?.searchText).toContain(
+      "Files: src/db/schema.ts (3 edits, 1 landed)",
+    );
+    expect(deterministicSearch?.searchText).toContain(
+      "Repository: fml-inc/panopticon",
+    );
+  });
+
   it("marks a hot session stale without making it immediately refreshable", () => {
     const merged = mergeSessionSummaryEnrichment(
       null,
@@ -45,6 +105,7 @@ describe("session summary enrichment merge", () => {
     expect(merged.dirty).toBe(1);
     expect(merged.dirty_reason_json).toContain("missing");
     expect(merged.dirty_reason_json).toContain("session_hot");
+    expect(merged.last_material_change_at_ms).toBe(BASE_INPUT.lastActivityMs);
     expect(
       shouldRefreshSessionSummaryNow(
         {
@@ -55,6 +116,41 @@ describe("session summary enrichment merge", () => {
         1234,
       ),
     ).toBe(false);
+  });
+
+  it("uses session activity rather than rebuild time for deterministic backlog ordering", () => {
+    const policyHash = getSessionSummaryRunnerPolicy().policyHash;
+    const docs = buildDeterministicSessionSummaryDocs(BASE_INPUT);
+    const merged = mergeSessionSummaryEnrichment(
+      {
+        session_summary_key: BASE_INPUT.sessionSummaryKey,
+        session_id: BASE_INPUT.sessionId,
+        summary_text: null,
+        summary_source: "deterministic",
+        summary_runner: null,
+        summary_model: null,
+        summary_version: SESSION_SUMMARY_ENRICHMENT_VERSION,
+        summary_generated_at_ms: null,
+        projection_hash: docs.projectionHash,
+        summary_input_hash: docs.summaryInputHash,
+        summary_policy_hash: null,
+        enriched_input_hash: null,
+        enriched_message_count: null,
+        dirty: 1,
+        dirty_reason_json: null,
+        last_material_change_at_ms: 9_999,
+        last_attempted_at_ms: null,
+        failure_count: 0,
+        last_error: null,
+      },
+      BASE_INPUT,
+      policyHash,
+      10_000,
+    );
+
+    expect(merged.summary_source).toBe("deterministic");
+    expect(merged.dirty).toBe(1);
+    expect(merged.last_material_change_at_ms).toBe(BASE_INPUT.lastActivityMs);
   });
 
   it("marks a cold session dirty even when it is still small", () => {
@@ -72,6 +168,7 @@ describe("session summary enrichment merge", () => {
     expect(merged.summary_source).toBe("deterministic");
     expect(merged.dirty).toBe(1);
     expect(merged.dirty_reason_json).toContain("session_cold");
+    expect(merged.last_material_change_at_ms).toBe(0);
     expect(
       shouldRefreshSessionSummaryNow(
         {

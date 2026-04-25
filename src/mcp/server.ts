@@ -4,7 +4,6 @@ import fs from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { config } from "../config.js";
 import { log, openLogFd } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
 import {
@@ -219,7 +218,7 @@ server.tool(
   `Execute a read-only SQL query against the panopticon database.
 
 Schema:
-  sessions(session_id PK, target, started_at_ms, ended_at_ms, first_prompt, permission_mode, agent_version, model, cli_version, scanner_file_path, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens, total_reasoning_tokens, turn_count, otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner, summary, summary_version, message_count, user_message_count, parent_session_id, relationship_type, is_automated, created_at, project, machine)
+  sessions(session_id PK, target, started_at_ms, ended_at_ms, first_prompt, permission_mode, agent_version, model, cli_version, scanner_file_path, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens, total_reasoning_tokens, turn_count, otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner, message_count, user_message_count, parent_session_id, relationship_type, is_automated, created_at, project, machine)
   session_repositories(session_id, repository, first_seen_ms, git_user_name, git_user_email, branch)
   session_cwds(session_id, cwd, first_seen_ms)
   messages(id, session_id, ordinal, role, content, timestamp_ms, has_thinking, has_tool_use, content_length, is_system, model, token_usage, context_tokens, output_tokens, has_context_tokens, has_output_tokens, uuid, parent_uuid, sync_id)
@@ -357,76 +356,74 @@ server.tool(
   },
 );
 
-if (config.enableSessionSummaryProjections) {
-  server.tool(
-    "session_summaries",
-    "List session-derived summaries with provenance metadata. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
-    {
-      repository: z
-        .string()
-        .optional()
-        .describe("Filter to a repository path or identifier"),
-      cwd: z.string().optional().describe("Filter to a working directory"),
-      status: z
-        .enum(["active", "landed", "mixed", "abandoned"])
-        .optional()
-        .describe("Filter by derived session-summary status"),
-      path: z
-        .string()
-        .optional()
-        .describe("Only return session summaries touching this file path"),
-      since: z
-        .string()
-        .optional()
-        .describe('Time filter: ISO date or relative like "24h", "7d"'),
-      limit: z.number().optional().describe("Max results (default 20)"),
-      offset: z.number().optional().describe("Skip N results for pagination"),
-    },
-    async ({ repository, cwd, status, path, since, limit, offset }) => {
-      const result = await service.listSessionSummaries({
-        repository,
-        cwd,
-        status,
-        path,
-        since,
-        limit,
-        offset,
-      });
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    },
-  );
+server.tool(
+  "session_summaries",
+  "List session-derived summaries with provenance metadata. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
+  {
+    repository: z
+      .string()
+      .optional()
+      .describe("Filter to a repository path or identifier"),
+    cwd: z.string().optional().describe("Filter to a working directory"),
+    status: z
+      .enum(["active", "landed", "mixed", "read-only", "unlanded"])
+      .optional()
+      .describe("Filter by derived session-summary status"),
+    path: z
+      .string()
+      .optional()
+      .describe("Only return session summaries touching this file path"),
+    since: z
+      .string()
+      .optional()
+      .describe('Time filter: ISO date or relative like "24h", "7d"'),
+    limit: z.number().optional().describe("Max results (default 20)"),
+    offset: z.number().optional().describe("Skip N results for pagination"),
+  },
+  async ({ repository, cwd, status, path, since, limit, offset }) => {
+    const result = await service.listSessionSummaries({
+      repository,
+      cwd,
+      status,
+      path,
+      since,
+      limit,
+      offset,
+    });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
 
-  server.tool(
-    "session_summary_detail",
-    "Get the explicit session-derived summary for a single session, including member intents and touched files.",
-    {
-      session_id: z.string().describe("ID of the session"),
-    },
-    async ({ session_id }) => {
-      const result = await service.sessionSummaryDetail({ session_id });
-      if (!result) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `No session summary found for session ${session_id}`,
-            },
-          ],
-          isError: true,
-        };
-      }
+server.tool(
+  "session_summary_detail",
+  "Get the explicit session-derived summary for a single session, including member intents and touched files.",
+  {
+    session_id: z.string().describe("ID of the session"),
+  },
+  async ({ session_id }) => {
+    const result = await service.sessionSummaryDetail({ session_id });
+    if (!result) {
       return {
         content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+          {
+            type: "text" as const,
+            text: `No session summary found for session ${session_id}`,
+          },
         ],
+        isError: true,
       };
-    },
-  );
-}
+    }
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
 
 server.tool(
   "why_code",
