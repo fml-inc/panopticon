@@ -71,6 +71,16 @@ function insertSessionRepo(sessionId: string, repository = "org/repo"): void {
   ).run(sessionId, repository);
 }
 
+function insertSessionSummary(sessionId: string, summaryText: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO session_summaries (
+       session_summary_key, session_id, title, status, summary_text,
+       projection_hash, projected_at_ms
+     ) VALUES (?, ?, 'Test summary', 'read-only', ?, 'hash', 0)`,
+  ).run(`summary:${sessionId}`, sessionId, summaryText);
+}
+
 function insertMessage(sessionId: string, ordinal: number): number {
   const db = getDb();
   const result = db
@@ -250,6 +260,10 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM target_session_sync").run();
+  db.prepare("DELETE FROM intent_session_summaries").run();
+  db.prepare("DELETE FROM session_summary_search_index").run();
+  db.prepare("DELETE FROM session_summary_enrichments").run();
+  db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM sessions").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM messages").run();
@@ -313,6 +327,31 @@ async function waitForPostedTable(table: string): Promise<void> {
 
 describe("createSyncLoop integration", () => {
   describe("Phase 1: session discovery", () => {
+    it("posts deterministic summaries on the sessions payload", async () => {
+      insertSession("with-repo", 1);
+      insertSessionRepo("with-repo");
+      insertSessionSummary("with-repo", "Deterministic sync summary.");
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      const sessionCalls = mockedPostSync.mock.calls.filter(
+        ([, body]) => body.table === "sessions",
+      );
+      expect(sessionCalls).toHaveLength(1);
+
+      const rows = sessionCalls[0][1].rows as Array<{
+        sessionId: string;
+        summary: string | null;
+      }>;
+      expect(rows).toEqual([
+        expect.objectContaining({
+          sessionId: "with-repo",
+          summary: "Deterministic sync summary.",
+        }),
+      ]);
+    });
+
     it("posts new sessions with repo and records them as confirmed", async () => {
       insertSession("with-repo", 1);
       insertSessionRepo("with-repo");

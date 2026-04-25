@@ -717,15 +717,19 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
 
   const rawRows = db
     .prepare(
-      `SELECT session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
-              permission_mode, agent_version,
-              total_input_tokens, total_output_tokens, total_cache_read_tokens,
-              total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-              models, tool_counts, hook_tool_counts, event_type_counts, hook_event_type_counts, sync_seq,
-              project, machine, message_count, user_message_count,
-              parent_session_id, relationship_type, is_automated, created_at
-       FROM sessions
-       WHERE session_id IN (${placeholders})`,
+      `SELECT s.session_id, s.target, s.started_at_ms, s.ended_at_ms, s.cwd,
+              s.first_prompt, s.permission_mode, s.agent_version,
+              s.total_input_tokens, s.total_output_tokens,
+              s.total_cache_read_tokens, s.total_cache_creation_tokens,
+              s.total_reasoning_tokens, s.turn_count, s.models,
+              ss.summary_text AS summary,
+              s.tool_counts, s.hook_tool_counts, s.event_type_counts,
+              s.hook_event_type_counts, s.sync_seq, s.project, s.machine,
+              s.message_count, s.user_message_count, s.parent_session_id,
+              s.relationship_type, s.is_automated, s.created_at
+       FROM sessions s
+       LEFT JOIN session_summaries ss ON ss.session_id = s.session_id
+       WHERE s.session_id IN (${placeholders})`,
     )
     .all(...sessionIds) as Array<{
     session_id: string;
@@ -743,6 +747,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     total_reasoning_tokens: number | null;
     turn_count: number | null;
     models: string | null;
+    summary: string | null;
     tool_counts: string | null;
     hook_tool_counts: string | null;
     event_type_counts: string | null;
@@ -823,6 +828,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     totalReasoningTokens: r.total_reasoning_tokens,
     turnCount: r.turn_count,
     models: r.models,
+    summary: r.summary,
     toolCounts: parseJsonObject(r.tool_counts) as Record<string, number>,
     hookToolCounts: parseJsonObject(r.hook_tool_counts) as Record<
       string,
