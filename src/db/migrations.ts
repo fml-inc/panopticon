@@ -1258,12 +1258,15 @@ export function runMigrations(
     if (!hasData) {
       // Fresh database: SCHEMA_SQL already created everything.
       // Stamp all migrations as applied without executing them.
-      const stamp = db.prepare(
-        "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
-      );
-      for (const m of migrations) {
-        stamp.run(m.id, m.name);
-      }
+      const stampFreshDb = db.transaction(() => {
+        const stamp = db.prepare(
+          "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+        );
+        for (const m of migrations) {
+          stamp.run(m.id, m.name);
+        }
+      });
+      stampFreshDb();
       return;
     }
     // Pre-migration-system DB: fall through to run migrations normally
