@@ -216,6 +216,10 @@ export function parseClaudePrintJson(rawText: string): {
 /**
  * Invoke a supported CLI with a prompt and optional MCP server.
  * Returns the trimmed output text, or null on any failure.
+ *
+ * Production enrichment uses invokeLlmAsync(). Keep this sync wrapper for the
+ * smaller direct-call surface and parity coverage while the old spawnSync path
+ * is still supported.
  */
 export function invokeLlm(
   prompt: string,
@@ -298,6 +302,7 @@ export async function invokeLlmAsync(
 }
 
 function buildClaudeArgs(opts: {
+  prompt: string;
   env: Record<string, string>;
   withMcp?: boolean;
   systemPrompt?: string;
@@ -305,7 +310,7 @@ function buildClaudeArgs(opts: {
 }): string[] | null {
   const args = [
     "-p",
-    "",
+    opts.prompt,
     "--output-format",
     "json",
     "--model",
@@ -472,13 +477,13 @@ function invokeClaudeLlm(
   },
 ): string | null {
   const args = buildClaudeArgs({
+    prompt,
     env: opts.env,
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
   });
   if (!args) return null;
-  args[1] = prompt;
 
   const result = spawnSync(opts.binaryPath, args, {
     cwd: opts.cwd,
@@ -530,13 +535,13 @@ async function invokeClaudeLlmAsync(
   },
 ): Promise<string | null> {
   const args = buildClaudeArgs({
+    prompt,
     env: opts.env,
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
   });
   if (!args) return null;
-  args[1] = prompt;
 
   const result = await runExecFileCommand(opts.binaryPath, args, {
     cwd: opts.cwd,

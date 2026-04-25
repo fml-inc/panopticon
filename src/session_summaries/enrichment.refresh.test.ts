@@ -334,7 +334,7 @@ describe("session summary enrichment refresh", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(100_000));
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
-    state.invokeLlmMock.mockReturnValue(null);
+    state.invokeLlmMock.mockResolvedValue(null);
 
     try {
       const first = await refreshSessionSummaryEnrichmentsOnce({
@@ -380,6 +380,72 @@ describe("session summary enrichment refresh", () => {
       expect(backoff).toMatchObject({
         failure_count: 1,
         next_attempt_at_ms: 160_000,
+      });
+
+      state.invokeLlmMock.mockClear();
+      const skipped = await refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+      });
+      expect(skipped).toEqual({ attempted: 0, updated: 0 });
+      expect(state.invokeLlmMock).not.toHaveBeenCalled();
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off row retries after an unexpected enrichment error", async () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(100_000));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    state.invokeLlmMock.mockRejectedValue(new Error("boom"));
+
+    try {
+      const first = await refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+        force: true,
+      });
+      const row = db
+        .prepare(
+          `SELECT last_attempted_at_ms, failure_count, last_error, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            last_attempted_at_ms: number | null;
+            failure_count: number;
+            last_error: string | null;
+            dirty: number;
+          }
+        | undefined;
+      const backoff = db
+        .prepare(
+          `SELECT failure_count, next_attempt_at_ms, last_error
+           FROM attempt_backoffs
+           WHERE scope_kind = 'session-summary-row'
+             AND scope_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            failure_count: number;
+            next_attempt_at_ms: number | null;
+            last_error: string | null;
+          }
+        | undefined;
+
+      expect(first).toEqual({ attempted: 1, updated: 0 });
+      expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+      expect(row).toMatchObject({
+        failure_count: 1,
+        last_error: "summary enrichment failed: boom",
+        dirty: 1,
+      });
+      expect(backoff).toMatchObject({
+        failure_count: 1,
+        next_attempt_at_ms: 160_000,
+        last_error: "summary enrichment failed: boom",
       });
 
       state.invokeLlmMock.mockClear();

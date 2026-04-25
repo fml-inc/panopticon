@@ -502,10 +502,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
           SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
         );
         clearAttemptBackoff(SUMMARY_RUNNER_BACKOFF_SCOPE, selection.runner);
-        clearAttemptBackoff(
-          SUMMARY_ROW_BACKOFF_SCOPE,
-          row.session_summary_key,
-        );
+        clearAttemptBackoff(SUMMARY_ROW_BACKOFF_SCOPE, row.session_summary_key);
         log(
           `Session summary enrichment success: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} duration=${formatDurationMs(durationMs)} messages=${row.message_count} chars=${result.length}`,
         );
@@ -522,6 +519,10 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
     } catch (error) {
       finishAttempt(
         `summary enrichment failed: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          scopeKind: SUMMARY_ROW_BACKOFF_SCOPE,
+          scopeKey: row.session_summary_key,
+        },
       );
       return 0;
     }

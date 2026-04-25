@@ -422,7 +422,10 @@ describe("summary llm wrapper", () => {
     expect(options.cwd).toBe(
       path.join("/tmp/panopticon-summary-tests", "codex-headless"),
     );
+    const outputPath = args[args.indexOf("--output-last-message") + 1];
     expect(readFileAsyncMock).toHaveBeenCalledOnce();
+    expect(rmAsyncMock).toHaveBeenCalledTimes(2);
+    expect(rmAsyncMock).toHaveBeenCalledWith(outputPath, { force: true });
   });
 
   it("logs debug context if stale codex output cleanup fails", async () => {

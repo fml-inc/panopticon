@@ -137,11 +137,10 @@ Each tool is implemented as a **target adapter** in `src/targets/`. To add suppo
 
 Once installed, these tools are available to the AI coding tool via MCP:
 
-`session_summaries` and `session_summary_detail` are only registered when
+Projection-backed summary views are gated by
 `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`. `why_code`,
 `recent_work_on_path`, and `file_overview` remain available without that flag,
-but they become much richer once projection-backed session summaries are
-enabled.
+but they become much richer once projections are enabled.
 
 | Tool | Description |
 |------|-------------|
@@ -157,8 +156,8 @@ enabled.
 | `intent_for_code` | Chronological prompt history for a file, annotated with whether each edit's inserted content survived |
 | `search_intent` | Search the prompt-to-edit index by prompt text, touched files, and landed ratio |
 | `outcomes_for_intent` | Session-end outcome view for one intent: landed, churned, and unreconciled edits |
-| `session_summaries` | Explicit session-derived summaries with provenance metadata, one row per session |
-| `session_summary_detail` | Full detail for one session summary, including member intents and touched files |
+| `session_summaries` (gated) | Explicit session-derived summaries with provenance metadata, one row per session |
+| `session_summary_detail` (gated) | Full detail for one session summary, including member intents and touched files |
 | `why_code` | Best current local provenance explanation for a file path and optional line |
 | `recent_work_on_path` | Recent local intents, edits, and summaries that touched a file |
 | `file_overview` | File-centric overview with aggregate counts, best explanation, recent work, and related files |
