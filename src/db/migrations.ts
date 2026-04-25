@@ -625,6 +625,9 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
     return;
   }
 
+  // One-time unreleased-branch cleanup: released v0.2.10 still has the legacy
+  // sessions.summary columns, but none of the intermediate PR-only summary
+  // table shapes shipped, so we rebuild directly to the final sessions schema.
   const sessionValueExpr = (column: string, fallbackSql = "NULL"): string => {
     return tableHasColumn(db, "sessions", column) ? column : fallbackSql;
   };

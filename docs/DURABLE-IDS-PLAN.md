@@ -28,9 +28,8 @@ Phase 2 wording in a few places:
   - `intent_for_code` prefers normalized file-subject relations and falls back
     to the legacy `intent_edits.file_path` path
 - The local `session_summaries` / `code_provenance` projection exists and is
-  enabled by default. It can be disabled with
-  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` and is currently tracked
-  under its own `session_summaries.projection` data-version component.
+  enabled unconditionally and is currently tracked under its own
+  `session_summaries.projection` data-version component.
 
 ## Why This Comes First
 

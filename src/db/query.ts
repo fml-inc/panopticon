@@ -1,5 +1,8 @@
 import { ensureSessionSummaryProjections } from "../session_summaries/query.js";
-import { SESSION_SUMMARY_SEARCH_CORPUS } from "../session_summaries/search-index.js";
+import {
+  SESSION_SUMMARY_SEARCH_CORPUS,
+  SESSION_SUMMARY_SEARCH_PRIORITY,
+} from "../session_summaries/search-index.js";
 import { allTargets } from "../targets/index.js";
 import type {
   ActivitySessionDetail,
@@ -57,6 +60,8 @@ function tokenizeSearchTerms(query: string, minLength: number): string[] {
 }
 
 function buildSafeFtsQuery(query: string): string | null {
+  // FTS5 trigram matching is poor for sub-3-char tokens and raw punctuation can
+  // trigger MATCH parser errors, so keep this stricter than the LIKE fallback.
   const terms = tokenizeSearchTerms(query, 3);
   return terms.length > 0 ? terms.join(" AND ") : null;
 }
@@ -775,6 +780,8 @@ export function search(opts: {
   const sinceMs = parseSince(opts.since);
   const pattern = buildLikePattern(opts.query);
   const ftsQuery = buildSafeFtsQuery(opts.query);
+  // The summary LIKE path can still use shorter normalized terms like "pr" or
+  // the split halves of "read-only", so keep it more permissive than FTS.
   const summaryTerms = tokenizeSearchTerms(opts.query, 2);
   const needsLiteralContentFallback =
     ftsQuery === null || /[^a-z0-9\s]/i.test(opts.query);
@@ -957,7 +964,7 @@ export function search(opts: {
             SELECT s.session_id,
                    s.started_at_ms AS timestamp_ms,
                    ss.summary_text AS payload,
-                   40 AS priority
+                   ${SESSION_SUMMARY_SEARCH_PRIORITY.deterministicSummary} AS priority
             FROM sessions s
             JOIN session_summaries ss
               ON ss.session_id = s.session_id

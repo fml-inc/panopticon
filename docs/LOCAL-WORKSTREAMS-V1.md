@@ -10,8 +10,7 @@ As of `main` on April 22, 2026:
 - `session_summaries`, `intent_session_summaries`, and `code_provenance` are in
   the core schema.
 - `rebuildIntentProjection()` rebuilds these projections through
-  `rebuildSessionSummaryProjections()` by default. Set
-  `PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` to disable them.
+  `rebuildSessionSummaryProjections()`.
 - The current grouping rule is intentionally simple: one derived session summary
   row per `session_id`, keyed as `ss:local:<session_id>`.
 - The exposed service and MCP tool names are:
@@ -20,10 +19,8 @@ As of `main` on April 22, 2026:
   - `why_code`
   - `recent_work_on_path`
   - `file_overview`
-- Those tools are enabled by default and hidden when the same environment flag
-  is set to `0`/`false`.
 - `listSessions()` also enriches session results with session-summary metadata
-  when the flag is enabled.
+  by default.
 - `why_code`, `recent_work_on_path`, and `file_overview` are deterministic
   structured queries. They do not currently call an LLM.
 
@@ -38,11 +35,10 @@ As of April 24, 2026, active work is on PR 193,
 The branch currently includes:
 
 - persisted retry backoff for sync and session-summary enrichment attempts
-- deterministic session-summary projections enabled by default
+- deterministic session-summary projections enabled unconditionally
 - LLM session-summary enrichment behind
   `PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT`
-- projection-backed session search/list cutover behind
-  `PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT`
+- projection-backed session search/list cut over by default
 - scanner-triggered deterministic summary refresh debounced by
   `PANOPTICON_SESSION_SUMMARY_PROJECTION_DEBOUNCE_MS` with a default of 30s
 
@@ -90,11 +86,8 @@ Verification run for the current PR state:
 npm run check
 npm run typecheck
 ./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/worktrees/**' src/session_summaries/query.test.ts src/session_summaries/enrichment.test.ts src/session_summaries/enrichment.refresh.test.ts src/db/query.session-summaries.test.ts src/session_summaries/pass.test.ts src/sync/loop.integration.test.ts src/scanner/loop.test.ts src/db/migrations.test.ts
-./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/**' --exclude 'src/db/sessions.test.ts' --exclude 'src/claims/store.test.ts'
+./node_modules/.bin/vitest run --exclude '.worktrees/**' --exclude '.claude/**'
 ```
-
-Known test caveat: the two excluded suites use fixed temp DB locations and can
-fail on stale local schemas from prior branch runs before executing tests.
 
 Remaining tasks before merging:
 
@@ -386,8 +379,7 @@ The current transport layer exposes:
     service.fileOverview(asType<FileOverviewInput>(params)),
 ```
 
-These tools are registered by default. Set
-`PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=0` to hide them.
+These tools are registered by default.
 
 ## API Contract
 
