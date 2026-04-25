@@ -2,28 +2,35 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  execFileMock,
   execFileSyncMock,
   spawnSyncMock,
   existsSyncMock,
   readFileSyncMock,
+  readFileAsyncMock,
   mkdirSyncMock,
   rmSyncMock,
+  rmAsyncMock,
   warnMock,
   errorMock,
   debugMock,
 } = vi.hoisted(() => ({
+  execFileMock: vi.fn(),
   execFileSyncMock: vi.fn(),
   spawnSyncMock: vi.fn(),
   existsSyncMock: vi.fn(),
   readFileSyncMock: vi.fn(),
+  readFileAsyncMock: vi.fn(),
   mkdirSyncMock: vi.fn(),
   rmSyncMock: vi.fn(),
+  rmAsyncMock: vi.fn(),
   warnMock: vi.fn(),
   errorMock: vi.fn(),
   debugMock: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
+  execFile: execFileMock,
   execFileSync: execFileSyncMock,
   spawnSync: spawnSyncMock,
 }));
@@ -32,11 +39,19 @@ vi.mock("node:fs", () => ({
   default: {
     existsSync: existsSyncMock,
     readFileSync: readFileSyncMock,
+    promises: {
+      readFile: readFileAsyncMock,
+      rm: rmAsyncMock,
+    },
     mkdirSync: mkdirSyncMock,
     rmSync: rmSyncMock,
   },
   existsSync: existsSyncMock,
   readFileSync: readFileSyncMock,
+  promises: {
+    readFile: readFileAsyncMock,
+    rm: rmAsyncMock,
+  },
   mkdirSync: mkdirSyncMock,
   rmSync: rmSyncMock,
 }));
@@ -66,6 +81,25 @@ describe("summary llm wrapper", () => {
     vi.resetModules();
     vi.clearAllMocks();
     execFileSyncMock.mockReturnValue("/usr/local/bin/claude");
+    execFileMock.mockImplementation(
+      (
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        callback(
+          null,
+          JSON.stringify({
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: "OK",
+          }),
+          "",
+        );
+      },
+    );
     spawnSyncMock.mockReturnValue({
       stdout: Buffer.from(
         JSON.stringify({
@@ -82,6 +116,8 @@ describe("summary llm wrapper", () => {
     });
     existsSyncMock.mockReturnValue(true);
     readFileSyncMock.mockReturnValue("OK");
+    readFileAsyncMock.mockResolvedValue("OK");
+    rmAsyncMock.mockResolvedValue(undefined);
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -192,6 +228,47 @@ describe("summary llm wrapper", () => {
     expect(options.env.ANTHROPIC_BASE_URL).toBe("https://gateway.example.com");
   });
 
+  it("supports asynchronous Claude invocation for pooled enrichment work", async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-token";
+    process.env.ANTHROPIC_BASE_URL = "http://localhost:4318/proxy/anthropic";
+    const { invokeLlmAsync } = await loadLlm();
+
+    await expect(invokeLlmAsync("Summarize this")).resolves.toBe("OK");
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+    const [binary, args, options] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      {
+        cwd: string;
+        env: Record<string, string>;
+      },
+    ];
+    expect(binary).toBe("/usr/local/bin/claude");
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-p",
+        "Summarize this",
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--permission-mode",
+        "default",
+        "--disable-slash-commands",
+        "--setting-sources",
+        "user",
+        "--tools",
+        "",
+      ]),
+    );
+    expect(options.cwd).toBe(
+      path.join("/tmp/panopticon-summary-tests", "claude-headless"),
+    );
+    expect(options.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
+    expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
   it("returns null for structured CLI errors even when stdout is populated", async () => {
     spawnSyncMock.mockReturnValue({
       stdout: Buffer.from(
@@ -299,6 +376,56 @@ describe("summary llm wrapper", () => {
     expect(outputPath).toEqual(
       expect.stringMatching(/last-message-\d+-\d+-.*\.txt$/),
     );
+  });
+
+  it("supports asynchronous Codex invocation for pooled enrichment work", async () => {
+    execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
+      if (args[0] === "codex") return "/usr/local/bin/codex";
+      return "/usr/local/bin/claude";
+    });
+    execFileMock.mockImplementation(
+      (
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        callback(null, "codex stdout", "");
+      },
+    );
+    const { invokeLlmAsync } = await loadLlm();
+
+    await expect(
+      invokeLlmAsync("Summarize this", { runner: "codex" }),
+    ).resolves.toBe("OK");
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    const [binary, args, options] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      { cwd: string },
+    ];
+    expect(binary).toBe("/usr/local/bin/codex");
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "exec",
+        "Summarize this",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--output-last-message",
+      ]),
+    );
+    expect(options.cwd).toBe(
+      path.join("/tmp/panopticon-summary-tests", "codex-headless"),
+    );
+    const outputPath = args[args.indexOf("--output-last-message") + 1];
+    expect(readFileAsyncMock).toHaveBeenCalledOnce();
+    expect(rmAsyncMock).toHaveBeenCalledTimes(2);
+    expect(rmAsyncMock).toHaveBeenCalledWith(outputPath, { force: true });
   });
 
   it("logs debug context if stale codex output cleanup fails", async () => {

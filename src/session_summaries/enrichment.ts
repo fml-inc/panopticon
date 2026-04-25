@@ -6,7 +6,7 @@ import {
 import type { SessionSummaryRunnerName } from "../config.js";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
-import { detectAgent, invokeLlm } from "../summary/llm.js";
+import { detectAgent, invokeLlmAsync } from "../summary/llm.js";
 import {
   SUMMARY_GLOBAL_BACKOFF_SCOPE,
   SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
@@ -36,6 +36,7 @@ import {
 } from "./session-data.js";
 
 const DEFAULT_ENRICH_LIMIT = 5;
+const DEFAULT_ENRICH_CONCURRENCY = 2;
 const DEFAULT_ENRICH_TIMEOUT_MS = 90_000;
 const LAST_ACTIVITY_SQL = `MAX(
   COALESCE(sess.started_at_ms, 0),
@@ -114,16 +115,26 @@ export function selectSessionSummaryRunner(opts: {
   };
 }
 
-export function refreshSessionSummaryEnrichmentsOnce(opts?: {
+export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
   sessionId?: string;
   limit?: number;
+  concurrency?: number;
   force?: boolean;
   log?: (msg: string) => void;
-}): SessionSummaryEnrichmentRefreshResult {
+}): Promise<SessionSummaryEnrichmentRefreshResult> {
   const db = getDb();
   const nowMs = Date.now();
   const limit =
     opts?.limit ?? config.sessionSummaryEnrichLimit ?? DEFAULT_ENRICH_LIMIT;
+  const concurrency = Math.max(
+    1,
+    Math.min(
+      limit,
+      opts?.concurrency ??
+        config.sessionSummaryEnrichConcurrency ??
+        DEFAULT_ENRICH_CONCURRENCY,
+    ),
+  );
   const force = opts?.force === true;
   const log = opts?.log ?? (() => {});
   const timeoutMs =
@@ -345,9 +356,9 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
     return { attempted: 0, updated: 0 };
   }
 
-  let updated = 0;
-  for (const row of claimedRows) {
-    const context = loadSummaryPromptContext(row.session_summary_key);
+  const processRow = async (
+    row: SessionSummaryRefreshCandidate,
+  ): Promise<number> => {
     const finishAttempt = (
       error: string,
       backoff?: { scopeKind: string; scopeKey: string },
@@ -379,131 +390,149 @@ export function refreshSessionSummaryEnrichmentsOnce(opts?: {
       }
     };
 
-    if (!context) {
-      finishAttempt("summary projection missing", {
-        scopeKind: SUMMARY_ROW_BACKOFF_SCOPE,
-        scopeKey: row.session_summary_key,
-      });
-      continue;
-    }
+    try {
+      const context = loadSummaryPromptContext(row.session_summary_key);
+      if (!context) {
+        finishAttempt("summary projection missing", {
+          scopeKind: SUMMARY_ROW_BACKOFF_SCOPE,
+          scopeKey: row.session_summary_key,
+        });
+        return 0;
+      }
 
-    const selection = selectSessionSummaryRunner({
-      sessionTarget: context.target,
-      stickyRunner: row.summary_runner,
-      policy,
-      detector: (runner) => {
-        const detected = detectAgent(runner);
-        if (!detected) return null;
-        if (
-          !force &&
-          isAttemptBackoffActive(SUMMARY_RUNNER_BACKOFF_SCOPE, runner, nowMs)
-        ) {
-          return null;
-        }
-        return detected;
-      },
-    });
-    if (!selection.runner) {
-      const cleared = clearClaim.run(
-        row.session_summary_key,
-        claimedAtMs,
-        row.summary_input_hash,
-        row.summary_input_hash,
-      );
-      if (cleared.changes === 0) {
-        releaseClaim.run(
+      const selection = selectSessionSummaryRunner({
+        sessionTarget: context.target,
+        stickyRunner: row.summary_runner,
+        policy,
+        detector: (runner) => {
+          const detected = detectAgent(runner);
+          if (!detected) return null;
+          if (
+            !force &&
+            isAttemptBackoffActive(SUMMARY_RUNNER_BACKOFF_SCOPE, runner, nowMs)
+          ) {
+            return null;
+          }
+          return detected;
+        },
+      });
+      if (!selection.runner) {
+        const cleared = clearClaim.run(
           row.session_summary_key,
           claimedAtMs,
           row.summary_input_hash,
           row.summary_input_hash,
         );
+        if (cleared.changes === 0) {
+          releaseClaim.run(
+            row.session_summary_key,
+            claimedAtMs,
+            row.summary_input_hash,
+            row.summary_input_hash,
+          );
+        }
+        return 0;
       }
-      continue;
-    }
 
-    const prompt = buildLlmPrompt(context);
-    const startedAtMs = Date.now();
-    log(
-      `Session summary enrichment start: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} messages=${row.message_count}`,
-    );
-    const result = invokeLlm(prompt, {
-      runner: selection.runner,
-      timeoutMs,
-      withMcp: false,
-      systemPrompt: SYSTEM_PROMPT,
-      model: selection.model,
-    });
-    if (!result) {
-      const durationMs = Date.now() - startedAtMs;
+      const prompt = buildLlmPrompt(context);
+      const startedAtMs = Date.now();
       log(
-        `Session summary enrichment failed: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} duration=${formatDurationMs(durationMs)}`,
+        `Session summary enrichment start: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} messages=${row.message_count}`,
       );
+      const result = await invokeLlmAsync(prompt, {
+        runner: selection.runner,
+        timeoutMs,
+        withMcp: false,
+        systemPrompt: SYSTEM_PROMPT,
+        model: selection.model,
+      });
+      if (!result) {
+        const durationMs = Date.now() - startedAtMs;
+        log(
+          `Session summary enrichment failed: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} duration=${formatDurationMs(durationMs)}`,
+        );
+        finishAttempt(
+          `summary enrichment invocation failed for ${selection.runner}`,
+          {
+            scopeKind: SUMMARY_RUNNER_BACKOFF_SCOPE,
+            scopeKey: selection.runner,
+          },
+        );
+        return 0;
+      }
+
+      const finishedAtMs = Date.now();
+      const durationMs = finishedAtMs - startedAtMs;
+      const write = updateSuccess.run(
+        result,
+        selection.runner,
+        selection.model,
+        SESSION_SUMMARY_ENRICHMENT_VERSION,
+        finishedAtMs,
+        selection.policyHash,
+        row.summary_input_hash,
+        row.message_count,
+        finishedAtMs,
+        row.session_summary_key,
+        claimedAtMs,
+        row.summary_input_hash,
+        row.summary_input_hash,
+      );
+      if (write.changes > 0) {
+        updateSearchIndexSuccess?.run(
+          row.session_summary_key,
+          row.session_id,
+          SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
+          SESSION_SUMMARY_SEARCH_PRIORITY.llmSummary,
+          result,
+          row.summary_input_hash,
+          finishedAtMs,
+        );
+        updateSearchIndexSuccess?.run(
+          row.session_summary_key,
+          row.session_id,
+          SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
+          SESSION_SUMMARY_SEARCH_PRIORITY.llmSearch,
+          result,
+          row.summary_input_hash,
+          finishedAtMs,
+        );
+        clearAttemptBackoff(
+          SUMMARY_GLOBAL_BACKOFF_SCOPE,
+          SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
+        );
+        clearAttemptBackoff(SUMMARY_RUNNER_BACKOFF_SCOPE, selection.runner);
+        clearAttemptBackoff(SUMMARY_ROW_BACKOFF_SCOPE, row.session_summary_key);
+        log(
+          `Session summary enrichment success: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} duration=${formatDurationMs(durationMs)} messages=${row.message_count} chars=${result.length}`,
+        );
+        return 1;
+      }
+
+      releaseClaim.run(
+        row.session_summary_key,
+        claimedAtMs,
+        row.summary_input_hash,
+        row.summary_input_hash,
+      );
+      return 0;
+    } catch (error) {
       finishAttempt(
-        `summary enrichment invocation failed for ${selection.runner}`,
+        `summary enrichment failed: ${error instanceof Error ? error.message : String(error)}`,
         {
-          scopeKind: SUMMARY_RUNNER_BACKOFF_SCOPE,
-          scopeKey: selection.runner,
+          scopeKind: SUMMARY_ROW_BACKOFF_SCOPE,
+          scopeKey: row.session_summary_key,
         },
       );
-      continue;
+      return 0;
     }
+  };
 
-    const finishedAtMs = Date.now();
-    const durationMs = finishedAtMs - startedAtMs;
-    const write = updateSuccess.run(
-      result,
-      selection.runner,
-      selection.model,
-      SESSION_SUMMARY_ENRICHMENT_VERSION,
-      finishedAtMs,
-      selection.policyHash,
-      row.summary_input_hash,
-      row.message_count,
-      finishedAtMs,
-      row.session_summary_key,
-      claimedAtMs,
-      row.summary_input_hash,
-      row.summary_input_hash,
-    );
-    if (write.changes > 0) {
-      updateSearchIndexSuccess?.run(
-        row.session_summary_key,
-        row.session_id,
-        SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
-        SESSION_SUMMARY_SEARCH_PRIORITY.llmSummary,
-        result,
-        row.summary_input_hash,
-        finishedAtMs,
-      );
-      updateSearchIndexSuccess?.run(
-        row.session_summary_key,
-        row.session_id,
-        SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
-        SESSION_SUMMARY_SEARCH_PRIORITY.llmSearch,
-        result,
-        row.summary_input_hash,
-        finishedAtMs,
-      );
-      clearAttemptBackoff(
-        SUMMARY_GLOBAL_BACKOFF_SCOPE,
-        SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
-      );
-      clearAttemptBackoff(SUMMARY_RUNNER_BACKOFF_SCOPE, selection.runner);
-      clearAttemptBackoff(SUMMARY_ROW_BACKOFF_SCOPE, row.session_summary_key);
-      log(
-        `Session summary enrichment success: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} duration=${formatDurationMs(durationMs)} messages=${row.message_count} chars=${result.length}`,
-      );
-      updated += 1;
-      continue;
-    }
-
-    releaseClaim.run(
-      row.session_summary_key,
-      claimedAtMs,
-      row.summary_input_hash,
-      row.summary_input_hash,
-    );
-  }
+  const updated = await mapWithConcurrency(
+    claimedRows,
+    concurrency,
+    processRow,
+  );
 
   if (updated > 0) {
     log(`Enriched ${updated} session summaries with LLM output`);
@@ -515,6 +544,28 @@ function formatDurationMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
   if (ms >= 100) return `${Math.round(ms)}ms`;
   return `${ms.toFixed(1)}ms`;
+}
+
+async function mapWithConcurrency<T>(
+  rows: readonly T[],
+  concurrency: number,
+  worker: (row: T) => Promise<number>,
+): Promise<number> {
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, rows.length);
+
+  const counts = await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      let localUpdated = 0;
+      while (true) {
+        const index = nextIndex++;
+        if (index >= rows.length) return localUpdated;
+        localUpdated += await worker(rows[index]);
+      }
+    }),
+  );
+
+  return counts.reduce((sum, count) => sum + count, 0);
 }
 
 function loadSummaryPromptContext(sessionSummaryKey: string): {

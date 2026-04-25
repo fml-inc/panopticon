@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const discoverMock = vi.fn();
 const parseFileMock = vi.fn();
+const { runSessionSummaryPassMock } = vi.hoisted(() => ({
+  runSessionSummaryPassMock: vi.fn(),
+}));
 
 vi.mock("../archive/index.js", () => ({
   getArchiveBackend: () => ({ putSync: vi.fn() }),
@@ -61,8 +64,8 @@ vi.mock("../sentry.js", () => ({
   captureException: vi.fn(),
 }));
 
-vi.mock("../summary/index.js", () => ({
-  generateSummariesOnce: vi.fn(),
+vi.mock("../session_summaries/pass.js", () => ({
+  runSessionSummaryPass: runSessionSummaryPassMock,
 }));
 
 vi.mock("../targets/registry.js", () => ({
@@ -116,7 +119,7 @@ vi.mock("./claims-rebuild.js", () => ({
 }));
 
 import { captureException } from "../sentry.js";
-import { scanOnce } from "./loop.js";
+import { createScannerLoop, scanOnce } from "./loop.js";
 import {
   insertMessages,
   insertTurns,
@@ -132,9 +135,15 @@ describe("scanOnce progress", () => {
     vi.clearAllMocks();
     discoverMock.mockReset();
     parseFileMock.mockReset();
+    runSessionSummaryPassMock.mockReset();
+    runSessionSummaryPassMock.mockResolvedValue({ updated: 0 });
     vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 0 });
     vi.mocked(readKnownScannerFiles).mockReturnValue([]);
     vi.mocked(readSessionIdByScannerFile).mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("reports progress across discovered files", () => {
@@ -380,5 +389,47 @@ describe("scanOnce progress", () => {
       undefined,
     );
     expect(vi.mocked(upsertSession)).not.toHaveBeenCalled();
+  });
+
+  it("drops a second start while an async tick is already in progress", async () => {
+    vi.useFakeTimers();
+    discoverMock.mockReturnValue([]);
+
+    let resolveTick:
+      | ((
+          value: { updated: number } | PromiseLike<{ updated: number }>,
+        ) => void)
+      | null = null;
+    runSessionSummaryPassMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTick = resolve;
+        }),
+    );
+
+    const handle = createScannerLoop({
+      idleIntervalMs: 10,
+      catchUpIntervalMs: 10,
+    });
+
+    handle.start();
+    await vi.waitFor(() => {
+      expect(runSessionSummaryPassMock).toHaveBeenCalledTimes(1);
+    });
+
+    handle.start();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(runSessionSummaryPassMock).toHaveBeenCalledTimes(1);
+    expect(discoverMock).toHaveBeenCalledTimes(1);
+
+    const releaseTick =
+      resolveTick ??
+      ((_value: { updated: number }) => {
+        throw new Error("expected the first scanner tick to remain in flight");
+      });
+    releaseTick({ updated: 0 });
+    await Promise.resolve();
+    handle.stop();
   });
 });

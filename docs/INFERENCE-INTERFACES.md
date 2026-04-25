@@ -15,7 +15,7 @@ The goal here is to set the shape we will reuse as session summaries become
 more explicit and provenance-backed, and when we later come back to:
 
 - session summaries
-- cross-session workstream titles and summaries
+- cross-session grouping titles and summaries
 - "why_code" natural-language explanations
 - classification or ranking tasks where deterministic signals exist but are not
   sufficient for a good UX by themselves
@@ -62,8 +62,8 @@ simple.
 Examples:
 
 - session summary: prompt + message count + top tools + edited files
-- workstream title: truncated first prompt
-- workstream summary: aggregate intent prompts + touched files + landed counts
+- session summary title: truncated first prompt
+- session summary text: aggregate intent prompts + touched files + landed counts
 - why-code explanation: deterministic evidence chain rendered as text
 
 This fallback can be low quality. It cannot be implicit.
@@ -144,13 +144,13 @@ When we come back to session summaries, the right refactor order is:
 - Do not make LLM availability a correctness requirement
 - Do not hide whether a result was deterministic or inferred
 
-## How This Relates To Session Summaries And Code Provenance V1
+## How This Relates To Session Summaries And Code Provenance
 
-For the local-only workstream/code-provenance slice, LLM inference should be
+For the local-only session-summary/code-provenance slice, LLM inference should be
 strictly optional and limited to presentation-grade enrichments:
 
-- workstream title refinement
-- workstream summary text
+- session summary title refinement
+- session summary text
 - "why/how" explanation text for `why_code`
 
 The underlying projections should still be fully usable without any LLM:

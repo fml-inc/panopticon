@@ -79,11 +79,11 @@ panopticon install
           └──┬──────────┬──────────────┬────────┘
              │          │              │
              ▼          ▼              ▼
-      ┌──────────┐ ┌──────────┐ ┌───────────┐
-      │   MCP    │ │  Sync    │ │  Scanner  │
-      │  Server  │ │  Loop    │ │  Loop     │
-      │ (stdio)  │ │ (OTLP)  │ │ (60s poll)│
-      └──────────┘ └──────────┘ └───────────┘
+      ┌──────────┐ ┌────────────┐ ┌──────────────┐
+      │   MCP    │ │    Sync    │ │   Scanner    │
+      │  Server  │ │   Loops    │ │ + Summaries  │
+      │ (stdio)  │ │   (OTLP)   │ │  (poll/idle) │
+      └──────────┘ └────────────┘ └──────────────┘
 ```
 
 **Five data pipelines feed one database:**
@@ -104,6 +104,24 @@ All pipelines feed a **unified sessions table** — each session accumulates dat
 
 **Scanner** — Polls local CLI session files every 60 seconds. Extracts per-turn token usage and events that OTel misses (reasoning tokens, cache breakdowns, tool calls with arguments/output, API errors with retry metadata). Backfills historical sessions from before panopticon was installed.
 
+## Daemon runtime
+
+The installed daemon is one unified server process.
+
+- The scanner loop starts first.
+- Core sync and OTel sync loops start only after the scanner reports ready.
+- Session-summary enrichment and legacy summary generation run from the
+  scanner's idle path.
+- Prune runs on startup and then hourly.
+- Most loop bodies are still serial today: file parsing, touched-session
+  rebuilds, legacy summary generation, and per-target sync advancement all
+  happen one unit at a time. Session-summary enrichment now uses a bounded
+  async runner pool.
+
+For the full execution model, current invariants, and the planned
+concurrency/workpooling follow-up, see
+[docs/DAEMON-EXECUTION-MODEL.md](docs/DAEMON-EXECUTION-MODEL.md).
+
 ## Supported tools
 
 | Tool | Hooks | OTel | Scanner | Proxy | Notes |
@@ -119,6 +137,11 @@ Each tool is implemented as a **target adapter** in `src/targets/`. To add suppo
 
 Once installed, these tools are available to the AI coding tool via MCP:
 
+Projection-backed summary views are gated by
+`PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS=1`. `why_code`,
+`recent_work_on_path`, and `file_overview` remain available without that flag,
+but they become much richer once projections are enabled.
+
 | Tool | Description |
 |------|-------------|
 | `sessions` | List recent sessions with stats (tokens, cost, model, project) |
@@ -130,6 +153,23 @@ Once installed, these tools are available to the AI coding tool via MCP:
 | `get` | Fetch full untruncated details for a record by source and ID |
 | `query` | Raw read-only SQL against the database |
 | `status` | Database row counts |
+| `intent_for_code` | Chronological prompt history for a file, annotated with whether each edit's inserted content survived |
+| `search_intent` | Search the prompt-to-edit index by prompt text, touched files, and landed ratio |
+| `outcomes_for_intent` | Session-end outcome view for one intent: landed, churned, and unreconciled edits |
+| `session_summaries` (gated) | Explicit session-derived summaries with provenance metadata, one row per session |
+| `session_summary_detail` (gated) | Full detail for one session summary, including member intents and touched files |
+| `why_code` | Best current local provenance explanation for a file path and optional line |
+| `recent_work_on_path` | Recent local intents, edits, and summaries that touched a file |
+| `file_overview` | File-centric overview with aggregate counts, best explanation, recent work, and related files |
+
+## Docs
+
+- [Daemon execution model](docs/DAEMON-EXECUTION-MODEL.md) explains the current scanner/sync/summary/prune loop topology and the planned concurrency/workpooling follow-up.
+- [Session summaries and code provenance](docs/LOCAL-WORKSTREAMS-V1.md) explains the local read model behind `why_code`, `recent_work_on_path`, `file_overview`, and the projection-backed session summary views.
+- [Durable IDs and provenance foundation plan](docs/DURABLE-IDS-PLAN.md) captures the remaining repo/file provenance and evidence-ref follow-up work.
+- [Inference interfaces](docs/INFERENCE-INTERFACES.md) defines the deterministic-fallback and optional-LLM contract for future enrichments.
+- [Release validation runbook](docs/RELEASE-VALIDATION-RUNBOOK.md) covers validating changes against a copied production-sized DB and real home-directory config.
+- [Session summary split status](docs/SESSION-SUMMARY-SPLIT-STATUS.md) records the merged state of the session-summary split and the next post-merge harness tranche.
 
 ## CLI
 
@@ -174,6 +214,8 @@ panopticon sync add <name> <url>  Add or update a sync target
 panopticon sync remove <name>     Remove a sync target
 panopticon sync list              List sync targets
 panopticon sync reset [target]    Reset sync watermarks (re-syncs all data)
+panopticon sync watermark <target> [table]
+  --set <value>                   Show or override a sync watermark
 
 panopticon prune            Delete old data from the database
   --older-than 30d          Max age (default: 30d)
@@ -181,8 +223,16 @@ panopticon prune            Delete old data from the database
   --vacuum                  Reclaim disk space after pruning
   --yes                     Skip confirmation prompt
 
+panopticon file overview <path>   Aggregate local provenance for a file
+panopticon file why <path>        Best current explanation for a file or line
+panopticon file recent <path>     Recent local history for a file
+
+panopticon scan             Trigger a synchronous scan pass on the server
+  --no-summaries            Skip summary generation during the scan
+
 panopticon refresh-pricing  Fetch latest model pricing from LiteLLM
 panopticon permissions show Show current approval rules
+panopticon permissions preview Compute permission diff from JSON on stdin
 panopticon permissions apply Apply permission rules (JSON from stdin)
 ```
 
@@ -292,10 +342,14 @@ config, see `docs/RELEASE-VALIDATION-RUNBOOK.md`.
 
 ## Architecture
 
+The code tree below is useful for orientation. For runtime loop ordering,
+serialization boundaries, and the concurrency/workpooling roadmap, see
+[docs/DAEMON-EXECUTION-MODEL.md](docs/DAEMON-EXECUTION-MODEL.md).
+
 ```
 src/
 ├── cli.ts              CLI entry point (install, uninstall, start/stop, query commands)
-├── server.ts           Unified HTTP server (hooks, OTLP, proxy — single port)
+├── server.ts           Unified HTTP server + scanner/sync/prune runtime bootstrap
 ├── sdk.ts              SDK shim (observe() wrapper)
 ├── config.ts           Panopticon paths, ports, defaults
 ├── setup.ts            Install/uninstall logic
@@ -327,7 +381,7 @@ src/
 │   └── pricing.ts      Model pricing cache (LiteLLM)
 ├── scanner/
 │   ├── index.ts        Public API (createScannerLoop, scanOnce)
-│   ├── loop.ts         Poll loop — discovers files via target adapters, incremental parse
+│   ├── loop.ts         Scanner scheduler — discover, parse, archive, rebuild touched sessions
 │   ├── reader.ts       Byte-offset file reader (only reads new lines)
 │   ├── store.ts        Scanner DB operations (turns, events, watermarks, session upsert)
 │   ├── reconcile.ts    Compare scanner vs hooks/OTLP token data per session
@@ -352,14 +406,14 @@ src/
 │   ├── types.ts        Interfaces (SyncTarget, SyncOptions, MergedEvent, OTLP types)
 │   ├── config.ts       Sync target configuration
 │   ├── registry.ts     Sync target registry
-│   ├── loop.ts         Poll loop with debounced scheduling
+│   ├── loop.ts         Sync scheduler — core and OTel loop instances share this implementation
 │   ├── reader.ts       Batch reads from SQLite + hook/OTLP dedup
 │   ├── watermark.ts    Watermark persistence
 │   └── post.ts         HTTP POST with retry + exponential backoff
 ├── summary/
 │   ├── index.ts        Session summary public API
-│   ├── llm.ts          LLM-powered summary generation
-│   └── loop.ts         Background summary generation loop
+│   ├── llm.ts          Optional LLM summary/enrichment helpers
+│   └── loop.ts         Legacy `sessions.summary` generation pass
 ├── archive/
 │   ├── index.ts        Archive public API
 │   ├── backend.ts      Archive backend interface
