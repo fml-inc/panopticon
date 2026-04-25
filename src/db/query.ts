@@ -834,18 +834,6 @@ export function search(opts: {
     WHERE ${hookConditions.join(" AND ")}
   `;
 
-  const otelConditions: string[] = ["(o.body LIKE ? OR o.attributes LIKE ?)"];
-  const otelParams: unknown[] = [pattern, pattern];
-
-  if (sinceMs) {
-    otelConditions.push("CAST(o.timestamp_ns / 1000000 AS INTEGER) >= ?");
-    otelParams.push(sinceMs);
-  }
-
-  const otelAttrsCol = truncate
-    ? "SUBSTR(o.attributes, 1, 500)"
-    : "o.attributes";
-
   // Use table-qualified versions of the OTel expressions for the aliased query
   const otelEventTypeQ = otelLogExprs().eventType.replace(
     /\b(body|timestamp_ns|attributes)\b/g,
@@ -855,6 +843,23 @@ export function search(opts: {
     /\b(body|timestamp_ns|attributes)\b/g,
     "o.$1",
   );
+  const otelConditions: string[] = [
+    `(
+      o.body LIKE ? ESCAPE '\\'
+      OR o.attributes LIKE ? ESCAPE '\\'
+      OR ${otelEventTypeQ} LIKE ? ESCAPE '\\'
+    )`,
+  ];
+  const otelParams: unknown[] = [pattern, pattern, pattern];
+
+  if (sinceMs) {
+    otelConditions.push("CAST(o.timestamp_ns / 1000000 AS INTEGER) >= ?");
+    otelParams.push(sinceMs);
+  }
+
+  const otelAttrsCol = truncate
+    ? "SUBSTR(o.attributes, 1, 500)"
+    : "o.attributes";
 
   const otelSql = `
     SELECT 'otel' as source, o.id, o.session_id,
