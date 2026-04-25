@@ -1,4 +1,3 @@
-import { config } from "../config.js";
 import { ensureSessionSummaryProjections } from "../session_summaries/query.js";
 import { SESSION_SUMMARY_SEARCH_CORPUS } from "../session_summaries/search-index.js";
 import { allTargets } from "../targets/index.js";
@@ -33,6 +32,55 @@ function parseSince(since?: string): number | null {
 
 function toIso(ms: number): string {
   return new Date(ms).toISOString();
+}
+
+const SEARCH_PRIORITY = {
+  summaryEnrichmentFallback: 80,
+  message: 20,
+  hookPrompt: 18,
+  hookTool: 15,
+  hookEvent: 10,
+  otel: 5,
+} as const;
+
+function escapeLikePattern(query: string): string {
+  return query.replace(/[\\%_]/g, "\\$&");
+}
+
+function buildLikePattern(query: string): string {
+  return `%${escapeLikePattern(query)}%`;
+}
+
+function tokenizeSearchTerms(query: string, minLength: number): string[] {
+  const matches = query.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  return [...new Set(matches.filter((term) => term.length >= minLength))];
+}
+
+function buildSafeFtsQuery(query: string): string | null {
+  const terms = tokenizeSearchTerms(query, 3);
+  return terms.length > 0 ? terms.join(" AND ") : null;
+}
+
+function buildTokenLikeCondition(
+  columnSql: string,
+  exactPattern: string,
+  terms: readonly string[],
+): {
+  sql: string;
+  params: string[];
+} {
+  const clauses = [`${columnSql} LIKE ? ESCAPE '\\'`];
+  const params = [exactPattern];
+  if (terms.length > 0) {
+    clauses.push(
+      terms.map(() => `LOWER(${columnSql}) LIKE ? ESCAPE '\\'`).join(" AND "),
+    );
+    params.push(...terms.map((term) => buildLikePattern(term)));
+  }
+  return {
+    sql: clauses.length === 1 ? clauses[0] : `(${clauses.join(" OR ")})`,
+    params,
+  };
 }
 
 // ── OTel log SQL helpers (adapter-driven) ────────────────────────────────────
@@ -105,9 +153,7 @@ export function listSessions(
   opts: { limit?: number; since?: string } = {},
 ): SessionListResult {
   const db = getDb();
-  const sessionSummariesEnabled = config.enableSessionSummaryProjections;
-  const useProjectionSummaryText = config.useProjectionSessionSummaryText;
-  if (sessionSummariesEnabled) ensureSessionSummaryProjections();
+  ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
 
@@ -122,7 +168,7 @@ export function listSessions(
 
   const sql = `
     SELECT s.session_id, s.target, s.model, s.project,
-           s.started_at_ms, s.ended_at_ms, s.first_prompt, s.summary,
+           s.started_at_ms, s.ended_at_ms, s.first_prompt,
            COALESCE(s.turn_count, 0) as turn_count,
            COALESCE(s.message_count, 0) as message_count,
            COALESCE(s.total_input_tokens, 0) as total_input_tokens,
@@ -144,7 +190,6 @@ export function listSessions(
     started_at_ms: number | null;
     ended_at_ms: number | null;
     first_prompt: string | null;
-    summary: string | null;
     turn_count: number;
     message_count: number;
     total_input_tokens: number;
@@ -174,7 +219,7 @@ export function listSessions(
   }
 
   const sessionSummaryRows =
-    sessionSummariesEnabled && sessionIds.length > 0
+    sessionIds.length > 0
       ? (db
           .prepare(
             `SELECT s.id AS id,
@@ -260,7 +305,7 @@ export function listSessions(
       : [];
 
   const topFileRows =
-    sessionSummariesEnabled && sessionSummaryRows.length > 0
+    sessionSummaryRows.length > 0
       ? (db
           .prepare(
             `SELECT w.session_summary_key,
@@ -351,10 +396,7 @@ export function listSessions(
       })),
       parentSessionId: row.parent_session_id,
       relationshipType: row.relationship_type,
-      summary: formatExplicitSessionSummary(
-        useProjectionSummaryText ? sessionSummary : null,
-        row.summary,
-      ),
+      summary: formatExplicitSessionSummary(sessionSummary),
       sessionSummary,
     };
   });
@@ -368,9 +410,8 @@ export function listSessions(
 
 function formatExplicitSessionSummary(
   sessionSummary: SessionSummary | null,
-  fallback: string | null,
 ): string | null {
-  if (!sessionSummary) return fallback;
+  if (!sessionSummary) return null;
   if (sessionSummary.enrichment?.summaryText) {
     return sessionSummary.enrichment.summaryText;
   }
@@ -713,6 +754,7 @@ interface RawSearchRow {
   session_id: string;
   event_type: string;
   timestamp_ms: number;
+  sort_priority: number;
   tool_name: string | null;
   cwd: string | null;
   payload: string | null;
@@ -727,14 +769,15 @@ export function search(opts: {
   fullPayloads?: boolean;
 }): SearchResult {
   const db = getDb();
-  const sessionSummariesEnabled =
-    config.enableSessionSummaryProjections &&
-    config.useProjectionSessionSummaryText;
-  if (sessionSummariesEnabled) ensureSessionSummaryProjections();
+  ensureSessionSummaryProjections();
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const sinceMs = parseSince(opts.since);
-  const pattern = `%${opts.query}%`;
+  const pattern = buildLikePattern(opts.query);
+  const ftsQuery = buildSafeFtsQuery(opts.query);
+  const summaryTerms = tokenizeSearchTerms(opts.query, 2);
+  const needsLiteralContentFallback =
+    ftsQuery === null || /[^a-z0-9\s]/i.test(opts.query);
   const truncate = !opts.fullPayloads;
 
   const hookPayloadCol = truncate
@@ -743,11 +786,23 @@ export function search(opts: {
 
   const hookConditions: string[] = [];
   const hookParams: unknown[] = [];
+  const hookSearchClauses: string[] = [];
 
-  hookConditions.push(
-    "(h.id IN (SELECT rowid FROM hook_events_fts WHERE hook_events_fts MATCH ?) OR h.tool_name LIKE ? OR h.event_type LIKE ?)",
-  );
-  hookParams.push(opts.query, pattern, pattern);
+  if (ftsQuery) {
+    hookSearchClauses.push(
+      "h.id IN (SELECT rowid FROM hook_events_fts WHERE hook_events_fts MATCH ?)",
+    );
+    hookParams.push(ftsQuery);
+  }
+  if (needsLiteralContentFallback) {
+    hookSearchClauses.push("decompress(h.payload) LIKE ? ESCAPE '\\'");
+    hookParams.push(pattern);
+  }
+  hookSearchClauses.push("h.tool_name LIKE ? ESCAPE '\\'");
+  hookParams.push(pattern);
+  hookSearchClauses.push("h.event_type LIKE ? ESCAPE '\\'");
+  hookParams.push(pattern);
+  hookConditions.push(`(${hookSearchClauses.join(" OR ")})`);
 
   if (opts.eventTypes?.length) {
     hookConditions.push(
@@ -762,6 +817,11 @@ export function search(opts: {
 
   const hookSql = `
     SELECT 'hook' as source, h.id, h.session_id, h.event_type, h.timestamp_ms,
+           CASE
+             WHEN h.event_type = 'UserPromptSubmit' THEN ${SEARCH_PRIORITY.hookPrompt}
+             WHEN h.tool_name IS NOT NULL THEN ${SEARCH_PRIORITY.hookTool}
+             ELSE ${SEARCH_PRIORITY.hookEvent}
+           END AS sort_priority,
            h.tool_name, h.cwd, ${hookPayloadCol} as payload
     FROM hook_events h
     WHERE ${hookConditions.join(" AND ")}
@@ -793,6 +853,7 @@ export function search(opts: {
     SELECT 'otel' as source, o.id, o.session_id,
            ${otelEventTypeQ} as event_type,
            ${otelTimestampMsQ} as timestamp_ms,
+           ${SEARCH_PRIORITY.otel} AS sort_priority,
            NULL as tool_name, NULL as cwd, ${otelAttrsCol} as payload
     FROM otel_logs o
     WHERE ${otelConditions.join(" AND ")}
@@ -800,10 +861,20 @@ export function search(opts: {
 
   // Messages FTS search
   const msgContentCol = truncate ? "SUBSTR(m.content, 1, 500)" : "m.content";
-  const msgConditions: string[] = [
-    "m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)",
-  ];
-  const msgParams: unknown[] = [opts.query];
+  const msgSearchClauses: string[] = [];
+  const msgConditions: string[] = [];
+  const msgParams: unknown[] = [];
+  if (ftsQuery) {
+    msgSearchClauses.push(
+      "m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)",
+    );
+    msgParams.push(ftsQuery);
+  }
+  if (needsLiteralContentFallback) {
+    msgSearchClauses.push("m.content LIKE ? ESCAPE '\\'");
+    msgParams.push(pattern);
+  }
+  msgConditions.push(`(${msgSearchClauses.join(" OR ")})`);
   if (sinceMs) {
     msgConditions.push("m.timestamp_ms >= ?");
     msgParams.push(sinceMs);
@@ -812,6 +883,7 @@ export function search(opts: {
   const msgSql = `
     SELECT 'message' as source, m.id, m.session_id,
            m.role as event_type, m.timestamp_ms,
+           ${SEARCH_PRIORITY.message} AS sort_priority,
            NULL as tool_name, NULL as cwd, ${msgContentCol} as payload
     FROM messages m
     WHERE ${msgConditions.join(" AND ")}
@@ -819,93 +891,83 @@ export function search(opts: {
 
   // Session summary search
   const summaryParams: unknown[] = [];
-  const summarySql = sessionSummariesEnabled
-    ? (() => {
-        const sinceClause = sinceMs ? "AND s.started_at_ms >= ?" : "";
-        const addSummaryMatchParams = () => {
-          summaryParams.push(pattern);
-          if (sinceMs) summaryParams.push(sinceMs);
-        };
-        for (let i = 0; i < 4; i += 1) {
-          addSummaryMatchParams();
-        }
-        const payloadExpr = truncate
-          ? "SUBSTR(summary_matches.payload, 1, 500)"
-          : "summary_matches.payload";
-        return `
-          SELECT 'summary' as source, summary_matches.session_id as id, summary_matches.session_id,
-                 'summary' as event_type, summary_matches.timestamp_ms,
-                 NULL as tool_name, NULL as cwd, ${payloadExpr} as payload
+  const searchIndexMatch = buildTokenLikeCondition(
+    "si.search_text",
+    pattern,
+    summaryTerms,
+  );
+  const enrichmentMatch = buildTokenLikeCondition(
+    "e.summary_text",
+    pattern,
+    summaryTerms,
+  );
+  const deterministicMatch = buildTokenLikeCondition(
+    "ss.summary_text",
+    pattern,
+    summaryTerms,
+  );
+  const summarySql = (() => {
+    const sinceClause = sinceMs ? "AND s.started_at_ms >= ?" : "";
+    summaryParams.push(...searchIndexMatch.params);
+    if (sinceMs) summaryParams.push(sinceMs);
+    summaryParams.push(...enrichmentMatch.params);
+    if (sinceMs) summaryParams.push(sinceMs);
+    summaryParams.push(...deterministicMatch.params);
+    if (sinceMs) summaryParams.push(sinceMs);
+    const payloadExpr = truncate
+      ? "SUBSTR(summary_matches.payload, 1, 500)"
+      : "summary_matches.payload";
+    return `
+      SELECT 'summary' as source, summary_matches.session_id as id, summary_matches.session_id,
+             'summary' as event_type, summary_matches.timestamp_ms,
+             summary_matches.sort_priority,
+             NULL as tool_name, NULL as cwd, ${payloadExpr} as payload
+      FROM (
+        SELECT ranked.session_id,
+               ranked.timestamp_ms,
+               ranked.payload,
+               ranked.priority AS sort_priority
+        FROM (
+          SELECT raw_matches.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY raw_matches.session_id
+                   ORDER BY raw_matches.priority DESC, raw_matches.timestamp_ms DESC
+                 ) AS rank
           FROM (
-            SELECT ranked.session_id,
-                   ranked.timestamp_ms,
-                   ranked.payload
-            FROM (
-              SELECT raw_matches.*,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY raw_matches.session_id
-                       ORDER BY raw_matches.priority DESC, raw_matches.timestamp_ms DESC
-                     ) AS rank
-              FROM (
-                SELECT s.session_id,
-                       s.started_at_ms AS timestamp_ms,
-                       si.search_text AS payload,
-                       si.priority
-                FROM sessions s
-                JOIN session_summary_search_index si
-                  ON si.session_id = s.session_id
-                WHERE si.search_text LIKE ? ${sinceClause}
-                UNION ALL
-                SELECT s.session_id,
-                       s.started_at_ms AS timestamp_ms,
-                       e.summary_text AS payload,
-                       80 AS priority
-                FROM sessions s
-                JOIN session_summaries ss
-                  ON ss.session_id = s.session_id
-                JOIN session_summary_enrichments e
-                  ON e.session_summary_key = ss.session_summary_key
-                WHERE e.summary_text LIKE ? ${sinceClause}
-                UNION ALL
-                SELECT s.session_id,
-                       s.started_at_ms AS timestamp_ms,
-                       ss.summary_text AS payload,
-                       40 AS priority
-                FROM sessions s
-                JOIN session_summaries ss
-                  ON ss.session_id = s.session_id
-                WHERE ss.summary_text LIKE ? ${sinceClause}
-                UNION ALL
-                SELECT s.session_id,
-                       s.started_at_ms AS timestamp_ms,
-                       s.summary AS payload,
-                       0 AS priority
-                FROM sessions s
-                WHERE s.summary LIKE ? ${sinceClause}
-              ) raw_matches
-            ) ranked
-            WHERE ranked.rank = 1
-          ) summary_matches
-        `;
-      })()
-    : (() => {
-        const summaryConditions = ["s.summary IS NOT NULL", "s.summary LIKE ?"];
-        summaryParams.push(pattern);
-        if (sinceMs) {
-          summaryConditions.push("s.started_at_ms >= ?");
-          summaryParams.push(sinceMs);
-        }
-        const payloadExpr = truncate
-          ? "SUBSTR(s.summary, 1, 500)"
-          : "s.summary";
-        return `
-          SELECT 'summary' as source, s.session_id as id, s.session_id,
-                 'summary' as event_type, s.started_at_ms as timestamp_ms,
-                 NULL as tool_name, NULL as cwd, ${payloadExpr} as payload
-          FROM sessions s
-          WHERE ${summaryConditions.join(" AND ")}
-        `;
-      })();
+            SELECT s.session_id,
+                   s.started_at_ms AS timestamp_ms,
+                   si.search_text AS payload,
+                   si.priority
+            FROM sessions s
+            JOIN session_summary_search_index si
+              ON si.session_id = s.session_id
+            WHERE ${searchIndexMatch.sql} ${sinceClause}
+            UNION ALL
+            SELECT s.session_id,
+                   s.started_at_ms AS timestamp_ms,
+                   e.summary_text AS payload,
+                   ${SEARCH_PRIORITY.summaryEnrichmentFallback} AS priority
+            FROM sessions s
+            JOIN session_summaries ss
+              ON ss.session_id = s.session_id
+            JOIN session_summary_enrichments e
+              ON e.session_summary_key = ss.session_summary_key
+            WHERE ${enrichmentMatch.sql} ${sinceClause}
+            UNION ALL
+            SELECT s.session_id,
+                   s.started_at_ms AS timestamp_ms,
+                   ss.summary_text AS payload,
+                   40 AS priority
+            FROM sessions s
+            JOIN session_summaries ss
+              ON ss.session_id = s.session_id
+            WHERE ${deterministicMatch.sql} ${sinceClause}
+          ) raw_matches
+        ) ranked
+        WHERE ranked.rank = 1
+      ) summary_matches
+    `;
+  })();
 
   const countSql = `SELECT COUNT(*) as total FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql} UNION ALL ${summarySql})`;
   const total = (
@@ -918,7 +980,7 @@ export function search(opts: {
 
   const sql = `
     SELECT * FROM (${hookSql} UNION ALL ${otelSql} UNION ALL ${msgSql} UNION ALL ${summarySql})
-    ORDER BY timestamp_ms DESC
+    ORDER BY sort_priority DESC, timestamp_ms DESC
     LIMIT ? OFFSET ?
   `;
 

@@ -160,11 +160,6 @@ function runSessionSummaryPass(logSummary: (msg: string) => void): {
         `Session summary enrichment error: ${err instanceof Error ? err.message : err}`,
       );
     },
-    onLegacySummaryError: (err) => {
-      log.scanner.error(
-        `Session summary error: ${err instanceof Error ? err.message : err}`,
-      );
-    },
   });
 }
 

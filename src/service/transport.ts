@@ -1,4 +1,3 @@
-import { config } from "../config.js";
 import type {
   ActivitySummaryInput,
   CostBreakdownInput,
@@ -64,9 +63,7 @@ const SESSION_SUMMARY_TOOL_HANDLERS = {
 
 export const TOOL_HANDLERS = {
   ...BASE_TOOL_HANDLERS,
-  ...(config.enableSessionSummaryProjections
-    ? SESSION_SUMMARY_TOOL_HANDLERS
-    : {}),
+  ...SESSION_SUMMARY_TOOL_HANDLERS,
 } satisfies Record<string, TransportHandler>;
 
 export type ToolName = keyof typeof TOOL_HANDLERS;

@@ -24,7 +24,6 @@ vi.mock("../config.js", () => {
       port: 4318,
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
-      enableSessionSummaryProjections: true,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -75,9 +74,6 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  (
-    config as { enableSessionSummaryProjections: boolean }
-  ).enableSessionSummaryProjections = true;
   const db = getDb();
   db.prepare("DELETE FROM code_provenance").run();
   db.prepare("DELETE FROM intent_session_summaries").run();

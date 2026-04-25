@@ -1253,6 +1253,49 @@ describe("runMigrations — existing DB", () => {
         version INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL
       );
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        target TEXT,
+        started_at_ms INTEGER,
+        ended_at_ms INTEGER,
+        cwd TEXT,
+        first_prompt TEXT,
+        permission_mode TEXT,
+        agent_version TEXT,
+        model TEXT,
+        cli_version TEXT,
+        scanner_file_path TEXT,
+        total_input_tokens INTEGER DEFAULT 0,
+        total_output_tokens INTEGER DEFAULT 0,
+        total_cache_read_tokens INTEGER DEFAULT 0,
+        total_cache_creation_tokens INTEGER DEFAULT 0,
+        total_reasoning_tokens INTEGER DEFAULT 0,
+        turn_count INTEGER DEFAULT 0,
+        otel_input_tokens INTEGER DEFAULT 0,
+        otel_output_tokens INTEGER DEFAULT 0,
+        otel_cache_read_tokens INTEGER DEFAULT 0,
+        otel_cache_creation_tokens INTEGER DEFAULT 0,
+        models TEXT,
+        has_hooks INTEGER DEFAULT 0,
+        has_otel INTEGER DEFAULT 0,
+        has_scanner INTEGER DEFAULT 0,
+        summary TEXT,
+        summary_version INTEGER DEFAULT 0,
+        sync_dirty INTEGER DEFAULT 0,
+        sync_seq INTEGER DEFAULT 0,
+        tool_counts JSON DEFAULT '{}',
+        hook_tool_counts JSON DEFAULT '{}',
+        event_type_counts JSON DEFAULT '{}',
+        hook_event_type_counts JSON DEFAULT '{}',
+        project TEXT,
+        machine TEXT NOT NULL DEFAULT 'local',
+        message_count INTEGER DEFAULT 0,
+        user_message_count INTEGER DEFAULT 0,
+        parent_session_id TEXT,
+        relationship_type TEXT DEFAULT '',
+        is_automated INTEGER DEFAULT 0,
+        created_at INTEGER
+      );
       CREATE TABLE session_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_summary_key TEXT NOT NULL UNIQUE,
@@ -1324,6 +1367,21 @@ describe("runMigrations — existing DB", () => {
       insertDataVersion.run(component, targetDataVersion(component), 1000);
     }
     db.prepare(
+      `INSERT INTO sessions (
+         session_id, target, started_at_ms, summary, summary_version,
+         sync_dirty, sync_seq, machine
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "session:legacy-summary",
+      "claude",
+      900,
+      "legacy weak summary",
+      2,
+      1,
+      3,
+      "local",
+    );
+    db.prepare(
       `INSERT INTO session_summaries (
          id, session_summary_key, title, status, reconciled_at_ms
        ) VALUES (?, ?, ?, ?, ?)`,
@@ -1356,6 +1414,27 @@ describe("runMigrations — existing DB", () => {
     expect(summaryCols.map((col) => col.name)).not.toContain(
       "reconciled_at_ms",
     );
+    const sessionCols = db
+      .prepare("PRAGMA table_info(sessions)")
+      .all() as Array<{ name: string }>;
+    expect(sessionCols.map((col) => col.name)).not.toContain("summary");
+    expect(sessionCols.map((col) => col.name)).not.toContain("summary_version");
+    expect(
+      db
+        .prepare(
+          `SELECT session_id, target, started_at_ms, sync_dirty, sync_seq, machine
+           FROM sessions
+           WHERE session_id = ?`,
+        )
+        .get("session:legacy-summary"),
+    ).toEqual({
+      session_id: "session:legacy-summary",
+      target: "claude",
+      started_at_ms: 900,
+      sync_dirty: 1,
+      sync_seq: 3,
+      machine: "local",
+    });
 
     const summaryCount = (
       db.prepare(`SELECT COUNT(*) AS count FROM session_summaries`).get() as {

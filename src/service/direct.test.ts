@@ -54,9 +54,7 @@ vi.mock("../claims/integrity.js", () => ({
 }));
 
 vi.mock("../config.js", () => ({
-  config: {
-    enableSessionSummaryProjections: true,
-  },
+  config: {},
 }));
 
 vi.mock("../db/pricing.js", () => ({

@@ -124,8 +124,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   has_hooks INTEGER DEFAULT 0,
   has_otel INTEGER DEFAULT 0,
   has_scanner INTEGER DEFAULT 0,
-  summary TEXT,
-  summary_version INTEGER DEFAULT 0,
   sync_dirty INTEGER DEFAULT 0,
   sync_seq INTEGER DEFAULT 0,
   tool_counts JSON DEFAULT '{}',

@@ -1,11 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../config.js", () => ({
-  config: {
-    enableSessionSummaryProjections: true,
-  },
-}));
-
 import {
   dispatchExec,
   dispatchTool,

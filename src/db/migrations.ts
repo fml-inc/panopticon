@@ -616,6 +616,146 @@ function resetSessionSummaryProjectionStorage(db: Database): void {
   markDataComponentsStaleInDb(db, [SESSION_SUMMARY_PROJECTION_COMPONENT]);
 }
 
+function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
+  if (!tableExists(db, "sessions")) return;
+  if (
+    !tableHasColumn(db, "sessions", "summary") &&
+    !tableHasColumn(db, "sessions", "summary_version")
+  ) {
+    return;
+  }
+
+  const sessionValueExpr = (column: string, fallbackSql = "NULL"): string => {
+    return tableHasColumn(db, "sessions", column) ? column : fallbackSql;
+  };
+
+  db.exec(`
+    CREATE TABLE sessions_new (
+      session_id TEXT PRIMARY KEY,
+      target TEXT,
+      started_at_ms INTEGER,
+      ended_at_ms INTEGER,
+      cwd TEXT,
+      first_prompt TEXT,
+      permission_mode TEXT,
+      agent_version TEXT,
+      model TEXT,
+      cli_version TEXT,
+      scanner_file_path TEXT,
+      total_input_tokens INTEGER DEFAULT 0,
+      total_output_tokens INTEGER DEFAULT 0,
+      total_cache_read_tokens INTEGER DEFAULT 0,
+      total_cache_creation_tokens INTEGER DEFAULT 0,
+      total_reasoning_tokens INTEGER DEFAULT 0,
+      turn_count INTEGER DEFAULT 0,
+      otel_input_tokens INTEGER DEFAULT 0,
+      otel_output_tokens INTEGER DEFAULT 0,
+      otel_cache_read_tokens INTEGER DEFAULT 0,
+      otel_cache_creation_tokens INTEGER DEFAULT 0,
+      models TEXT,
+      has_hooks INTEGER DEFAULT 0,
+      has_otel INTEGER DEFAULT 0,
+      has_scanner INTEGER DEFAULT 0,
+      sync_dirty INTEGER DEFAULT 0,
+      sync_seq INTEGER DEFAULT 0,
+      tool_counts JSON DEFAULT '{}',
+      hook_tool_counts JSON DEFAULT '{}',
+      event_type_counts JSON DEFAULT '{}',
+      hook_event_type_counts JSON DEFAULT '{}',
+      project TEXT,
+      machine TEXT NOT NULL DEFAULT 'local',
+      message_count INTEGER DEFAULT 0,
+      user_message_count INTEGER DEFAULT 0,
+      parent_session_id TEXT,
+      relationship_type TEXT DEFAULT '',
+      is_automated INTEGER DEFAULT 0,
+      created_at INTEGER
+    )
+  `);
+
+  db.exec(`
+    INSERT INTO sessions_new (
+      session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+      permission_mode, agent_version, model, cli_version, scanner_file_path,
+      total_input_tokens, total_output_tokens, total_cache_read_tokens,
+      total_cache_creation_tokens, total_reasoning_tokens, turn_count,
+      otel_input_tokens, otel_output_tokens, otel_cache_read_tokens,
+      otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner,
+      sync_dirty, sync_seq, tool_counts, hook_tool_counts, event_type_counts,
+      hook_event_type_counts, project, machine, message_count,
+      user_message_count, parent_session_id, relationship_type, is_automated,
+      created_at
+    )
+    SELECT
+      ${sessionValueExpr("session_id")},
+      ${sessionValueExpr("target")},
+      ${sessionValueExpr("started_at_ms", "NULL")},
+      ${sessionValueExpr("ended_at_ms", "NULL")},
+      ${sessionValueExpr("cwd")},
+      ${sessionValueExpr("first_prompt")},
+      ${sessionValueExpr("permission_mode")},
+      ${sessionValueExpr("agent_version")},
+      ${sessionValueExpr("model")},
+      ${sessionValueExpr("cli_version")},
+      ${sessionValueExpr("scanner_file_path")},
+      ${sessionValueExpr("total_input_tokens", "0")},
+      ${sessionValueExpr("total_output_tokens", "0")},
+      ${sessionValueExpr("total_cache_read_tokens", "0")},
+      ${sessionValueExpr("total_cache_creation_tokens", "0")},
+      ${sessionValueExpr("total_reasoning_tokens", "0")},
+      ${sessionValueExpr("turn_count", "0")},
+      ${sessionValueExpr("otel_input_tokens", "0")},
+      ${sessionValueExpr("otel_output_tokens", "0")},
+      ${sessionValueExpr("otel_cache_read_tokens", "0")},
+      ${sessionValueExpr("otel_cache_creation_tokens", "0")},
+      ${sessionValueExpr("models")},
+      ${sessionValueExpr("has_hooks", "0")},
+      ${sessionValueExpr("has_otel", "0")},
+      ${sessionValueExpr("has_scanner", "0")},
+      ${sessionValueExpr("sync_dirty", "0")},
+      ${sessionValueExpr("sync_seq", "0")},
+      ${sessionValueExpr("tool_counts", "'{}'")},
+      ${sessionValueExpr("hook_tool_counts", "'{}'")},
+      ${sessionValueExpr("event_type_counts", "'{}'")},
+      ${sessionValueExpr("hook_event_type_counts", "'{}'")},
+      ${sessionValueExpr("project")},
+      ${sessionValueExpr("machine", "'local'")},
+      ${sessionValueExpr("message_count", "0")},
+      ${sessionValueExpr("user_message_count", "0")},
+      ${sessionValueExpr("parent_session_id")},
+      ${sessionValueExpr("relationship_type", "''")},
+      ${sessionValueExpr("is_automated", "0")},
+      ${sessionValueExpr("created_at", "NULL")}
+    FROM sessions
+  `);
+
+  db.exec("DROP TABLE sessions");
+  db.exec("ALTER TABLE sessions_new RENAME TO sessions");
+
+  db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target)");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_scanner_file_target
+      ON sessions(scanner_file_path, target)
+      WHERE scanner_file_path IS NOT NULL
+  `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_sync_seq ON sessions(sync_seq)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_sessions_machine ON sessions(machine)",
+  );
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)
+      WHERE parent_session_id IS NOT NULL
+  `);
+}
+
 // ---------------------------------------------------------------------------
 // Migration registry — append only, never reorder or remove
 // ---------------------------------------------------------------------------
@@ -653,7 +793,7 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 3,
     name: "drop_session_summary_deltas",
-    // #115 (Apr 2) replaced delta summaries with a single sessions.summary
+    // #115 (Apr 2) replaced delta summaries with a single legacy sessions.summary
     // column but left the table in the schema and never wrote to it. The
     // prune/MCP/e2e references have been cleaned up; this migration removes
     // the dead table for DBs that were created before the rewrite.
@@ -1054,6 +1194,13 @@ export const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_session_summary_enrichments_dirty
           ON session_summary_enrichments(dirty, last_material_change_at_ms)
       `);
+    },
+  },
+  {
+    id: 17,
+    name: "drop_legacy_sessions_summary_columns",
+    up: (db) => {
+      rebuildSessionsTableWithoutLegacySummary(db);
     },
   },
 ];

@@ -1,4 +1,3 @@
-import { config } from "../config.js";
 import { getDb, needsSessionSummaryProjectionRebuild } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import { resolveFilePathFromCwd } from "../paths.js";
@@ -223,7 +222,6 @@ export function listSessionSummaries(opts?: {
 export function sessionSummaryDetail(opts: {
   session_id: string;
 }): SessionSummaryDetailResult | null {
-  if (!config.enableSessionSummaryProjections) return null;
   ensureSessionSummaryProjections();
   const db = getDb();
   const row = db
@@ -254,23 +252,6 @@ export function whyCode(opts: {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const line = typeof opts.line === "number" ? opts.line : null;
   const history = intentForCode({ file_path: normalizedPath, limit: 10 });
-
-  if (!config.enableSessionSummaryProjections) {
-    return {
-      path: normalizedPath,
-      line,
-      match_level: "none",
-      status: history.length > 0 ? "stale" : "none",
-      confidence: 0,
-      repository: opts.repository ?? history[0]?.repository ?? null,
-      session_summary: null,
-      intent: null,
-      edit: null,
-      binding: null,
-      evidence: { intent_for_code: history },
-      related_candidates: [],
-    };
-  }
 
   ensureSessionSummaryProjections();
   const db = getDb();
@@ -445,9 +426,7 @@ export function recentWorkOnPath(opts: {
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
-  if (config.enableSessionSummaryProjections) {
-    ensureSessionSummaryProjections();
-  }
+  ensureSessionSummaryProjections();
   const rows = db
     .prepare(
       `SELECT e.id AS intent_edit_id,
@@ -457,32 +436,27 @@ export function recentWorkOnPath(opts: {
               u.id AS intent_unit_id,
               u.prompt_text,
               u.repository,
-              ${
-                config.enableSessionSummaryProjections
-                  ? `(SELECT iss.session_summary_id
-                      FROM intent_session_summaries iss
-                      WHERE iss.intent_unit_id = u.id
-                      ORDER BY CASE iss.membership_kind
-                                 WHEN 'primary' THEN 0
-                                 ELSE 1
-                               END ASC,
-                               iss.score DESC,
-                               iss.session_summary_id DESC
-                      LIMIT 1) AS session_summary_id,
-                     (SELECT s.title
-                      FROM intent_session_summaries iss
-                      JOIN session_summaries s ON s.id = iss.session_summary_id
-                      WHERE iss.intent_unit_id = u.id
-                      ORDER BY CASE iss.membership_kind
-                                 WHEN 'primary' THEN 0
-                                 ELSE 1
-                               END ASC,
-                               iss.score DESC,
-                               iss.session_summary_id DESC
-                      LIMIT 1) AS session_summary_title`
-                  : `NULL AS session_summary_id,
-                     NULL AS session_summary_title`
-              }
+              (SELECT iss.session_summary_id
+               FROM intent_session_summaries iss
+               WHERE iss.intent_unit_id = u.id
+               ORDER BY CASE iss.membership_kind
+                          WHEN 'primary' THEN 0
+                          ELSE 1
+                        END ASC,
+                        iss.score DESC,
+                        iss.session_summary_id DESC
+               LIMIT 1) AS session_summary_id,
+              (SELECT s.title
+               FROM intent_session_summaries iss
+               JOIN session_summaries s ON s.id = iss.session_summary_id
+               WHERE iss.intent_unit_id = u.id
+               ORDER BY CASE iss.membership_kind
+                          WHEN 'primary' THEN 0
+                          ELSE 1
+                        END ASC,
+                        iss.score DESC,
+                        iss.session_summary_id DESC
+               LIMIT 1) AS session_summary_title
        FROM intent_edits e
        JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
@@ -634,7 +608,6 @@ export function fileOverview(opts: {
 }
 
 export function ensureSessionSummaryProjections(): void {
-  if (!config.enableSessionSummaryProjections) return;
   if (needsSessionSummaryProjectionRebuild()) {
     rebuildSessionSummaryProjections();
     return;
@@ -683,7 +656,6 @@ function listSessionSummaryProjections(opts?: {
   limit?: number;
   offset?: number;
 }): SessionSummaryProjectionRow[] {
-  if (!config.enableSessionSummaryProjections) return [];
   ensureSessionSummaryProjections();
   const db = getDb();
   const params: unknown[] = [];
@@ -786,7 +758,6 @@ function listSessionSummaryProjections(opts?: {
 function getSessionSummaryProjectionDetail(opts: {
   session_summary_id: number;
 }): SessionSummaryProjectionDetailResult | null {
-  if (!config.enableSessionSummaryProjections) return null;
   ensureSessionSummaryProjections();
   const db = getDb();
   const sessionSummary = db

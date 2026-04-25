@@ -721,7 +721,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
               permission_mode, agent_version,
               total_input_tokens, total_output_tokens, total_cache_read_tokens,
               total_cache_creation_tokens, total_reasoning_tokens, turn_count,
-              models, summary, tool_counts, hook_tool_counts, event_type_counts, hook_event_type_counts, sync_seq,
+              models, tool_counts, hook_tool_counts, event_type_counts, hook_event_type_counts, sync_seq,
               project, machine, message_count, user_message_count,
               parent_session_id, relationship_type, is_automated, created_at
        FROM sessions
@@ -743,7 +743,6 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     total_reasoning_tokens: number | null;
     turn_count: number | null;
     models: string | null;
-    summary: string | null;
     tool_counts: string | null;
     hook_tool_counts: string | null;
     event_type_counts: string | null;
@@ -824,7 +823,6 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     totalReasoningTokens: r.total_reasoning_tokens,
     turnCount: r.turn_count,
     models: r.models,
-    summary: r.summary,
     toolCounts: parseJsonObject(r.tool_counts) as Record<string, number>,
     hookToolCounts: parseJsonObject(r.hook_tool_counts) as Record<
       string,

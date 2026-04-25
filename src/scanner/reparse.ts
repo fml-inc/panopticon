@@ -58,8 +58,6 @@ const SESSION_MERGE_COLUMNS = [
   "otel_output_tokens",
   "otel_cache_read_tokens",
   "otel_cache_creation_tokens",
-  "summary",
-  "summary_version",
   "permission_mode",
   "is_automated",
   "created_at",

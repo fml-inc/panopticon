@@ -169,15 +169,8 @@ export const config = {
   proxyHost: process.env.PANOPTICON_PROXY_HOST ?? "127.0.0.1",
   proxyPidFile: path.join(DATA_DIR, "proxy.pid"),
   proxyIdleSessionMs: 30 * 60 * 1000,
-  enableSessionSummaryProjections: envBool(
-    "PANOPTICON_ENABLE_SESSION_SUMMARY_PROJECTIONS",
-    true,
-  ),
   enableSessionSummaryEnrichment: envBool(
     "PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT",
-  ),
-  useProjectionSessionSummaryText: envBool(
-    "PANOPTICON_USE_PROJECTION_SESSION_SUMMARY_TEXT",
   ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,

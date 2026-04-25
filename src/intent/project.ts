@@ -1,5 +1,4 @@
 import { performance } from "node:perf_hooks";
-import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { resolveFilePathFromCwd } from "../paths.js";
 import { rebuildSessionSummaryProjections } from "../session_summaries/project.js";
@@ -187,16 +186,10 @@ export function rebuildIntentProjection(opts?: {
   });
   tx();
 
-  const local = config.enableSessionSummaryProjections
-    ? rebuildSessionSummaryProjections({
-        sessionId: opts?.sessionId,
-        debounce: opts?.debounceSessionSummaries,
-      })
-    : {
-        sessionSummaries: 0,
-        memberships: 0,
-        provenance: 0,
-      };
+  const local = rebuildSessionSummaryProjections({
+    sessionId: opts?.sessionId,
+    debounce: opts?.debounceSessionSummaries,
+  });
 
   return {
     intents: intents.size,

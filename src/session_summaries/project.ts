@@ -98,13 +98,6 @@ export function rebuildSessionSummaryProjections(opts?: {
   memberships: number;
   provenance: number;
 } {
-  if (!config.enableSessionSummaryProjections) {
-    return {
-      sessionSummaries: 0,
-      memberships: 0,
-      provenance: 0,
-    };
-  }
   const db = getDb();
   const runnerPolicy = getSessionSummaryRunnerPolicy();
   const tx = db.transaction(() => {

@@ -228,7 +228,6 @@ export interface SessionSyncRecord {
   totalReasoningTokens: number | null;
   turnCount: number | null;
   models: string | null;
-  summary: string | null;
   toolCounts: Record<string, number>;
   hookToolCounts: Record<string, number>;
   eventTypeCounts: Record<string, number>;
