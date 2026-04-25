@@ -791,29 +791,62 @@ fi
 
 # ── 7d: Session summaries ──────────────────────────────────────────────────
 #
-# Summaries live on the `sessions` table (summary, summary_version). The
-# session_summary_deltas table was removed in #115 — the current code path
-# writes a single denormalized summary per session instead of an append-only
-# delta log. LLM-sourced summaries are currently TODO'd out in favor of a
-# deterministic builder, so this section only asserts the deterministic path.
+# Session summaries now live in the split local read model:
+# - `session_summaries` stores the deterministic per-session projection
+# - `session_summary_enrichments` stores optional enrichment state
+# - `session_summary_search_index` stores deterministic/LLM search corpora
+#
+# The E2E path only relies on the deterministic projection being available.
 
 log_info "── Session summaries ──"
 
-SESSIONS_WITH_SUMMARY=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND summary != '';" 2>/dev/null || echo "0")
-log_info "Sessions with summary: ${SESSIONS_WITH_SUMMARY}"
+SESSION_SUMMARY_ROWS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM session_summaries;" 2>/dev/null || echo "0")
+log_info "Session summaries: ${SESSION_SUMMARY_ROWS}"
 
 if [ "$SCANNER_TURNS" -ge 10 ]; then
-  assert_db_count "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND summary != '';" 1 \
-    "sessions: >= 1 session has a populated summary"
+  assert_db_count \
+    "SELECT COUNT(*) FROM session_summaries WHERE summary_text IS NOT NULL AND summary_text != '';" \
+    1 \
+    "session_summaries: >= 1 session summary has populated deterministic text"
 
   assert_db_zero \
-    "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND (summary_version IS NULL OR summary_version <= 0);" \
-    "sessions: every populated summary has summary_version > 0"
+    "SELECT COUNT(*) FROM session_summaries
+     WHERE summary_text IS NOT NULL
+       AND summary_text != ''
+       AND (
+         projection_hash IS NULL
+         OR projection_hash = ''
+         OR projected_at_ms IS NULL
+       );" \
+    "session_summaries: every populated summary has projection metadata"
+
+  assert_db_count \
+    "SELECT COUNT(*) FROM session_summary_enrichments;" \
+    1 \
+    "session_summary_enrichments: >= 1 companion row exists"
+
+  assert_db_count \
+    "SELECT COUNT(*) FROM session_summary_search_index WHERE corpus_key = 'deterministic_summary';" \
+    1 \
+    "session_summary_search_index: >= 1 deterministic summary corpus row"
+
+  assert_db_count \
+    "SELECT COUNT(*) FROM session_summary_search_index WHERE corpus_key = 'deterministic_search';" \
+    1 \
+    "session_summary_search_index: >= 1 deterministic search corpus row"
 
   # Show sample summaries
   sqlite3 -header -column "$DB_PATH" \
-    "SELECT session_id, summary_version, substr(summary, 1, 80) AS summary_preview
-     FROM sessions WHERE summary IS NOT NULL ORDER BY started_at_ms DESC LIMIT 5;" 2>/dev/null || true
+    "SELECT s.session_id,
+            substr(s.summary_text, 1, 80) AS deterministic_preview,
+            e.summary_source,
+            COALESCE(e.dirty, 0) AS enrichment_dirty
+     FROM session_summaries s
+     LEFT JOIN session_summary_enrichments e
+       ON e.session_summary_key = s.session_summary_key
+     WHERE s.summary_text IS NOT NULL
+     ORDER BY COALESCE(s.last_intent_ts_ms, 0) DESC
+     LIMIT 5;" 2>/dev/null || true
 else
   log_info "session summaries: skipped (only ${SCANNER_TURNS} turns, need >= 10)"
 fi
