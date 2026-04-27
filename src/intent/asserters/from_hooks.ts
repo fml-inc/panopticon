@@ -18,7 +18,10 @@ import {
   targetDataVersion,
 } from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
-import { resolveFilePathFromCwd } from "../../paths.js";
+import {
+  canonicalizeRepoFilePath,
+  resolveFilePathFromCwd,
+} from "../../paths.js";
 import {
   EDIT_TOOL_NAMES,
   type ParsedEditEntry,
@@ -181,8 +184,13 @@ export function rebuildIntentClaimsFromHooks(opts?: { sessionId?: string }): {
         const seenFileSubjects = new Set<string>();
         for (const entry of editEntries) {
           const resolvedFilePath = resolveFilePath(entry.filePath, sessionCwd);
+          const canonicalFilePath = canonicalizeRepoFilePath(resolvedFilePath, {
+            cwd: sessionCwd,
+            repositoryRoot: repository,
+            allowNonGitRepositoryRoot: true,
+          });
           const semanticIdentity = semanticEditIdentity({
-            filePath: resolvedFilePath,
+            filePath: canonicalFilePath,
             newString: entry.newString,
             oldStrings: entry.oldStrings,
             deletedFile: entry.deletedFile,
@@ -353,8 +361,13 @@ export function recordIntentClaimsFromHookEvent(args: {
     const evidenceFilePaths = resolveEvidenceFilePaths(entries, sessionCwd);
     for (const entry of entries) {
       const resolvedFilePath = resolveFilePath(entry.filePath, sessionCwd);
+      const canonicalFilePath = canonicalizeRepoFilePath(resolvedFilePath, {
+        cwd: sessionCwd,
+        repositoryRoot: repository,
+        allowNonGitRepositoryRoot: true,
+      });
       const semanticIdentity = semanticEditIdentity({
-        filePath: resolvedFilePath,
+        filePath: canonicalFilePath,
         newString: entry.newString,
         oldStrings: entry.oldStrings,
         deletedFile: entry.deletedFile,
@@ -492,12 +505,15 @@ function assertHookEditClaims(args: {
   seenRepositorySubjects?: Set<string>;
   seenFileSubjects?: Set<string>;
 }): void {
-  const resolvedFilePath = resolveFilePath(
-    args.entry.filePath,
-    resolveSessionCwd(args.sessionId, args.cwd),
-  );
+  const sessionCwd = resolveSessionCwd(args.sessionId, args.cwd);
+  const resolvedFilePath = resolveFilePath(args.entry.filePath, sessionCwd);
+  const canonicalFilePath = canonicalizeRepoFilePath(resolvedFilePath, {
+    cwd: sessionCwd,
+    repositoryRoot: args.repository,
+    allowNonGitRepositoryRoot: true,
+  });
   const semanticIdentity = semanticEditIdentity({
-    filePath: resolvedFilePath,
+    filePath: canonicalFilePath,
     newString: args.entry.newString,
     oldStrings: args.entry.oldStrings,
     deletedFile: args.entry.deletedFile,
@@ -538,7 +554,7 @@ function assertHookEditClaims(args: {
     predicate: "edit/file",
     subjectKind: "edit",
     subject,
-    value: resolvedFilePath,
+    value: canonicalFilePath,
     observedAtMs: args.timestampMs,
     sourceType: "hook",
     asserter: ASSERTER,
@@ -549,7 +565,7 @@ function assertHookEditClaims(args: {
   if (args.repository) {
     assertNormalizedFileClaims({
       repository: args.repository,
-      filePath: resolvedFilePath,
+      filePath: canonicalFilePath,
       editSubject: subject,
       observedAtMs: args.timestampMs,
       evidence,

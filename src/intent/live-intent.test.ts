@@ -1066,12 +1066,20 @@ describe("scanner-only landed reconciliation", () => {
     const sessionId = "scanner-apply-patch";
     const filePath = path.join(scratchDir, "scanner-apply-patch.ts");
     fs.writeFileSync(filePath, "export const value = 1;\n");
+    const relativeFilePath = path
+      .relative(scratchDir, filePath)
+      .replace(/\\/g, "/");
 
     insertSession({
       sessionId,
       cwd: scratchDir,
       endedAtMs: 2000,
       hasScanner: true,
+    });
+    insertSessionRepository({
+      sessionId,
+      repository: scratchDir,
+      firstSeenMs: 900,
     });
     insertUserMessage({
       sessionId,
@@ -1116,7 +1124,7 @@ describe("scanner-only landed reconciliation", () => {
       | undefined;
 
     expect(row).toEqual({
-      file_path: filePath,
+      file_path: relativeFilePath,
       tool_name: "apply_patch",
       landed: 1,
     });
@@ -1126,6 +1134,9 @@ describe("scanner-only landed reconciliation", () => {
     const sessionId = "scanner-typed-tool-evidence";
     const filePath = path.join(scratchDir, "scanner-typed-tool-evidence.ts");
     fs.writeFileSync(filePath, "export const value = 1;\n");
+    const relativeFilePath = path
+      .relative(scratchDir, filePath)
+      .replace(/\\/g, "/");
 
     insertSession({
       sessionId,
@@ -1237,7 +1248,7 @@ describe("scanner-only landed reconciliation", () => {
       | undefined;
 
     expect(row).toEqual({
-      file_path: filePath,
+      file_path: relativeFilePath,
       tool_name: "apply_patch",
       landed: 1,
     });
@@ -1304,12 +1315,15 @@ describe("scanner-only landed reconciliation", () => {
       subject_kind: string;
       value_text: string | null;
     }>;
+    const relativeFilePath = path
+      .relative(scratchDir, filePath)
+      .replace(/\\/g, "/");
 
     expect(rows).toEqual([
       {
         predicate: "edit/touches-file",
         subject_kind: "edit",
-        value_text: `file:${scratchDir}:${filePath}`,
+        value_text: `file:${scratchDir}:${relativeFilePath}`,
       },
       {
         predicate: "file/in-repository",
@@ -1319,7 +1333,7 @@ describe("scanner-only landed reconciliation", () => {
       {
         predicate: "file/path",
         subject_kind: "file",
-        value_text: filePath,
+        value_text: relativeFilePath,
       },
       {
         predicate: "intent/in-repository",

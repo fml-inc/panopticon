@@ -1,6 +1,11 @@
 import { getDb, needsSessionSummaryProjectionRebuild } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
-import { resolveFilePathFromCwd } from "../paths.js";
+import {
+  canonicalizeRepoFilePath,
+  isObservedAbsolutePath,
+  resolveCanonicalFilePath,
+  resolveRepositoryRootForPath,
+} from "../paths.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
 import { SESSION_SUMMARY_SEARCH_CORPUS } from "./search-index.js";
 
@@ -250,6 +255,8 @@ export function whyCode(opts: {
   repository?: string;
 }): WhyCodeResult {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
+  const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
+  const displayPath = resolveDisplayPath(normalizedPath, repositoryRoot);
   const line = typeof opts.line === "number" ? opts.line : null;
   const history = intentForCode({ file_path: normalizedPath, limit: 10 });
 
@@ -334,7 +341,7 @@ export function whyCode(opts: {
 
   if (!preferred) {
     return {
-      path: normalizedPath,
+      path: displayPath,
       line,
       match_level: "none",
       status: history.length > 0 ? "stale" : "none",
@@ -368,7 +375,7 @@ export function whyCode(opts: {
     }));
 
   return {
-    path: normalizedPath,
+    path: displayPath,
     line,
     match_level:
       preferred.binding_level === "span" &&
@@ -397,7 +404,7 @@ export function whyCode(opts: {
     },
     edit: {
       intent_edit_id: preferred.intent_edit_id,
-      file_path: preferred.file_path,
+      file_path: resolveDisplayPath(preferred.file_path, repositoryRoot),
       tool_name: preferred.tool_name,
       timestamp_ms: preferred.timestamp_ms,
       landed: preferred.landed,
@@ -425,6 +432,7 @@ export function recentWorkOnPath(opts: {
 }): RecentWorkOnPathResult {
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
+  const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
   ensureSessionSummaryProjections();
   const rows = db
@@ -539,7 +547,7 @@ export function recentWorkOnPath(opts: {
     .slice(0, limit);
 
   return {
-    path: normalizedPath,
+    path: resolveDisplayPath(normalizedPath, repositoryRoot),
     repository:
       opts.repository ??
       recent[0]?.repository ??
@@ -569,13 +577,14 @@ export function fileOverview(opts: {
   related_limit?: number;
 }): FileOverviewResult {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
+  const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const summary = loadFileOverviewSummary(normalizedPath);
   const current = whyCode({
-    path: normalizedPath,
+    path: opts.path,
     repository: opts.repository,
   });
   const recent = recentWorkOnPath({
-    path: normalizedPath,
+    path: opts.path,
     repository: opts.repository,
     limit: opts.recent_limit ?? 5,
   });
@@ -585,7 +594,7 @@ export function fileOverview(opts: {
   );
 
   return {
-    path: normalizedPath,
+    path: resolveDisplayPath(normalizedPath, repositoryRoot),
     repository:
       opts.repository ??
       current.repository ??
@@ -603,7 +612,10 @@ export function fileOverview(opts: {
       snippet_preview: current.edit?.snippet_preview ?? null,
     },
     recent: recent.recent,
-    related_files: relatedFiles,
+    related_files: relatedFiles.map((row) => ({
+      ...row,
+      file_path: resolveDisplayPath(row.file_path, repositoryRoot),
+    })),
   };
 }
 
@@ -852,12 +864,85 @@ function getSessionSummaryProjectionDetail(opts: {
   return {
     session_summary: toSessionSummaryProjectionRow(sessionSummary),
     intents,
-    files,
+    files: files.map((row) => ({
+      ...row,
+      file_path: resolveCanonicalFilePath(row.file_path, {
+        cwd: sessionSummary.cwd,
+        repositoryRoot: sessionSummary.repository,
+      }),
+    })),
   };
 }
 
 function normalizeLookupPath(filePath: string, repository?: string): string {
-  return resolveFilePathFromCwd(filePath, repository ?? null);
+  const direct = canonicalizeRepoFilePath(filePath, {
+    repositoryRoot: repository ?? null,
+    allowNonGitRepositoryRoot: true,
+  });
+  if (!isObservedAbsolutePath(filePath) || direct !== filePath) {
+    return direct;
+  }
+  const storedRoot = inferStoredRepositoryRoot(filePath);
+  if (!storedRoot) return direct;
+  return canonicalizeRepoFilePath(filePath, {
+    repositoryRoot: storedRoot,
+    allowNonGitRepositoryRoot: true,
+  });
+}
+
+function lookupRepositoryRoot(
+  filePath: string,
+  repository?: string,
+): string | null {
+  const direct = resolveRepositoryRootForPath({
+    filePath,
+    repositoryRoot: repository ?? null,
+    allowNonGitRepositoryRoot: true,
+  });
+  return direct ?? inferStoredRepositoryRoot(filePath);
+}
+
+function resolveDisplayPath(
+  filePath: string,
+  repositoryRoot: string | null,
+): string {
+  return resolveCanonicalFilePath(filePath, {
+    repositoryRoot,
+  });
+}
+
+function inferStoredRepositoryRoot(filePath: string): string | null {
+  if (!isObservedAbsolutePath(filePath)) return null;
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT repository
+       FROM (
+         SELECT repository
+         FROM session_summaries
+         WHERE repository IS NOT NULL
+           AND repository != ''
+         UNION
+         SELECT repository
+         FROM intent_units
+         WHERE repository IS NOT NULL
+           AND repository != ''
+       )
+       ORDER BY length(repository) DESC, repository ASC`,
+    )
+    .all() as Array<{ repository: string }>;
+
+  for (const row of rows) {
+    if (!isObservedAbsolutePath(row.repository)) continue;
+    const candidate = canonicalizeRepoFilePath(filePath, {
+      repositoryRoot: row.repository,
+      allowNonGitRepositoryRoot: true,
+    });
+    if (candidate !== filePath) {
+      return row.repository;
+    }
+  }
+  return null;
 }
 
 function toSessionSummaryRow(

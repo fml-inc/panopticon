@@ -21,7 +21,10 @@ import {
   targetDataVersion,
 } from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
-import { resolveFilePathFromCwd } from "../../paths.js";
+import {
+  canonicalizeRepoFilePath,
+  resolveFilePathFromCwd,
+} from "../../paths.js";
 import {
   type ParsedEditEntry,
   parseEditEntriesFromJson,
@@ -282,8 +285,13 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         entry.filePath,
         intentMsg.cwd ?? null,
       );
+      const canonicalFilePath = canonicalizeRepoFilePath(resolvedFilePath, {
+        cwd: intentMsg.cwd ?? null,
+        repositoryRoot: repository,
+        allowNonGitRepositoryRoot: true,
+      });
       const semanticIdentity = semanticEditIdentity({
-        filePath: resolvedFilePath,
+        filePath: canonicalFilePath,
         newString: entry.newString,
         oldStrings: entry.oldStrings,
         deletedFile: entry.deletedFile,
@@ -328,7 +336,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         predicate: "edit/file",
         subjectKind: "edit",
         subject,
-        value: resolvedFilePath,
+        value: canonicalFilePath,
         observedAtMs,
         sourceType: "scanner",
         asserter: ASSERTER,
@@ -339,7 +347,7 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
         assertNormalizedFileClaims({
           assertClaim: assertScannerClaim,
           repository,
-          filePath: resolvedFilePath,
+          filePath: canonicalFilePath,
           editSubject: subject,
           observedAtMs,
           evidence,

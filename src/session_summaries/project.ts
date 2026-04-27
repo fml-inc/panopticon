@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { clearAttemptBackoff } from "../attempt-backoff.js";
 import { config } from "../config.js";
 import { getDb, markSessionSummaryProjectionComplete } from "../db/schema.js";
-import { canUseLocalPathApis } from "../paths.js";
+import { canUseLocalPathApis, resolveCanonicalFilePath } from "../paths.js";
 import { SUMMARY_ROW_BACKOFF_SCOPE } from "./backoff.js";
 import {
   buildDeterministicSessionSummaryDocs,
@@ -489,6 +489,7 @@ export function rebuildSessionSummaryProjections(opts?: {
           sessionSummaryId: sessionSummaryRow.id,
           edits,
           repository,
+          cwd,
           actor: repoMeta?.git_user_name ?? null,
           machine: sessionMeta?.machine ?? "local",
           firstIntentTs,
@@ -617,6 +618,7 @@ export function rebuildSessionSummaryProjections(opts?: {
         sessionSummaryId: sessionSummaryRow.id,
         edits,
         repository,
+        cwd,
         actor: repoMeta?.git_user_name ?? null,
         machine: sessionMeta?.machine ?? "local",
         firstIntentTs,
@@ -786,6 +788,7 @@ function rebuildCodeProvenance(opts: {
   sessionSummaryId: number;
   edits: SessionSummaryEditRow[];
   repository: string | null;
+  cwd: string | null;
   actor: string | null;
   machine: string;
   firstIntentTs: number | null;
@@ -793,7 +796,11 @@ function rebuildCodeProvenance(opts: {
 }): number {
   let provenance = 0;
   for (const edit of opts.edits) {
-    const snapshot = readFileSnapshot(edit.file_path, opts.fileCache);
+    const resolvedFilePath = resolveCanonicalFilePath(edit.file_path, {
+      cwd: opts.cwd,
+      repositoryRoot: opts.repository,
+    });
+    const snapshot = readFileSnapshot(resolvedFilePath, opts.fileCache);
     if (!snapshot && edit.landed !== 0) continue;
 
     const snippet = cleanSnippet(edit.new_string_snippet);

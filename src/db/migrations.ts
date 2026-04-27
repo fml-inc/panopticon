@@ -413,6 +413,34 @@ function resetClaimDerivedStateForAsserterVersionIntegerCutover(
   markDataComponentsStaleInDb(db, CLAIM_DERIVED_COMPONENTS);
 }
 
+function resetClaimDerivedStateForRepoRelativeFilePaths(db: Database): void {
+  ensureEvidenceRefSchema(db);
+  ensureDataVersionsTable(db);
+
+  deleteAllRowsIfTableExists(db, "code_provenance");
+  deleteAllRowsIfTableExists(db, "intent_session_summaries");
+  deleteAllRowsIfTableExists(db, "session_summary_search_index");
+  deleteAllRowsIfTableExists(db, "session_summaries");
+  deleteAllRowsIfTableExists(db, "intent_edits");
+  deleteAllRowsIfTableExists(db, "intent_units_fts");
+  deleteAllRowsIfTableExists(db, "intent_units");
+  deleteAllRowsIfTableExists(db, "active_claims");
+  deleteAllRowsIfTableExists(db, "claim_evidence");
+  deleteAllRowsIfTableExists(db, "claims");
+  deleteAllRowsIfTableExists(db, "evidence_ref_paths");
+  deleteAllRowsIfTableExists(db, "evidence_refs");
+  deleteAllRowsIfTableExists(db, "ingestion_cursors");
+  deleteAllRowsIfTableExists(db, "claim_rebuild_runs");
+  if (tableExists(db, "attempt_backoffs")) {
+    db.prepare(
+      `DELETE FROM attempt_backoffs
+       WHERE scope_kind = ?`,
+    ).run("session-summary-row");
+  }
+
+  markDataComponentsStaleInDb(db, CLAIM_DERIVED_COMPONENTS);
+}
+
 function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
   if (!tableExists(db, "scanner_file_watermarks")) {
     return;
@@ -1204,6 +1232,13 @@ export const MIGRATIONS: Migration[] = [
     name: "drop_legacy_sessions_summary_columns",
     up: (db) => {
       rebuildSessionsTableWithoutLegacySummary(db);
+    },
+  },
+  {
+    id: 18,
+    name: "reset_claim_state_for_repo_relative_file_paths",
+    up: (db) => {
+      resetClaimDerivedStateForRepoRelativeFilePaths(db);
     },
   },
 ];
