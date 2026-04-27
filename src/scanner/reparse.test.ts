@@ -58,12 +58,22 @@ vi.mock("../targets/registry.js", () => ({
 }));
 
 import { config } from "../config.js";
+import { ALL_DATA_COMPONENTS, targetDataVersion } from "../db/data-versions.js";
 import { Database } from "../db/driver.js";
 import { MIGRATIONS } from "../db/migrations.js";
-import { closeDb, getDb, needsResync, SCHEMA_SQL } from "../db/schema.js";
+import {
+  closeDb,
+  getDb,
+  needsClaimsRebuild,
+  needsRawDataResync,
+  needsResync,
+  SCHEMA_SQL,
+} from "../db/schema.js";
 import { insertHookEvent, insertOtelLogs, upsertSession } from "../db/store.js";
 import { buildMessageSyncId } from "../db/sync-ids.js";
+import { outcomesForIntent, searchIntent } from "../intent/query.js";
 import { createDirectPanopticonService } from "../service/direct.js";
+import { SESSION_SUMMARY_SEARCH_CORPUS } from "../session_summaries/search-index.js";
 import {
   rebuildDerivedStateFromRaw,
   reparseAll,
@@ -353,6 +363,263 @@ function seedPreUpgradeDb(args: {
      VALUES (?, ?, ?, ?)`,
     )
     .run("stale-edit", intentUnitId, args.sessionId, "/stale/path.ts");
+  raw.close();
+}
+
+function seedPreRepoRelativePathUpgradeDb(args: {
+  sessionId: string;
+  cwd: string;
+  filePath: string;
+  prompt: string;
+  llmSummaryText: string;
+}): void {
+  clearDbFiles();
+  const raw = new Database(config.dbPath);
+  raw.exec(SCHEMA_SQL);
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  const stampMigration = raw.prepare(
+    "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+  );
+  for (const migration of MIGRATIONS.filter((entry) => entry.id < 18)) {
+    stampMigration.run(migration.id, migration.name);
+  }
+
+  const insertDataVersion = raw.prepare(
+    `INSERT INTO data_versions (component, version, updated_at_ms)
+     VALUES (?, ?, ?)`,
+  );
+  for (const component of ALL_DATA_COMPONENTS) {
+    insertDataVersion.run(component, targetDataVersion(component), 1000);
+  }
+
+  raw
+    .prepare(
+      `INSERT INTO sessions
+       (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+        has_scanner, message_count, user_message_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      args.sessionId,
+      "codex",
+      1_713_670_416_000,
+      1_713_670_420_000,
+      args.cwd,
+      args.prompt,
+      1,
+      2,
+      1,
+      1_713_670_416_000,
+    );
+  raw
+    .prepare(
+      `INSERT INTO session_repositories
+       (session_id, repository, first_seen_ms)
+       VALUES (?, ?, ?)`,
+    )
+    .run(args.sessionId, args.cwd, 1_713_670_416_000);
+  raw
+    .prepare(
+      `INSERT INTO session_cwds (session_id, cwd, first_seen_ms)
+       VALUES (?, ?, ?)`,
+    )
+    .run(args.sessionId, args.cwd, 1_713_670_416_000);
+
+  raw
+    .prepare(
+      `INSERT INTO messages
+       (session_id, ordinal, role, content, timestamp_ms, is_system, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      args.sessionId,
+      0,
+      "user",
+      args.prompt,
+      1_713_670_418_000,
+      0,
+      buildMessageSyncId(args.sessionId, 0),
+    );
+  raw
+    .prepare(
+      `INSERT INTO messages
+       (session_id, ordinal, role, content, timestamp_ms, has_tool_use, is_system, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      args.sessionId,
+      1,
+      "assistant",
+      "",
+      1_713_670_419_000,
+      1,
+      0,
+      buildMessageSyncId(args.sessionId, 1),
+    );
+  const assistantMessageId = (
+    raw
+      .prepare(
+        `SELECT id
+         FROM messages
+         WHERE session_id = ? AND ordinal = 1`,
+      )
+      .get(args.sessionId) as { id: number }
+  ).id;
+
+  const patch = [
+    "*** Begin Patch",
+    `*** Update File: ${args.filePath}`,
+    "@@",
+    "-export const upgraded = false;",
+    "+export const upgraded = true;",
+    "*** End Patch",
+  ].join("\n");
+  raw
+    .prepare(
+      `INSERT INTO tool_calls
+       (message_id, session_id, call_index, tool_name, category, input_json, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      assistantMessageId,
+      args.sessionId,
+      0,
+      "apply_patch",
+      "Edit",
+      JSON.stringify({ input: patch }),
+      "tool-call-sync-1",
+    );
+
+  raw
+    .prepare(
+      `INSERT INTO claims (
+         observation_key, head_key, predicate, subject_kind, subject,
+         value_kind, value_text, source_type, observed_at_ms, asserted_at_ms,
+         asserter, asserter_version
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "stale-observation",
+      "stale-head",
+      "intent/prompt-text",
+      "intent",
+      "stale-intent",
+      "text",
+      "stale prompt",
+      "scanner",
+      1,
+      1,
+      "test",
+      1,
+    );
+  const staleClaimId = (
+    raw.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
+  ).id;
+  raw
+    .prepare(
+      `INSERT INTO evidence_refs (ref_key, kind, file_path, locator_json)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run("stale:tool_call", "tool_call", args.filePath, "{}");
+  const staleEvidenceRefId = (
+    raw.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
+  ).id;
+  raw
+    .prepare(
+      `INSERT INTO evidence_ref_paths (evidence_ref_id, file_path)
+       VALUES (?, ?)`,
+    )
+    .run(staleEvidenceRefId, args.filePath);
+  raw
+    .prepare(
+      `INSERT INTO claim_evidence (claim_id, evidence_ref_id)
+       VALUES (?, ?)`,
+    )
+    .run(staleClaimId, staleEvidenceRefId);
+  raw
+    .prepare(
+      `INSERT INTO active_claims (head_key, claim_id, selected_at_ms, selection_reason)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run("stale-head", staleClaimId, 1, "test");
+  raw
+    .prepare(
+      `INSERT INTO intent_units
+       (intent_key, session_id, prompt_text, repository, cwd)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run("stale-intent", args.sessionId, "stale prompt", args.cwd, args.cwd);
+  const staleIntentUnitId = (
+    raw.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
+  ).id;
+  raw
+    .prepare(
+      `INSERT INTO intent_edits
+       (edit_key, intent_unit_id, session_id, file_path, tool_name)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "stale-edit",
+      staleIntentUnitId,
+      args.sessionId,
+      args.filePath,
+      "apply_patch",
+    );
+  raw
+    .prepare(
+      `INSERT INTO session_summaries
+       (session_summary_key, session_id, repository, cwd, title, status,
+        projection_hash, projected_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      `ss:local:${args.sessionId}`,
+      args.sessionId,
+      args.cwd,
+      args.cwd,
+      "stale title",
+      "active",
+      "stale-hash",
+      1_713_670_420_000,
+    );
+  raw
+    .prepare(
+      `INSERT INTO session_summary_enrichments
+       (session_summary_key, session_id, summary_text, summary_source, dirty,
+        last_material_change_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      `ss:local:${args.sessionId}`,
+      args.sessionId,
+      args.llmSummaryText,
+      "llm",
+      1,
+      1_713_670_420_000,
+    );
+  raw
+    .prepare(
+      `INSERT INTO session_summary_search_index
+       (session_summary_key, session_id, corpus_key, source, priority, search_text, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      `ss:local:${args.sessionId}`,
+      args.sessionId,
+      SESSION_SUMMARY_SEARCH_CORPUS.deterministicSummary,
+      "deterministic",
+      40,
+      "stale deterministic summary",
+      1_713_670_420_000,
+    );
+
   raw.close();
 }
 
@@ -941,6 +1208,172 @@ describe("startup reparse after migration 12", () => {
       expect(rebuiltPaths).toEqual([
         { file_path: fileA },
         { file_path: fileB },
+      ]);
+    } finally {
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("startup claims rebuild after migration 18", () => {
+  it("rebuilds from local raw DB data without scanner replay and preserves llm enrichments", async () => {
+    const sessionId = "repo-relative-upgrade-session";
+    const scratchDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pano-repo-relative-upgrade-"),
+    );
+
+    try {
+      const filePath = path.join(scratchDir, "src", "upgraded.ts");
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, "export const upgraded = true;\n");
+
+      seedPreRepoRelativePathUpgradeDb({
+        sessionId,
+        cwd: scratchDir,
+        filePath,
+        prompt: "patch repo relative file",
+        llmSummaryText: "Existing LLM summary",
+      });
+
+      fakeDiscoverMock.mockImplementation(() => {
+        throw new Error(
+          "scanner discover should not run during claims rebuild",
+        );
+      });
+      fakeParseFileMock.mockImplementation(() => {
+        throw new Error("scanner parse should not run during claims rebuild");
+      });
+
+      const migratedDb = getDb();
+      expect(needsResync()).toBe(true);
+      expect(needsRawDataResync()).toBe(false);
+      expect(needsClaimsRebuild()).toBe(true);
+      expect(
+        migratedDb
+          .prepare(
+            `SELECT
+               (SELECT COUNT(*) FROM claims) AS claims,
+               (SELECT COUNT(*) FROM evidence_refs) AS evidence_refs,
+               (SELECT COUNT(*) FROM intent_units) AS intent_units,
+               (SELECT COUNT(*) FROM intent_edits) AS intent_edits,
+               (SELECT COUNT(*) FROM session_summaries) AS session_summaries,
+               (SELECT COUNT(*) FROM session_summary_enrichments) AS enrichments,
+               (SELECT COUNT(*) FROM session_summary_search_index) AS search_index`,
+          )
+          .get(),
+      ).toEqual({
+        claims: 0,
+        evidence_refs: 0,
+        intent_units: 0,
+        intent_edits: 0,
+        session_summaries: 0,
+        enrichments: 1,
+        search_index: 0,
+      });
+
+      const service = createDirectPanopticonService();
+      const result = await service.scan({ summaries: false });
+
+      expect(result).toEqual({
+        filesScanned: 0,
+        newTurns: 0,
+        summariesUpdated: 0,
+      });
+      expect(fakeDiscoverMock).not.toHaveBeenCalled();
+      expect(fakeParseFileMock).not.toHaveBeenCalled();
+      expect(needsResync()).toBe(false);
+      expect(needsRawDataResync()).toBe(false);
+      expect(needsClaimsRebuild()).toBe(false);
+
+      const db = getDb();
+      expect(
+        db
+          .prepare(
+            `SELECT prompt_text, edit_count, landed_count, repository, cwd
+             FROM intent_units
+             WHERE session_id = ?`,
+          )
+          .get(sessionId),
+      ).toEqual({
+        prompt_text: "patch repo relative file",
+        edit_count: 1,
+        landed_count: 1,
+        repository: scratchDir,
+        cwd: scratchDir,
+      });
+      expect(
+        db
+          .prepare(
+            `SELECT file_path, landed, landed_reason
+             FROM intent_edits
+             WHERE session_id = ?`,
+          )
+          .get(sessionId),
+      ).toEqual({
+        file_path: "src/upgraded.ts",
+        landed: 1,
+        landed_reason: "present_in_file",
+      });
+
+      const search = searchIntent({ query: "repo relative file" });
+      expect(search).toHaveLength(1);
+      expect(search[0]).toMatchObject({
+        prompt_text: "patch repo relative file",
+        files: [
+          expect.objectContaining({
+            file_path: filePath,
+            landed: 1,
+          }),
+        ],
+      });
+
+      const outcomes = outcomesForIntent({
+        intent_unit_id: search[0].intent_unit_id,
+      });
+      expect(outcomes).not.toBeNull();
+      expect(outcomes!.t0_session_end.edits_survived).toEqual([
+        expect.objectContaining({
+          file_path: filePath,
+          reason: "present_in_file",
+        }),
+      ]);
+
+      expect(
+        db
+          .prepare(
+            `SELECT summary_text, summary_source, session_id
+             FROM session_summary_enrichments
+             WHERE session_summary_key = ?`,
+          )
+          .get(`ss:local:${sessionId}`),
+      ).toEqual({
+        summary_text: "Existing LLM summary",
+        summary_source: "llm",
+        session_id: sessionId,
+      });
+      expect(
+        db
+          .prepare(
+            `SELECT corpus_key, search_text
+             FROM session_summary_search_index
+             WHERE session_summary_key = ?
+               AND corpus_key IN (?, ?)
+             ORDER BY corpus_key ASC`,
+          )
+          .all(
+            `ss:local:${sessionId}`,
+            SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
+            SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
+          ),
+      ).toEqual([
+        {
+          corpus_key: SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
+          search_text: "Existing LLM summary",
+        },
+        {
+          corpus_key: SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
+          search_text: "Existing LLM summary",
+        },
       ]);
     } finally {
       fs.rmSync(scratchDir, { recursive: true, force: true });
