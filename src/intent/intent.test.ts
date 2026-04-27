@@ -403,11 +403,15 @@ describe("query: search_intent", () => {
     ingest({
       event_type: "UserPromptSubmit",
       ts: 1000,
+      cwd: scratchDir,
+      repository: scratchDir,
       payload: { prompt: "add retry policy", session_id: SESSION },
     });
     ingest({
       event_type: "PostToolUse",
       ts: 1100,
+      cwd: scratchDir,
+      repository: scratchDir,
       tool_name: "Edit",
       payload: {
         tool_name: "Edit",
@@ -421,11 +425,15 @@ describe("query: search_intent", () => {
     ingest({
       event_type: "UserPromptSubmit",
       ts: 2000,
+      cwd: scratchDir,
+      repository: scratchDir,
       payload: { prompt: "add retry policy updated", session_id: SESSION },
     });
     ingest({
       event_type: "PostToolUse",
       ts: 2100,
+      cwd: scratchDir,
+      repository: scratchDir,
       tool_name: "Edit",
       payload: {
         tool_name: "Edit",
@@ -439,6 +447,8 @@ describe("query: search_intent", () => {
     ingest({
       event_type: "Stop",
       ts: 3000,
+      cwd: scratchDir,
+      repository: scratchDir,
       payload: { session_id: SESSION },
     });
 
@@ -447,9 +457,24 @@ describe("query: search_intent", () => {
     const landed = searchIntent({ query: "retry policy" });
     expect(landed).toHaveLength(1);
     expect(landed[0].prompt_text).toBe("add retry policy");
+    expect(landed[0].files).toEqual([
+      expect.objectContaining({
+        file_path: fileLanded,
+        landed: 1,
+      }),
+    ]);
 
     const all = searchIntent({ query: "retry policy", only_landed: false });
     expect(all).toHaveLength(2);
+    const churned = all.find(
+      (row) => row.prompt_text === "add retry policy updated",
+    );
+    expect(churned?.files).toEqual([
+      expect.objectContaining({
+        file_path: fileChurned,
+        landed: 0,
+      }),
+    ]);
   });
 });
 
@@ -461,11 +486,15 @@ describe("query: outcomes_for_intent", () => {
     ingest({
       event_type: "UserPromptSubmit",
       ts: 1000,
+      cwd: scratchDir,
+      repository: scratchDir,
       payload: { prompt: "do stuff", session_id: SESSION },
     });
     ingest({
       event_type: "PostToolUse",
       ts: 1100,
+      cwd: scratchDir,
+      repository: scratchDir,
       tool_name: "Edit",
       payload: {
         tool_name: "Edit",
@@ -479,6 +508,8 @@ describe("query: outcomes_for_intent", () => {
     ingest({
       event_type: "PostToolUse",
       ts: 1200,
+      cwd: scratchDir,
+      repository: scratchDir,
       tool_name: "Edit",
       payload: {
         tool_name: "Edit",
@@ -492,6 +523,8 @@ describe("query: outcomes_for_intent", () => {
     ingest({
       event_type: "Stop",
       ts: 2000,
+      cwd: scratchDir,
+      repository: scratchDir,
       payload: { session_id: SESSION },
     });
 
@@ -505,8 +538,16 @@ describe("query: outcomes_for_intent", () => {
     expect(out).not.toBeNull();
     expect(out!.edit_count).toBe(2);
     expect(out!.landed_count).toBe(1);
-    expect(out!.t0_session_end.edits_survived).toHaveLength(1);
-    expect(out!.t0_session_end.edits_churned).toHaveLength(1);
+    expect(out!.t0_session_end.edits_survived).toEqual([
+      expect.objectContaining({
+        file_path: fileSurvived,
+      }),
+    ]);
+    expect(out!.t0_session_end.edits_churned).toEqual([
+      expect.objectContaining({
+        file_path: path.join(scratchDir, "outcome-missing.ts"),
+      }),
+    ]);
     expect(out!.t0_session_end.edits_unknown).toHaveLength(0);
   });
 });

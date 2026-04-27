@@ -3,6 +3,11 @@
  * outcomes_for_intent MCP tools. Read-only.
  */
 import { getDb } from "../db/schema.js";
+import {
+  canonicalizeRepoFilePath,
+  isObservedAbsolutePath,
+  resolveCanonicalFilePath,
+} from "../paths.js";
 
 // ── intent_for_code ────────────────────────────────────────────────────────
 
@@ -96,16 +101,19 @@ function collectIntentForCodeRows(
   limit: number,
 ): IntentForCodeGroupedRow[] {
   const candidateLimit = Math.max(limit * 20, 200);
-  const normalized = loadIntentForCodeRowsFromFileSubjects(
-    filePath,
-    candidateLimit,
-  );
-  const legacy = loadIntentForCodeRowsLegacy(filePath, candidateLimit);
+  const candidatePaths = lookupCanonicalFilePathCandidates(filePath);
   const byEditId = new Map<number, IntentForCodeCandidateRow>();
 
-  for (const row of [...normalized, ...legacy]) {
-    if (!byEditId.has(row.edit_id)) {
-      byEditId.set(row.edit_id, row);
+  for (const candidatePath of candidatePaths) {
+    const normalized = loadIntentForCodeRowsFromFileSubjects(
+      candidatePath,
+      candidateLimit,
+    );
+    const legacy = loadIntentForCodeRowsLegacy(candidatePath, candidateLimit);
+    for (const row of [...normalized, ...legacy]) {
+      if (!byEditId.has(row.edit_id)) {
+        byEditId.set(row.edit_id, row);
+      }
     }
   }
 
@@ -150,6 +158,37 @@ function collectIntentForCodeRows(
         (b.timestamp_ms ?? 0) - (a.timestamp_ms ?? 0) || b.edit_id - a.edit_id,
     )
     .slice(0, limit);
+}
+
+function lookupCanonicalFilePathCandidates(filePath: string): string[] {
+  const direct = canonicalizeRepoFilePath(filePath);
+  const candidates = new Set([direct]);
+  if (!isObservedAbsolutePath(filePath)) {
+    return [...candidates];
+  }
+
+  const db = getDb();
+  const roots = db
+    .prepare(
+      `SELECT DISTINCT repository
+       FROM intent_units
+       WHERE repository IS NOT NULL
+         AND repository != ''`,
+    )
+    .all() as Array<{ repository: string }>;
+
+  for (const row of roots) {
+    if (!isObservedAbsolutePath(row.repository)) continue;
+    const candidate = canonicalizeRepoFilePath(filePath, {
+      repositoryRoot: row.repository,
+      allowNonGitRepositoryRoot: true,
+    });
+    if (candidate !== filePath) {
+      candidates.add(candidate);
+    }
+  }
+
+  return [...candidates];
 }
 
 function loadIntentForCodeRowsFromFileSubjects(
@@ -312,6 +351,7 @@ export function searchIntent(opts: {
               u.prompt_ts_ms,
               u.session_id,
               u.repository,
+              u.cwd,
               u.edit_count,
               u.landed_count
        FROM intent_units_fts
@@ -326,6 +366,7 @@ export function searchIntent(opts: {
     prompt_ts_ms: number;
     session_id: string;
     repository: string | null;
+    cwd: string | null;
     edit_count: number;
     landed_count: number | null;
   }>;
@@ -333,6 +374,7 @@ export function searchIntent(opts: {
   if (units.length === 0) return [];
 
   const ids = units.map((u) => u.intent_unit_id);
+  const unitById = new Map(units.map((u) => [u.intent_unit_id, u]));
   const placeholders = ids.map(() => "?").join(",");
   const editRows = db
     .prepare(
@@ -357,11 +399,16 @@ export function searchIntent(opts: {
     }>
   >();
   for (const r of editRows) {
+    const unit = unitById.get(r.intent_unit_id);
     if (!filesByUnit.has(r.intent_unit_id)) {
       filesByUnit.set(r.intent_unit_id, []);
     }
     filesByUnit.get(r.intent_unit_id)!.push({
-      file_path: r.file_path,
+      file_path: resolveDisplayFilePath(
+        r.file_path,
+        unit?.repository ?? null,
+        unit?.cwd ?? null,
+      ),
       landed: r.landed,
       landed_reason: r.landed_reason,
     });
@@ -423,7 +470,7 @@ export function outcomesForIntent(opts: {
   const unit = db
     .prepare(
       `SELECT id, prompt_text, session_id, prompt_ts_ms, next_prompt_ts_ms,
-              reconciled_at_ms, edit_count, landed_count
+              reconciled_at_ms, edit_count, landed_count, repository, cwd
        FROM intent_units WHERE id = ?`,
     )
     .get(opts.intent_unit_id) as
@@ -436,6 +483,8 @@ export function outcomesForIntent(opts: {
         reconciled_at_ms: number | null;
         edit_count: number;
         landed_count: number | null;
+        repository: string | null;
+        cwd: string | null;
       }
     | undefined;
   if (!unit) return null;
@@ -466,20 +515,32 @@ export function outcomesForIntent(opts: {
     if (e.landed === null) {
       unknown.push({
         intent_edit_id: e.id,
-        file_path: e.file_path,
+        file_path: resolveDisplayFilePath(
+          e.file_path,
+          unit.repository,
+          unit.cwd,
+        ),
         tool_name: e.tool_name,
       });
     } else if (e.landed === 1) {
       survived.push({
         intent_edit_id: e.id,
-        file_path: e.file_path,
+        file_path: resolveDisplayFilePath(
+          e.file_path,
+          unit.repository,
+          unit.cwd,
+        ),
         tool_name: e.tool_name,
         reason: e.landed_reason,
       });
     } else {
       churned.push({
         intent_edit_id: e.id,
-        file_path: e.file_path,
+        file_path: resolveDisplayFilePath(
+          e.file_path,
+          unit.repository,
+          unit.cwd,
+        ),
         tool_name: e.tool_name,
         reason: e.landed_reason,
       });
@@ -501,4 +562,15 @@ export function outcomesForIntent(opts: {
       edits_unknown: unknown,
     },
   };
+}
+
+function resolveDisplayFilePath(
+  filePath: string,
+  repository: string | null,
+  cwd: string | null,
+): string {
+  return resolveCanonicalFilePath(filePath, {
+    cwd,
+    repositoryRoot: repository,
+  });
 }

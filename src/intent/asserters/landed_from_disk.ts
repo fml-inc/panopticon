@@ -12,7 +12,7 @@ import {
   targetDataVersion,
 } from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
-import { canUseLocalPathApis } from "../../paths.js";
+import { canUseLocalPathApis, resolveCanonicalFilePath } from "../../paths.js";
 import {
   type ActiveEdit,
   loadActiveEdits,
@@ -33,6 +33,9 @@ type LandedReason =
 interface PreparedEdit {
   edit: ActiveEdit;
   closedAtMs: number;
+  repository: string | null;
+  cwd: string | null;
+  resolvedFilePath: string;
   parsedEntry: ParsedEditEntry | null;
   fileOrderIndex: number;
 }
@@ -92,9 +95,16 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
         continue;
       }
       const fileEdits = editsByFile.get(edit.filePath) ?? [];
+      const resolvedFilePath = resolveCanonicalFilePath(edit.filePath, {
+        cwd: intent.cwd ?? null,
+        repositoryRoot: intent.repository ?? null,
+      });
       const preparedEdit: PreparedEdit = {
         edit,
         closedAtMs: intent.closedAtMs,
+        repository: intent.repository ?? null,
+        cwd: intent.cwd ?? null,
+        resolvedFilePath,
         parsedEntry: getParsedEditEntry(edit, payloadCache),
         fileOrderIndex: fileEdits.length,
       };
@@ -115,16 +125,13 @@ export function reconcileLandedClaimsFromDisk(opts?: { sessionId?: string }): {
       }
       const observedAtMs =
         preparedEdit.edit.timestampMs ?? preparedEdit.closedAtMs ?? Date.now();
-      const intent = preparedEdit.edit.intentKey
-        ? intents.get(preparedEdit.edit.intentKey)
-        : undefined;
       const evidence = verdict.fileContent
         ? [
             {
               ref: fileSnapshotEvidenceRef({
-                filePath: preparedEdit.edit.filePath!,
+                filePath: preparedEdit.resolvedFilePath,
                 content: verdict.fileContent,
-                repository: intent?.repository ?? null,
+                repository: preparedEdit.repository,
               }),
               role: "origin" as const,
             },
@@ -205,11 +212,14 @@ function decideForEdit(
     }
   }
 
-  if (!canUseLocalPathApis(edit.filePath!)) {
+  if (!canUseLocalPathApis(preparedEdit.resolvedFilePath)) {
     return null;
   }
 
-  const fileContent = readFileSafe(edit.filePath!, fileContentCache);
+  const fileContent = readFileSafe(
+    preparedEdit.resolvedFilePath,
+    fileContentCache,
+  );
   if (fileContent === null) {
     return deletedFileEdit
       ? { status: "landed", reason: "file_deleted", fileContent: null }

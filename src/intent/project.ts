@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { getDb } from "../db/schema.js";
-import { resolveFilePathFromCwd } from "../paths.js";
+import { canonicalizeRepoFilePath } from "../paths.js";
 import { rebuildSessionSummaryProjections } from "../session_summaries/project.js";
 import { loadActiveEdits, loadActiveIntents } from "./claimViews.js";
 
@@ -134,7 +134,11 @@ export function rebuildIntentProjection(opts?: {
         unitId,
         sessionId,
         edit.timestampMs ?? null,
-        normalizeFilePath(edit.filePath, intent?.cwd ?? null),
+        normalizeFilePath(
+          edit.filePath,
+          intent?.cwd ?? null,
+          intent?.repository ?? null,
+        ),
         edit.toolName ?? null,
         edit.multiEditIndex ?? 0,
         edit.newStringHash ?? null,
@@ -201,6 +205,14 @@ export function rebuildIntentProjection(opts?: {
   };
 }
 
-function normalizeFilePath(filePath: string, cwd: string | null): string {
-  return resolveFilePathFromCwd(filePath, cwd);
+function normalizeFilePath(
+  filePath: string,
+  cwd: string | null,
+  repository: string | null,
+): string {
+  return canonicalizeRepoFilePath(filePath, {
+    cwd,
+    repositoryRoot: repository,
+    allowNonGitRepositoryRoot: true,
+  });
 }

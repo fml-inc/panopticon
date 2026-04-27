@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ALL_DATA_COMPONENTS,
+  CLAIM_DERIVED_COMPONENTS,
   SESSION_SUMMARY_PROJECTION_COMPONENT,
   targetDataVersion,
 } from "./data-versions.js";
@@ -1498,6 +1499,239 @@ describe("runMigrations — existing DB", () => {
       .all() as Array<{ name: string }>;
     expect(cols.map((col) => col.name)).toContain("evidence_ref_id");
     expect(cols.map((col) => col.name)).not.toContain("evidence_key");
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
+  it("resets derived file identity state for repo-relative path storage", () => {
+    const db = createExistingDb();
+    db.exec(SCHEMA_SQL);
+
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 18) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    const insertDataVersion = db.prepare(
+      `INSERT INTO data_versions (component, version, updated_at_ms)
+       VALUES (?, ?, ?)`,
+    );
+    for (const component of ALL_DATA_COMPONENTS) {
+      insertDataVersion.run(component, targetDataVersion(component), 1000);
+    }
+
+    db.prepare(
+      `INSERT INTO claims (
+         id, observation_key, head_key, predicate, subject_kind, subject,
+         value_kind, value_text, source_type, observed_at_ms, asserted_at_ms,
+         asserter, asserter_version, machine
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "obs:1",
+      "head:1",
+      "file/path",
+      "file",
+      "file:/repo:src/index.ts",
+      "text",
+      "src/index.ts",
+      "scanner",
+      1000,
+      1000,
+      "intent.from_scanner",
+      2,
+      "local",
+    );
+    db.prepare(
+      `INSERT INTO evidence_refs (
+         id, ref_key, kind, locator_json, file_path, repository
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(1, "ref:1", "tool_call", "{}", "/repo/src/index.ts", "org/repo");
+    db.prepare(
+      `INSERT INTO evidence_ref_paths (evidence_ref_id, file_path)
+       VALUES (?, ?)`,
+    ).run(1, "/repo/src/index.ts");
+    db.prepare(
+      `INSERT INTO claim_evidence (
+         claim_id, evidence_ref_id, role
+       ) VALUES (?, ?, ?)`,
+    ).run(1, 1, "supporting");
+    db.prepare(
+      `INSERT INTO active_claims (head_key, claim_id, selected_at_ms, selection_reason)
+       VALUES (?, ?, ?, ?)`,
+    ).run("head:1", 1, 1000, "test");
+    db.prepare(
+      `INSERT INTO ingestion_cursors (asserter, source, cursor_text, updated_at_ms)
+       VALUES (?, ?, ?, ?)`,
+    ).run("intent.from_scanner", "scanner", "cursor", 1000);
+    db.prepare(
+      `INSERT INTO claim_rebuild_runs (asserter, asserter_version, started_at_ms)
+       VALUES (?, ?, ?)`,
+    ).run("intent.from_scanner", 2, 1000);
+    db.prepare(
+      `INSERT INTO intent_units (
+         id, intent_key, session_id, prompt_text, repository, cwd
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(1, "intent:1", "session:1", "edit file", "/repo", "/repo");
+    db.prepare(
+      `INSERT INTO intent_edits (
+         id, edit_key, intent_unit_id, session_id, file_path
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(1, "edit:1", 1, "session:1", "src/index.ts");
+    db.prepare(
+      `INSERT INTO session_summaries (
+         id, session_summary_key, session_id, repository, cwd, title, status,
+         projection_hash, projected_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "ss:local:session:1",
+      "session:1",
+      "/repo",
+      "/repo",
+      "title",
+      "active",
+      "hash",
+      1000,
+    );
+    db.prepare(
+      `INSERT INTO session_summary_enrichments (
+         session_summary_key, session_id, summary_text, summary_source,
+         dirty, last_material_change_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("ss:local:session:1", "session:1", "stale llm", "llm", 1, 1000);
+    db.prepare(
+      `INSERT INTO session_summary_search_index (
+         session_summary_key, session_id, corpus_key, source, priority,
+         search_text, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "ss:local:session:1",
+      "session:1",
+      "deterministic_summary",
+      "deterministic",
+      10,
+      "summary text",
+      1000,
+    );
+    db.prepare(
+      `INSERT INTO intent_session_summaries (
+         intent_unit_id, session_summary_id, membership_kind, source, score
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(1, 1, "primary", "heuristic", 1);
+    db.prepare(
+      `INSERT INTO code_provenance (
+         repository, file_path, binding_level, intent_unit_id, session_summary_id,
+         status, established_at_ms, verified_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("/repo", "src/index.ts", "file", 1, 1, "current", 1000, 1000);
+    db.prepare(
+      `INSERT INTO attempt_backoffs (
+         scope_kind, scope_key, failure_count, updated_at_ms
+       ) VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+    ).run(
+      "session-summary-row",
+      "ss:local:session:1",
+      2,
+      1000,
+      "sync-target",
+      "local",
+      1,
+      1000,
+    );
+
+    runMigrations(db);
+
+    const counts = db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM claims) AS claims,
+           (SELECT COUNT(*) FROM evidence_refs) AS evidence_refs,
+           (SELECT COUNT(*) FROM evidence_ref_paths) AS evidence_ref_paths,
+           (SELECT COUNT(*) FROM claim_evidence) AS claim_evidence,
+           (SELECT COUNT(*) FROM active_claims) AS active_claims,
+           (SELECT COUNT(*) FROM ingestion_cursors) AS ingestion_cursors,
+           (SELECT COUNT(*) FROM claim_rebuild_runs) AS claim_rebuild_runs,
+           (SELECT COUNT(*) FROM intent_units) AS intent_units,
+           (SELECT COUNT(*) FROM intent_edits) AS intent_edits,
+           (SELECT COUNT(*) FROM session_summaries) AS session_summaries,
+           (SELECT COUNT(*) FROM session_summary_enrichments) AS session_summary_enrichments,
+           (SELECT COUNT(*) FROM session_summary_search_index) AS session_summary_search_index,
+           (SELECT COUNT(*) FROM intent_session_summaries) AS intent_session_summaries,
+           (SELECT COUNT(*) FROM code_provenance) AS code_provenance`,
+      )
+      .get() as Record<string, number>;
+
+    expect(counts).toEqual({
+      claims: 0,
+      evidence_refs: 0,
+      evidence_ref_paths: 0,
+      claim_evidence: 0,
+      active_claims: 0,
+      ingestion_cursors: 0,
+      claim_rebuild_runs: 0,
+      intent_units: 0,
+      intent_edits: 0,
+      session_summaries: 0,
+      session_summary_enrichments: 1,
+      session_summary_search_index: 0,
+      intent_session_summaries: 0,
+      code_provenance: 0,
+    });
+
+    const preservedEnrichment = db
+      .prepare(
+        `SELECT session_summary_key, session_id, summary_text, summary_source, dirty
+         FROM session_summary_enrichments`,
+      )
+      .get() as
+      | {
+          session_summary_key: string;
+          session_id: string;
+          summary_text: string | null;
+          summary_source: string | null;
+          dirty: number;
+        }
+      | undefined;
+    expect(preservedEnrichment).toEqual({
+      session_summary_key: "ss:local:session:1",
+      session_id: "session:1",
+      summary_text: "stale llm",
+      summary_source: "llm",
+      dirty: 1,
+    });
+
+    const backoffs = db
+      .prepare(
+        `SELECT scope_kind, scope_key
+         FROM attempt_backoffs
+         ORDER BY scope_kind ASC, scope_key ASC`,
+      )
+      .all() as Array<{ scope_kind: string; scope_key: string }>;
+    expect(backoffs).toEqual([
+      { scope_kind: "sync-target", scope_key: "local" },
+    ]);
+
+    const dataVersions = db
+      .prepare(
+        `SELECT component, version
+         FROM data_versions
+         ORDER BY component ASC`,
+      )
+      .all() as Array<{ component: string; version: number }>;
+    const versionByComponent = new Map(
+      dataVersions.map((row) => [row.component, row.version]),
+    );
+    for (const component of CLAIM_DERIVED_COMPONENTS) {
+      expect(versionByComponent.get(component)).toBe(0);
+    }
+    expect(versionByComponent.get("scanner.raw")).toBe(
+      targetDataVersion("scanner.raw"),
+    );
     expect(getApplied(db).map((row) => row.id)).toEqual(
       MIGRATIONS.map((migration) => migration.id),
     );
