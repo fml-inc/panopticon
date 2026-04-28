@@ -552,7 +552,7 @@ describe("target_session_sync", () => {
         "projection-hash",
         1300,
         1200,
-        "{\"strategy\":\"session_id\"}",
+        '{"strategy":"session_id"}',
       );
       db.prepare(
         `INSERT INTO session_summary_enrichments (
@@ -578,7 +578,7 @@ describe("target_session_sync", () => {
         "enriched-input-hash",
         42,
         1,
-        "{\"reason\":\"pending\"}",
+        '{"reason":"pending"}',
         1450,
         1460,
         2,
@@ -588,14 +588,7 @@ describe("target_session_sync", () => {
         `INSERT INTO intent_session_summaries (
            intent_unit_id, session_summary_id, membership_kind, source, score, reason_json
          ) VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(
-        101,
-        301,
-        "primary",
-        "session_id",
-        1,
-        "{\"strategy\":\"session_id\"}",
-      );
+      ).run(101, 301, "primary", "session_id", 1, '{"strategy":"session_id"}');
       db.prepare(
         `INSERT INTO code_provenance (
            repository, file_path, binding_level, start_line, end_line,
@@ -650,7 +643,7 @@ describe("target_session_sync", () => {
             projectionHash: "projection-hash",
             projectedAtMs: 1300,
             sourceLastSeenAtMs: 1200,
-            reasonJson: "{\"strategy\":\"session_id\"}",
+            reasonJson: '{"strategy":"session_id"}',
           },
         ],
         enrichments: [
@@ -669,7 +662,7 @@ describe("target_session_sync", () => {
             enrichedInputHash: "enriched-input-hash",
             enrichedMessageCount: 42,
             dirty: true,
-            dirtyReasonJson: "{\"reason\":\"pending\"}",
+            dirtyReasonJson: '{"reason":"pending"}',
             lastMaterialChangeAtMs: 1450,
             lastAttemptedAtMs: 1460,
             failureCount: 2,
@@ -684,7 +677,7 @@ describe("target_session_sync", () => {
             membershipKind: "primary",
             source: "session_id",
             score: 1,
-            reasonJson: "{\"strategy\":\"session_id\"}",
+            reasonJson: '{"strategy":"session_id"}',
           },
         ],
         codeProvenance: [

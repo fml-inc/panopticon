@@ -541,7 +541,10 @@ describe("createSyncLoop integration", () => {
 
       const derivedRows = postedRowsForTable("session_derived_state") as Array<{
         sessionId: string;
-        summaries: Array<{ sessionSummaryKey: string; summaryText: string | null }>;
+        summaries: Array<{
+          sessionSummaryKey: string;
+          summaryText: string | null;
+        }>;
       }>;
       expect(derivedRows).toEqual([
         {
