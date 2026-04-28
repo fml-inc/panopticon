@@ -260,11 +260,15 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM target_session_sync").run();
+  db.prepare("DELETE FROM code_provenance").run();
+  db.prepare("DELETE FROM intent_edits").run();
+  db.prepare("DELETE FROM intent_units").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
   db.prepare("DELETE FROM session_summary_search_index").run();
   db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM sessions").run();
+  db.prepare("DELETE FROM session_cwds").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM tool_calls").run();
@@ -310,6 +314,12 @@ function postedTablesFor(sessionId: string): string[] {
       });
     })
     .map(([, body]) => body.table);
+}
+
+function postedRowsForTable(table: string): unknown[] {
+  return mockedPostSync.mock.calls
+    .filter(([, body]) => body.table === table)
+    .flatMap(([, body]) => body.rows);
 }
 
 async function waitForPostedTable(table: string): Promise<void> {
@@ -512,6 +522,47 @@ describe("createSyncLoop integration", () => {
   });
 
   describe("Phase 2: per-session data sync", () => {
+    it("posts session_derived_state bundles and advances derived_synced_seq", async () => {
+      insertSession("s1", 1);
+      insertSessionRepo("s1");
+      insertSessionSummary("s1", "Derived summary text.");
+      const db = getDb();
+      db.prepare(
+        `UPDATE sessions
+         SET derived_sync_seq = 1
+         WHERE session_id = ?`,
+      ).run("s1");
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      const tables = postedTablesFor("s1");
+      expect(tables).toContain("session_derived_state");
+
+      const derivedRows = postedRowsForTable("session_derived_state") as Array<{
+        sessionId: string;
+        summaries: Array<{ sessionSummaryKey: string; summaryText: string | null }>;
+      }>;
+      expect(derivedRows).toEqual([
+        {
+          sessionId: "s1",
+          summaries: [
+            expect.objectContaining({
+              sessionSummaryKey: "summary:s1",
+              summaryText: "Derived summary text.",
+            }),
+          ],
+          enrichments: [],
+          memberships: [],
+          codeProvenance: [],
+        },
+      ]);
+
+      expect(getTss("s1", "fml")).toMatchObject({
+        derived_synced_seq: 1,
+      });
+    });
+
     it("drains per-table data for confirmed sessions and advances watermarks", async () => {
       insertSession("s1", 1);
       insertSessionRepo("s1");

@@ -229,7 +229,7 @@ export interface SessionSyncRecord {
   turnCount: number | null;
   models: string | null;
   // Sync compatibility field populated from deterministic session summaries
-  // until the split session-summary tables are synced end-to-end.
+  // until session_derived_state bundles are synced end-to-end.
   summary: string | null;
   toolCounts: Record<string, number>;
   hookToolCounts: Record<string, number>;
@@ -254,6 +254,98 @@ export interface SessionSyncRecord {
     cwd: string;
     firstSeenMs: number;
   }>;
+}
+
+// ── Session-derived state sync records ─────────────────────────────────────
+
+export interface SessionSummarySyncRecord {
+  sessionSummaryKey: string;
+  sessionId: string;
+  repository: string | null;
+  cwd: string | null;
+  branch: string | null;
+  worktree: string | null;
+  actor: string | null;
+  machine: string;
+  originScope: string;
+  title: string;
+  status: string;
+  firstIntentTsMs: number | null;
+  lastIntentTsMs: number | null;
+  intentCount: number;
+  editCount: number;
+  landedEditCount: number;
+  openEditCount: number;
+  summaryText: string | null;
+  projectionHash: string;
+  projectedAtMs: number;
+  sourceLastSeenAtMs: number | null;
+  reasonJson: string | null;
+}
+
+export interface SessionSummaryEnrichmentSyncRecord {
+  sessionSummaryKey: string;
+  sessionId: string;
+  summaryText: string | null;
+  summarySource: string | null;
+  summaryRunner: string | null;
+  summaryModel: string | null;
+  summaryVersion: number;
+  summaryGeneratedAtMs: number | null;
+  projectionHash: string | null;
+  summaryInputHash: string | null;
+  summaryPolicyHash: string | null;
+  enrichedInputHash: string | null;
+  enrichedMessageCount: number | null;
+  dirty: boolean;
+  dirtyReasonJson: string | null;
+  lastMaterialChangeAtMs: number | null;
+  lastAttemptedAtMs: number | null;
+  failureCount: number;
+  lastError: string | null;
+}
+
+export interface IntentSessionSummarySyncRecord {
+  sessionSummaryKey: string;
+  sessionId: string;
+  intentKey: string;
+  membershipKind: string;
+  source: string;
+  score: number;
+  reasonJson: string | null;
+}
+
+export interface CodeProvenanceSyncRecord {
+  sessionSummaryKey: string;
+  sessionId: string;
+  repository: string;
+  filePath: string;
+  bindingLevel: string;
+  startLine: number | null;
+  endLine: number | null;
+  snippetHash: string | null;
+  snippetPreview: string | null;
+  language: string | null;
+  symbolKind: string | null;
+  symbolName: string | null;
+  actor: string | null;
+  machine: string;
+  originScope: string;
+  intentKey: string;
+  intentEditKey: string | null;
+  status: string;
+  confidence: number;
+  fileHash: string | null;
+  establishedAtMs: number;
+  verifiedAtMs: number;
+}
+
+export interface SessionDerivedStateSyncRecord {
+  sessionId: string;
+  summaries: SessionSummarySyncRecord[];
+  enrichments: SessionSummaryEnrichmentSyncRecord[];
+  memberships: IntentSessionSummarySyncRecord[];
+  codeProvenance: CodeProvenanceSyncRecord[];
 }
 
 // ── Message sync records ────────────────────────────────────────────────────

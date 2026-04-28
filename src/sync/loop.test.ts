@@ -24,7 +24,11 @@ vi.mock("../config.js", () => {
 
 import { closeDb, getDb } from "../db/schema.js";
 import { buildMessageSyncId } from "../db/sync-ids.js";
-import { readSessionMessages, readSessionsByIds } from "./reader.js";
+import {
+  readSessionDerivedState,
+  readSessionMessages,
+  readSessionsByIds,
+} from "./reader.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -184,11 +188,15 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.prepare("DELETE FROM target_session_sync").run();
+  db.prepare("DELETE FROM code_provenance").run();
+  db.prepare("DELETE FROM intent_edits").run();
+  db.prepare("DELETE FROM intent_units").run();
   db.prepare("DELETE FROM intent_session_summaries").run();
   db.prepare("DELETE FROM session_summary_search_index").run();
   db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
   db.prepare("DELETE FROM sessions").run();
+  db.prepare("DELETE FROM session_cwds").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM watermarks").run();
@@ -411,6 +419,7 @@ describe("target_session_sync", () => {
       expect(colNames).toContain("confirmed");
       expect(colNames).toContain("sync_seq");
       expect(colNames).toContain("synced_seq");
+      expect(colNames).toContain("derived_synced_seq");
       expect(colNames).toContain("wm_messages");
       expect(colNames).toContain("wm_tool_calls");
       expect(colNames).toContain("wm_scanner_turns");
@@ -478,6 +487,233 @@ describe("target_session_sync", () => {
 
     it("readSessionsByIds returns empty for empty input", () => {
       expect(readSessionsByIds([])).toHaveLength(0);
+    });
+
+    it("readSessionDerivedState returns stable-key derived bundles", () => {
+      insertSession("sess-1", 3);
+
+      const db = getDb();
+      db.prepare(
+        `INSERT INTO intent_units (
+           id, intent_key, session_id, prompt_text, prompt_ts_ms, repository
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        101,
+        "intent:sess-1:user:0",
+        "sess-1",
+        "Implement repo-relative provenance",
+        1000,
+        "org/repo",
+      );
+      db.prepare(
+        `INSERT INTO intent_edits (
+           id, edit_key, intent_unit_id, session_id, timestamp_ms, file_path,
+           tool_name, landed, new_string_hash, new_string_snippet
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        201,
+        "edit:intent:sess-1:user:0:src/app.ts:0",
+        101,
+        "sess-1",
+        1100,
+        "src/app.ts",
+        "Edit",
+        1,
+        "hash-1",
+        "const value = 1;",
+      );
+      db.prepare(
+        `INSERT INTO session_summaries (
+           id, session_summary_key, session_id, repository, cwd, branch, actor,
+           machine, origin_scope, title, status, first_intent_ts_ms,
+           last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
+           open_edit_count, summary_text, projection_hash, projected_at_ms,
+           source_last_seen_at_ms, reason_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        301,
+        "ss:local:sess-1",
+        "sess-1",
+        "org/repo",
+        "/tmp/repo",
+        "main",
+        "gus",
+        "test-machine",
+        "local",
+        "Repo-relative provenance",
+        "landed",
+        1000,
+        1200,
+        1,
+        1,
+        1,
+        0,
+        "Summary text",
+        "projection-hash",
+        1300,
+        1200,
+        "{\"strategy\":\"session_id\"}",
+      );
+      db.prepare(
+        `INSERT INTO session_summary_enrichments (
+           session_summary_key, session_id, summary_text, summary_source,
+           summary_runner, summary_model, summary_version,
+           summary_generated_at_ms, projection_hash, summary_input_hash,
+           summary_policy_hash, enriched_input_hash, enriched_message_count,
+           dirty, dirty_reason_json, last_material_change_at_ms,
+           last_attempted_at_ms, failure_count, last_error
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "ss:local:sess-1",
+        "sess-1",
+        "LLM summary",
+        "llm",
+        "claude",
+        "sonnet",
+        1,
+        1400,
+        "projection-hash",
+        "summary-input-hash",
+        "policy-hash",
+        "enriched-input-hash",
+        42,
+        1,
+        "{\"reason\":\"pending\"}",
+        1450,
+        1460,
+        2,
+        "timeout",
+      );
+      db.prepare(
+        `INSERT INTO intent_session_summaries (
+           intent_unit_id, session_summary_id, membership_kind, source, score, reason_json
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        101,
+        301,
+        "primary",
+        "session_id",
+        1,
+        "{\"strategy\":\"session_id\"}",
+      );
+      db.prepare(
+        `INSERT INTO code_provenance (
+           repository, file_path, binding_level, start_line, end_line,
+           snippet_hash, snippet_preview, language, actor, machine,
+           origin_scope, intent_unit_id, intent_edit_id, session_summary_id,
+           status, confidence, file_hash, established_at_ms, verified_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "org/repo",
+        "src/app.ts",
+        "span",
+        12,
+        18,
+        "hash-1",
+        "const value = 1;",
+        "typescript",
+        "gus",
+        "test-machine",
+        "local",
+        101,
+        201,
+        301,
+        "current",
+        0.95,
+        "file-hash",
+        1100,
+        1500,
+      );
+
+      expect(readSessionDerivedState("sess-1")).toEqual({
+        sessionId: "sess-1",
+        summaries: [
+          {
+            sessionSummaryKey: "ss:local:sess-1",
+            sessionId: "sess-1",
+            repository: "org/repo",
+            cwd: "/tmp/repo",
+            branch: "main",
+            worktree: null,
+            actor: "gus",
+            machine: "test-machine",
+            originScope: "local",
+            title: "Repo-relative provenance",
+            status: "landed",
+            firstIntentTsMs: 1000,
+            lastIntentTsMs: 1200,
+            intentCount: 1,
+            editCount: 1,
+            landedEditCount: 1,
+            openEditCount: 0,
+            summaryText: "Summary text",
+            projectionHash: "projection-hash",
+            projectedAtMs: 1300,
+            sourceLastSeenAtMs: 1200,
+            reasonJson: "{\"strategy\":\"session_id\"}",
+          },
+        ],
+        enrichments: [
+          {
+            sessionSummaryKey: "ss:local:sess-1",
+            sessionId: "sess-1",
+            summaryText: "LLM summary",
+            summarySource: "llm",
+            summaryRunner: "claude",
+            summaryModel: "sonnet",
+            summaryVersion: 1,
+            summaryGeneratedAtMs: 1400,
+            projectionHash: "projection-hash",
+            summaryInputHash: "summary-input-hash",
+            summaryPolicyHash: "policy-hash",
+            enrichedInputHash: "enriched-input-hash",
+            enrichedMessageCount: 42,
+            dirty: true,
+            dirtyReasonJson: "{\"reason\":\"pending\"}",
+            lastMaterialChangeAtMs: 1450,
+            lastAttemptedAtMs: 1460,
+            failureCount: 2,
+            lastError: "timeout",
+          },
+        ],
+        memberships: [
+          {
+            sessionSummaryKey: "ss:local:sess-1",
+            sessionId: "sess-1",
+            intentKey: "intent:sess-1:user:0",
+            membershipKind: "primary",
+            source: "session_id",
+            score: 1,
+            reasonJson: "{\"strategy\":\"session_id\"}",
+          },
+        ],
+        codeProvenance: [
+          {
+            sessionSummaryKey: "ss:local:sess-1",
+            sessionId: "sess-1",
+            repository: "org/repo",
+            filePath: "src/app.ts",
+            bindingLevel: "span",
+            startLine: 12,
+            endLine: 18,
+            snippetHash: "hash-1",
+            snippetPreview: "const value = 1;",
+            language: "typescript",
+            symbolKind: null,
+            symbolName: null,
+            actor: "gus",
+            machine: "test-machine",
+            originScope: "local",
+            intentKey: "intent:sess-1:user:0",
+            intentEditKey: "edit:intent:sess-1:user:0:src/app.ts:0",
+            status: "current",
+            confidence: 0.95,
+            fileHash: "file-hash",
+            establishedAtMs: 1100,
+            verifiedAtMs: 1500,
+          },
+        ],
+      });
     });
   });
 

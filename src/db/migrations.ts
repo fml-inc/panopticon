@@ -689,6 +689,7 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
       has_scanner INTEGER DEFAULT 0,
       sync_dirty INTEGER DEFAULT 0,
       sync_seq INTEGER DEFAULT 0,
+      derived_sync_seq INTEGER DEFAULT 0,
       tool_counts JSON DEFAULT '{}',
       hook_tool_counts JSON DEFAULT '{}',
       event_type_counts JSON DEFAULT '{}',
@@ -712,7 +713,7 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
       total_cache_creation_tokens, total_reasoning_tokens, turn_count,
       otel_input_tokens, otel_output_tokens, otel_cache_read_tokens,
       otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner,
-      sync_dirty, sync_seq, tool_counts, hook_tool_counts, event_type_counts,
+      sync_dirty, sync_seq, derived_sync_seq, tool_counts, hook_tool_counts, event_type_counts,
       hook_event_type_counts, project, machine, message_count,
       user_message_count, parent_session_id, relationship_type, is_automated,
       created_at
@@ -745,6 +746,7 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
       ${sessionValueExpr("has_scanner", "0")},
       ${sessionValueExpr("sync_dirty", "0")},
       ${sessionValueExpr("sync_seq", "0")},
+      ${sessionValueExpr("derived_sync_seq", "0")},
       ${sessionValueExpr("tool_counts", "'{}'")},
       ${sessionValueExpr("hook_tool_counts", "'{}'")},
       ${sessionValueExpr("event_type_counts", "'{}'")},
@@ -1239,6 +1241,28 @@ export const MIGRATIONS: Migration[] = [
     name: "reset_claim_state_for_repo_relative_file_paths",
     up: (db) => {
       resetClaimDerivedStateForRepoRelativeFilePaths(db);
+    },
+  },
+  {
+    id: 19,
+    name: "add_session_derived_sync_tracking",
+    up: (db) => {
+      if (tableExists(db, "sessions")) {
+        addColumnIfMissing(
+          db,
+          "sessions",
+          "derived_sync_seq",
+          "derived_sync_seq INTEGER DEFAULT 0",
+        );
+      }
+      if (tableExists(db, "target_session_sync")) {
+        addColumnIfMissing(
+          db,
+          "target_session_sync",
+          "derived_synced_seq",
+          "derived_synced_seq INTEGER DEFAULT 0",
+        );
+      }
     },
   },
 ];

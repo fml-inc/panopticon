@@ -333,6 +333,11 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
          OR (summary_input_hash IS NULL AND ? IS NULL)
        )`,
   );
+  const bumpDerivedSyncSeq = db.prepare(
+    `UPDATE sessions
+     SET derived_sync_seq = COALESCE(derived_sync_seq, 0) + 1
+     WHERE session_id = ?`,
+  );
 
   const claimedAtMs = nowMs;
   const claimRows = db.transaction(
@@ -380,6 +385,9 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
         row.summary_input_hash,
         row.summary_input_hash,
       );
+      if (result.changes > 0) {
+        bumpDerivedSyncSeq.run(row.session_id);
+      }
       if (result.changes === 0) {
         releaseClaim.run(
           row.session_summary_key,
@@ -479,6 +487,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
         row.summary_input_hash,
       );
       if (write.changes > 0) {
+        bumpDerivedSyncSeq.run(row.session_id);
         updateSearchIndexSuccess?.run(
           row.session_summary_key,
           row.session_id,
