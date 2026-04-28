@@ -126,7 +126,8 @@ describe("session summary enrichment refresh", () => {
         target TEXT,
         started_at_ms INTEGER,
         ended_at_ms INTEGER,
-        message_count INTEGER
+        message_count INTEGER,
+        derived_sync_seq INTEGER DEFAULT 0
       );
       CREATE TABLE messages (
         id INTEGER PRIMARY KEY,
