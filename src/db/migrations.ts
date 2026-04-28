@@ -441,6 +441,25 @@ function resetClaimDerivedStateForRepoRelativeFilePaths(db: Database): void {
   markDataComponentsStaleInDb(db, CLAIM_DERIVED_COMPONENTS);
 }
 
+function seedDerivedSyncSeqForExistingSessionSummaries(db: Database): void {
+  if (!tableExists(db, "sessions") || !tableExists(db, "session_summaries")) {
+    return;
+  }
+  if (!tableHasColumn(db, "sessions", "derived_sync_seq")) {
+    return;
+  }
+
+  db.exec(`
+    UPDATE sessions
+    SET derived_sync_seq = MAX(COALESCE(derived_sync_seq, 0), 1)
+    WHERE session_id IN (
+      SELECT DISTINCT session_id
+      FROM session_summaries
+      WHERE session_id IS NOT NULL
+    )
+  `);
+}
+
 function addScannerFileWatermarkSessionIdAndForceReparse(db: Database): void {
   if (!tableExists(db, "scanner_file_watermarks")) {
     return;
@@ -1263,6 +1282,7 @@ export const MIGRATIONS: Migration[] = [
           "derived_synced_seq INTEGER DEFAULT 0",
         );
       }
+      seedDerivedSyncSeqForExistingSessionSummaries(db);
     },
   },
 ];

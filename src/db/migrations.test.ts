@@ -1787,6 +1787,108 @@ describe("runMigrations — existing DB", () => {
     );
   });
 
+  it("seeds derived sync progress for existing session summaries", () => {
+    const db = createExistingDb();
+    db.exec(SCHEMA_SQL);
+
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 19) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    db.prepare(
+      `INSERT INTO sessions (session_id, machine, derived_sync_seq)
+       VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)`,
+    ).run(
+      "session:with-summary",
+      "local",
+      0,
+      "session:without-summary",
+      "local",
+      0,
+      "session:already-bumped",
+      "local",
+      4,
+    );
+    db.prepare(
+      `INSERT INTO target_session_sync (session_id, target, confirmed, derived_synced_seq)
+       VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)`,
+    ).run(
+      "session:with-summary",
+      "dev",
+      1,
+      0,
+      "session:without-summary",
+      "dev",
+      1,
+      0,
+      "session:already-bumped",
+      "dev",
+      1,
+      0,
+    );
+    db.prepare(
+      `INSERT INTO session_summaries (
+         session_summary_key, session_id, repository, cwd, title, status,
+         projection_hash, projected_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "ss:local:with-summary",
+      "session:with-summary",
+      "org/repo",
+      "/repo",
+      "with summary",
+      "active",
+      "hash-1",
+      1000,
+      "ss:local:already-bumped",
+      "session:already-bumped",
+      "org/repo",
+      "/repo",
+      "already bumped",
+      "active",
+      "hash-2",
+      1000,
+    );
+
+    runMigrations(db);
+
+    const sessions = db
+      .prepare(
+        `SELECT session_id, derived_sync_seq
+         FROM sessions
+         WHERE session_id IN (?, ?, ?)
+         ORDER BY session_id ASC`,
+      )
+      .all(
+        "session:already-bumped",
+        "session:with-summary",
+        "session:without-summary",
+      ) as Array<{ session_id: string; derived_sync_seq: number }>;
+    expect(sessions).toEqual([
+      { session_id: "session:already-bumped", derived_sync_seq: 4 },
+      { session_id: "session:with-summary", derived_sync_seq: 1 },
+      { session_id: "session:without-summary", derived_sync_seq: 0 },
+    ]);
+
+    const syncRows = db
+      .prepare(
+        `SELECT session_id, derived_synced_seq
+         FROM target_session_sync
+         WHERE target = ?
+         ORDER BY session_id ASC`,
+      )
+      .all("dev") as Array<{ session_id: string; derived_synced_seq: number }>;
+    expect(syncRows).toEqual([
+      { session_id: "session:already-bumped", derived_synced_seq: 0 },
+      { session_id: "session:with-summary", derived_synced_seq: 0 },
+      { session_id: "session:without-summary", derived_synced_seq: 0 },
+    ]);
+  });
+
   it("runs up() function migration", () => {
     const db = createExistingDb();
     db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)");
