@@ -12,7 +12,6 @@ import { Command, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
-import { getOrCreateAuthToken } from "./auth.js";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
@@ -30,7 +29,7 @@ import {
 } from "./mcp/permissions.js";
 import { readScannerStatus } from "./scanner/status.js";
 import { httpPanopticonService } from "./service/http.js";
-import { writePanopticonEnvFile } from "./setup.js";
+import { configureShellEnvDetailed, removeShellEnvDetailed } from "./setup.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -241,174 +240,6 @@ function readStdin(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Shell environment configuration
-// ---------------------------------------------------------------------------
-
-function configureShellEnv(force: boolean, target = "claude", proxy = false) {
-  const shellRc = path.join(
-    os.homedir(),
-    process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
-  );
-  const rcContent = fs.existsSync(shellRc)
-    ? fs.readFileSync(shellRc, "utf-8")
-    : "";
-
-  // Collect all known target env var names for detection/cleanup
-  const allTargetVarNames = new Set<string>();
-  for (const v of allTargets()) {
-    for (const [varName] of v.shellEnv.envVars(config.port, true)) {
-      allTargetVarNames.add(varName);
-    }
-  }
-
-  // Shared OTEL vars + all target-specific vars
-  const PANOPTICON_VARS = [
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_PROTOCOL",
-    "OTEL_EXPORTER_OTLP_HEADERS",
-    "OTEL_METRICS_EXPORTER",
-    "OTEL_LOGS_EXPORTER",
-    "OTEL_LOG_TOOL_DETAILS",
-    "OTEL_LOG_USER_PROMPTS",
-    "OTEL_METRIC_EXPORT_INTERVAL",
-    ...allTargetVarNames,
-  ];
-  const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
-
-  const isPanopticonLine = (line: string): boolean => {
-    const trimmed = line.trim();
-    if (PANOPTICON_COMMENTS.some((c) => trimmed.startsWith(c))) return true;
-    for (const v of PANOPTICON_VARS) {
-      if (trimmed === `export ${v}` || trimmed.startsWith(`export ${v}=`))
-        return true;
-    }
-    return false;
-  };
-
-  // Generate the auth token once so the bashrc and the env.sh file both
-  // contain the same OTEL_EXPORTER_OTLP_HEADERS value.
-  const authToken = getOrCreateAuthToken();
-
-  // Build the wanted env vars: shared OTEL vars + target-specific vars
-  const wantedLines: [string, string][] = [
-    ["# >>> panopticon >>>", "# >>> panopticon >>>"],
-    [
-      "OTEL_EXPORTER_OTLP_ENDPOINT",
-      `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.port}`,
-    ],
-    [
-      "OTEL_EXPORTER_OTLP_PROTOCOL",
-      "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
-    ],
-    [
-      "OTEL_EXPORTER_OTLP_HEADERS",
-      // Per the OTel spec, header values are URL-encoded — encode the
-      // space between "Bearer" and the token. The token itself is hex.
-      `export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${authToken}`,
-    ],
-    ["OTEL_METRICS_EXPORTER", "export OTEL_METRICS_EXPORTER=otlp"],
-    ["OTEL_LOGS_EXPORTER", "export OTEL_LOGS_EXPORTER=otlp"],
-    ["OTEL_LOG_TOOL_DETAILS", "export OTEL_LOG_TOOL_DETAILS=1"],
-    ["OTEL_LOG_USER_PROMPTS", "export OTEL_LOG_USER_PROMPTS=1"],
-    ["OTEL_METRIC_EXPORT_INTERVAL", "export OTEL_METRIC_EXPORT_INTERVAL=10000"],
-  ];
-
-  // Add target-specific env vars for selected targets
-  const selectedTargetList =
-    target === "all"
-      ? allTargets()
-      : allTargets().filter((v) => v.id === target);
-
-  for (const t of selectedTargetList) {
-    for (const [varName, value] of t.shellEnv.envVars(config.port, proxy)) {
-      wantedLines.push([varName, `export ${varName}=${value}`]);
-    }
-  }
-
-  wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
-
-  const lines = rcContent.split("\n");
-  const preservedLines: string[] = [];
-  const existingByKey = new Map<string, string>();
-  let insertAt = -1;
-
-  for (const line of lines) {
-    if (!isPanopticonLine(line)) {
-      preservedLines.push(line);
-      continue;
-    }
-
-    if (insertAt < 0) {
-      insertAt = preservedLines.length;
-    }
-
-    const match = wantedLines.find(([key]) => {
-      if (key.startsWith("#")) return line.trim().startsWith(key);
-      return (
-        line.trim() === `export ${key}` ||
-        line.trim().startsWith(`export ${key}=`)
-      );
-    });
-    if (match) {
-      existingByKey.set(match[0], line.trim());
-    }
-  }
-
-  const resolvedBlock = wantedLines.map(([key, value]) => {
-    if (force || key.startsWith("#")) return value;
-
-    const existing = existingByKey.get(key);
-    if (existing && existing !== value) {
-      console.log(`      ⚠ Keeping existing value: ${existing}`);
-      console.log(`        (default would be: ${value})`);
-      console.log("        (use --force to overwrite)");
-    }
-    return existing ?? value;
-  });
-
-  const insertionIndex = insertAt >= 0 ? insertAt : preservedLines.length;
-  const blockLines = ["", ...resolvedBlock, ""];
-  preservedLines.splice(insertionIndex, 0, ...blockLines);
-
-  fs.writeFileSync(shellRc, preservedLines.join("\n"));
-  console.log(
-    `      ${insertAt >= 0 ? "Updated" : "Added"} env vars in ${shellRc}`,
-  );
-
-  // Also write the dedicated env file so non-interactive callers (CI,
-  // docker entrypoints, e2e scripts) can source the panopticon env without
-  // depending on the standard `~/.bashrc` non-interactive guard.
-  const envFile = writePanopticonEnvFile(proxy);
-  console.log(`      Wrote ${envFile}\n`);
-}
-
-function removeShellEnv() {
-  const shellRc = path.join(
-    os.homedir(),
-    process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
-  );
-  if (!fs.existsSync(shellRc)) return;
-
-  const content = fs.readFileSync(shellRc, "utf-8");
-  const lines = content.split("\n");
-  let inBlock = false;
-  const filtered = lines.filter((line) => {
-    if (line.trim().startsWith("# >>> panopticon")) {
-      inBlock = true;
-      return false;
-    }
-    if (line.trim().startsWith("# <<< panopticon")) {
-      inBlock = false;
-      return false;
-    }
-    return !inBlock;
-  });
-
-  fs.writeFileSync(shellRc, filtered.join("\n"));
-  console.log(`      Removed panopticon env vars from ${shellRc}\n`);
-}
-
-// ---------------------------------------------------------------------------
 // Program
 // ---------------------------------------------------------------------------
 
@@ -524,7 +355,15 @@ program
 
     // Remove shell env
     console.log("[4/6] Cleaning shell environment...");
-    removeShellEnv();
+    const shellCleanup = removeShellEnvDetailed();
+    if (shellCleanup.removedProfilePaths.length === 0) {
+      console.log("      No panopticon shell env block found\n");
+    } else {
+      for (const profilePath of shellCleanup.removedProfilePaths) {
+        console.log(`      Removed panopticon env vars from ${profilePath}`);
+      }
+      console.log();
+    }
 
     if (targetId === "all") {
       // Remove marketplace and plugin cache
@@ -780,7 +619,20 @@ async function install(
   console.log();
 
   console.log("[5/5] Configuring shell environment...");
-  configureShellEnv(force, target, !!opts.proxy);
+  const shellEnv = configureShellEnvDetailed({
+    force,
+    target,
+    proxy: !!opts.proxy,
+  });
+  for (const profileUpdate of shellEnv.profileUpdates) {
+    console.log(
+      `      ${profileUpdate.action === "updated" ? "Updated" : "Added"} env vars in ${profileUpdate.path}`,
+    );
+  }
+  for (const envFile of shellEnv.envFiles) {
+    console.log(`      Wrote ${envFile}`);
+  }
+  console.log();
 
   // Start the server so it's ready for the first hook event
   stopExistingDaemons();

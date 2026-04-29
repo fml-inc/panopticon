@@ -102,7 +102,7 @@
     "typecheck": "tsc --noEmit",
     "prepack": "node scripts/generate-plugin-manifest.js",
     "pack:local": "pnpm build && pnpm pack",
-    "postinstall": "[ ! -d dist ] || (node ./bin/panopticon install && (claude plugin install panopticon@local-plugins 2>/dev/null || claude plugin update panopticon@local-plugins || echo 'warn: claude CLI not found, run claude plugin install panopticon@local-plugins manually'))"
+    "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

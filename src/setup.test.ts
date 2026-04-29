@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_SHELL = process.env.SHELL;
+const ORIGINAL_DATA_DIR = process.env.PANOPTICON_DATA_DIR;
+const ORIGINAL_TOKEN = process.env.PANOPTICON_AUTH_TOKEN;
 
 function panopticonBlock(content: string): { start: number; end: number } {
   const lines = content.split("\n");
@@ -21,6 +23,12 @@ describe("configureShellEnv", () => {
 
     if (ORIGINAL_SHELL === undefined) delete process.env.SHELL;
     else process.env.SHELL = ORIGINAL_SHELL;
+
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env.PANOPTICON_DATA_DIR;
+    else process.env.PANOPTICON_DATA_DIR = ORIGINAL_DATA_DIR;
+
+    if (ORIGINAL_TOKEN === undefined) delete process.env.PANOPTICON_AUTH_TOKEN;
+    else process.env.PANOPTICON_AUTH_TOKEN = ORIGINAL_TOKEN;
 
     vi.resetModules();
   });
@@ -111,12 +119,117 @@ describe("configureShellEnv", () => {
     expect(anthLineIndexes[0]).toBeGreaterThan(block.start);
     expect(anthLineIndexes[0]).toBeLessThan(block.end);
   });
+
+  it("writes Windows PowerShell profiles that source env.ps1", async () => {
+    const tmpHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-setup-home-win-"),
+    );
+    const tmpDataDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-setup-data-win-"),
+    );
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-win";
+
+    const { configureShellEnvDetailed } = await import("./setup.js");
+    const result = configureShellEnvDetailed(
+      { target: "claude", proxy: true, force: true },
+      {
+        platform: "win32",
+        homeDir: tmpHome,
+        dataDir: tmpDataDir,
+      },
+    );
+
+    expect(result.envFiles).toEqual([
+      path.join(tmpDataDir, "env.ps1"),
+      path.join(tmpDataDir, "env.cmd"),
+    ]);
+    expect(result.profileUpdates).toEqual([
+      {
+        action: "added",
+        path: path.join(tmpHome, "Documents", "PowerShell", "Profile.ps1"),
+      },
+      {
+        action: "added",
+        path: path.join(
+          tmpHome,
+          "Documents",
+          "WindowsPowerShell",
+          "Profile.ps1",
+        ),
+      },
+    ]);
+
+    for (const update of result.profileUpdates) {
+      const content = fs.readFileSync(update.path, "utf-8");
+      expect(content).toContain("# >>> panopticon >>>");
+      expect(content).toContain(
+        `if (Test-Path '${path.join(tmpDataDir, "env.ps1")}') {`,
+      );
+      expect(content).toContain(`  . '${path.join(tmpDataDir, "env.ps1")}'`);
+      expect(content).toContain("# <<< panopticon <<<");
+    }
+
+    const psContent = fs.readFileSync(
+      path.join(tmpDataDir, "env.ps1"),
+      "utf-8",
+    );
+    expect(psContent).toContain(
+      "$env:OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%20test-token-win'",
+    );
+    expect(psContent).toContain("$env:CLAUDE_CODE_ENABLE_TELEMETRY = '1'");
+    expect(psContent).toMatch(
+      /\$env:ANTHROPIC_BASE_URL = 'http:\/\/localhost:\d+\/proxy\/anthropic'/,
+    );
+
+    const cmdContent = fs.readFileSync(
+      path.join(tmpDataDir, "env.cmd"),
+      "utf-8",
+    );
+    expect(cmdContent).toContain(
+      'set "OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%%20test-token-win"',
+    );
+    expect(cmdContent).toContain('set "CLAUDE_CODE_ENABLE_TELEMETRY=1"');
+  });
+
+  it("removes panopticon blocks from Windows PowerShell profiles", async () => {
+    const tmpHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-setup-home-win-"),
+    );
+    const tmpDataDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-setup-data-win-"),
+    );
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-win-cleanup";
+
+    const { configureShellEnvDetailed, removeShellEnvDetailed } = await import(
+      "./setup.js"
+    );
+    const installResult = configureShellEnvDetailed(
+      { target: "claude", force: true },
+      {
+        platform: "win32",
+        homeDir: tmpHome,
+        dataDir: tmpDataDir,
+      },
+    );
+
+    const cleanup = removeShellEnvDetailed({
+      platform: "win32",
+      homeDir: tmpHome,
+      dataDir: tmpDataDir,
+    });
+
+    expect(cleanup.removedProfilePaths).toEqual(
+      installResult.profileUpdates.map((update) => update.path),
+    );
+    for (const profilePath of cleanup.removedProfilePaths) {
+      const content = fs.readFileSync(profilePath, "utf-8");
+      expect(content).not.toContain("# >>> panopticon >>>");
+      expect(content).not.toContain("# <<< panopticon <<<");
+    }
+  });
 });
 
 describe("writePanopticonEnvFile", () => {
-  const ORIGINAL_DATA_DIR = process.env.PANOPTICON_DATA_DIR;
-  const ORIGINAL_TOKEN = process.env.PANOPTICON_AUTH_TOKEN;
-
   afterEach(() => {
     if (ORIGINAL_DATA_DIR === undefined) delete process.env.PANOPTICON_DATA_DIR;
     else process.env.PANOPTICON_DATA_DIR = ORIGINAL_DATA_DIR;
@@ -174,5 +287,27 @@ describe("writePanopticonEnvFile", () => {
       { encoding: "utf-8" },
     ).trim();
     expect(out).toBe("Authorization=Bearer%20test-token-source");
+  });
+
+  it("writes Windows env.ps1 and env.cmd variants", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envwin-"));
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-win-files";
+
+    const { writePanopticonEnvFiles } = await import("./setup.js");
+    const envFiles = writePanopticonEnvFiles(false, {
+      platform: "win32",
+      dataDir: tmpDir,
+    });
+
+    expect(envFiles).toEqual([
+      path.join(tmpDir, "env.ps1"),
+      path.join(tmpDir, "env.cmd"),
+    ]);
+    expect(fs.readFileSync(envFiles[0], "utf-8")).toContain(
+      "$env:OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%20test-token-win-files'",
+    );
+    expect(fs.readFileSync(envFiles[1], "utf-8")).toContain(
+      'set "OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%%20test-token-win-files"',
+    );
   });
 });
