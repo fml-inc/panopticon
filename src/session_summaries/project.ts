@@ -105,7 +105,9 @@ export function rebuildSessionSummaryProjections(opts?: {
       string,
       ExistingSessionSummaryProjection
     >();
+    const changedSessionIds = new Set<string>();
     if (opts?.sessionId) {
+      changedSessionIds.add(opts.sessionId);
       const key = sessionSummaryKey(opts.sessionId);
       const row = db
         .prepare(
@@ -147,6 +149,15 @@ export function rebuildSessionSummaryProjections(opts?: {
         db.prepare(`DELETE FROM session_summaries WHERE id = ?`).run(row.id);
       }
     } else {
+      const existingSessionRows = db
+        .prepare(
+          `SELECT DISTINCT session_id
+           FROM session_summaries`,
+        )
+        .all() as Array<{ session_id: string }>;
+      for (const row of existingSessionRows) {
+        changedSessionIds.add(row.session_id);
+      }
       db.prepare(`DELETE FROM code_provenance`).run();
       db.prepare(`DELETE FROM intent_session_summaries`).run();
       db.prepare(`DELETE FROM session_summary_search_index`).run();
@@ -265,12 +276,18 @@ export function rebuildSessionSummaryProjections(opts?: {
         verified_at_ms)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    const bumpDerivedSyncSeqStmt = db.prepare(
+      `UPDATE sessions
+       SET derived_sync_seq = COALESCE(derived_sync_seq, 0) + 1
+       WHERE session_id = ?`,
+    );
 
     let sessionSummaries = 0;
     let memberships = 0;
     let provenance = 0;
 
     for (const session of sessionRows) {
+      changedSessionIds.add(session.session_id);
       const intents = loadSessionSummaryIntentRows(session.session_id);
       if (intents.length === 0) continue;
 
@@ -658,6 +675,10 @@ export function rebuildSessionSummaryProjections(opts?: {
            SELECT session_summary_key FROM session_summaries
          )`,
       ).run();
+    }
+
+    for (const sessionId of changedSessionIds) {
+      bumpDerivedSyncSeqStmt.run(sessionId);
     }
 
     return { sessionSummaries, memberships, provenance };

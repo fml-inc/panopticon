@@ -10,7 +10,11 @@ import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
 import { postSync } from "./post.js";
-import { readSessionsByIds, SESSION_READERS } from "./reader.js";
+import {
+  readSessionDerivedState,
+  readSessionsByIds,
+  SESSION_READERS,
+} from "./reader.js";
 import {
   DEFAULT_NON_SESSION_TABLES,
   DEFAULT_SESSION_TABLES,
@@ -30,6 +34,7 @@ const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 100;
 const DEFAULT_MAX_SESSIONS_PER_TICK = 10;
 const SYNC_TARGET_BACKOFF_SCOPE = "sync-target";
+const DERIVED_STATE_TABLE = "session_derived_state";
 
 /** Maps SESSION_READERS table name → target_session_sync column name. */
 const WM_COLUMNS = {
@@ -51,6 +56,13 @@ type PendingSessionRow = {
   sync_seq: number;
   synced_seq: number;
 } & Record<(typeof WM_COLUMNS)[SessionTableName], number>;
+
+type PendingDerivedSessionRow = {
+  row_id: number;
+  session_id: string;
+  derived_sync_seq: number;
+  derived_synced_seq: number;
+};
 
 function isSessionTableName(table: string): table is SessionTableName {
   return table in WM_COLUMNS && table in SESSION_READERS;
@@ -179,6 +191,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   let syncing = false;
   let stopping = false;
   const pendingSessionCursorByTarget = new Map<string, number>();
+  const pendingDerivedCursorByTarget = new Map<string, number>();
 
   function formatLog(message: string): string {
     return `${loopPrefix}${message}`;
@@ -494,6 +507,140 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     return hasRemainingPendingSessions(target.name);
   }
 
+  // ── Phase 2a: Sync derived session state bundles ───────────────────────
+
+  function hasRemainingPendingDerivedSessions(targetName: string): boolean {
+    if (!syncSessionsEnabled) return false;
+
+    const db = getDb();
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt
+         FROM target_session_sync tss
+         JOIN sessions s ON s.session_id = tss.session_id
+         WHERE tss.target = ?
+           AND tss.confirmed = 1
+           AND COALESCE(s.derived_sync_seq, 0) > COALESCE(tss.derived_synced_seq, 0)`,
+      )
+      .get(targetName) as { cnt: number };
+    return row.cnt > 0;
+  }
+
+  function readPendingDerivedSessionsPage(
+    targetName: string,
+    rowPredicate: string,
+    rowParam: number,
+    limit: number,
+  ): PendingDerivedSessionRow[] {
+    if (limit <= 0) return [];
+
+    const db = getDb();
+    return db
+      .prepare(
+        `SELECT tss.rowid AS row_id,
+                tss.session_id,
+                COALESCE(s.derived_sync_seq, 0) AS derived_sync_seq,
+                COALESCE(tss.derived_synced_seq, 0) AS derived_synced_seq
+         FROM target_session_sync tss
+         JOIN sessions s ON s.session_id = tss.session_id
+         WHERE tss.target = ?
+           AND tss.confirmed = 1
+           AND COALESCE(s.derived_sync_seq, 0) > COALESCE(tss.derived_synced_seq, 0)
+           AND ${rowPredicate}
+         ORDER BY tss.rowid
+         LIMIT ?`,
+      )
+      .all(targetName, rowParam, limit) as PendingDerivedSessionRow[];
+  }
+
+  function readPendingDerivedSessions(
+    targetName: string,
+  ): PendingDerivedSessionRow[] {
+    if (!syncSessionsEnabled) return [];
+
+    const cursor = pendingDerivedCursorByTarget.get(targetName) ?? 0;
+    const firstPage = readPendingDerivedSessionsPage(
+      targetName,
+      "tss.rowid > ?",
+      cursor,
+      maxSessionsPerTick,
+    );
+    const wrappedPage =
+      firstPage.length < maxSessionsPerTick && cursor > 0
+        ? readPendingDerivedSessionsPage(
+            targetName,
+            "tss.rowid <= ?",
+            cursor,
+            maxSessionsPerTick - firstPage.length,
+          )
+        : [];
+    const pending = [...firstPage, ...wrappedPage];
+
+    if (pending.length === 0) {
+      pendingDerivedCursorByTarget.set(targetName, 0);
+      return pending;
+    }
+
+    pendingDerivedCursorByTarget.set(
+      targetName,
+      pending[pending.length - 1].row_id,
+    );
+    return pending;
+  }
+
+  function writeDerivedSessionProgress(
+    sessionId: string,
+    targetName: string,
+    syncedDerivedSeq: number,
+  ): void {
+    const db = getDb();
+    db.prepare(
+      `UPDATE target_session_sync
+       SET derived_synced_seq = MAX(COALESCE(derived_synced_seq, 0), ?)
+       WHERE session_id = ? AND target = ?`,
+    ).run(syncedDerivedSeq, sessionId, targetName);
+  }
+
+  async function syncSessionDerivedState(target: SyncTarget): Promise<boolean> {
+    if (!syncSessionsEnabled) return false;
+
+    const db = getDb();
+    db.prepare(
+      `DELETE FROM target_session_sync
+       WHERE session_id NOT IN (SELECT session_id FROM sessions)`,
+    ).run();
+
+    const pending = readPendingDerivedSessions(target.name);
+    if (pending.length === 0) return false;
+
+    const headers = resolveHeaders(target);
+    const url = `${target.url}/v1/sync`;
+
+    for (const entry of pending) {
+      const row = readSessionDerivedState(entry.session_id);
+      await postSync(
+        url,
+        {
+          table: DERIVED_STATE_TABLE,
+          rows: [row],
+        },
+        headers,
+      );
+      writeDerivedSessionProgress(
+        entry.session_id,
+        target.name,
+        entry.derived_sync_seq,
+      );
+      log.sync.debug(
+        formatLog(
+          `session-derived-sync: synced derived state for ${entry.session_id} to ${target.name}`,
+        ),
+      );
+    }
+
+    return hasRemainingPendingDerivedSessions(target.name);
+  }
+
   // ── Phase 3: Sync non-session tables (unchanged) ─────────────────────────
 
   async function syncNonSessionTables(target: SyncTarget): Promise<boolean> {
@@ -580,10 +727,13 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         // Phase 1: Sync sessions (repo-filtered, backend confirms)
         if (await syncSessions(target, syncableSessionIds)) hasMore = true;
 
-        // Phase 2: Sync dependent data for confirmed sessions
+        // Phase 2: Sync derived state for confirmed sessions
+        if (await syncSessionDerivedState(target)) hasMore = true;
+
+        // Phase 3: Sync dependent raw session data for confirmed sessions
         if (await syncSessionData(target)) hasMore = true;
 
-        // Phase 3: Sync non-session tables
+        // Phase 4: Sync non-session tables
         if (await syncNonSessionTables(target)) hasMore = true;
         clearAttemptBackoff(SYNC_TARGET_BACKOFF_SCOPE, target.name);
       } catch (err) {

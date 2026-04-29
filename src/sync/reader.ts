@@ -1,6 +1,8 @@
 import { getDb } from "../db/schema.js";
 import type {
+  CodeProvenanceSyncRecord,
   HookEventRecord,
+  IntentSessionSummarySyncRecord,
   MessageSyncRecord,
   MetricRow,
   OtelLogRecord,
@@ -8,6 +10,9 @@ import type {
   RepoConfigSnapshotRecord,
   ScannerEventRecord,
   ScannerTurnRecord,
+  SessionDerivedStateSyncRecord,
+  SessionSummaryEnrichmentSyncRecord,
+  SessionSummarySyncRecord,
   SessionSyncRecord,
   ToolCallSyncRecord,
   UserConfigSnapshotRecord,
@@ -853,6 +858,234 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     repositories: reposBySession.get(r.session_id) ?? [],
     cwds: cwdsBySession.get(r.session_id) ?? [],
   }));
+}
+
+export function readSessionDerivedState(
+  sessionId: string,
+): SessionDerivedStateSyncRecord {
+  const db = getDb();
+
+  const summaries = db
+    .prepare(
+      `SELECT session_summary_key, session_id, repository, cwd, branch,
+              worktree, actor, machine, origin_scope, title, status,
+              first_intent_ts_ms, last_intent_ts_ms, intent_count, edit_count,
+              landed_edit_count, open_edit_count, summary_text,
+              projection_hash, projected_at_ms, source_last_seen_at_ms,
+              reason_json
+       FROM session_summaries
+       WHERE session_id = ?
+       ORDER BY session_summary_key ASC`,
+    )
+    .all(sessionId) as Array<{
+    session_summary_key: string;
+    session_id: string;
+    repository: string | null;
+    cwd: string | null;
+    branch: string | null;
+    worktree: string | null;
+    actor: string | null;
+    machine: string;
+    origin_scope: string;
+    title: string;
+    status: string;
+    first_intent_ts_ms: number | null;
+    last_intent_ts_ms: number | null;
+    intent_count: number;
+    edit_count: number;
+    landed_edit_count: number;
+    open_edit_count: number;
+    summary_text: string | null;
+    projection_hash: string;
+    projected_at_ms: number;
+    source_last_seen_at_ms: number | null;
+    reason_json: string | null;
+  }>;
+
+  const enrichments = db
+    .prepare(
+      `SELECT session_summary_key, session_id, summary_text, summary_source,
+              summary_runner, summary_model, summary_version,
+              summary_generated_at_ms, projection_hash, summary_input_hash,
+              summary_policy_hash, enriched_input_hash,
+              enriched_message_count, dirty, dirty_reason_json,
+              last_material_change_at_ms, last_attempted_at_ms,
+              failure_count, last_error
+       FROM session_summary_enrichments
+       WHERE session_id = ?
+       ORDER BY session_summary_key ASC`,
+    )
+    .all(sessionId) as Array<{
+    session_summary_key: string;
+    session_id: string;
+    summary_text: string | null;
+    summary_source: string | null;
+    summary_runner: string | null;
+    summary_model: string | null;
+    summary_version: number;
+    summary_generated_at_ms: number | null;
+    projection_hash: string | null;
+    summary_input_hash: string | null;
+    summary_policy_hash: string | null;
+    enriched_input_hash: string | null;
+    enriched_message_count: number | null;
+    dirty: number;
+    dirty_reason_json: string | null;
+    last_material_change_at_ms: number | null;
+    last_attempted_at_ms: number | null;
+    failure_count: number;
+    last_error: string | null;
+  }>;
+
+  const memberships = db
+    .prepare(
+      `SELECT s.session_summary_key, s.session_id, u.intent_key,
+              m.membership_kind, m.source, m.score, m.reason_json
+       FROM intent_session_summaries m
+       JOIN session_summaries s ON s.id = m.session_summary_id
+       JOIN intent_units u ON u.id = m.intent_unit_id
+       WHERE s.session_id = ?
+       ORDER BY s.session_summary_key ASC, u.intent_key ASC`,
+    )
+    .all(sessionId) as Array<{
+    session_summary_key: string;
+    session_id: string;
+    intent_key: string;
+    membership_kind: string;
+    source: string;
+    score: number;
+    reason_json: string | null;
+  }>;
+
+  const codeProvenance = db
+    .prepare(
+      `SELECT s.session_summary_key, s.session_id, p.repository, p.file_path,
+              p.binding_level, p.start_line, p.end_line, p.snippet_hash,
+              p.snippet_preview, p.language, p.symbol_kind, p.symbol_name,
+              p.actor, p.machine, p.origin_scope, u.intent_key, e.edit_key,
+              p.status, p.confidence, p.file_hash, p.established_at_ms,
+              p.verified_at_ms
+       FROM code_provenance p
+       JOIN session_summaries s ON s.id = p.session_summary_id
+       JOIN intent_units u ON u.id = p.intent_unit_id
+       LEFT JOIN intent_edits e ON e.id = p.intent_edit_id
+       WHERE s.session_id = ?
+       ORDER BY s.session_summary_key ASC, p.repository ASC, p.file_path ASC, p.id ASC`,
+    )
+    .all(sessionId) as Array<{
+    session_summary_key: string;
+    session_id: string;
+    repository: string;
+    file_path: string;
+    binding_level: string;
+    start_line: number | null;
+    end_line: number | null;
+    snippet_hash: string | null;
+    snippet_preview: string | null;
+    language: string | null;
+    symbol_kind: string | null;
+    symbol_name: string | null;
+    actor: string | null;
+    machine: string;
+    origin_scope: string;
+    intent_key: string;
+    edit_key: string | null;
+    status: string;
+    confidence: number;
+    file_hash: string | null;
+    established_at_ms: number;
+    verified_at_ms: number;
+  }>;
+
+  return {
+    sessionId: sessionId,
+    summaries: summaries.map(
+      (row): SessionSummarySyncRecord => ({
+        sessionSummaryKey: row.session_summary_key,
+        sessionId: row.session_id,
+        repository: row.repository,
+        cwd: row.cwd,
+        branch: row.branch,
+        worktree: row.worktree,
+        actor: row.actor,
+        machine: row.machine,
+        originScope: row.origin_scope,
+        title: row.title,
+        status: row.status,
+        firstIntentTsMs: row.first_intent_ts_ms,
+        lastIntentTsMs: row.last_intent_ts_ms,
+        intentCount: row.intent_count,
+        editCount: row.edit_count,
+        landedEditCount: row.landed_edit_count,
+        openEditCount: row.open_edit_count,
+        summaryText: row.summary_text,
+        projectionHash: row.projection_hash,
+        projectedAtMs: row.projected_at_ms,
+        sourceLastSeenAtMs: row.source_last_seen_at_ms,
+        reasonJson: row.reason_json,
+      }),
+    ),
+    enrichments: enrichments.map(
+      (row): SessionSummaryEnrichmentSyncRecord => ({
+        sessionSummaryKey: row.session_summary_key,
+        sessionId: row.session_id,
+        summaryText: row.summary_text,
+        summarySource: row.summary_source,
+        summaryRunner: row.summary_runner,
+        summaryModel: row.summary_model,
+        summaryVersion: row.summary_version,
+        summaryGeneratedAtMs: row.summary_generated_at_ms,
+        projectionHash: row.projection_hash,
+        summaryInputHash: row.summary_input_hash,
+        summaryPolicyHash: row.summary_policy_hash,
+        enrichedInputHash: row.enriched_input_hash,
+        enrichedMessageCount: row.enriched_message_count,
+        dirty: row.dirty === 1,
+        dirtyReasonJson: row.dirty_reason_json,
+        lastMaterialChangeAtMs: row.last_material_change_at_ms,
+        lastAttemptedAtMs: row.last_attempted_at_ms,
+        failureCount: row.failure_count,
+        lastError: row.last_error,
+      }),
+    ),
+    memberships: memberships.map(
+      (row): IntentSessionSummarySyncRecord => ({
+        sessionSummaryKey: row.session_summary_key,
+        sessionId: row.session_id,
+        intentKey: row.intent_key,
+        membershipKind: row.membership_kind,
+        source: row.source,
+        score: row.score,
+        reasonJson: row.reason_json,
+      }),
+    ),
+    codeProvenance: codeProvenance.map(
+      (row): CodeProvenanceSyncRecord => ({
+        sessionSummaryKey: row.session_summary_key,
+        sessionId: row.session_id,
+        repository: row.repository,
+        filePath: row.file_path,
+        bindingLevel: row.binding_level,
+        startLine: row.start_line,
+        endLine: row.end_line,
+        snippetHash: row.snippet_hash,
+        snippetPreview: row.snippet_preview,
+        language: row.language,
+        symbolKind: row.symbol_kind,
+        symbolName: row.symbol_name,
+        actor: row.actor,
+        machine: row.machine,
+        originScope: row.origin_scope,
+        intentKey: row.intent_key,
+        intentEditKey: row.edit_key,
+        status: row.status,
+        confidence: row.confidence,
+        fileHash: row.file_hash,
+        establishedAtMs: row.established_at_ms,
+        verifiedAtMs: row.verified_at_ms,
+      }),
+    ),
+  };
 }
 
 // ── Per-session readers (for gated sync) ──────────────────────────────────

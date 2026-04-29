@@ -8,7 +8,12 @@ export {
 export { createSyncLoop } from "./loop.js";
 export { TABLE_SYNC_REGISTRY } from "./registry.js";
 export type {
+  CodeProvenanceSyncRecord,
+  IntentSessionSummarySyncRecord,
   RepoConfigSnapshotRecord,
+  SessionDerivedStateSyncRecord,
+  SessionSummaryEnrichmentSyncRecord,
+  SessionSummarySyncRecord,
   SessionSyncRecord,
   SyncFilter,
   SyncHandle,
