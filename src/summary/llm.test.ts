@@ -1,9 +1,10 @@
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-  execFileMock,
   execFileSyncMock,
+  spawnMock,
   spawnSyncMock,
   existsSyncMock,
   readFileSyncMock,
@@ -15,8 +16,8 @@ const {
   errorMock,
   debugMock,
 } = vi.hoisted(() => ({
-  execFileMock: vi.fn(),
   execFileSyncMock: vi.fn(),
+  spawnMock: vi.fn(),
   spawnSyncMock: vi.fn(),
   existsSyncMock: vi.fn(),
   readFileSyncMock: vi.fn(),
@@ -30,8 +31,8 @@ const {
 }));
 
 vi.mock("node:child_process", () => ({
-  execFile: execFileMock,
   execFileSync: execFileSyncMock,
+  spawn: spawnMock,
   spawnSync: spawnSyncMock,
 }));
 
@@ -81,25 +82,31 @@ describe("summary llm wrapper", () => {
     vi.resetModules();
     vi.clearAllMocks();
     execFileSyncMock.mockReturnValue("/usr/local/bin/claude");
-    execFileMock.mockImplementation(
-      (
-        _file: string,
-        _args: string[],
-        _opts: unknown,
-        callback: (error: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        callback(
-          null,
-          JSON.stringify({
-            type: "result",
-            subtype: "success",
-            is_error: false,
-            result: "OK",
-          }),
-          "",
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: () => void;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn();
+      process.nextTick(() => {
+        child.stdout.emit(
+          "data",
+          Buffer.from(
+            JSON.stringify({
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              result: "OK",
+            }),
+          ),
         );
-      },
-    );
+        child.emit("close", 0, null);
+      });
+      return child;
+    });
     spawnSyncMock.mockReturnValue({
       stdout: Buffer.from(
         JSON.stringify({
@@ -128,6 +135,54 @@ describe("summary llm wrapper", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("detects agents with where.exe on Windows", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+    });
+    execFileSyncMock.mockReturnValue(
+      "C:\\Users\\Gus\\AppData\\Roaming\\npm\\codex\r\n",
+    );
+
+    try {
+      const { detectAgent } = await loadLlm();
+
+      expect(detectAgent("codex")).toBe(
+        "C:\\Users\\Gus\\AppData\\Roaming\\npm\\codex.cmd",
+      );
+      expect(existsSyncMock).toHaveBeenCalledWith(
+        "C:\\Users\\Gus\\AppData\\Roaming\\npm\\codex.cmd",
+      );
+      expect(execFileSyncMock).toHaveBeenCalledWith("where.exe", ["codex"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } finally {
+      if (platform) Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("detects agents with which outside Windows", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", {
+      value: "linux",
+    });
+
+    try {
+      const { detectAgent } = await loadLlm();
+
+      expect(detectAgent("claude")).toBe("/usr/local/bin/claude");
+      expect(execFileSyncMock).toHaveBeenCalledWith("which", ["claude"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } finally {
+      if (platform) Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("parses successful Claude print JSON", async () => {
@@ -235,9 +290,9 @@ describe("summary llm wrapper", () => {
 
     await expect(invokeLlmAsync("Summarize this")).resolves.toBe("OK");
 
-    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(spawnSyncMock).not.toHaveBeenCalled();
-    const [binary, args, options] = execFileMock.mock.calls[0] as [
+    const [binary, args, options] = spawnMock.mock.calls[0] as [
       string,
       string[],
       {
@@ -369,6 +424,7 @@ describe("summary llm wrapper", () => {
         "--output-last-message",
       ]),
     );
+    expect(args.at(-1)).toBe("Summarize this");
     expect(options.cwd).toBe(
       path.join("/tmp/panopticon-summary-tests", "codex-headless"),
     );
@@ -378,29 +434,54 @@ describe("summary llm wrapper", () => {
     );
   });
 
+  it("unwraps Windows npm cmd shims before spawning codex", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+    });
+    execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
+      if (args[0] === "codex") return "C:\\Users\\Gus\\AppData\\Roaming\\npm\\codex";
+      return "C:\\Users\\Gus\\AppData\\Roaming\\npm\\claude";
+    });
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath.endsWith("codex.cmd")) {
+        return '@ECHO off\r\n"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n';
+      }
+      return "OK";
+    });
+
+    try {
+      const { invokeLlm } = await loadLlm();
+
+      expect(invokeLlm("Summarize this", { runner: "codex" })).toBe("OK");
+
+      const [binary, args] = spawnSyncMock.mock.calls[0] as [
+        string,
+        string[],
+      ];
+      expect(binary).toBe(process.execPath);
+      expect(args[0]).toBe(
+        "C:\\Users\\Gus\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
+      );
+      expect(args).toContain("Summarize this");
+    } finally {
+      if (platform) Object.defineProperty(process, "platform", platform);
+    }
+  });
+
   it("supports asynchronous Codex invocation for pooled enrichment work", async () => {
     execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === "codex") return "/usr/local/bin/codex";
       return "/usr/local/bin/claude";
     });
-    execFileMock.mockImplementation(
-      (
-        _file: string,
-        _args: string[],
-        _opts: unknown,
-        callback: (error: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        callback(null, "codex stdout", "");
-      },
-    );
     const { invokeLlmAsync } = await loadLlm();
 
     await expect(
       invokeLlmAsync("Summarize this", { runner: "codex" }),
     ).resolves.toBe("OK");
 
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    const [binary, args, options] = execFileMock.mock.calls[0] as [
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [binary, args, options] = spawnMock.mock.calls[0] as [
       string,
       string[],
       { cwd: string },
@@ -419,6 +500,7 @@ describe("summary llm wrapper", () => {
         "--output-last-message",
       ]),
     );
+    expect(args.at(-1)).toBe("Summarize this");
     expect(options.cwd).toBe(
       path.join("/tmp/panopticon-summary-tests", "codex-headless"),
     );
