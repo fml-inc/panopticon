@@ -641,8 +641,9 @@ async function install(
     "server.js",
   );
   const logFd = openLogFd("server");
-  const child = spawn("node", [serverScript], {
+  const child = spawn(process.execPath, [serverScript], {
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", logFd, logFd],
     env: { ...process.env, PANOPTICON_PORT: String(config.port) },
   });
@@ -703,8 +704,9 @@ program
     );
     const logFd = openLogFd("server");
 
-    const child = spawn("node", [serverScript], {
+    const child = spawn(process.execPath, [serverScript], {
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", logFd, logFd],
       env: {
         ...process.env,

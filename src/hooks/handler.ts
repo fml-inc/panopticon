@@ -144,8 +144,9 @@ function startServer(): void {
 
   const logFd = openLogFd("server");
 
-  const child = spawn("node", [serverScript], {
+  const child = spawn(process.execPath, [serverScript], {
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", logFd, logFd],
     env: {
       ...process.env,
@@ -166,6 +167,12 @@ async function readStdin(): Promise<string> {
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString("utf-8");
+}
+
+function writeJsonResponse(value: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve) => {
+    process.stdout.write(JSON.stringify(value), () => resolve());
+  });
 }
 
 function postToServer(
@@ -251,7 +258,7 @@ export async function runHandler(opts: {
   // After uninstall --purge the data dir is gone. Exit silently to avoid
   // resurrecting it — hooks must never block the calling CLI.
   if (!fs.existsSync(config.dataDir)) {
-    process.stdout.write(JSON.stringify({}));
+    await writeJsonResponse({});
     return;
   }
 
@@ -353,7 +360,7 @@ export async function runHandler(opts: {
       result = {};
     }
 
-    process.stdout.write(JSON.stringify(result));
+    await writeJsonResponse(result);
     logHook("debug", "response written", {
       bytes: Buffer.byteLength(JSON.stringify(result)),
     });
@@ -365,7 +372,7 @@ export async function runHandler(opts: {
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);
     }
-    process.stdout.write(JSON.stringify({ error: "panopticon hook failed" }));
+    await writeJsonResponse({ error: "panopticon hook failed" });
   }
 }
 
@@ -382,5 +389,6 @@ if (
   // CLI args are set at install time: `node hook-handler <target> <port> [--proxy]`
   // When invoked without args (e.g. by Claude Code's plugin system), falls back
   // to config defaults and server-side target detection.
-  runHandler(parseArgs(process.argv));
+  await runHandler(parseArgs(process.argv));
+  process.exit(0);
 }

@@ -45,7 +45,7 @@ describe("codex install config", () => {
     expect(result.mcp_servers).toMatchObject({
       panopticon: {
         command: "node",
-        args: ["/app/bin/mcp-server"],
+        args: [path.join("/app", "bin", "mcp-server")],
         tools: {
           search_intent: { approval_mode: "approve" },
           query: { approval_mode: "deny" },

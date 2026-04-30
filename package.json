@@ -19,6 +19,7 @@
     "bin/",
     "dist/",
     "hooks/",
+    "scripts/postinstall.js",
     "skills/",
     ".claude-plugin/"
   ],

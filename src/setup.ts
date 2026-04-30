@@ -196,6 +196,13 @@ function removeManagedBlockFromFile(filePath: string): boolean {
 export function buildPanopticonEnvVars(
   proxy: boolean,
 ): Array<[string, string]> {
+  return buildPanopticonEnvVarsForTarget("all", proxy);
+}
+
+function buildPanopticonEnvVarsForTarget(
+  target: string,
+  proxy: boolean,
+): Array<[string, string]> {
   const token = getOrCreateAuthToken();
   const vars: Array<[string, string]> = [
     ["OTEL_EXPORTER_OTLP_ENDPOINT", `http://localhost:${config.port}`],
@@ -209,7 +216,7 @@ export function buildPanopticonEnvVars(
     ["OTEL_LOG_USER_PROMPTS", "1"],
     ["OTEL_METRIC_EXPORT_INTERVAL", "10000"],
   ];
-  for (const t of allTargets()) {
+  for (const t of selectedTargets(target)) {
     for (const [name, value] of t.shellEnv.envVars(config.port, proxy)) {
       vars.push([name, value]);
     }
@@ -231,9 +238,10 @@ export function buildPanopticonEnvVars(
 export function writePanopticonEnvFiles(
   proxy: boolean,
   context: ShellEnvContext = {},
+  target = "all",
 ): string[] {
   const dataDir = runtimeDataDir(context);
-  const vars = buildPanopticonEnvVars(proxy);
+  const vars = buildPanopticonEnvVarsForTarget(target, proxy);
   fs.mkdirSync(dataDir, { recursive: true });
   if (runtimePlatform(context) === "win32") {
     const psPath = path.join(dataDir, "env.ps1");
@@ -281,8 +289,9 @@ export function writePanopticonEnvFiles(
 export function writePanopticonEnvFile(
   proxy: boolean,
   context: ShellEnvContext = {},
+  target = "all",
 ): string {
-  return writePanopticonEnvFiles(proxy, context)[0];
+  return writePanopticonEnvFiles(proxy, context, target)[0];
 }
 
 /**
@@ -330,7 +339,7 @@ export function configureShellEnvDetailed(
   const target = opts.target ?? "claude";
   const proxy = opts.proxy ?? false;
   const authToken = getOrCreateAuthToken();
-  const envFiles = writePanopticonEnvFiles(proxy, context);
+  const envFiles = writePanopticonEnvFiles(proxy, context, target);
 
   if (runtimePlatform(context) === "win32") {
     const envFile = envFiles[0];
