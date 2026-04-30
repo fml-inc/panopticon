@@ -193,8 +193,25 @@ function postToServer(
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("end", () => {
+          const responseText = Buffer.concat(chunks).toString("utf-8");
+          if (
+            res.statusCode &&
+            (res.statusCode < 200 || res.statusCode >= 300)
+          ) {
+            reject(
+              new Error(
+                `server returned ${res.statusCode}: ${responseText.slice(0, 200)}`,
+              ),
+            );
+            return;
+          }
           try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString("utf-8")));
+            const parsed = JSON.parse(responseText);
+            resolve(
+              parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                ? (parsed as Record<string, unknown>)
+                : {},
+            );
           } catch {
             resolve({});
           }
@@ -209,6 +226,23 @@ function postToServer(
     req.write(body);
     req.end();
   });
+}
+
+/**
+ * Codex validates hook stdout against the event-specific hook-output schema.
+ * Panopticon server/client failures are operational errors, not hook decisions,
+ * so never surface a bare `{ "error": ... }` object to the calling CLI.
+ */
+export function normalizeHookOutput(
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Object.hasOwn(result, "error")) {
+    return result;
+  }
+
+  const sanitized = { ...result };
+  delete sanitized.error;
+  return sanitized;
 }
 
 /** Parse CLI args: `node hook-handler [target] [port] [--proxy]` */
@@ -270,7 +304,8 @@ export async function runHandler(opts: {
     const input = await readStdin();
     if (!input.trim()) {
       logHook("debug", "empty stdin");
-      process.exit(0);
+      process.stdout.write(JSON.stringify({}));
+      return;
     }
 
     logHook("debug", "stdin received", { bytes: Buffer.byteLength(input) });
@@ -344,12 +379,14 @@ export async function runHandler(opts: {
     let result: Record<string, unknown>;
     try {
       logHook("debug", "posting to server", { port });
-      result = await postToServer(data, port);
+      result = normalizeHookOutput(await postToServer(data, port));
       logHook("debug", "server post succeeded", {
         resultKeys: Object.keys(result),
       });
-    } catch {
-      logHook("warn", "server post failed, dropping event");
+    } catch (err) {
+      logHook("warn", "server post failed, dropping event", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       result = {};
     }
 
@@ -365,7 +402,7 @@ export async function runHandler(opts: {
     if (process.env.PANOPTICON_DEBUG) {
       console.error("panopticon hook error:", err);
     }
-    process.stdout.write(JSON.stringify({ error: "panopticon hook failed" }));
+    process.stdout.write(JSON.stringify({}));
   }
 }
 
