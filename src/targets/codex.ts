@@ -66,6 +66,10 @@ function writeHooksJson(data: Record<string, unknown>): void {
   fs.writeFileSync(CODEX_HOOKS_JSON, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+function quoteCommandArg(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -237,7 +241,9 @@ const codex: TargetAdapter = {
       const hooksFile = readHooksJson();
       const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
       const proxyFlag = opts.proxy ? " --proxy" : "";
-      const command = `node ${hookBin} codex ${opts.port}${proxyFlag}`;
+      const command = `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+        hookBin,
+      )} codex ${opts.port}${proxyFlag}`;
       for (const event of HOOK_EVENTS) {
         const groups = (hooks[event] ?? []) as Array<Record<string, unknown>>;
         // Remove existing panopticon groups

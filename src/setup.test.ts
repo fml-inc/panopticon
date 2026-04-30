@@ -16,6 +16,15 @@ function panopticonBlock(content: string): { start: number; end: number } {
   };
 }
 
+function hasCommand(command: string): boolean {
+  const pathExt =
+    process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
+  const pathDirs = (process.env.PATH ?? "").split(path.delimiter);
+  return pathDirs.some((dir) =>
+    pathExt.some((ext) => fs.existsSync(path.join(dir, `${command}${ext}`))),
+  );
+}
+
 describe("configureShellEnv", () => {
   afterEach(() => {
     if (ORIGINAL_HOME === undefined) delete process.env.HOME;
@@ -61,7 +70,10 @@ describe("configureShellEnv", () => {
     );
 
     const { configureShellEnv } = await import("./setup.js");
-    configureShellEnv({ target: "claude", proxy: true, force: true });
+    configureShellEnv(
+      { target: "claude", proxy: true, force: true },
+      { platform: "linux", homeDir: tmpHome, shell: "/bin/zsh" },
+    );
 
     const content = fs.readFileSync(shellRc, "utf-8");
     const lines = content.split("\n");
@@ -106,7 +118,10 @@ describe("configureShellEnv", () => {
     );
 
     const { configureShellEnv } = await import("./setup.js");
-    configureShellEnv({ target: "claude", proxy: true, force: true });
+    configureShellEnv(
+      { target: "claude", proxy: true, force: true },
+      { platform: "linux", homeDir: tmpHome, shell: "/bin/zsh" },
+    );
 
     const content = fs.readFileSync(shellRc, "utf-8");
     const lines = content.split("\n");
@@ -177,6 +192,7 @@ describe("configureShellEnv", () => {
       "$env:OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%20test-token-win'",
     );
     expect(psContent).toContain("$env:CLAUDE_CODE_ENABLE_TELEMETRY = '1'");
+    expect(psContent).not.toContain("$env:GEMINI_TELEMETRY_ENABLED");
     expect(psContent).toMatch(
       /\$env:ANTHROPIC_BASE_URL = 'http:\/\/localhost:\d+\/proxy\/anthropic'/,
     );
@@ -189,6 +205,7 @@ describe("configureShellEnv", () => {
       'set "OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%%20test-token-win"',
     );
     expect(cmdContent).toContain('set "CLAUDE_CODE_ENABLE_TELEMETRY=1"');
+    expect(cmdContent).not.toContain('set "GEMINI_TELEMETRY_ENABLED=');
   });
 
   it("removes panopticon blocks from Windows PowerShell profiles", async () => {
@@ -244,7 +261,10 @@ describe("writePanopticonEnvFile", () => {
     process.env.PANOPTICON_AUTH_TOKEN = "test-token-abc";
 
     const { writePanopticonEnvFile } = await import("./setup.js");
-    const envFile = writePanopticonEnvFile(false);
+    const envFile = writePanopticonEnvFile(false, {
+      platform: "linux",
+      dataDir: tmpDir,
+    });
 
     expect(envFile).toBe(path.join(tmpDir, "env.sh"));
     const content = fs.readFileSync(envFile, "utf-8");
@@ -258,36 +278,52 @@ describe("writePanopticonEnvFile", () => {
     expect(content).toContain("export OTEL_LOGS_EXPORTER=otlp");
   });
 
-  it("file is mode 0600 (contains the auth token)", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envsh-"));
-    process.env.PANOPTICON_DATA_DIR = tmpDir;
-    process.env.PANOPTICON_AUTH_TOKEN = "test-token-mode";
+  it.skipIf(process.platform === "win32")(
+    "file is mode 0600 (contains the auth token)",
+    async () => {
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "panopticon-envsh-"),
+      );
+      process.env.PANOPTICON_DATA_DIR = tmpDir;
+      process.env.PANOPTICON_AUTH_TOKEN = "test-token-mode";
 
-    const { writePanopticonEnvFile } = await import("./setup.js");
-    const envFile = writePanopticonEnvFile(false);
-    const stat = fs.statSync(envFile);
-    expect(stat.mode & 0o777).toBe(0o600);
-  });
+      const { writePanopticonEnvFile } = await import("./setup.js");
+      const envFile = writePanopticonEnvFile(false, {
+        platform: "linux",
+        dataDir: tmpDir,
+      });
+      const stat = fs.statSync(envFile);
+      expect(stat.mode & 0o777).toBe(0o600);
+    },
+  );
 
-  it("can be sourced by /bin/sh and exports the variables", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envsh-"));
-    process.env.PANOPTICON_DATA_DIR = tmpDir;
-    process.env.PANOPTICON_AUTH_TOKEN = "test-token-source";
+  it.skipIf(!hasCommand("bash"))(
+    "can be sourced by /bin/sh and exports the variables",
+    async () => {
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "panopticon-envsh-"),
+      );
+      process.env.PANOPTICON_DATA_DIR = tmpDir;
+      process.env.PANOPTICON_AUTH_TOKEN = "test-token-source";
 
-    const { writePanopticonEnvFile } = await import("./setup.js");
-    const envFile = writePanopticonEnvFile(false);
+      const { writePanopticonEnvFile } = await import("./setup.js");
+      const envFile = writePanopticonEnvFile(false, {
+        platform: "linux",
+        dataDir: tmpDir,
+      });
 
-    // The whole point of this file is that a non-interactive shell can
-    // source it without the bashrc-guard problem. Verify with a real
-    // bash subprocess.
-    const { execFileSync } = await import("node:child_process");
-    const out = execFileSync(
-      "bash",
-      ["-c", `source "${envFile}" && echo "$OTEL_EXPORTER_OTLP_HEADERS"`],
-      { encoding: "utf-8" },
-    ).trim();
-    expect(out).toBe("Authorization=Bearer%20test-token-source");
-  });
+      // The whole point of this file is that a non-interactive shell can
+      // source it without the bashrc-guard problem. Verify with a real
+      // bash subprocess.
+      const { execFileSync } = await import("node:child_process");
+      const out = execFileSync(
+        "bash",
+        ["-c", `source "${envFile}" && echo "$OTEL_EXPORTER_OTLP_HEADERS"`],
+        { encoding: "utf-8" },
+      ).trim();
+      expect(out).toBe("Authorization=Bearer%20test-token-source");
+    },
+  );
 
   it("writes Windows env.ps1 and env.cmd variants", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envwin-"));
@@ -309,5 +345,27 @@ describe("writePanopticonEnvFile", () => {
     expect(fs.readFileSync(envFiles[1], "utf-8")).toContain(
       'set "OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%%20test-token-win-files"',
     );
+  });
+
+  it("filters Windows env files to the selected target", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envwin-"));
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-win-target";
+
+    const { writePanopticonEnvFiles } = await import("./setup.js");
+    const envFiles = writePanopticonEnvFiles(
+      false,
+      {
+        platform: "win32",
+        dataDir: tmpDir,
+      },
+      "claude",
+    );
+
+    const psContent = fs.readFileSync(envFiles[0], "utf-8");
+    const cmdContent = fs.readFileSync(envFiles[1], "utf-8");
+    expect(psContent).toContain("$env:CLAUDE_CODE_ENABLE_TELEMETRY = '1'");
+    expect(psContent).not.toContain("$env:GEMINI_TELEMETRY_ENABLED");
+    expect(cmdContent).toContain('set "CLAUDE_CODE_ENABLE_TELEMETRY=1"');
+    expect(cmdContent).not.toContain('set "GEMINI_TELEMETRY_ENABLED=');
   });
 });
