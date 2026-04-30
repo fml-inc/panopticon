@@ -244,6 +244,43 @@ describe("configureShellEnv", () => {
       expect(content).not.toContain("# <<< panopticon <<<");
     }
   });
+
+  it("quotes Windows env paths with spaces and apostrophes", async () => {
+    const tmpRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon O'Brien root "),
+    );
+    const tmpHome = path.join(tmpRoot, "home with spaces");
+    const tmpDataDir = path.join(tmpRoot, "data O'Brien dir");
+    const previousAuthToken = process.env.PANOPTICON_AUTH_TOKEN;
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-win-quotes";
+
+    try {
+      const { configureShellEnvDetailed } = await import("./setup.js");
+      const result = configureShellEnvDetailed(
+        { target: "claude", proxy: true, force: true },
+        {
+          platform: "win32",
+          homeDir: tmpHome,
+          dataDir: tmpDataDir,
+        },
+      );
+
+      const envPath = path.join(tmpDataDir, "env.ps1");
+      const quotedEnvPath = `'${envPath.replace(/'/g, "''")}'`;
+
+      for (const update of result.profileUpdates) {
+        const content = fs.readFileSync(update.path, "utf-8");
+        expect(content).toContain(`if (Test-Path ${quotedEnvPath}) {`);
+        expect(content).toContain(`  . ${quotedEnvPath}`);
+      }
+    } finally {
+      if (previousAuthToken === undefined) {
+        delete process.env.PANOPTICON_AUTH_TOKEN;
+      } else {
+        process.env.PANOPTICON_AUTH_TOKEN = previousAuthToken;
+      }
+    }
+  });
 });
 
 describe("writePanopticonEnvFile", () => {
