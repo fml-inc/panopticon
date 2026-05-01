@@ -91,28 +91,15 @@ const pi: TargetAdapter = {
       if (fs.existsSync(EXTENSION_DEST)) {
         fs.unlinkSync(EXTENSION_DEST);
       }
-      // Filter out any stale settings.json entry a previous install may have
-      // added. Exact-match on EXTENSION_DEST so we only touch what we own.
-      const settings = { ...existing };
-      const existingExtensions = settings.extensions;
-      if (Array.isArray(existingExtensions)) {
-        const filtered = existingExtensions.filter(
-          (e) => typeof e !== "string" || e !== EXTENSION_DEST,
-        );
-        if (filtered.length !== existingExtensions.length) {
-          settings.extensions = filtered.length > 0 ? filtered : undefined;
-        }
-      }
-      return settings;
+      return existing;
     },
   },
 
   shellEnv: {
     // Emit the extension's connection vars unconditionally so that setup.ts's
-    // .bashrc cleanup pass recognizes them as ours. Users who need a non-local
-    // panopticon (e.g. Pi in a container talking to panopticon on the host)
-    // set PANOPTICON_HOST themselves — via docker-compose env or their shell
-    // rc — and that always overrides what we write here.
+    // .bashrc cleanup pass recognizes them as ours. Container deployments
+    // override via subprocess env (e.g. docker-compose); shell rc edits
+    // inside the panopticon block don't survive `panopticon install --force`.
     envVars(port) {
       return [
         ["PANOPTICON_HOST", "127.0.0.1"],

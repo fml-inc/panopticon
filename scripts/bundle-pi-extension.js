@@ -27,7 +27,6 @@ await build({
   target: "node18",
   outfile: outFile,
   external: ["@mariozechner/pi-coding-agent"],
-  sourcemap: true,
   logLevel: "warning",
 });
 
