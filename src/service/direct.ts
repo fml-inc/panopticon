@@ -54,7 +54,12 @@ import {
   sessionSummaryDetail,
   whyCode,
 } from "../session_summaries/query.js";
-import { addTarget, listTargets, removeTarget } from "../sync/config.js";
+import {
+  addTarget,
+  listTargets,
+  loadSyncConfig,
+  removeTarget,
+} from "../sync/config.js";
 import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
 import type { SyncTarget } from "../sync/types.js";
 import {
@@ -394,6 +399,11 @@ export function createDirectPanopticonService(): PanopticonService {
       return { targets: listTargets() };
     },
     async syncTargetAdd(target: SyncTargetAddInput) {
+      if (loadSyncConfig().enabled === false) {
+        throw new Error(
+          'sync is disabled; run "panopticon sync enable" before adding sync targets',
+        );
+      }
       const syncTarget = target as SyncTarget;
       if (!syncTarget.name) throw new Error("name is required");
       if (!syncTarget.url) throw new Error("url is required");

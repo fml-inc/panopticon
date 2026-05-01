@@ -20,6 +20,8 @@ export interface UnifiedConfig {
    *  error paths are reported to Sentry. */
   sentryDsn?: string;
   sync: {
+    /** Whether remote sync loops should run. Defaults to true. */
+    enabled?: boolean;
     targets: SyncTarget[];
     filter?: SyncFilter;
   };
@@ -34,7 +36,10 @@ const DEFAULT_RETENTION: RetentionConfig = {
 };
 
 function defaultConfig(): UnifiedConfig {
-  return { sync: { targets: [] }, retention: { ...DEFAULT_RETENTION } };
+  return {
+    sync: { enabled: true, targets: [] },
+    retention: { ...DEFAULT_RETENTION },
+  };
 }
 
 // ── Paths ────────────────────────────────────────────────────────────────────
@@ -55,7 +60,7 @@ function mergeDefaults(raw: Partial<UnifiedConfig>): UnifiedConfig {
   return {
     hooksInstalled: raw.hooksInstalled,
     sentryDsn: raw.sentryDsn,
-    sync: raw.sync ?? { targets: [] },
+    sync: { enabled: true, targets: [], ...(raw.sync ?? {}) },
     retention,
   };
 }

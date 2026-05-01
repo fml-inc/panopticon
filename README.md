@@ -179,6 +179,7 @@ but they become much richer once projections are enabled.
 panopticon install          Register hooks, init DB, configure shell
   --target <t>              Target: claude, gemini, codex, claude-desktop, pi, all (default: all)
   --proxy                   Route API traffic through the panopticon proxy
+  --disable-sync            Disable remote sync and skip Git detection
   --force                   Overwrite customized env vars with defaults
 
 panopticon uninstall        Remove hooks, shell config, and optionally all data
@@ -212,6 +213,8 @@ panopticon print <src> <id> Get full details for a record by source and ID
 panopticon query <sql>      Raw read-only SQL query
 panopticon db-stats         Show database row counts
 
+panopticon sync enable            Enable remote sync
+panopticon sync disable           Disable remote sync
 panopticon sync add <name> <url>  Add or update a sync target
 panopticon sync remove <name>     Remove a sync target
 panopticon sync list              List sync targets

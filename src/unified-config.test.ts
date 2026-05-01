@@ -77,6 +77,7 @@ describe("unified config", () => {
   it("save and load round-trips", () => {
     const original = {
       sync: {
+        enabled: true,
         targets: [{ name: "t", url: "http://t", token: "secret" }],
         filter: { excludeRepos: ["private/*"] },
       },
@@ -84,7 +85,11 @@ describe("unified config", () => {
     };
     saveUnifiedConfig(original);
     const loaded = loadUnifiedConfig();
-    expect(loaded).toEqual(original);
+    expect(loaded).toEqual({
+      hooksInstalled: undefined,
+      sentryDsn: undefined,
+      ...original,
+    });
   });
 
   it("loadRetentionConfig returns just retention", () => {
