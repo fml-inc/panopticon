@@ -19,6 +19,7 @@ import {
   loadSyncConfig,
   removeTarget,
   saveSyncConfig,
+  setSyncEnabled,
 } from "./config.js";
 
 describe("sync config", () => {
@@ -69,6 +70,22 @@ describe("sync config", () => {
     expect(cfg.enabled).toBe(false);
     expect(cfg.targets).toHaveLength(1);
     expect(cfg.targets[0].name).toBe("prod");
+  });
+
+  it("toggles sync without changing targets or filters", () => {
+    saveSyncConfig({
+      targets: [{ name: "test", url: "http://localhost:4318" }],
+      filter: { includeRepos: ["org/*"] },
+    });
+    let cfg = setSyncEnabled(false);
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.targets[0].name).toBe("test");
+    expect(cfg.filter?.includeRepos).toEqual(["org/*"]);
+
+    cfg = setSyncEnabled(true);
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.targets[0].name).toBe("test");
+    expect(cfg.filter?.includeRepos).toEqual(["org/*"]);
   });
 
   it("addTarget creates new target", () => {

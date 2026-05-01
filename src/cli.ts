@@ -31,9 +31,10 @@ import {
 import { readScannerStatus } from "./scanner/status.js";
 import { httpPanopticonService } from "./service/http.js";
 import { writePanopticonEnvFile } from "./setup.js";
+import { setSyncEnabled } from "./sync/config.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
-import { loadUnifiedConfig, saveUnifiedConfig } from "./unified-config.js";
+import { loadUnifiedConfig } from "./unified-config.js";
 
 const service = httpPanopticonService;
 
@@ -119,28 +120,32 @@ function isGitAvailable(): boolean {
 }
 
 function configureSyncEnabled(enabled: boolean): void {
-  const cfg = loadUnifiedConfig();
-  cfg.sync.enabled = enabled;
-  saveUnifiedConfig(cfg);
+  setSyncEnabled(enabled);
 }
 
-function requireGitForSync(): void {
+function requireGitForSync(
+  retryCommand = "panopticon install",
+  includeDisableSyncHint = true,
+): void {
   if (isGitAvailable()) return;
 
-  console.error(
-    [
-      "Git is required for Panopticon sync.",
-      "",
-      "Panopticon uses git during ingest to resolve repository attribution.",
-      "Without it, sessions cannot be matched to repos and remote sync will skip them.",
-      "",
-      "Install Git and make sure `git --version` works in your shell, then rerun:",
-      "  panopticon install",
+  const lines = [
+    "Git is required for Panopticon sync.",
+    "",
+    "Panopticon uses git during ingest to resolve repository attribution.",
+    "Without it, sessions cannot be matched to repos and remote sync will skip them.",
+    "",
+    "Install Git and make sure `git --version` works in your shell, then rerun:",
+    `  ${retryCommand}`,
+  ];
+  if (includeDisableSyncHint) {
+    lines.push(
       "",
       "To install with remote sync disabled, rerun:",
       "  panopticon install --disable-sync",
-    ].join("\n"),
-  );
+    );
+  }
+  console.error(lines.join("\n"));
   process.exit(1);
 }
 
@@ -658,7 +663,7 @@ async function install(
   const version = pkgJson?.version ?? "0.0.0-dev";
 
   if (syncEnabled) {
-    requireGitForSync();
+    requireGitForSync("panopticon install");
   }
 
   console.log("[1/5] Initializing database and log directory...");
@@ -1276,7 +1281,30 @@ program
 
 program
   .command("sync")
-  .description("Manage sync targets (OTLP export)")
+  .description("Manage remote sync")
+  .addCommand(
+    new Command("enable").description("Enable remote sync").action(() => {
+      requireGitForSync("panopticon sync enable", false);
+      const cfg = setSyncEnabled(true);
+      console.log("Remote sync enabled.");
+      if (cfg.targets.length === 0) {
+        console.log(
+          "No sync targets configured. Add one with: panopticon sync add <name> <url>",
+        );
+      }
+      console.log("Restart panopticon to apply.");
+    }),
+  )
+  .addCommand(
+    new Command("disable").description("Disable remote sync").action(() => {
+      const cfg = setSyncEnabled(false);
+      console.log("Remote sync disabled.");
+      if (cfg.targets.length > 0) {
+        console.log(`Configured sync targets preserved: ${cfg.targets.length}`);
+      }
+      console.log("Restart panopticon to apply.");
+    }),
+  )
   .addCommand(
     new Command("add")
       .description("Add or update a sync target")

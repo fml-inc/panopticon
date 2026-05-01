@@ -24,6 +24,17 @@ export function saveSyncConfig(syncCfg: SyncConfig): void {
   saveUnifiedConfig(cfg);
 }
 
+export function setSyncEnabled(enabled: boolean): SyncConfig {
+  const cfg = loadUnifiedConfig();
+  cfg.sync.enabled = enabled;
+  saveUnifiedConfig(cfg);
+  return {
+    enabled: cfg.sync.enabled,
+    targets: cfg.sync.targets,
+    filter: cfg.sync.filter,
+  };
+}
+
 export function addTarget(target: SyncTarget): void {
   const cfg = loadUnifiedConfig();
   const existing = cfg.sync.targets.findIndex((t) => t.name === target.name);

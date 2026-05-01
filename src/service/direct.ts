@@ -401,7 +401,7 @@ export function createDirectPanopticonService(): PanopticonService {
     async syncTargetAdd(target: SyncTargetAddInput) {
       if (loadSyncConfig().enabled === false) {
         throw new Error(
-          'sync is disabled; rerun "panopticon install" without --disable-sync before adding sync targets',
+          'sync is disabled; run "panopticon sync enable" before adding sync targets',
         );
       }
       const syncTarget = target as SyncTarget;

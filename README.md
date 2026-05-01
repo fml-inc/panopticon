@@ -211,6 +211,8 @@ panopticon print <src> <id> Get full details for a record by source and ID
 panopticon query <sql>      Raw read-only SQL query
 panopticon db-stats         Show database row counts
 
+panopticon sync enable            Enable remote sync
+panopticon sync disable           Disable remote sync
 panopticon sync add <name> <url>  Add or update a sync target
 panopticon sync remove <name>     Remove a sync target
 panopticon sync list              List sync targets

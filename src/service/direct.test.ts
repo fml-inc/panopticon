@@ -411,7 +411,7 @@ describe("direct service scan", () => {
         name: "fml",
         url: "https://example.com",
       }),
-    ).rejects.toThrow("--disable-sync");
+    ).rejects.toThrow("panopticon sync enable");
 
     expect(addTargetMock).not.toHaveBeenCalled();
   });
