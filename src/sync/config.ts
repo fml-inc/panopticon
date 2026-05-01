@@ -2,17 +2,23 @@ import { loadUnifiedConfig, saveUnifiedConfig } from "../unified-config.js";
 import type { SyncFilter, SyncTarget } from "./types.js";
 
 export interface SyncConfig {
+  enabled?: boolean;
   targets: SyncTarget[];
   filter?: SyncFilter;
 }
 
 export function loadSyncConfig(): SyncConfig {
   const cfg = loadUnifiedConfig();
-  return { targets: cfg.sync.targets, filter: cfg.sync.filter };
+  return {
+    enabled: cfg.sync.enabled,
+    targets: cfg.sync.targets,
+    filter: cfg.sync.filter,
+  };
 }
 
 export function saveSyncConfig(syncCfg: SyncConfig): void {
   const cfg = loadUnifiedConfig();
+  cfg.sync.enabled = syncCfg.enabled ?? true;
   cfg.sync.targets = syncCfg.targets;
   cfg.sync.filter = syncCfg.filter;
   saveUnifiedConfig(cfg);

@@ -32,6 +32,7 @@ describe("sync config", () => {
 
   it("returns empty targets when no config file", () => {
     const cfg = loadSyncConfig();
+    expect(cfg.enabled).toBe(true);
     expect(cfg.targets).toEqual([]);
   });
 
@@ -43,6 +44,17 @@ describe("sync config", () => {
     expect(cfg.targets).toHaveLength(1);
     expect(cfg.targets[0].name).toBe("test");
     expect(cfg.targets[0].url).toBe("http://localhost:4318");
+    expect(cfg.enabled).toBe(true);
+  });
+
+  it("saves disabled sync config", () => {
+    saveSyncConfig({
+      enabled: false,
+      targets: [{ name: "test", url: "http://localhost:4318" }],
+    });
+    const cfg = loadSyncConfig();
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.targets).toHaveLength(1);
   });
 
   it("addTarget creates new target", () => {

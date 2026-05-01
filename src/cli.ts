@@ -33,7 +33,7 @@ import { httpPanopticonService } from "./service/http.js";
 import { writePanopticonEnvFile } from "./setup.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
-import { loadUnifiedConfig } from "./unified-config.js";
+import { loadUnifiedConfig, saveUnifiedConfig } from "./unified-config.js";
 
 const service = httpPanopticonService;
 
@@ -103,6 +103,45 @@ function stopExistingDaemons(): void {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
     }
   }
+}
+
+function isGitAvailable(): boolean {
+  try {
+    execFileSync("git", ["--version"], {
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function configureSyncEnabled(enabled: boolean): void {
+  const cfg = loadUnifiedConfig();
+  cfg.sync.enabled = enabled;
+  saveUnifiedConfig(cfg);
+}
+
+function requireGitForSync(): void {
+  if (isGitAvailable()) return;
+
+  console.error(
+    [
+      "Git is required for Panopticon sync.",
+      "",
+      "Panopticon uses git during ingest to resolve repository attribution.",
+      "Without it, sessions cannot be matched to repos and remote sync will skip them.",
+      "",
+      "Install Git and make sure `git --version` works in your shell, then rerun:",
+      "  panopticon install",
+      "",
+      "To install with remote sync disabled, rerun:",
+      "  panopticon install --disable-sync",
+    ].join("\n"),
+  );
+  process.exit(1);
 }
 
 function readJsonFile(filePath: string): any {
@@ -436,6 +475,7 @@ program
     "all",
   )
   .option("--proxy", "Also route API traffic through the panopticon proxy")
+  .option("--disable-sync", "Disable remote sync and skip Git detection")
   .option("--force", "Overwrite customized env vars with defaults")
   .action(async (opts: Opts) => {
     const validTargets = [...targetIds(), "all"];
@@ -605,15 +645,21 @@ async function install(
     force?: boolean;
     target?: string;
     proxy?: boolean;
+    disableSync?: boolean;
   },
 ) {
   const force = opts.force ?? false;
   const target = opts.target ?? "claude";
+  const syncEnabled = !opts.disableSync;
 
   console.log("Installing panopticon...\n");
 
   const pkgJson = readJsonFile(path.join(pluginRoot, "package.json"));
   const version = pkgJson?.version ?? "0.0.0-dev";
+
+  if (syncEnabled) {
+    requireGitForSync();
+  }
 
   console.log("[1/5] Initializing database and log directory...");
   ensureDataDir();
@@ -621,8 +667,12 @@ async function install(
   fs.mkdirSync(logDir, { recursive: true });
   getDb();
   closeDb();
+  configureSyncEnabled(syncEnabled);
   console.log(`      ${config.dbPath}`);
   console.log(`      ${logDir}`);
+  if (!syncEnabled) {
+    console.log("      Remote sync disabled (--disable-sync)");
+  }
 
   // Ensure the Claude Code plugin manifest exists and has the current
   // version. Claude Code's local-plugins loader reads `version` from

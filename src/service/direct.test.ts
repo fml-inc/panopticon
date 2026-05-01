@@ -17,6 +17,10 @@ const {
   reconcileLandedClaimsFromDiskMock,
   readScannerStatusMock,
   runSessionSummaryPassMock,
+  addTargetMock,
+  listTargetsMock,
+  loadSyncConfigMock,
+  removeTargetMock,
 } = vi.hoisted(() => ({
   needsResyncMock: vi.fn(),
   needsRawDataResyncMock: vi.fn(),
@@ -43,6 +47,10 @@ const {
   reconcileLandedClaimsFromDiskMock: vi.fn(() => ({ checked: 5 })),
   readScannerStatusMock: vi.fn(),
   runSessionSummaryPassMock: vi.fn(),
+  addTargetMock: vi.fn(),
+  listTargetsMock: vi.fn(),
+  loadSyncConfigMock: vi.fn(() => ({ enabled: true, targets: [] })),
+  removeTargetMock: vi.fn(),
 }));
 
 vi.mock("../claims/canonicalize.js", () => ({
@@ -142,9 +150,10 @@ vi.mock("../session_summaries/pass.js", () => ({
 }));
 
 vi.mock("../sync/config.js", () => ({
-  addTarget: vi.fn(),
-  listTargets: vi.fn(),
-  removeTarget: vi.fn(),
+  addTarget: addTargetMock,
+  listTargets: listTargetsMock,
+  loadSyncConfig: loadSyncConfigMock,
+  removeTarget: removeTargetMock,
 }));
 
 vi.mock("../sync/registry.js", () => ({
@@ -167,6 +176,7 @@ describe("direct service scan", () => {
     needsRawDataResyncMock.mockReturnValue(false);
     needsClaimsRebuildMock.mockReturnValue(false);
     staleDataComponentsMock.mockReturnValue([]);
+    loadSyncConfigMock.mockReturnValue({ enabled: true, targets: [] });
     readScannerStatusMock.mockReturnValue(null);
     scanOnceMock.mockReturnValue({
       filesScanned: 2,
@@ -371,5 +381,38 @@ describe("direct service scan", () => {
       memberships: 9,
       provenance: 10,
     });
+  });
+
+  it("adds sync targets when sync is enabled", async () => {
+    const service = createDirectPanopticonService();
+
+    const result = await service.syncTargetAdd({
+      name: "fml",
+      url: "https://example.com",
+    });
+
+    expect(addTargetMock).toHaveBeenCalledWith({
+      name: "fml",
+      url: "https://example.com",
+    });
+    expect(result).toEqual({
+      ok: true,
+      name: "fml",
+      url: "https://example.com",
+    });
+  });
+
+  it("rejects sync target adds when sync is disabled", async () => {
+    loadSyncConfigMock.mockReturnValue({ enabled: false, targets: [] });
+    const service = createDirectPanopticonService();
+
+    await expect(
+      service.syncTargetAdd({
+        name: "fml",
+        url: "https://example.com",
+      }),
+    ).rejects.toThrow("--disable-sync");
+
+    expect(addTargetMock).not.toHaveBeenCalled();
   });
 });

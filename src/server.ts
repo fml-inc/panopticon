@@ -142,7 +142,11 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
       const cfg = loadUnifiedConfig();
       addBreadcrumb("prune", "Running scheduled prune");
       autoPrune(cfg.retention.maxAgeDays, cfg.retention.maxSizeMb);
-      if (cfg.sync.targets.length > 0 && cfg.retention.syncedMaxAgeDays) {
+      if (
+        cfg.sync.enabled !== false &&
+        cfg.sync.targets.length > 0 &&
+        cfg.retention.syncedMaxAgeDays
+      ) {
         syncAwarePrune(cfg.sync.targets, cfg.retention);
       }
     } catch (err) {
@@ -199,7 +203,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     // finishes any initial resync so we don't sync stale/partial data.
     scannerHandle = createScannerLoop({
       onReady: () => {
-        if (cfg.sync.targets.length > 0) {
+        if (cfg.sync.enabled !== false && cfg.sync.targets.length > 0) {
           log.sync.debug(
             `Targets: ${cfg.sync.targets.map((t) => t.name).join(", ")}`,
           );
