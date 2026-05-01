@@ -34,10 +34,14 @@ TASKS=(
 # ─── Phase 1: Prerequisites ──────────────────────────────────────────────────
 log_phase 1 "Prerequisites"
 
-HAS_CLAUDE="" HAS_CODEX="" HAS_GEMINI=""
+HAS_CLAUDE="" HAS_CODEX="" HAS_GEMINI="" HAS_PI=""
 [ -n "${ANTHROPIC_API_KEY:-}" ] && HAS_CLAUDE=1
 [ -n "${OPENAI_API_KEY:-}" ]    && HAS_CODEX=1
 [ -n "${GEMINI_API_KEY:-}" ]    && HAS_GEMINI=1
+# Pi reuses ANTHROPIC_API_KEY (its default provider is Claude). We always test
+# Pi when ANTHROPIC_API_KEY is available — the extension is small and its
+# capture path is entirely different from Claude Code's hooks.
+[ -n "${ANTHROPIC_API_KEY:-}" ] && HAS_PI=1
 
 if [ -z "$HAS_CLAUDE" ] && [ -z "$HAS_CODEX" ] && [ -z "$HAS_GEMINI" ]; then
   log_skip "No API keys set (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)"
@@ -48,6 +52,7 @@ AVAILABLE=""
 [ -n "$HAS_CLAUDE" ] && AVAILABLE="${AVAILABLE} claude"
 [ -n "$HAS_CODEX" ]  && AVAILABLE="${AVAILABLE} codex"
 [ -n "$HAS_GEMINI" ] && AVAILABLE="${AVAILABLE} gemini"
+[ -n "$HAS_PI" ]     && AVAILABLE="${AVAILABLE} pi"
 log_info "Available CLIs:${AVAILABLE}"
 
 # ─── Phase 2: Clean Install ──────────────────────────────────────────────────
@@ -61,10 +66,39 @@ if ! command -v panopticon &>/dev/null; then
   log_fail "panopticon CLI not found in PATH"; print_summary
 fi
 
-# Install once for all supported targets to avoid repeated daemon
-# restarts against the same local DB during setup.
-panopticon install --target all --proxy --force
-log_pass "panopticon install --target all --proxy"
+# Install for each available CLI target. Pi doesn't support proxy capture
+# (it routes API calls through its own provider config), so install without
+# --proxy for Pi.
+#
+# Install Pi FIRST, then the other CLIs: `panopticon install --force` rewrites
+# the shell env block each time, scoped to the --target's env vars. If Pi
+# went last it would wipe the other CLIs' telemetry vars
+# (CLAUDE_CODE_ENABLE_TELEMETRY, ANTHROPIC_BASE_URL, GEMINI_TELEMETRY_*)
+# since Pi's shellEnv only emits PANOPTICON_HOST/PORT. Putting Pi first
+# lets the last-installed CLI's vars be the ones that survive in .bashrc.
+INSTALL_ORDER=""
+[ -n "$HAS_PI" ]     && INSTALL_ORDER="${INSTALL_ORDER} pi"
+[ -n "$HAS_CLAUDE" ] && INSTALL_ORDER="${INSTALL_ORDER} claude"
+[ -n "$HAS_CODEX" ]  && INSTALL_ORDER="${INSTALL_ORDER} codex"
+[ -n "$HAS_GEMINI" ] && INSTALL_ORDER="${INSTALL_ORDER} gemini"
+
+for target in $INSTALL_ORDER; do
+  if [ "$target" = "pi" ]; then
+    panopticon install --target "$target" --force
+  else
+    panopticon install --target "$target" --proxy --force
+  fi
+  log_pass "panopticon install --target $target"
+done
+
+if [ -n "$HAS_PI" ]; then
+  # Confirm the extension bundle was actually copied to Pi's global extensions
+  # directory. This is the exact failure mode of the prior __dirname-based
+  # path resolution bug — the installer would silently succeed with the
+  # extension missing, and no events would flow.
+  assert_file_exists "$HOME/.pi/agent/extensions/panopticon.js" \
+    "Pi extension copied to global extensions dir"
+fi
 
 # Spawn the mock panopticon-protocol sync receiver in the background. This
 # replaces the old setup that pointed sync at LGTM — #116 unified the sync
@@ -288,6 +322,25 @@ if [ -n "$HAS_GEMINI" ]; then
   log_pass "Gemini: 2 sessions completed"
 fi
 
+if [ -n "$HAS_PI" ]; then
+  log_info "── Pi sessions ──"
+  rm -f /workspace/*.py /workspace/*.txt 2>/dev/null || true
+
+  # Pi auto-discovers extensions from ~/.pi/agent/extensions/ (global) and
+  # <cwd>/.pi/extensions/ (project-local). The install step put the extension
+  # in the global dir, so it loads for any pi invocation.
+  #
+  # --mode print runs non-interactively and loads extensions identically to
+  # the TUI path (see pi-coding-agent print-mode.js → session.bindExtensions).
+  # A tool-forcing prompt makes the PreToolUse/PostToolUse assertions below
+  # deterministic.
+  log_info "Pi session 1/1: ${TASKS[0]:0:60}..."
+  timeout 120 pi --mode print "${TASKS[0]}" 2>&1 || log_info "Pi session exited"
+  sleep 3
+  SESSIONS_RUN=$((SESSIONS_RUN + 1))
+  log_pass "Pi: 1 session completed"
+fi
+
 log_pass "Total sessions run: ${SESSIONS_RUN}"
 
 # ─── Phase 6: Database Validation ────────────────────────────────────────────
@@ -338,9 +391,20 @@ else
   log_info "hook_events: no PostToolUse/SessionEnd/Stop (may not appear with limited turns)"
 fi
 
+# We ran $SESSIONS_RUN total sessions but don't require every one to appear
+# in hook_events. Scanner-only sessions (where the CLI wrote a JSONL file
+# but hook events never made it to panopticon — e.g. first-session race)
+# show up in `sessions` without corresponding hook rows. Require one distinct
+# hook-event session per enabled CLI instead; the per-target assertions below
+# catch any CLI that captured zero events.
+ENABLED_CLI_COUNT=0
+[ -n "$HAS_CLAUDE" ] && ENABLED_CLI_COUNT=$((ENABLED_CLI_COUNT + 1))
+[ -n "$HAS_CODEX" ]  && ENABLED_CLI_COUNT=$((ENABLED_CLI_COUNT + 1))
+[ -n "$HAS_GEMINI" ] && ENABLED_CLI_COUNT=$((ENABLED_CLI_COUNT + 1))
+[ -n "$HAS_PI" ]     && ENABLED_CLI_COUNT=$((ENABLED_CLI_COUNT + 1))
 assert_db_count \
-  "SELECT COUNT(DISTINCT session_id) FROM hook_events;" "$SESSIONS_RUN" \
-  "hook_events: >= ${SESSIONS_RUN} distinct sessions"
+  "SELECT COUNT(DISTINCT session_id) FROM hook_events;" "$ENABLED_CLI_COUNT" \
+  "hook_events: >= ${ENABLED_CLI_COUNT} distinct sessions (one per enabled CLI; SESSIONS_RUN=${SESSIONS_RUN})"
 
 assert_db_count "SELECT COUNT(*) FROM otel_logs;" 1 \
   "otel_logs: >= 1 row"
@@ -430,6 +494,35 @@ if [ -n "$HAS_GEMINI" ]; then
   assert_db_not_empty \
     "SELECT 1 FROM hook_events WHERE target = 'gemini' LIMIT 1;" \
     "hook_events: target is 'gemini' for Gemini sessions"
+fi
+if [ -n "$HAS_PI" ]; then
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events WHERE target = 'pi' LIMIT 1;" \
+    "hook_events: target is 'pi' for Pi sessions"
+  # Without pi-specific event-type assertions, regressions in pi's tool/
+  # shutdown wiring are masked by Claude/Gemini satisfying the CLI-agnostic
+  # checks above. The TASKS[0] prompt is tool-forcing, so PreToolUse and
+  # PostToolUse should be deterministic; SessionEnd fires on shutdown.
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'SessionStart' LIMIT 1;" \
+    "hook_events: Pi emitted SessionStart"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'UserPromptSubmit' LIMIT 1;" \
+    "hook_events: Pi emitted UserPromptSubmit"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'PreToolUse' LIMIT 1;" \
+    "hook_events: Pi emitted PreToolUse"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'PostToolUse' LIMIT 1;" \
+    "hook_events: Pi emitted PostToolUse"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'SessionEnd' LIMIT 1;" \
+    "hook_events: Pi emitted SessionEnd"
 fi
 
 # ── 6c: otel_metrics column correctness ──────────────────────────────────────

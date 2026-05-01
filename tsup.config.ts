@@ -38,6 +38,10 @@ export default defineConfig({
     "api/client": "src/api/client.ts",
     "sync/index": "src/sync/index.ts",
     targets: "src/targets/index.ts",
+    // Note: the Pi extension (src/targets/pi/extension.ts) is built separately
+    // by scripts/bundle-pi-extension.js — tsup would produce a chunked ESM
+    // module that imports shared shim chunks, which can't be loaded standalone
+    // by Pi's extension loader.
   },
   format: ["esm"],
   target: "node24",

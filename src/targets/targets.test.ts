@@ -782,3 +782,150 @@ describe("target ident specs", () => {
     expect(gemini.ident).toBeUndefined();
   });
 });
+
+describe("pi target adapter", () => {
+  it("registers pi target", () => {
+    expect(getTarget("pi")).toBeDefined();
+  });
+
+  it("has correct config paths", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.config.dir).toContain(".pi");
+    expect(pi.config.configPath).toContain(".pi");
+    expect(pi.config.configFormat).toBe("json");
+  });
+
+  it("has displayName 'Pi'", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.detect.displayName).toBe("Pi");
+  });
+
+  it("has an empty eventMap — the extension emits canonical names directly", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.events.eventMap).toEqual({});
+  });
+
+  it("shellEnv emits PANOPTICON_HOST/PORT with static defaults", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.shellEnv.envVars(4318, true)).toEqual([
+      ["PANOPTICON_HOST", "127.0.0.1"],
+      ["PANOPTICON_PORT", "4318"],
+    ]);
+    expect(pi.shellEnv.envVars(9000, false)).toEqual([
+      ["PANOPTICON_HOST", "127.0.0.1"],
+      ["PANOPTICON_PORT", "9000"],
+    ]);
+  });
+
+  it("has no proxy spec (Pi routes through its own config)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.proxy).toBeUndefined();
+  });
+
+  it("has no otel spec (Pi doesn't emit OTel natively)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.otel).toBeUndefined();
+  });
+
+  it("has no scanner spec (Pi doesn't write session files)", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.scanner).toBeUndefined();
+  });
+
+  it("applyInstallConfig throws when extension bundle is missing", () => {
+    const pi = getTarget("pi")!;
+    expect(() =>
+      pi.hooks.applyInstallConfig(
+        { foo: "bar" },
+        { pluginRoot: "/nonexistent/path", port: 4318 },
+      ),
+    ).toThrow(/Pi extension bundle not found/);
+  });
+
+  it("applyInstallConfig copies the bundled extension and leaves config unchanged", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+
+    // Build a fake plugin root with a dist/targets/pi/extension.js sentinel
+    const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pano-pi-root-"));
+    const extSrc = path.join(pluginRoot, "dist", "targets", "pi");
+    fs.mkdirSync(extSrc, { recursive: true });
+    const sentinel = "// sentinel pi extension\n";
+    fs.writeFileSync(path.join(extSrc, "extension.js"), sentinel);
+
+    // Redirect HOME so the copy lands in a sandbox, not ~/.pi
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "pano-pi-home-"));
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      // Re-import so the adapter picks up the new HOME for EXTENSION_DEST.
+      // (The module caches homedir() at import time — computing the destination
+      // up-front is a module-scope constant. Re-import via vi.resetModules.)
+      vi.resetModules();
+      const { getTarget: freshGetTarget } = await import("./index.js");
+      await import("./pi.js");
+      const freshPi = freshGetTarget("pi")!;
+
+      const existing = { foo: "bar" };
+      const result = freshPi.hooks.applyInstallConfig(existing, {
+        pluginRoot,
+        port: 4318,
+      });
+
+      // applyInstallConfig must not mutate the config object
+      expect(result).toEqual(existing);
+
+      // But it must have copied the extension to ~/.pi/agent/extensions/
+      const dest = path.join(
+        fakeHome,
+        ".pi",
+        "agent",
+        "extensions",
+        "panopticon.js",
+      );
+      expect(fs.readFileSync(dest, "utf-8")).toBe(sentinel);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      fs.rmSync(pluginRoot, { recursive: true, force: true });
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("removeInstallConfig filters only panopticon.js from extensions array", () => {
+    const pi = getTarget("pi")!;
+    const home = process.env.HOME ?? "";
+    const dest = `${home}/.pi/agent/extensions/panopticon.js`;
+    const result = pi.hooks.removeInstallConfig({
+      extensions: [dest, "/other/panopticon-like-path.js", "/some/user/ext.js"],
+      foo: "bar",
+    });
+    // Only the exact-match dest is removed; substring matches are preserved
+    expect(result.extensions).toEqual([
+      "/other/panopticon-like-path.js",
+      "/some/user/ext.js",
+    ]);
+    expect(result.foo).toBe("bar");
+  });
+
+  it("removeInstallConfig is a no-op when extensions array is absent", () => {
+    const pi = getTarget("pi")!;
+    const result = pi.hooks.removeInstallConfig({ foo: "bar" });
+    expect(result).toEqual({ foo: "bar" });
+  });
+
+  it("formatPermissionResponse returns allow/deny structure", () => {
+    const pi = getTarget("pi")!;
+    const allow = pi.events.formatPermissionResponse("PreToolUse", {
+      allow: true,
+      reason: "ok",
+    });
+    expect(allow).toEqual({ decision: "allow", reason: "ok" });
+    const deny = pi.events.formatPermissionResponse("PreToolUse", {
+      allow: false,
+      reason: "blocked",
+    });
+    expect(deny).toEqual({ decision: "deny", reason: "blocked" });
+  });
+});

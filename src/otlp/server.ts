@@ -363,6 +363,13 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
             new Date(attrs["event.timestamp"] as string).getTime() * 1_000_000;
         }
 
+        const sessionId = (attrs["session.id"] ??
+          attrs["conversation.id"] ??
+          resourceSessionId) as string | undefined;
+
+        // Drop empty records — see decode-logs.ts for rationale.
+        if (!body && !sessionId && !timestamp_ns) continue;
+
         rows.push({
           timestamp_ns,
           observed_timestamp_ns: lr.observedTimeUnixNano
@@ -374,9 +381,7 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
           attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
           resource_attributes:
             Object.keys(resourceAttrs).length > 0 ? resourceAttrs : undefined,
-          session_id: (attrs["session.id"] ??
-            attrs["conversation.id"] ??
-            resourceSessionId) as string | undefined,
+          session_id: sessionId,
           prompt_id: (attrs["prompt.id"] ?? attrs.prompt_id) as
             | string
             | undefined,
