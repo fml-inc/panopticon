@@ -57,6 +57,20 @@ describe("sync config", () => {
     expect(cfg.targets).toHaveLength(1);
   });
 
+  it("preserves disabled sync when saving targets only", () => {
+    saveSyncConfig({
+      enabled: false,
+      targets: [{ name: "test", url: "http://localhost:4318" }],
+    });
+    saveSyncConfig({
+      targets: [{ name: "prod", url: "http://localhost:4318" }],
+    });
+    const cfg = loadSyncConfig();
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.targets).toHaveLength(1);
+    expect(cfg.targets[0].name).toBe("prod");
+  });
+
   it("addTarget creates new target", () => {
     addTarget({ name: "grafana", url: "http://localhost:14318" });
     const targets = listTargets();

@@ -18,7 +18,7 @@ export function loadSyncConfig(): SyncConfig {
 
 export function saveSyncConfig(syncCfg: SyncConfig): void {
   const cfg = loadUnifiedConfig();
-  cfg.sync.enabled = syncCfg.enabled ?? true;
+  cfg.sync.enabled = syncCfg.enabled ?? cfg.sync.enabled ?? true;
   cfg.sync.targets = syncCfg.targets;
   cfg.sync.filter = syncCfg.filter;
   saveUnifiedConfig(cfg);
