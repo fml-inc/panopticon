@@ -25,6 +25,7 @@ function resolveGitRemote(dir: string): string | null {
         encoding: "utf-8",
         timeout: 5000,
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       },
     ).trim();
 
@@ -50,6 +51,7 @@ function resolveGitBranch(dir: string): string | null {
         encoding: "utf-8",
         timeout: 5000,
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       }).trim() || null
     );
   } catch {
@@ -126,6 +128,7 @@ export function resolveGitIdentity(cwd: string): {
         encoding: "utf-8",
         timeout: 3000,
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       }).trim() || null;
   } catch {
     // no user.name configured
@@ -136,6 +139,7 @@ export function resolveGitIdentity(cwd: string): {
         encoding: "utf-8",
         timeout: 3000,
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       }).trim() || null;
   } catch {
     // no user.email configured

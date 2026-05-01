@@ -73,6 +73,7 @@ function stopExistingDaemons(): void {
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
     for (const line of out.split("\n")) {
       const pid = parseInt(line, 10);
@@ -94,6 +95,7 @@ function stopExistingDaemons(): void {
           encoding: "utf-8",
           timeout: 1000,
           stdio: ["ignore", "pipe", "ignore"],
+          windowsHide: true,
         });
         // lsof succeeded = port still in use, wait and retry
       } catch {
@@ -112,6 +114,7 @@ function isGitAvailable(): boolean {
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     });
     return true;
   } catch {
@@ -533,6 +536,7 @@ program
           {
             stdio: "ignore",
             timeout: 10_000,
+            windowsHide: true,
           },
         );
         console.log("      Uninstalled plugin via Claude Code CLI");
@@ -753,12 +757,13 @@ async function install(
       execFileSync(
         "claude",
         ["plugin", "install", "panopticon@local-plugins"],
-        { stdio: "pipe", timeout: 15_000 },
+        { stdio: "pipe", timeout: 15_000, windowsHide: true },
       );
     } catch {
       execFileSync("claude", ["plugin", "update", "panopticon@local-plugins"], {
         stdio: "pipe",
         timeout: 15_000,
+        windowsHide: true,
       });
     }
     console.log("      Plugin cache updated via Claude Code CLI\n");
@@ -844,8 +849,9 @@ async function install(
     "server.js",
   );
   const logFd = openLogFd("server");
-  const child = spawn("node", [serverScript], {
+  const child = spawn(process.execPath, [serverScript], {
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", logFd, logFd],
     env: { ...process.env, PANOPTICON_PORT: String(config.port) },
   });
@@ -906,8 +912,9 @@ program
     );
     const logFd = openLogFd("server");
 
-    const child = spawn("node", [serverScript], {
+    const child = spawn(process.execPath, [serverScript], {
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", logFd, logFd],
       env: {
         ...process.env,
