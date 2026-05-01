@@ -561,6 +561,26 @@ describe("server integration", () => {
         },
       });
     });
+
+    it("Codex PermissionRequest allows slash-form Panopticon MCP tools", async () => {
+      const { status, body } = await post("/hooks", {
+        session_id: "codex-permission-request-panopticon-mcp",
+        source: "codex",
+        hook_event_name: "PermissionRequest",
+        tool_name: "panopticon/session_summary_detail",
+        tool_input: { session_id: "session-123" },
+      });
+
+      expect(status).toBe(200);
+      expect(body).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: {
+            behavior: "allow",
+          },
+        },
+      });
+    });
   });
 
   describe("OTel ingestion", () => {

@@ -6,6 +6,7 @@
  */
 
 export { ensureDataDir } from "./config.js";
+export { captureUserConfigSnapshot } from "./config-capture.js";
 export { refreshPricing } from "./db/pricing.js";
 // ── Maintenance ───────────────────────────────────────────────────────────────
 export { autoPrune, pruneEstimate, pruneExecute } from "./db/prune.js";

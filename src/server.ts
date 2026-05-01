@@ -36,6 +36,27 @@ function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   });
 }
 
+function isSessionStartEvent(data: HookInput): boolean {
+  return (
+    data.hook_event_name === "SessionStart" ||
+    data.hook_event_name === "session_start"
+  );
+}
+
+function enqueueSessionStartIngest(data: HookInput): void {
+  setImmediate(() => {
+    try {
+      processHookEvent(data);
+    } catch (err) {
+      log.hooks.error("Queued SessionStart ingest error:", err);
+      captureException(err, {
+        component: "hooks",
+        event_type: data.hook_event_name,
+      });
+    }
+  });
+}
+
 export function createUnifiedServer(): http.Server {
   // Generate/load the bearer token at server boot so every request handler
   // checks against the same value without re-reading the file each time.
@@ -64,6 +85,12 @@ export function createUnifiedServer(): http.Server {
           tool_name: data.tool_name,
           target: data.target ?? data.source,
         });
+        if (isSessionStartEvent(data)) {
+          enqueueSessionStartIngest(data);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({}));
+          return;
+        }
         const result = processHookEvent(data);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));

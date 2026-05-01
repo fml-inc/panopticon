@@ -405,7 +405,7 @@ export function resolveGitRoot(cwd: string): string | null {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
-    // Not a git repo
+    // Not a git repo.
   }
   gitRootCache.set(cwd, root);
   return root;
@@ -455,7 +455,7 @@ function findPerDirectoryClaudeMd(
       }
       return [];
     } catch {
-      // Fall through to find
+      // Fall through to find.
     }
   }
 
@@ -487,7 +487,7 @@ function findPerDirectoryClaudeMd(
         .filter((p) => !excludePaths.has(p));
     }
   } catch {
-    // Fall through
+    // Fall through.
   }
 
   return [];
@@ -520,7 +520,7 @@ function getManagedDir(): string {
  */
 export function readConfig(cwd?: string): ClaudeCodeConfig {
   const rawCwd = cwd ? path.resolve(cwd) : process.cwd();
-  // Use git root if available so project config is found even from subdirs
+  // Use git root if available so project config is found even from subdirs.
   const root = resolveGitRoot(rawCwd) ?? rawCwd;
   const home = os.homedir();
   const claudeHome = path.join(home, ".claude");

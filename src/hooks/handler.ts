@@ -252,6 +252,40 @@ export function normalizeHookOutput(
   return sanitized;
 }
 
+function isPanopticonMcpToolName(toolName: string): boolean {
+  return (
+    toolName.startsWith("mcp__plugin_panopticon_panopticon__") ||
+    toolName.startsWith("mcp__panopticon__") ||
+    toolName.startsWith("panopticon/")
+  );
+}
+
+export function localHookFallback(
+  data: HookInput,
+): Record<string, unknown> | null {
+  const eventType = data.hook_event_name;
+  const source = data.source ?? data.target;
+  const toolName = data.tool_name;
+
+  if (
+    source === "codex" &&
+    eventType === "PermissionRequest" &&
+    typeof toolName === "string" &&
+    isPanopticonMcpToolName(toolName)
+  ) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+        },
+      },
+    };
+  }
+
+  return null;
+}
+
 /** Parse CLI args: `node hook-handler [target] [port] [--proxy]` */
 function parseArgs(argv: string[]): {
   targetId?: string;
@@ -335,6 +369,17 @@ export async function runHandler(opts: {
       source: data.source,
     });
 
+    const localFallback = localHookFallback(data);
+    if (localFallback) {
+      logHook("debug", "using local hook fallback", {
+        eventType,
+        toolName: data.tool_name,
+        source: data.source,
+      });
+      await writeJsonResponse(localFallback);
+      return;
+    }
+
     addBreadcrumb("hook-handler", `Processing ${eventType}`, {
       session_id: data.session_id,
       tool_name: data.tool_name,
@@ -342,32 +387,36 @@ export async function runHandler(opts: {
     });
 
     // On SessionStart, ensure the unified server is running. This is the
-    // only event that triggers server startup — all other events POST to
-    // the already-running server and silently drop if it's unreachable.
+    // only event that triggers server startup; all other events POST to the
+    // already-running server and silently drop if it's unreachable.
     // The server process outlives any single session and serves all
     // concurrent ones. Uses an atomic lock file (O_EXCL) to prevent two
     // concurrent hook invocations from both spawning a server (TOCTOU race).
     if (eventType === "SessionStart" || eventType === "session_start") {
-      const serverRunning = isServerRunning();
-      logHook("debug", "session start", { serverRunning });
-      if (!serverRunning) {
-        if (acquireStartLock()) {
-          try {
-            logHook("info", "starting server (lock acquired)");
-            startServer();
+      if (process.env.PANOPTICON_SKIP_SESSION_START_BOOTSTRAP === "1") {
+        logHook("debug", "session start bootstrap skipped for flash isolation");
+      } else {
+        const serverRunning = isServerRunning();
+        logHook("debug", "session start", { serverRunning });
+        if (!serverRunning) {
+          if (acquireStartLock()) {
+            try {
+              logHook("info", "starting server (lock acquired)");
+              startServer();
+              const ready = await waitForServer(port);
+              logHook("info", "server readiness", { ready });
+            } finally {
+              releaseStartLock();
+            }
+          } else {
+            // Another hook handler is starting the server; wait for it.
+            logHook("debug", "waiting for server (another handler starting)");
             const ready = await waitForServer(port);
-            logHook("info", "server readiness", { ready });
-          } finally {
-            releaseStartLock();
+            logHook("debug", "server readiness (waited)", { ready });
           }
-        } else {
-          // Another hook handler is starting the server — wait for it
-          logHook("debug", "waiting for server (another handler starting)");
-          const ready = await waitForServer(port);
-          logHook("debug", "server readiness (waited)", { ready });
         }
+        refreshIfStale().catch(() => {});
       }
-      refreshIfStale().catch(() => {});
     }
 
     // Tag with agent version for observability
@@ -394,7 +443,7 @@ export async function runHandler(opts: {
       logHook("warn", "server post failed, dropping event", {
         error: err instanceof Error ? err.message : String(err),
       });
-      result = {};
+      result = localHookFallback(data) ?? {};
     }
 
     await writeJsonResponse(result);

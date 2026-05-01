@@ -49,7 +49,7 @@ const LAST_ACTIVITY_SQL = `MAX(
 const SYSTEM_PROMPT = `You are enriching a per-session coding summary for retrieval.
 
 Rules:
-1. Use only the structured session data provided in the prompt
+1. Use only Panopticon MCP/query results for the target session id provided in the prompt
 2. Write exactly one paragraph of 2-3 short sentences, max 140 words total
 3. Lead with the main outcome or highest-value finding
 4. For review sessions, emphasize findings, severity, and whether fixes landed
@@ -450,7 +450,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
       const result = await invokeLlmAsync(prompt, {
         runner: selection.runner,
         timeoutMs,
-        withMcp: false,
+        withMcp: true,
         systemPrompt: SYSTEM_PROMPT,
         model: selection.model,
       });
@@ -578,6 +578,7 @@ async function mapWithConcurrency<T>(
 }
 
 function loadSummaryPromptContext(sessionSummaryKey: string): {
+  sessionId: string;
   title: string;
   status: string;
   target: string | null;
@@ -642,6 +643,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     loadDeterministicSearchCorpus(sessionSummaryKey);
 
   return {
+    sessionId: summary.session_id,
     title: summary.title,
     status: summary.status,
     target: summary.target,
@@ -660,8 +662,10 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
 }
 
 function buildLlmPrompt(context: {
+  sessionId: string;
   title: string;
   status: string;
+  target: string | null;
   repository: string | null;
   branch: string | null;
   messageCount: number;
@@ -675,30 +679,15 @@ function buildLlmPrompt(context: {
   deterministicSearchCorpus: string | null;
 }): string {
   const lines = [
+    `Target session id: ${context.sessionId}`,
     `Title: ${context.title}`,
     `Status: ${context.status}`,
+    context.target ? `Target: ${context.target}` : null,
     context.repository ? `Repository: ${context.repository}` : null,
     context.branch ? `Branch: ${context.branch}` : null,
     `Counts: messages ${context.messageCount}; intents ${context.intentCount}; edits ${context.editCount}; landed ${context.landedEditCount}; open ${context.openEditCount}`,
-    context.files.length > 0
-      ? `Files:\n${context.files
-          .map(
-            (file) =>
-              `- ${file.filePath} (${file.editCount} edits, ${file.landedCount} landed)`,
-          )
-          .join("\n")}`
-      : null,
-    context.intents.length > 0
-      ? `Intent prompts:\n${context.intents.map((prompt) => `- ${prompt}`).join("\n")}`
-      : null,
-    context.recentMessages.length > 0
-      ? `Recent messages:\n${context.recentMessages
-          .map((message) => `- ${message.role}: ${message.content}`)
-          .join("\n")}`
-      : null,
-    context.deterministicSearchCorpus
-      ? `Deterministic search corpus:\n${context.deterministicSearchCorpus}`
-      : null,
+    "Use the Panopticon MCP tools to inspect only this session. Prefer session_summary_detail for the session id, then timeline if you need message/tool-call detail, and query only for focused follow-up.",
+    "Do not summarize this instruction text. Query Panopticon, then write the per-session summary.",
     "Write the per-session summary.",
   ].filter((value): value is string => Boolean(value));
   return lines.join("\n\n");

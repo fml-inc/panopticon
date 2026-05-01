@@ -70,6 +70,19 @@ function quoteCommandArg(value: string): string {
   return `"${value.replaceAll('"', '\\"')}"`;
 }
 
+function resolveHookNodeCommand(): string {
+  if (process.platform !== "win32") {
+    return quoteCommandArg(process.execPath);
+  }
+
+  const shortProgramFilesNode = "C:\\Progra~1\\nodejs\\node.exe";
+  if (fs.existsSync(shortProgramFilesNode)) {
+    return shortProgramFilesNode;
+  }
+
+  return quoteCommandArg(process.execPath);
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -241,7 +254,7 @@ const codex: TargetAdapter = {
       const hooksFile = readHooksJson();
       const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
       const proxyFlag = opts.proxy ? " --proxy" : "";
-      const command = `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+      const command = `${resolveHookNodeCommand()} ${quoteCommandArg(
         hookBin,
       )} codex ${opts.port}${proxyFlag}`;
       for (const event of HOOK_EVENTS) {
@@ -292,6 +305,7 @@ const codex: TargetAdapter = {
         ...existingPanopticonServer,
         command: "node",
         args: [mcpBin],
+        default_tools_approval_mode: "approve",
       };
       codexConfig.mcp_servers = mcpServers;
 
