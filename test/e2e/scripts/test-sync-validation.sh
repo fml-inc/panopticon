@@ -66,30 +66,14 @@ if ! command -v panopticon &>/dev/null; then
   log_fail "panopticon CLI not found in PATH"; print_summary
 fi
 
-# Install for each available CLI target. Pi doesn't support proxy capture
-# (it routes API calls through its own provider config), so install without
-# --proxy for Pi.
-#
-# Install Pi FIRST, then the other CLIs: `panopticon install --force` rewrites
-# the shell env block each time, scoped to the --target's env vars. If Pi
-# went last it would wipe the other CLIs' telemetry vars
-# (CLAUDE_CODE_ENABLE_TELEMETRY, ANTHROPIC_BASE_URL, GEMINI_TELEMETRY_*)
-# since Pi's shellEnv only emits PANOPTICON_HOST/PORT. Putting Pi first
-# lets the last-installed CLI's vars be the ones that survive in .bashrc.
-INSTALL_ORDER=""
-[ -n "$HAS_PI" ]     && INSTALL_ORDER="${INSTALL_ORDER} pi"
-[ -n "$HAS_CLAUDE" ] && INSTALL_ORDER="${INSTALL_ORDER} claude"
-[ -n "$HAS_CODEX" ]  && INSTALL_ORDER="${INSTALL_ORDER} codex"
-[ -n "$HAS_GEMINI" ] && INSTALL_ORDER="${INSTALL_ORDER} gemini"
-
-for target in $INSTALL_ORDER; do
-  if [ "$target" = "pi" ]; then
-    panopticon install --target "$target" --force
-  else
-    panopticon install --target "$target" --proxy --force
-  fi
-  log_pass "panopticon install --target $target"
-done
+# Install once for all targets. Per-target installs rewrite the panopticon
+# block in .bashrc scoped to that target's env vars only — running them in
+# sequence makes the last install's vars the only ones that survive, which
+# breaks the per-CLI .bashrc assertions below. `--target all` iterates every
+# target's applyInstallConfig (including Pi's bundle copy) and writes the
+# union of env vars in a single pass. Pi ignores --proxy.
+panopticon install --target all --proxy --force
+log_pass "panopticon install --target all --proxy"
 
 if [ -n "$HAS_PI" ]; then
   # Confirm the extension bundle was actually copied to Pi's global extensions
