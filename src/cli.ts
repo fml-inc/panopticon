@@ -1128,7 +1128,16 @@ program
     try {
       const cfg = loadUnifiedConfig();
       const targets = cfg.sync.targets;
-      if (targets.length > 0) {
+      if (cfg.sync.enabled === false) {
+        console.log();
+        console.log("Sync: disabled (--disable-sync)");
+        if (targets.length > 0) {
+          console.log("Configured sync targets (inactive):");
+          for (const t of targets) {
+            console.log(`  ${t.name} → ${t.url}`);
+          }
+        }
+      } else if (targets.length > 0) {
         console.log();
         console.log("Sync targets:");
         for (const t of targets) {
