@@ -499,9 +499,10 @@ if [ -n "$HAS_PI" ]; then
   assert_db_not_empty \
     "SELECT 1 FROM hook_events WHERE target = 'pi' LIMIT 1;" \
     "hook_events: target is 'pi' for Pi sessions"
-  # The extension emits a SessionStart + UserPromptSubmit at minimum;
-  # asserting both catches (a) extension not loaded and (b) extension loaded
-  # but wiring broken.
+  # Without pi-specific event-type assertions, regressions in pi's tool/
+  # shutdown wiring are masked by Claude/Gemini satisfying the CLI-agnostic
+  # checks above. The TASKS[0] prompt is tool-forcing, so PreToolUse and
+  # PostToolUse should be deterministic; SessionEnd fires on shutdown.
   assert_db_not_empty \
     "SELECT 1 FROM hook_events
      WHERE target = 'pi' AND event_type = 'SessionStart' LIMIT 1;" \
@@ -510,6 +511,18 @@ if [ -n "$HAS_PI" ]; then
     "SELECT 1 FROM hook_events
      WHERE target = 'pi' AND event_type = 'UserPromptSubmit' LIMIT 1;" \
     "hook_events: Pi emitted UserPromptSubmit"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'PreToolUse' LIMIT 1;" \
+    "hook_events: Pi emitted PreToolUse"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'PostToolUse' LIMIT 1;" \
+    "hook_events: Pi emitted PostToolUse"
+  assert_db_not_empty \
+    "SELECT 1 FROM hook_events
+     WHERE target = 'pi' AND event_type = 'SessionEnd' LIMIT 1;" \
+    "hook_events: Pi emitted SessionEnd"
 fi
 
 # ── 6c: otel_metrics column correctness ──────────────────────────────────────
