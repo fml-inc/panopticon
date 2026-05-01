@@ -893,20 +893,14 @@ describe("pi target adapter", () => {
     }
   });
 
-  it("removeInstallConfig filters only panopticon.js from extensions array", () => {
+  it("removeInstallConfig returns existing config unchanged (extensions array preserved)", () => {
     const pi = getTarget("pi")!;
-    const home = process.env.HOME ?? "";
-    const dest = `${home}/.pi/agent/extensions/panopticon.js`;
-    const result = pi.hooks.removeInstallConfig({
-      extensions: [dest, "/other/panopticon-like-path.js", "/some/user/ext.js"],
+    const existing = {
+      extensions: ["/some/user/ext.js"],
       foo: "bar",
-    });
-    // Only the exact-match dest is removed; substring matches are preserved
-    expect(result.extensions).toEqual([
-      "/other/panopticon-like-path.js",
-      "/some/user/ext.js",
-    ]);
-    expect(result.foo).toBe("bar");
+    };
+    const result = pi.hooks.removeInstallConfig(existing);
+    expect(result).toEqual(existing);
   });
 
   it("removeInstallConfig is a no-op when extensions array is absent", () => {
