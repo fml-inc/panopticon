@@ -206,6 +206,10 @@ describe("session summary enrichment refresh", () => {
 
     expect(result).toEqual({ attempted: 1, updated: 1 });
     expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+    expect(state.invokeLlmMock).toHaveBeenCalledWith(
+      expect.stringContaining("Target session id: session-1"),
+      expect.objectContaining({ withMcp: true }),
+    );
     expect(row).toMatchObject({
       summary_text: "LLM summary text.",
       summary_source: "llm",
@@ -565,7 +569,7 @@ describe("session summary enrichment refresh", () => {
     }
   });
 
-  it("includes recent message context when message growth triggers a refresh", async () => {
+  it("passes a compact MCP-backed prompt when message growth triggers a refresh", async () => {
     const db = state.db!;
     db.prepare(
       `UPDATE session_summary_enrichments
@@ -615,11 +619,12 @@ describe("session summary enrichment refresh", () => {
 
     state.invokeLlmMock.mockImplementation(async (prompt: string) => {
       expect(prompt).toContain("Counts: messages 25;");
-      expect(prompt).toContain("Recent messages:");
-      expect(prompt).toContain("user: Please verify the final patch behavior.");
+      expect(prompt).toContain("Target session id: session-1");
       expect(prompt).toContain(
-        "assistant: I checked the edge cases and the output now stays stable.",
+        "Use the Panopticon MCP tools to inspect only this session.",
       );
+      expect(prompt).not.toContain("Recent messages:");
+      expect(prompt).not.toContain("Please verify the final patch behavior.");
       return "LLM summary text.";
     });
 
@@ -644,6 +649,10 @@ describe("session summary enrichment refresh", () => {
 
     expect(result).toEqual({ attempted: 1, updated: 1 });
     expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+    expect(state.invokeLlmMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ withMcp: true }),
+    );
     expect(row).toMatchObject({
       summary_text: "LLM summary text.",
       summary_source: "llm",

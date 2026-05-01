@@ -13,7 +13,11 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isServerRunning, waitForServer } from "../api/util.js";
+import {
+  checkServerHealth,
+  getServerProcessStatus,
+  waitForServer,
+} from "../api/util.js";
 import { readAuthToken } from "../auth.js";
 import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
@@ -154,9 +158,6 @@ function startServer(): void {
     },
   });
 
-  if (child.pid) {
-    fs.writeFileSync(config.serverPidFile, String(child.pid));
-  }
   child.unref();
   fs.closeSync(logFd);
 }
@@ -235,6 +236,10 @@ function postToServer(
   });
 }
 
+function elapsedSince(startMs: number): number {
+  return Date.now() - startMs;
+}
+
 /**
  * Codex validates hook stdout against the event-specific hook-output schema.
  * Panopticon server/client failures are operational errors, not hook decisions,
@@ -250,6 +255,40 @@ export function normalizeHookOutput(
   const sanitized = { ...result };
   delete sanitized.error;
   return sanitized;
+}
+
+function isPanopticonMcpToolName(toolName: string): boolean {
+  return (
+    toolName.startsWith("mcp__plugin_panopticon_panopticon__") ||
+    toolName.startsWith("mcp__panopticon__") ||
+    toolName.startsWith("panopticon/")
+  );
+}
+
+export function localHookFallback(
+  data: HookInput,
+): Record<string, unknown> | null {
+  const eventType = data.hook_event_name;
+  const source = data.source ?? data.target;
+  const toolName = data.tool_name;
+
+  if (
+    source === "codex" &&
+    eventType === "PermissionRequest" &&
+    typeof toolName === "string" &&
+    isPanopticonMcpToolName(toolName)
+  ) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+        },
+      },
+    };
+  }
+
+  return null;
 }
 
 /** Parse CLI args: `node hook-handler [target] [port] [--proxy]` */
@@ -299,6 +338,7 @@ export async function runHandler(opts: {
   const { targetId, port, proxy } = opts;
 
   try {
+    const handlerStartMs = Date.now();
     logHook("debug", "hook-handler invoked", {
       pid: process.pid,
       cwd: process.cwd(),
@@ -335,6 +375,17 @@ export async function runHandler(opts: {
       source: data.source,
     });
 
+    const localFallback = localHookFallback(data);
+    if (localFallback) {
+      logHook("debug", "using local hook fallback", {
+        eventType,
+        toolName: data.tool_name,
+        source: data.source,
+      });
+      await writeJsonResponse(localFallback);
+      return;
+    }
+
     addBreadcrumb("hook-handler", `Processing ${eventType}`, {
       session_id: data.session_id,
       tool_name: data.tool_name,
@@ -342,32 +393,97 @@ export async function runHandler(opts: {
     });
 
     // On SessionStart, ensure the unified server is running. This is the
-    // only event that triggers server startup — all other events POST to
-    // the already-running server and silently drop if it's unreachable.
+    // only event that triggers server startup; all other events POST to the
+    // already-running server and silently drop if it's unreachable.
     // The server process outlives any single session and serves all
     // concurrent ones. Uses an atomic lock file (O_EXCL) to prevent two
     // concurrent hook invocations from both spawning a server (TOCTOU race).
     if (eventType === "SessionStart" || eventType === "session_start") {
-      const serverRunning = isServerRunning();
-      logHook("debug", "session start", { serverRunning });
-      if (!serverRunning) {
-        if (acquireStartLock()) {
-          try {
-            logHook("info", "starting server (lock acquired)");
-            startServer();
-            const ready = await waitForServer(port);
-            logHook("info", "server readiness", { ready });
-          } finally {
-            releaseStartLock();
+      const bootstrapStartMs = Date.now();
+      const bootstrapMeta: Record<string, unknown> = {
+        eventType,
+        sessionId: data.session_id,
+        port,
+      };
+      if (process.env.PANOPTICON_SKIP_SESSION_START_BOOTSTRAP === "1") {
+        logHook("debug", "session start bootstrap skipped for flash isolation");
+      } else {
+        const pidCheckStartMs = Date.now();
+        const processStatus = getServerProcessStatus();
+        bootstrapMeta.pidCheckMs = elapsedSince(pidCheckStartMs);
+        bootstrapMeta.pidFileExists = processStatus.pidFileExists;
+        bootstrapMeta.pid = processStatus.pid;
+        bootstrapMeta.processRunning = processStatus.processRunning;
+        bootstrapMeta.stalePidFileRemoved = processStatus.stalePidFileRemoved;
+        if (processStatus.error) bootstrapMeta.pidError = processStatus.error;
+
+        let serverRunning = false;
+        const shouldCheckHealth =
+          processStatus.processRunning || processStatus.pidFileExists;
+        if (shouldCheckHealth) {
+          const health = await checkServerHealth(
+            port,
+            processStatus.processRunning ? 500 : 150,
+          );
+          bootstrapMeta.healthMs = health.elapsedMs;
+          bootstrapMeta.healthOk = health.healthy;
+          bootstrapMeta.healthStatusCode = health.statusCode;
+          if (health.error) bootstrapMeta.healthError = health.error;
+          serverRunning = health.healthy;
+          if (health.healthy && !processStatus.processRunning) {
+            logHook("warn", "server health ok but pid file is stale", {
+              pid: processStatus.pid,
+              port,
+              pidFileExists: processStatus.pidFileExists,
+              stalePidFileRemoved: processStatus.stalePidFileRemoved,
+              pidError: processStatus.error,
+              elapsedMs: health.elapsedMs,
+            });
+          } else if (!health.healthy && processStatus.processRunning) {
+            logHook("warn", "server pid alive but health check failed", {
+              pid: processStatus.pid,
+              port,
+              statusCode: health.statusCode,
+              error: health.error,
+              elapsedMs: health.elapsedMs,
+            });
           }
-        } else {
-          // Another hook handler is starting the server — wait for it
-          logHook("debug", "waiting for server (another handler starting)");
-          const ready = await waitForServer(port);
-          logHook("debug", "server readiness (waited)", { ready });
         }
+
+        logHook("debug", "session start", { serverRunning });
+        if (!serverRunning) {
+          const lockStartMs = Date.now();
+          const lockAcquired = acquireStartLock();
+          bootstrapMeta.lockMs = elapsedSince(lockStartMs);
+          bootstrapMeta.lockAcquired = lockAcquired;
+          if (lockAcquired) {
+            try {
+              logHook("info", "starting server (lock acquired)");
+              const startServerStartMs = Date.now();
+              startServer();
+              bootstrapMeta.startServerMs = elapsedSince(startServerStartMs);
+              const waitStartMs = Date.now();
+              const ready = await waitForServer(port);
+              bootstrapMeta.waitForServerMs = elapsedSince(waitStartMs);
+              bootstrapMeta.ready = ready;
+              logHook("info", "server readiness", { ready });
+            } finally {
+              releaseStartLock();
+            }
+          } else {
+            // Another hook handler is starting the server; wait for it.
+            logHook("debug", "waiting for server (another handler starting)");
+            const waitStartMs = Date.now();
+            const ready = await waitForServer(port);
+            bootstrapMeta.waitForServerMs = elapsedSince(waitStartMs);
+            bootstrapMeta.ready = ready;
+            logHook("debug", "server readiness (waited)", { ready });
+          }
+        }
+        bootstrapMeta.totalMs = elapsedSince(bootstrapStartMs);
+        logHook("info", "session start bootstrap timing", bootstrapMeta);
+        refreshIfStale().catch(() => {});
       }
-      refreshIfStale().catch(() => {});
     }
 
     // Tag with agent version for observability
@@ -384,23 +500,35 @@ export async function runHandler(opts: {
     // direct DB writes add latency, risk lock contention, and mask a
     // misconfigured server. The server auto-starts on SessionStart above.
     let result: Record<string, unknown>;
+    const postStartMs = Date.now();
     try {
       logHook("debug", "posting to server", { port });
       result = normalizeHookOutput(await postToServer(data, port));
       logHook("debug", "server post succeeded", {
         resultKeys: Object.keys(result),
+        elapsedMs: elapsedSince(postStartMs),
       });
     } catch (err) {
       logHook("warn", "server post failed, dropping event", {
         error: err instanceof Error ? err.message : String(err),
+        elapsedMs: elapsedSince(postStartMs),
       });
-      result = {};
+      result = localHookFallback(data) ?? {};
     }
 
+    const writeStartMs = Date.now();
     await writeJsonResponse(result);
     logHook("debug", "response written", {
       bytes: Buffer.byteLength(JSON.stringify(result)),
+      elapsedMs: elapsedSince(writeStartMs),
     });
+    if (eventType === "SessionStart" || eventType === "session_start") {
+      logHook("info", "session start handler timing", {
+        sessionId: data.session_id,
+        port,
+        totalMs: elapsedSince(handlerStartMs),
+      });
+    }
   } catch (err) {
     // Silently fail — hooks must not block the calling CLI
     const errorMessage = err instanceof Error ? err.message : String(err);

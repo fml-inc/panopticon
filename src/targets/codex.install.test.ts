@@ -46,6 +46,7 @@ describe("codex install config", () => {
       panopticon: {
         command: "node",
         args: [path.join("/app", "bin", "mcp-server")],
+        default_tools_approval_mode: "approve",
         tools: {
           search_intent: { approval_mode: "approve" },
           query: { approval_mode: "deny" },
@@ -59,5 +60,15 @@ describe("codex install config", () => {
       hooks?: Record<string, unknown[]>;
     };
     expect(hooksJson.hooks?.PermissionRequest).toBeDefined();
+    const permissionGroup = hooksJson.hooks?.PermissionRequest?.[0] as {
+      hooks?: Array<{ command?: string }>;
+    };
+    const expectedNode =
+      process.platform === "win32" && fs.existsSync("C:\\Progra~1\\nodejs\\node.exe")
+        ? "C:\\Progra~1\\nodejs\\node.exe"
+        : `"${process.execPath.replaceAll('"', '\\"')}"`;
+    expect(permissionGroup.hooks?.[0]?.command).toBe(
+      `${expectedNode} "${path.join("/app", "bin", "hook-handler")}" codex 4318 --proxy`,
+    );
   });
 });

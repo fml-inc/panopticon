@@ -14,11 +14,26 @@ const CLAUDE_HEADLESS_CWD_NAME = "claude-headless";
 const CODEX_HEADLESS_CWD_NAME = "codex-headless";
 const CODEX_OUTPUT_FILE_PREFIX = "last-message";
 const MCP_ALLOWED_TOOLS = [
+  "mcp__panopticon__sessions",
   "mcp__panopticon__timeline",
+  "mcp__panopticon__costs",
+  "mcp__panopticon__summary",
+  "mcp__panopticon__plans",
+  "mcp__panopticon__search",
   "mcp__panopticon__get",
   "mcp__panopticon__query",
-  "mcp__panopticon__search",
   "mcp__panopticon__status",
+  "mcp__panopticon__intent_for_code",
+  "mcp__panopticon__search_intent",
+  "mcp__panopticon__outcomes_for_intent",
+  "mcp__panopticon__session_summaries",
+  "mcp__panopticon__session_summary_detail",
+  "mcp__panopticon__why_code",
+  "mcp__panopticon__recent_work_on_path",
+  "mcp__panopticon__file_overview",
+  "mcp__panopticon__permissions_show",
+  "mcp__panopticon__permissions_preview",
+  "mcp__panopticon__permissions_apply",
 ] as const;
 
 const _agentPaths = new Map<SessionSummaryRunnerName, string | null>();
@@ -288,6 +303,7 @@ export function invokeLlm(
       cwd,
       env,
       timeoutMs,
+      withMcp: opts.withMcp,
       systemPrompt: opts.systemPrompt,
       model: opts.model,
     });
@@ -328,6 +344,7 @@ export async function invokeLlmAsync(
       cwd,
       env,
       timeoutMs,
+      withMcp: opts.withMcp,
       systemPrompt: opts.systemPrompt,
       model: opts.model,
     });
@@ -407,6 +424,7 @@ function buildCodexArgs(
   opts: {
     systemPrompt?: string;
     model?: string | null;
+    withMcp?: boolean;
   },
 ): string[] {
   const fullPrompt = opts.systemPrompt
@@ -418,13 +436,15 @@ function buildCodexArgs(
     "read-only",
     "--skip-git-repo-check",
     "--ephemeral",
-    "--ignore-user-config",
     "--ignore-rules",
     "--color",
     "never",
     "--output-last-message",
     outputPath,
   ];
+  if (!opts.withMcp) {
+    args.splice(args.indexOf("--ignore-rules"), 0, "--ignore-user-config");
+  }
   if (opts.model) {
     args.push("--model", opts.model);
   }
@@ -634,6 +654,7 @@ function invokeCodexLlm(
     timeoutMs: number;
     systemPrompt?: string;
     model?: string | null;
+    withMcp?: boolean;
   },
 ): string | null {
   const outputPath = getCodexOutputPath(opts.cwd);
@@ -700,6 +721,7 @@ async function invokeCodexLlmAsync(
     timeoutMs: number;
     systemPrompt?: string;
     model?: string | null;
+    withMcp?: boolean;
   },
 ): Promise<string | null> {
   const outputPath = getCodexOutputPath(opts.cwd);

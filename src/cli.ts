@@ -12,6 +12,11 @@ import { Command, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
+import {
+  checkServerHealth,
+  getServerProcessStatus,
+  waitForServer,
+} from "./api/util.js";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
@@ -48,6 +53,40 @@ function getPluginRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   dir = path.resolve(dir, "..");
   return dir;
+}
+
+async function isServerHealthy(): Promise<boolean> {
+  return (await checkServerHealth(config.port, 500)).healthy;
+}
+
+async function printAlreadyRunningIfHealthy(): Promise<boolean> {
+  const processStatus = getServerProcessStatus();
+  if (processStatus.processRunning) {
+    const health = await checkServerHealth(config.port, 500);
+    if (health.healthy) {
+      console.log(`Panopticon already running (PID ${processStatus.pid})`);
+      return true;
+    }
+    console.warn(
+      `Stale or unhealthy Panopticon PID ${processStatus.pid}; restarting server`,
+    );
+    try {
+      if (processStatus.pid) process.kill(processStatus.pid, "SIGTERM");
+    } catch {}
+    try {
+      fs.unlinkSync(config.serverPidFile);
+    } catch {}
+    return false;
+  }
+
+  if (await isServerHealthy()) {
+    console.log(
+      `Panopticon already responding on :${config.port} (PID file missing or stale)`,
+    );
+    return true;
+  }
+
+  return false;
 }
 
 function stopExistingDaemons(): void {
@@ -647,12 +686,16 @@ async function install(
     stdio: ["ignore", logFd, logFd],
     env: { ...process.env, PANOPTICON_PORT: String(config.port) },
   });
-  if (child.pid) {
-    fs.writeFileSync(config.serverPidFile, String(child.pid));
-    console.log(`\nServer started (PID ${child.pid}) on :${config.port}`);
-  }
   child.unref();
   fs.closeSync(logFd);
+  if (await waitForServer(config.port, 5000)) {
+    const processStatus = getServerProcessStatus();
+    console.log(
+      `\nServer started (PID ${processStatus.pid ?? child.pid ?? "unknown"}) on :${config.port}`,
+    );
+  } else {
+    console.warn(`\nServer did not become healthy on :${config.port}`);
+  }
 
   const assistant =
     target === "all"
@@ -670,19 +713,8 @@ program
   .action(async () => {
     ensureDataDir();
 
-    // Check for already-running unified server
-    if (fs.existsSync(config.serverPidFile)) {
-      const pid = parseInt(
-        fs.readFileSync(config.serverPidFile, "utf-8").trim(),
-        10,
-      );
-      try {
-        process.kill(pid, 0);
-        console.log(`Panopticon already running (PID ${pid})`);
-        return;
-      } catch {
-        fs.unlinkSync(config.serverPidFile);
-      }
+    if (await printAlreadyRunningIfHealthy()) {
+      return;
     }
 
     // Clean up legacy PID files from old separate daemons
@@ -718,21 +750,21 @@ program
       child.on("error", (err) => {
         reject(new Error(`Failed to start: ${err.message}`));
       });
-      setTimeout(() => {
-        if (child.pid) {
-          fs.writeFileSync(config.serverPidFile, String(child.pid));
-          child.unref();
-          fs.closeSync(logFd);
-          console.log(
-            `Panopticon started (PID ${child.pid}) on :${config.port}`,
-          );
-          console.log(`Log: ${logPaths.server}`);
-          resolve();
-        } else {
-          fs.closeSync(logFd);
-          reject(new Error("Failed to start panopticon server"));
+      void (async () => {
+        const ready = await waitForServer(config.port, 5000);
+        child.unref();
+        fs.closeSync(logFd);
+        if (!ready) {
+          reject(new Error("Panopticon server did not become healthy"));
+          return;
         }
-      }, 500);
+        const processStatus = getServerProcessStatus();
+        console.log(
+          `Panopticon started (PID ${processStatus.pid ?? child.pid ?? "unknown"}) on :${config.port}`,
+        );
+        console.log(`Log: ${logPaths.server}`);
+        resolve();
+      })();
     });
   });
 

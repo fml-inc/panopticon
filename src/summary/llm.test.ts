@@ -376,11 +376,26 @@ describe("summary llm wrapper", () => {
     });
     expect(args[args.indexOf("--allowedTools") + 1]).toBe(
       [
+        "mcp__panopticon__sessions",
         "mcp__panopticon__timeline",
+        "mcp__panopticon__costs",
+        "mcp__panopticon__summary",
+        "mcp__panopticon__plans",
+        "mcp__panopticon__search",
         "mcp__panopticon__get",
         "mcp__panopticon__query",
-        "mcp__panopticon__search",
         "mcp__panopticon__status",
+        "mcp__panopticon__intent_for_code",
+        "mcp__panopticon__search_intent",
+        "mcp__panopticon__outcomes_for_intent",
+        "mcp__panopticon__session_summaries",
+        "mcp__panopticon__session_summary_detail",
+        "mcp__panopticon__why_code",
+        "mcp__panopticon__recent_work_on_path",
+        "mcp__panopticon__file_overview",
+        "mcp__panopticon__permissions_show",
+        "mcp__panopticon__permissions_preview",
+        "mcp__panopticon__permissions_apply",
       ].join(" "),
     );
   });
@@ -440,7 +455,8 @@ describe("summary llm wrapper", () => {
       value: "win32",
     });
     execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
-      if (args[0] === "codex") return "C:\\Users\\Gus\\AppData\\Roaming\\npm\\codex";
+      if (args[0] === "codex")
+        return "C:\\Users\\Gus\\AppData\\Roaming\\npm\\codex";
       return "C:\\Users\\Gus\\AppData\\Roaming\\npm\\claude";
     });
     readFileSyncMock.mockImplementation((filePath: string) => {
@@ -455,10 +471,7 @@ describe("summary llm wrapper", () => {
 
       expect(invokeLlm("Summarize this", { runner: "codex" })).toBe("OK");
 
-      const [binary, args] = spawnSyncMock.mock.calls[0] as [
-        string,
-        string[],
-      ];
+      const [binary, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
       expect(binary).toBe(process.execPath);
       expect(args[0]).toBe(
         "C:\\Users\\Gus\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
@@ -508,6 +521,26 @@ describe("summary llm wrapper", () => {
     expect(readFileAsyncMock).toHaveBeenCalledOnce();
     expect(rmAsyncMock).toHaveBeenCalledTimes(2);
     expect(rmAsyncMock).toHaveBeenCalledWith(outputPath, { force: true });
+  });
+
+  it("allows Codex user config when MCP tools are requested", async () => {
+    execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
+      if (args[0] === "codex") return "/usr/local/bin/codex";
+      return "/usr/local/bin/claude";
+    });
+    const { invokeLlmAsync } = await loadLlm();
+
+    await expect(
+      invokeLlmAsync("Summarize session-1", {
+        runner: "codex",
+        withMcp: true,
+      }),
+    ).resolves.toBe("OK");
+
+    const [, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(args).toContain("--ignore-rules");
+    expect(args).not.toContain("--ignore-user-config");
+    expect(args.at(-1)).toBe("Summarize session-1");
   });
 
   it("logs debug context if stale codex output cleanup fails", async () => {
