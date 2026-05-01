@@ -47,6 +47,7 @@ export function detectAgent(
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
     _agentPaths.set(runner, detected);
   } catch {
@@ -491,6 +492,7 @@ function invokeClaudeLlm(
     stdio: ["ignore", "pipe", "pipe"],
     timeout: opts.timeoutMs,
     maxBuffer: CHILD_PROCESS_MAX_BUFFER,
+    windowsHide: true,
   });
 
   const stdout = result.stdout?.toString() ?? "";
@@ -598,6 +600,7 @@ function invokeCodexLlm(
     stdio: ["ignore", "pipe", "pipe"],
     timeout: opts.timeoutMs,
     maxBuffer: CHILD_PROCESS_MAX_BUFFER,
+    windowsHide: true,
   });
 
   const stdout = result.stdout?.toString().trim();

@@ -144,8 +144,9 @@ function startServer(): void {
 
   const logFd = openLogFd("server");
 
-  const child = spawn("node", [serverScript], {
+  const child = spawn(process.execPath, [serverScript], {
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", logFd, logFd],
     env: {
       ...process.env,

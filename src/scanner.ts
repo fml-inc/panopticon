@@ -403,6 +403,7 @@ export function resolveGitRoot(cwd: string): string | null {
       encoding: "utf-8",
       timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
   } catch {
     // Not a git repo
@@ -419,6 +420,7 @@ export function isGitignored(filePath: string, cwd: string): boolean {
     execFileSync("git", ["-C", cwd, "check-ignore", "-q", filePath], {
       timeout: 3000,
       stdio: ["ignore", "ignore", "ignore"],
+      windowsHide: true,
     });
     return true; // exit code 0 = ignored
   } catch {
@@ -445,6 +447,7 @@ function findPerDirectoryClaudeMd(
           encoding: "utf-8",
           timeout: 5000,
           stdio: ["ignore", "pipe", "ignore"],
+          windowsHide: true,
         },
       ).trim();
       if (output) {
@@ -478,6 +481,7 @@ function findPerDirectoryClaudeMd(
         encoding: "utf-8",
         timeout: 10000,
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       },
     ).trim();
     if (output) {
