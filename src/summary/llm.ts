@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -31,6 +31,11 @@ interface AsyncCommandResult {
   error: Error | null;
 }
 
+interface ResolvedCommand {
+  binaryPath: string;
+  args: string[];
+}
+
 /**
  * Detect whether the requested CLI is available on this machine.
  * Result is cached for the lifetime of the process, so installing or removing
@@ -43,17 +48,58 @@ export function detectAgent(
   if (cached !== undefined) return cached;
   try {
     const binary = runner === "codex" ? "codex" : "claude";
-    const detected = execFileSync("which", [binary], {
+    const lookupCommand = process.platform === "win32" ? "where.exe" : "which";
+    const detected = execFileSync(lookupCommand, [binary], {
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
       windowsHide: true,
-    }).trim();
-    _agentPaths.set(runner, detected);
+    })
+      .trim()
+      .split(/\r?\n/, 1)[0]
+      ?.trim();
+    _agentPaths.set(
+      runner,
+      detected && detected.length > 0 ? normalizeAgentPath(detected) : null,
+    );
   } catch {
     _agentPaths.set(runner, null);
   }
   return _agentPaths.get(runner) ?? null;
+}
+
+function normalizeAgentPath(detected: string): string {
+  if (
+    process.platform !== "win32" ||
+    path.win32.extname(detected) ||
+    !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(detected)
+  ) {
+    return detected;
+  }
+  for (const extension of [".cmd", ".exe", ".bat", ".ps1"]) {
+    const candidate = `${detected}${extension}`;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return detected;
+}
+
+function resolveCommand(binaryPath: string, args: string[]): ResolvedCommand {
+  if (process.platform !== "win32" || !/\.cmd$/i.test(binaryPath)) {
+    return { binaryPath, args };
+  }
+  try {
+    const shim = fs.readFileSync(binaryPath, "utf-8");
+    const match = shim.match(/"%dp0%\\([^"]+?\.js)"/i);
+    if (!match) return { binaryPath, args };
+    const scriptPath = path.win32.join(
+      path.win32.dirname(binaryPath),
+      match[1],
+    );
+    if (!fs.existsSync(scriptPath)) return { binaryPath, args };
+    return { binaryPath: process.execPath, args: [scriptPath, ...args] };
+  } catch {
+    return { binaryPath, args };
+  }
 }
 
 /**
@@ -372,7 +418,6 @@ function buildCodexArgs(
     : prompt;
   const args = [
     "exec",
-    fullPrompt,
     "--sandbox",
     "read-only",
     "--skip-git-repo-check",
@@ -387,16 +432,13 @@ function buildCodexArgs(
   if (opts.model) {
     args.push("--model", opts.model);
   }
+  args.push(fullPrompt);
   return args;
 }
 
 function logChildStderr(stderr: string): void {
   const trimmed = stderr.trim();
   if (trimmed) log.llm.warn(`stderr: ${trimmed.slice(0, 500)}`);
-}
-
-function readExecStatusCode(code: unknown): number | null {
-  return typeof code === "number" ? code : null;
 }
 
 function bufferToString(value: unknown): string {
@@ -415,53 +457,62 @@ async function runExecFileCommand(
   },
 ): Promise<AsyncCommandResult> {
   return await new Promise<AsyncCommandResult>((resolve) => {
-    execFile(
-      binaryPath,
-      args,
-      {
-        cwd: opts.cwd,
-        env: opts.env,
-        encoding: "utf-8",
-        timeout: opts.timeoutMs,
-        maxBuffer: CHILD_PROCESS_MAX_BUFFER,
-      },
-      (error, stdout, stderr) => {
-        if (!error) {
-          resolve({
-            stdout: bufferToString(stdout),
-            stderr: bufferToString(stderr).trim(),
-            status: 0,
-            signal: null,
-            error: null,
-          });
-          return;
-        }
+    const command = resolveCommand(binaryPath, args);
+    const child = spawn(command.binaryPath, command.args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, opts.timeoutMs);
 
-        const execError =
-          error instanceof Error ? error : new Error(String(error));
-        const errorWithOutput = execError as Error & {
-          stdout?: unknown;
-          stderr?: unknown;
-          code?: unknown;
-          signal?: NodeJS.Signals | null;
-        };
-        resolve({
-          stdout: bufferToString(
-            errorWithOutput.stdout === undefined
-              ? stdout
-              : errorWithOutput.stdout,
-          ),
-          stderr: bufferToString(
-            errorWithOutput.stderr === undefined
-              ? stderr
-              : errorWithOutput.stderr,
-          ).trim(),
-          status: readExecStatusCode(errorWithOutput.code),
-          signal: errorWithOutput.signal ?? null,
-          error: execError,
-        });
-      },
-    );
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (Buffer.concat(stdoutChunks).length < CHILD_PROCESS_MAX_BUFFER) {
+        stdoutChunks.push(chunk);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (Buffer.concat(stderrChunks).length < CHILD_PROCESS_MAX_BUFFER) {
+        stderrChunks.push(chunk);
+      }
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        stdout: bufferToString(Buffer.concat(stdoutChunks)),
+        stderr: bufferToString(Buffer.concat(stderrChunks)).trim(),
+        status: null,
+        signal: null,
+        error,
+      });
+    });
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const status = typeof code === "number" ? code : null;
+      resolve({
+        stdout: bufferToString(Buffer.concat(stdoutChunks)),
+        stderr: bufferToString(Buffer.concat(stderrChunks)).trim(),
+        status,
+        signal,
+        error:
+          timedOut && signal
+            ? new Error(`Process timed out after ${opts.timeoutMs}ms`)
+            : status && status !== 0
+              ? new Error(`Process exited with code ${status}`)
+              : null,
+      });
+    });
   });
 }
 
@@ -486,7 +537,8 @@ function invokeClaudeLlm(
   });
   if (!args) return null;
 
-  const result = spawnSync(opts.binaryPath, args, {
+  const command = resolveCommand(opts.binaryPath, args);
+  const result = spawnSync(command.binaryPath, command.args, {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -594,7 +646,8 @@ function invokeCodexLlm(
 
   const args = buildCodexArgs(prompt, outputPath, opts);
 
-  const result = spawnSync(opts.binaryPath, args, {
+  const command = resolveCommand(opts.binaryPath, args);
+  const result = spawnSync(command.binaryPath, command.args, {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],

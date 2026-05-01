@@ -19,6 +19,7 @@
     "bin/",
     "dist/",
     "hooks/",
+    "scripts/postinstall.js",
     "skills/",
     ".claude-plugin/"
   ],
@@ -102,7 +103,7 @@
     "typecheck": "tsc --noEmit",
     "prepack": "node scripts/generate-plugin-manifest.js",
     "pack:local": "pnpm build && pnpm pack",
-    "postinstall": "if [ -d dist ]; then if git --version >/dev/null 2>&1; then node ./bin/panopticon install && (claude plugin install panopticon@local-plugins 2>/dev/null || claude plugin update panopticon@local-plugins || echo 'warn: claude CLI not found, run claude plugin install panopticon@local-plugins manually'); else echo 'warn: git not found; skipping automatic panopticon install. Install Git and run panopticon install, or run panopticon install --disable-sync.'; fi; fi"
+    "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

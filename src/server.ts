@@ -81,8 +81,9 @@ export function createUnifiedServer(): http.Server {
     // OTLP ingest — /v1/logs, /v1/metrics, /v1/traces, or bare "/" (Gemini).
     // Auth required: any local process can otherwise inject fake telemetry
     // and poison cost/session aggregates. Agent CLIs send the token via
-    // OTEL_EXPORTER_OTLP_HEADERS, written into <dataDir>/env.sh at install
-    // time and sourced by anything that needs the panopticon environment.
+    // OTEL_EXPORTER_OTLP_HEADERS, written into the install-time panopticon
+    // env file (`env.sh` on Unix, `env.ps1` on Windows) and sourced by
+    // anything that needs the panopticon environment.
     if (
       method === "POST" &&
       (url.startsWith("/v1/") || url === "/" || url === "")

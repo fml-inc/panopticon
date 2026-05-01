@@ -24,6 +24,10 @@ function geminiToolCategory(toolName: string): string {
   return GEMINI_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
 }
 
+function quoteCommandArg(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
+
 const GEMINI_DIR = path.join(os.homedir(), ".gemini");
 const GEMINI_DISCOVER_MAX_DEPTH = 4;
 const GEMINI_DISCOVER_SKIP_DIRS = new Set([
@@ -119,7 +123,9 @@ const gemini: TargetAdapter = {
           hooks: [
             {
               type: "command",
-              command: `node ${hookBin} gemini ${opts.port}${opts.proxy ? " --proxy" : ""}`,
+              command: `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+                hookBin,
+              )} gemini ${opts.port}${opts.proxy ? " --proxy" : ""}`,
             },
           ],
         });
