@@ -30,7 +30,11 @@ import {
 } from "./mcp/permissions.js";
 import { readScannerStatus } from "./scanner/status.js";
 import { httpPanopticonService } from "./service/http.js";
-import { writePanopticonEnvFile } from "./setup.js";
+import {
+  configureShellEnvDetailed,
+  removeShellEnvDetailed,
+  writePanopticonEnvFile,
+} from "./setup.js";
 import { setSyncEnabled } from "./sync/config.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
@@ -292,6 +296,20 @@ function readStdin(): Promise<string> {
 // ---------------------------------------------------------------------------
 
 function configureShellEnv(force: boolean, target = "claude", proxy = false) {
+  if (process.platform === "win32") {
+    const shellEnv = configureShellEnvDetailed({ force, target, proxy });
+    for (const profileUpdate of shellEnv.profileUpdates) {
+      console.log(
+        `      ${profileUpdate.action === "updated" ? "Updated" : "Added"} env vars in ${profileUpdate.path}`,
+      );
+    }
+    for (const envFile of shellEnv.envFiles) {
+      console.log(`      Wrote ${envFile}`);
+    }
+    console.log();
+    return;
+  }
+
   const shellRc = path.join(
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
@@ -430,6 +448,19 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
 }
 
 function removeShellEnv() {
+  if (process.platform === "win32") {
+    const shellCleanup = removeShellEnvDetailed();
+    if (shellCleanup.removedProfilePaths.length === 0) {
+      console.log("      No panopticon shell env block found\n");
+      return;
+    }
+    for (const profilePath of shellCleanup.removedProfilePaths) {
+      console.log(`      Removed panopticon env vars from ${profilePath}`);
+    }
+    console.log();
+    return;
+  }
+
   const shellRc = path.join(
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",

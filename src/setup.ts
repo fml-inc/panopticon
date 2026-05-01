@@ -14,6 +14,175 @@ import { refreshPricing } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
 import { allTargets } from "./targets/index.js";
 
+const PANOPTICON_BLOCK_START = "# >>> panopticon >>>";
+const PANOPTICON_BLOCK_END = "# <<< panopticon <<<";
+const LOCAL_BIN_EXPORT = 'export PATH="$HOME/.local/bin:$PATH"';
+
+export interface ShellEnvContext {
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+  shell?: string;
+  dataDir?: string;
+}
+
+export interface ShellEnvProfileUpdate {
+  action: "added" | "updated";
+  path: string;
+}
+
+export interface ConfigureShellEnvResult {
+  envFiles: string[];
+  primaryEnvFilePath: string;
+  primaryProfilePath: string;
+  profileUpdates: ShellEnvProfileUpdate[];
+}
+
+export interface RemoveShellEnvResult {
+  removedProfilePaths: string[];
+}
+
+function runtimePlatform(context: ShellEnvContext = {}): NodeJS.Platform {
+  return context.platform ?? process.platform;
+}
+
+function runtimeHomeDir(context: ShellEnvContext = {}): string {
+  return context.homeDir ?? os.homedir();
+}
+
+function runtimeShell(context: ShellEnvContext = {}): string | undefined {
+  return context.shell ?? process.env.SHELL;
+}
+
+function runtimeDataDir(context: ShellEnvContext = {}): string {
+  return context.dataDir ?? process.env.PANOPTICON_DATA_DIR ?? config.dataDir;
+}
+
+function selectedTargets(target: string) {
+  return target === "all"
+    ? allTargets()
+    : allTargets().filter((value) => value.id === target);
+}
+
+function allManagedEnvVarNames(): string[] {
+  const allTargetVarNames = new Set<string>();
+  for (const value of allTargets()) {
+    for (const [varName] of value.shellEnv.envVars(config.port, true)) {
+      allTargetVarNames.add(varName);
+    }
+  }
+  return [
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_METRIC_EXPORT_INTERVAL",
+    ...allTargetVarNames,
+  ];
+}
+
+function readTextFileIfExists(filePath: string): string {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : "";
+}
+
+function resolveShellRcPath(context: ShellEnvContext = {}): string {
+  return path.join(
+    runtimeHomeDir(context),
+    runtimeShell(context)?.includes("zsh") ? ".zshrc" : ".bashrc",
+  );
+}
+
+function resolvePowerShellProfiles(context: ShellEnvContext = {}): string[] {
+  const homeDir = runtimeHomeDir(context);
+  return [
+    path.join(homeDir, "Documents", "PowerShell", "Profile.ps1"),
+    path.join(homeDir, "Documents", "WindowsPowerShell", "Profile.ps1"),
+  ];
+}
+
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function escapeCmdValue(value: string): string {
+  return value.replace(/"/g, '""').replace(/%/g, "%%");
+}
+
+function writeManagedFile(
+  filePath: string,
+  lines: string[],
+  options?: { mode?: number; newline?: string },
+): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, lines.join(options?.newline ?? "\n"), {
+    mode: options?.mode,
+  });
+}
+
+function replaceManagedBlock(
+  filePath: string,
+  blockLines: string[],
+): ShellEnvProfileUpdate {
+  const content = readTextFileIfExists(filePath);
+  const lines = content.split("\n");
+  const preservedLines: string[] = [];
+  let inBlock = false;
+  let insertAt = -1;
+  let found = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(PANOPTICON_BLOCK_START)) {
+      inBlock = true;
+      found = true;
+      if (insertAt < 0) insertAt = preservedLines.length;
+      continue;
+    }
+    if (trimmed.startsWith(PANOPTICON_BLOCK_END)) {
+      inBlock = false;
+      continue;
+    }
+    if (!inBlock) {
+      preservedLines.push(line);
+    }
+  }
+
+  const insertionIndex = insertAt >= 0 ? insertAt : preservedLines.length;
+  preservedLines.splice(insertionIndex, 0, "", ...blockLines, "");
+  writeManagedFile(filePath, preservedLines);
+
+  return { path: filePath, action: found ? "updated" : "added" };
+}
+
+function removeManagedBlockFromFile(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+
+  const content = fs.readFileSync(filePath, "utf-8");
+  const lines = content.split("\n");
+  let inBlock = false;
+  let changed = false;
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(PANOPTICON_BLOCK_START)) {
+      inBlock = true;
+      changed = true;
+      return false;
+    }
+    if (trimmed.startsWith(PANOPTICON_BLOCK_END)) {
+      inBlock = false;
+      return false;
+    }
+    return !inBlock;
+  });
+
+  if (changed) {
+    fs.writeFileSync(filePath, filtered.join("\n"));
+  }
+  return changed;
+}
+
 /**
  * Build the canonical list of panopticon env vars (`[name, value]` tuples).
  *
@@ -25,6 +194,13 @@ import { allTargets } from "./targets/index.js";
  * (e.g. ANTHROPIC_BASE_URL → /proxy/anthropic).
  */
 export function buildPanopticonEnvVars(
+  proxy: boolean,
+): Array<[string, string]> {
+  return buildPanopticonEnvVarsForTarget("all", proxy);
+}
+
+function buildPanopticonEnvVarsForTarget(
+  target: string,
   proxy: boolean,
 ): Array<[string, string]> {
   const token = getOrCreateAuthToken();
@@ -40,7 +216,7 @@ export function buildPanopticonEnvVars(
     ["OTEL_LOG_USER_PROMPTS", "1"],
     ["OTEL_METRIC_EXPORT_INTERVAL", "10000"],
   ];
-  for (const t of allTargets()) {
+  for (const t of selectedTargets(target)) {
     for (const [name, value] of t.shellEnv.envVars(config.port, proxy)) {
       vars.push([name, value]);
     }
@@ -49,36 +225,73 @@ export function buildPanopticonEnvVars(
 }
 
 /**
- * Write a guaranteed-sourcable env file at `<dataDir>/env.sh`.
+ * Write guaranteed-sourcable env file(s) in the panopticon data dir.
  *
- * The standard Debian/Ubuntu `~/.bashrc` aborts early for non-interactive
- * shells, which means scripts that `source ~/.bashrc` get nothing from the
- * panopticon block — including OTEL_EXPORTER_OTLP_HEADERS, breaking auth
- * on /v1/*. This file has no such guard: any caller that sources it gets
- * the full panopticon environment.
+ * Unix gets `env.sh` so non-interactive shells can source panopticon without
+ * tripping over `~/.bashrc` early-return guards. Windows gets `env.ps1` and
+ * `env.cmd` for PowerShell and manual `cmd.exe` use.
  *
  * The file contains the auth token, so it's written 0600.
  *
- * Returns the path to the written file.
+ * Returns the primary env file path (`env.sh` on Unix, `env.ps1` on Windows).
  */
-export function writePanopticonEnvFile(proxy: boolean): string {
-  // Resolve dataDir at call time so PANOPTICON_DATA_DIR overrides (used
-  // heavily in tests) take effect even when this module was imported
-  // before the env var was set.
-  const dataDir = process.env.PANOPTICON_DATA_DIR ?? config.dataDir;
+export function writePanopticonEnvFiles(
+  proxy: boolean,
+  context: ShellEnvContext = {},
+  target = "all",
+): string[] {
+  const dataDir = runtimeDataDir(context);
+  const vars = buildPanopticonEnvVarsForTarget(target, proxy);
   fs.mkdirSync(dataDir, { recursive: true });
-  const fp = path.join(dataDir, "env.sh");
-  const lines = [
-    "# Auto-generated by panopticon — source this for the panopticon shell env.",
-    "# Equivalent to the `# >>> panopticon` block in your shell rc, but safe",
-    "# to source from non-interactive scripts (no early-return guard).",
-    ...buildPanopticonEnvVars(proxy).map(
-      ([name, value]) => `export ${name}=${value}`,
-    ),
-    "",
-  ];
-  fs.writeFileSync(fp, lines.join("\n"), { mode: 0o600 });
-  return fp;
+  if (runtimePlatform(context) === "win32") {
+    const psPath = path.join(dataDir, "env.ps1");
+    const cmdPath = path.join(dataDir, "env.cmd");
+    writeManagedFile(
+      psPath,
+      [
+        "# Auto-generated by panopticon — dot-source this for the shell env.",
+        "# Equivalent to the panopticon block in your PowerShell profile.",
+        ...vars.map(([name, value]) => `$env:${name} = ${psQuote(value)}`),
+        "",
+      ],
+      { mode: 0o600 },
+    );
+    writeManagedFile(
+      cmdPath,
+      [
+        "@echo off",
+        "rem Auto-generated by panopticon — call this for the shell env.",
+        ...vars.map(
+          ([name, value]) => `set "${name}=${escapeCmdValue(value)}"`,
+        ),
+        "",
+      ],
+      { mode: 0o600, newline: "\r\n" },
+    );
+    return [psPath, cmdPath];
+  }
+
+  const shPath = path.join(dataDir, "env.sh");
+  writeManagedFile(
+    shPath,
+    [
+      "# Auto-generated by panopticon — source this for the panopticon shell env.",
+      "# Equivalent to the `# >>> panopticon` block in your shell rc, but safe",
+      "# to source from non-interactive scripts (no early-return guard).",
+      ...vars.map(([name, value]) => `export ${name}=${value}`),
+      "",
+    ],
+    { mode: 0o600 },
+  );
+  return [shPath];
+}
+
+export function writePanopticonEnvFile(
+  proxy: boolean,
+  context: ShellEnvContext = {},
+  target = "all",
+): string {
+  return writePanopticonEnvFiles(proxy, context, target)[0];
 }
 
 /**
@@ -110,62 +323,71 @@ export interface ShellEnvOptions {
 }
 
 /**
- * Configure shell environment variables (.zshrc / .bashrc) so that
- * coding tools send telemetry to panopticon.
+ * Configure shell environment variables so that coding tools send telemetry
+ * to panopticon.
  *
- * Returns the path to the shell rc file that was updated.
+ * Unix updates `.zshrc` or `.bashrc`. Windows updates the user's PowerShell
+ * profiles under `Documents/PowerShell` and `Documents/WindowsPowerShell`.
+ *
+ * Returns the primary profile path that was updated.
  */
-export function configureShellEnv(opts: ShellEnvOptions = {}): string {
+export function configureShellEnvDetailed(
+  opts: ShellEnvOptions = {},
+  context: ShellEnvContext = {},
+): ConfigureShellEnvResult {
   const force = opts.force ?? false;
   const target = opts.target ?? "claude";
   const proxy = opts.proxy ?? false;
+  const authToken = getOrCreateAuthToken();
+  const envFiles = writePanopticonEnvFiles(proxy, context, target);
 
-  const shellRc = path.join(
-    os.homedir(),
-    process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
-  );
-  const rcContent = fs.existsSync(shellRc)
-    ? fs.readFileSync(shellRc, "utf-8")
-    : "";
-
-  // Collect all known target env var names for detection/cleanup
-  const allTargetVarNames = new Set<string>();
-  for (const v of allTargets()) {
-    for (const [varName] of v.shellEnv.envVars(config.port, true)) {
-      allTargetVarNames.add(varName);
-    }
+  if (runtimePlatform(context) === "win32") {
+    const envFile = envFiles[0];
+    const blockLines = [
+      PANOPTICON_BLOCK_START,
+      `if (Test-Path ${psQuote(envFile)}) {`,
+      `  . ${psQuote(envFile)}`,
+      "}",
+      PANOPTICON_BLOCK_END,
+    ];
+    const profileUpdates = resolvePowerShellProfiles(context).map((profile) =>
+      replaceManagedBlock(profile, blockLines),
+    );
+    return {
+      envFiles,
+      primaryEnvFilePath: envFiles[0],
+      primaryProfilePath:
+        profileUpdates[0]?.path ?? resolvePowerShellProfiles(context)[0],
+      profileUpdates,
+    };
   }
 
-  const PANOPTICON_VARS = [
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_PROTOCOL",
-    "OTEL_EXPORTER_OTLP_HEADERS",
-    "OTEL_METRICS_EXPORTER",
-    "OTEL_LOGS_EXPORTER",
-    "OTEL_LOG_TOOL_DETAILS",
-    "OTEL_LOG_USER_PROMPTS",
-    "OTEL_METRIC_EXPORT_INTERVAL",
-    ...allTargetVarNames,
-  ];
-  const PANOPTICON_COMMENTS = ["# >>> panopticon", "# <<< panopticon"];
+  const shellRc = resolveShellRcPath(context);
+  const rcContent = readTextFileIfExists(shellRc);
+
+  const managedEnvVarNames = allManagedEnvVarNames();
+  const panopticonComments = [PANOPTICON_BLOCK_START, PANOPTICON_BLOCK_END];
 
   const isPanopticonLine = (line: string): boolean => {
     const trimmed = line.trim();
-    if (PANOPTICON_COMMENTS.some((c) => trimmed.startsWith(c))) return true;
-    for (const v of PANOPTICON_VARS) {
-      if (trimmed === `export ${v}` || trimmed.startsWith(`export ${v}=`))
+    if (panopticonComments.some((comment) => trimmed.startsWith(comment))) {
+      return true;
+    }
+    if (trimmed === LOCAL_BIN_EXPORT) return true;
+    for (const varName of managedEnvVarNames) {
+      if (
+        trimmed === `export ${varName}` ||
+        trimmed.startsWith(`export ${varName}=`)
+      ) {
         return true;
+      }
     }
     return false;
   };
 
-  // Generate the auth token once so the bashrc and the env.sh file both
-  // contain the same OTEL_EXPORTER_OTLP_HEADERS value.
-  const authToken = getOrCreateAuthToken();
-
   // Build the wanted env vars: shared OTEL vars + target-specific vars
   const wantedLines: [string, string][] = [
-    ["# >>> panopticon >>>", "# >>> panopticon >>>"],
+    [PANOPTICON_BLOCK_START, PANOPTICON_BLOCK_START],
     [
       "OTEL_EXPORTER_OTLP_ENDPOINT",
       `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${config.port}`,
@@ -186,24 +408,19 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
   ];
 
   // Add target-specific env vars for selected targets
-  const selectedTargetList =
-    target === "all"
-      ? allTargets()
-      : allTargets().filter((v) => v.id === target);
-
-  for (const t of selectedTargetList) {
-    for (const [varName, value] of t.shellEnv.envVars(config.port, proxy)) {
+  for (const selectedTarget of selectedTargets(target)) {
+    for (const [varName, value] of selectedTarget.shellEnv.envVars(
+      config.port,
+      proxy,
+    )) {
       wantedLines.push([varName, `export ${varName}=${value}`]);
     }
   }
 
-  wantedLines.push(["# <<< panopticon <<<", "# <<< panopticon <<<"]);
+  wantedLines.push([PANOPTICON_BLOCK_END, PANOPTICON_BLOCK_END]);
 
   if (!rcContent.includes(".local/bin")) {
-    wantedLines.splice(1, 0, [
-      "PATH_LOCAL_BIN",
-      'export PATH="$HOME/.local/bin:$PATH"',
-    ]);
+    wantedLines.splice(1, 0, ["PATH_LOCAL_BIN", LOCAL_BIN_EXPORT]);
   }
 
   const lines = rcContent.split("\n");
@@ -223,6 +440,7 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
 
     const match = wantedLines.find(([key]) => {
       if (key.startsWith("#")) return line.trim().startsWith(key);
+      if (key === "PATH_LOCAL_BIN") return line.trim() === LOCAL_BIN_EXPORT;
       return (
         line.trim() === `export ${key}` ||
         line.trim().startsWith(`export ${key}=`)
@@ -243,13 +461,41 @@ export function configureShellEnv(opts: ShellEnvOptions = {}): string {
   preservedLines.splice(insertionIndex, 0, ...blockLines);
 
   fs.writeFileSync(shellRc, preservedLines.join("\n"));
+  return {
+    envFiles,
+    primaryEnvFilePath: envFiles[0],
+    primaryProfilePath: shellRc,
+    profileUpdates: [
+      { path: shellRc, action: insertAt >= 0 ? "updated" : "added" },
+    ],
+  };
+}
 
-  // Also write the dedicated env file so non-interactive callers (CI,
-  // docker entrypoints, e2e scripts) can source the panopticon env without
-  // depending on the standard `~/.bashrc` non-interactive guard.
-  writePanopticonEnvFile(proxy);
+export function configureShellEnv(
+  opts: ShellEnvOptions = {},
+  context: ShellEnvContext = {},
+): string {
+  return configureShellEnvDetailed(opts, context).primaryProfilePath;
+}
 
-  return shellRc;
+export function removeShellEnvDetailed(
+  context: ShellEnvContext = {},
+): RemoveShellEnvResult {
+  const profilePaths =
+    runtimePlatform(context) === "win32"
+      ? resolvePowerShellProfiles(context)
+      : [resolveShellRcPath(context)];
+  const removedProfilePaths: string[] = [];
+  for (const profilePath of profilePaths) {
+    if (removeManagedBlockFromFile(profilePath)) {
+      removedProfilePaths.push(profilePath);
+    }
+  }
+  return { removedProfilePaths };
+}
+
+export function removeShellEnv(context: ShellEnvContext = {}): string[] {
+  return removeShellEnvDetailed(context).removedProfilePaths;
 }
 
 // Re-export config for convenience (port, paths, etc.)

@@ -259,6 +259,13 @@ Log files: `server.log`, `otlp-receiver.log`, `mcp-server.log`, `proxy.log`, `ho
 
 **Environment variables** set by `panopticon install` in your shell profile:
 
+- macOS/Linux: written into `~/.zshrc` or `~/.bashrc`, plus a dedicated
+  `env.sh` in the panopticon data directory for non-interactive shells.
+- Windows: written into both `~/Documents/PowerShell/Profile.ps1` and
+  `~/Documents/WindowsPowerShell/Profile.ps1`, each of which sources
+  `%APPDATA%/panopticon/env.ps1`. A companion `%APPDATA%/panopticon/env.cmd`
+  is also written for manual `cmd.exe` use.
+
 ```bash
 # Shared OTel (always set)
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
@@ -448,7 +455,7 @@ Each supported coding tool is a self-contained adapter in `src/targets/`. An ada
 |---------|-------------------|
 | **Config** | Directory, config file path, format (JSON/TOML) |
 | **Hooks** | Event names, install-time config merge, uninstall cleanup |
-| **Shell env** | Target-specific env vars for the shell profile |
+| **Shell env** | Target-specific env vars for the shell profile / PowerShell profile |
 | **Events** | Event name mapping to canonical types, payload normalization, permission response format |
 | **Detection** | Display name, `isInstalled()`, `isConfigured()` for doctor |
 | **Proxy** | Upstream host (static or dynamic), path rewriting, accumulator type |
