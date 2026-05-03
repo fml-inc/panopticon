@@ -384,6 +384,28 @@ describe("writePanopticonEnvFile", () => {
     );
   });
 
+  it("filters Unix env.sh to the selected target", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envsh-"));
+    process.env.PANOPTICON_AUTH_TOKEN = "test-token-unix-target";
+
+    const { writePanopticonEnvFile } = await import("./setup.js");
+    const envFile = writePanopticonEnvFile(
+      true,
+      {
+        platform: "linux",
+        dataDir: tmpDir,
+      },
+      "claude",
+    );
+
+    const content = fs.readFileSync(envFile, "utf-8");
+    expect(content).toContain("export CLAUDE_CODE_ENABLE_TELEMETRY=1");
+    expect(content).toMatch(
+      /export ANTHROPIC_BASE_URL=http:\/\/localhost:\d+\/proxy\/anthropic/,
+    );
+    expect(content).not.toContain("export GEMINI_TELEMETRY_ENABLED=");
+  });
+
   it("filters Windows env files to the selected target", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-envwin-"));
     process.env.PANOPTICON_AUTH_TOKEN = "test-token-win-target";
