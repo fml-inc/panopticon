@@ -1,6 +1,11 @@
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HookInput } from "../hooks/ingest.js";
 import { allTargets, getTarget, targetIds } from "./index.js";
+
+function quoteCommandArg(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
 
 describe("target registry", () => {
   it("registers claude, gemini, and codex", () => {
@@ -90,6 +95,57 @@ describe("gemini event normalization", () => {
     };
     const result = gemini.events.normalizePayload!(data);
     expect((result as Record<string, unknown>).user_prompt).toBeUndefined();
+  });
+
+  it("install config writes a quoted hook command", () => {
+    const pluginRoot = path.join("/tmp", "panopticon app");
+    const result = gemini.hooks.applyInstallConfig(
+      {},
+      { pluginRoot, port: 4318, proxy: true },
+    ) as Record<string, unknown>;
+
+    const hooks = result.hooks as Record<
+      string,
+      Array<{ hooks: Array<{ command: string }> }>
+    >;
+    expect(hooks.SessionStart.at(-1)?.hooks[0].command).toBe(
+      `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+        path.join(pluginRoot, "bin", "hook-handler"),
+      )} gemini 4318 --proxy`,
+    );
+  });
+
+  it("install config writes MCP server with the current Node executable", () => {
+    const pluginRoot = path.join("/tmp", "panopticon app");
+    const result = gemini.hooks.applyInstallConfig(
+      {},
+      { pluginRoot, port: 4318, proxy: false },
+    ) as Record<string, unknown>;
+
+    expect(result.mcpServers).toMatchObject({
+      panopticon: {
+        command: process.execPath,
+        args: [path.join(pluginRoot, "bin", "mcp-server")],
+      },
+    });
+  });
+});
+
+describe("claude desktop install config", () => {
+  it("writes MCP server with the current Node executable", () => {
+    const claudeDesktop = getTarget("claude-desktop")!;
+    const pluginRoot = path.join("/tmp", "panopticon app");
+    const result = claudeDesktop.hooks.applyInstallConfig(
+      {},
+      { pluginRoot, port: 4318, proxy: false },
+    ) as Record<string, unknown>;
+
+    expect(result.mcpServers).toMatchObject({
+      panopticon: {
+        command: process.execPath,
+        args: [path.join(pluginRoot, "bin", "mcp-server")],
+      },
+    });
   });
 });
 

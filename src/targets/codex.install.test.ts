@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+function quoteCommandArg(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
+
 describe("codex install config", () => {
   let tmpCodexDir = "";
 
@@ -25,6 +29,7 @@ describe("codex install config", () => {
     const { getTarget } = await import("./index.js");
     const codex = getTarget("codex")!;
 
+    const pluginRoot = path.join("/tmp", "panopticon app");
     const result = codex.hooks.applyInstallConfig(
       {
         mcp_servers: {
@@ -38,14 +43,14 @@ describe("codex install config", () => {
           },
         },
       },
-      { pluginRoot: "/app", port: 4318, proxy: true },
+      { pluginRoot, port: 4318, proxy: true },
     ) as Record<string, unknown>;
 
     expect(result.openai_base_url).toBe("http://localhost:4318/proxy/codex");
     expect(result.mcp_servers).toMatchObject({
       panopticon: {
-        command: "node",
-        args: [path.join("/app", "bin", "mcp-server")],
+        command: process.execPath,
+        args: [path.join(pluginRoot, "bin", "mcp-server")],
         tools: {
           search_intent: { approval_mode: "approve" },
           query: { approval_mode: "deny" },
@@ -58,6 +63,14 @@ describe("codex install config", () => {
     ) as {
       hooks?: Record<string, unknown[]>;
     };
-    expect(hooksJson.hooks?.PermissionRequest).toBeDefined();
+    const permissionRequest = hooksJson.hooks?.PermissionRequest as Array<{
+      hooks: Array<{ command: string }>;
+    }>;
+    expect(permissionRequest).toBeDefined();
+    expect(permissionRequest.at(-1)?.hooks[0].command).toBe(
+      `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+        path.join(pluginRoot, "bin", "hook-handler"),
+      )} codex 4318 --proxy`,
+    );
   });
 });
