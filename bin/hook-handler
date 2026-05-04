@@ -1,3 +1,5 @@
 #!/usr/bin/env node
 
+import "./suppress-sqlite-warning.js";
+
 import("../dist/hooks/handler.js");

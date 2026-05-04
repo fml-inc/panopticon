@@ -443,7 +443,7 @@ function configureShellEnv(force: boolean, target = "claude", proxy = false) {
   // Also write the dedicated env file so non-interactive callers (CI,
   // docker entrypoints, e2e scripts) can source the panopticon env without
   // depending on the standard `~/.bashrc` non-interactive guard.
-  const envFile = writePanopticonEnvFile(proxy);
+  const envFile = writePanopticonEnvFile(proxy, {}, target);
   console.log(`      Wrote ${envFile}\n`);
 }
 
@@ -734,7 +734,7 @@ async function install(
     description: pkgJson?.description ?? "Observability for Claude Code",
     mcpServers: {
       panopticon: {
-        command: "node",
+        command: process.execPath,
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
         args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
       },
@@ -783,6 +783,14 @@ async function install(
   console.log(`      Marketplace: ${config.marketplaceDir}`);
 
   // Register plugin with Claude Code (install if new, update if existing)
+  // Claude Code keys the cache by plugin version, so dev reinstalls with the
+  // same version can otherwise keep an old manifest forever.
+  try {
+    fs.rmSync(path.join(config.pluginCacheDir, version), {
+      recursive: true,
+      force: true,
+    });
+  } catch {}
   try {
     try {
       execFileSync(

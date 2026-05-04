@@ -32,7 +32,7 @@ const claudeDesktop: TargetAdapter = {
       const serverBin = path.join(opts.pluginRoot, "bin", "mcp-server");
       cfg.mcpServers = (cfg.mcpServers as Record<string, unknown>) ?? {};
       (cfg.mcpServers as Record<string, unknown>).panopticon = {
-        command: "node",
+        command: process.execPath,
         args: [serverBin],
       };
       return cfg;

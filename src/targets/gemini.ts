@@ -136,7 +136,7 @@ const gemini: TargetAdapter = {
       settings.mcpServers =
         (settings.mcpServers as Record<string, unknown>) || {};
       (settings.mcpServers as Record<string, unknown>).panopticon = {
-        command: "node",
+        command: process.execPath,
         args: [mcpBin],
       };
 
