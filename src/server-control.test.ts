@@ -33,6 +33,7 @@ const { originalDataDir, originalHost, originalPort, tmpDir, port } =
 
 import { config } from "./config.js";
 import {
+  assertServerStartBackoffInactive,
   checkServerHealth,
   clearServerStartBackoff,
   formatServerStatus,
@@ -306,6 +307,46 @@ describe("server control", () => {
     }
   });
 
+  it("leaves an unhealthy PID-file process alone while start backoff is active", async () => {
+    const idleScript = path.join(tmpDir, "backoff-idle-process.mjs");
+    fs.writeFileSync(
+      idleScript,
+      [
+        "setInterval(() => {}, 1000);",
+        'process.on("SIGTERM", () => process.exit(0));',
+        "",
+      ].join("\n"),
+    );
+    const idle = spawn(process.execPath, [idleScript], { stdio: "ignore" });
+    expect(idle.pid).toEqual(expect.any(Number));
+    fs.writeFileSync(config.serverPidFile, `${idle.pid}\n`);
+    fs.writeFileSync(
+      config.serverStartBackoffFile,
+      `${JSON.stringify({
+        attempts: 1,
+        lastFailureAtMs: Date.now(),
+        nextAllowedAtMs: Date.now() + 60_000,
+        lastError: "previous failure",
+      })}\n`,
+    );
+
+    try {
+      await expect(
+        startServerDetached({
+          serverScript: path.join(tmpDir, "unused-server.mjs"),
+          timeoutMs: 200,
+        }),
+      ).rejects.toThrow(/start backoff active/);
+      expect(idle.pid != null && isPidRunning(idle.pid)).toBe(true);
+    } finally {
+      if (idle.pid && isPidRunning(idle.pid)) {
+        try {
+          process.kill(idle.pid, "SIGKILL");
+        } catch {}
+      }
+    }
+  });
+
   it("terminates a spawned child that never becomes healthy", async () => {
     const stoppedPath = path.join(tmpDir, "bad-health-stopped");
     const scriptPath = path.join(tmpDir, "bad-health-server.mjs");
@@ -342,7 +383,47 @@ describe("server control", () => {
     ).rejects.toThrow(/did not become healthy/);
 
     expect(fs.readFileSync(stoppedPath, "utf-8")).toBe("stopped");
-    clearServerStartBackoff();
+  });
+
+  it("treats malformed start backoff files as inactive", () => {
+    fs.writeFileSync(config.serverStartBackoffFile, "null\n");
+    expect(readServerStartBackoffStatus()).toMatchObject({
+      exists: false,
+      active: false,
+    });
+    expect(() => assertServerStartBackoffInactive()).not.toThrow();
+
+    fs.writeFileSync(config.serverStartBackoffFile, "[]\n");
+    expect(readServerStartBackoffStatus()).toMatchObject({
+      exists: false,
+      active: false,
+    });
+    expect(() => assertServerStartBackoffInactive()).not.toThrow();
+  });
+
+  it("records backoff when an unhealthy process cannot be stopped", async () => {
+    const err = Object.assign(new Error("denied"), { code: "EPERM" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw err;
+    });
+    try {
+      fs.writeFileSync(config.serverPidFile, "12345\n");
+
+      await expect(
+        startServerDetached({
+          serverScript: path.join(tmpDir, "unused-server.mjs"),
+          timeoutMs: 200,
+        }),
+      ).rejects.toThrow(/permission_denied/);
+    } finally {
+      kill.mockRestore();
+    }
+
+    expect(readServerStartBackoffStatus()).toMatchObject({
+      exists: true,
+      active: true,
+      attempts: 1,
+    });
   });
 
   it("records and respects start failure backoff", async () => {

@@ -49,6 +49,13 @@ function envInt(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
+function envNonNegativeInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue;
+}
+
 function envRatio(name: string, defaultValue: number): number {
   const raw = process.env[name];
   if (raw == null || raw.trim() === "") return defaultValue;
@@ -127,6 +134,8 @@ const DEFAULT_ATTEMPT_BACKOFF_SCHEDULE_MS = [
 ] as const;
 const DEFAULT_ATTEMPT_BACKOFF_JITTER_RATIO = 0.1;
 const DEFAULT_SESSION_SUMMARY_ENRICH_CONCURRENCY = 2;
+// Separate from attemptBackoffScheduleMs: daemon start backoff controls local
+// process respawn attempts and intentionally does not need fanout jitter.
 const DEFAULT_SERVER_START_BACKOFF_SCHEDULE_MS = [
   5_000,
   15_000,
@@ -236,11 +245,11 @@ export const config = {
     "PANOPTICON_SERVER_START_BACKOFF_SCHEDULE_MS",
     DEFAULT_SERVER_START_BACKOFF_SCHEDULE_MS,
   ),
-  logRotateBytes: envInt(
+  logRotateBytes: envNonNegativeInt(
     "PANOPTICON_LOG_ROTATE_BYTES",
     DEFAULT_LOG_ROTATE_BYTES,
   ),
-  logRotateFiles: envInt(
+  logRotateFiles: envNonNegativeInt(
     "PANOPTICON_LOG_ROTATE_FILES",
     DEFAULT_LOG_ROTATE_FILES,
   ),

@@ -56,7 +56,11 @@ function hasErrnoCode(err: unknown, code: string): boolean {
 
 function truncateStartFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.length > 500 ? `${message.slice(0, 497)}...` : message;
+  const logSuffix = `. Log: ${logPaths.server}`;
+  const cleaned = message.endsWith(logSuffix)
+    ? message.slice(0, -logSuffix.length)
+    : message;
+  return cleaned.length > 500 ? `${cleaned.slice(0, 497)}...` : cleaned;
 }
 
 function startBackoffDelayMs(
@@ -66,6 +70,17 @@ function startBackoffDelayMs(
   if (scheduleMs.length === 0) return 0;
   const index = Math.min(Math.max(attempts - 1, 0), scheduleMs.length - 1);
   return scheduleMs[index];
+}
+
+function emptyServerStartBackoffStatus(): ServerStartBackoffStatus {
+  return {
+    exists: false,
+    active: false,
+    attempts: 0,
+    lastFailureAtMs: null,
+    nextAllowedAtMs: null,
+    lastError: null,
+  };
 }
 
 export function readServerStartBackoffStatus(opts?: {
@@ -79,14 +94,11 @@ export function readServerStartBackoffStatus(opts?: {
   try {
     raw = JSON.parse(fs.readFileSync(backoffFile, "utf-8"));
   } catch {
-    return {
-      exists: false,
-      active: false,
-      attempts: 0,
-      lastFailureAtMs: null,
-      nextAllowedAtMs: null,
-      lastError: null,
-    };
+    return emptyServerStartBackoffStatus();
+  }
+
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return emptyServerStartBackoffStatus();
   }
 
   const record = raw as Record<string, unknown>;
@@ -132,7 +144,7 @@ export function recordServerStartFailure(
     nowMs?: number;
     scheduleMs?: readonly number[];
   },
-): ServerStartBackoffStatus {
+): void {
   const backoffFile = opts?.backoffFile ?? config.serverStartBackoffFile;
   const nowMs = opts?.nowMs ?? Date.now();
   const previous = readServerStartBackoffStatus({ backoffFile, nowMs });
@@ -150,11 +162,13 @@ export function recordServerStartFailure(
 
   fs.mkdirSync(path.dirname(backoffFile), { recursive: true });
   fs.writeFileSync(backoffFile, `${JSON.stringify(record, null, 2)}\n`);
-  return readServerStartBackoffStatus({ backoffFile, nowMs });
 }
 
-function assertStartBackoffInactive(): void {
-  const backoff = readServerStartBackoffStatus();
+export function assertServerStartBackoffInactive(opts?: {
+  backoffFile?: string;
+  nowMs?: number;
+}): void {
+  const backoff = readServerStartBackoffStatus(opts);
   if (!backoff.active) return;
 
   const nextAllowed =
@@ -167,6 +181,11 @@ function assertStartBackoffInactive(): void {
   throw new Error(
     `Panopticon server start backoff active until ${nextAllowed} after ${backoff.attempts} failed start attempt${backoff.attempts === 1 ? "" : "s"}.${lastError} Log: ${logPaths.server}`,
   );
+}
+
+function recordServerStartFailureAndThrow(error: Error): never {
+  recordServerStartFailure(error);
+  throw error;
 }
 
 export function isPidRunning(pid: number): boolean {
@@ -491,13 +510,17 @@ export async function startServerDetached(opts: {
       timeoutMs: 3000,
     });
     if (stopped.status === "signal_sent") {
-      throw new Error(
-        `Panopticon server did not stop after SIGTERM/SIGKILL (PID ${stopped.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server did not stop after SIGTERM/SIGKILL (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
     if (stopped.status === "permission_denied") {
-      throw new Error(
-        `Panopticon server could not be stopped because permission was denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server could not be stopped because permission was denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
   }
@@ -514,19 +537,25 @@ export async function startServerDetached(opts: {
   }
 
   if (current.pidFile.running && current.pidFile.pid != null) {
+    if (!opts.ignoreStartBackoff) assertServerStartBackoffInactive();
+
     const stopped = await stopServer({
       host: opts.host,
       port,
       timeoutMs: 3000,
     });
     if (stopped.status === "signal_sent") {
-      throw new Error(
-        `Panopticon server process is running but unhealthy and did not stop after SIGTERM/SIGKILL (PID ${stopped.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server process is running but unhealthy and stop returned signal_sent (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
     if (stopped.status === "permission_denied") {
-      throw new Error(
-        `Panopticon server process is running but unhealthy and could not be stopped because permission was denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server process is running but unhealthy and stop returned permission_denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
 
@@ -541,8 +570,10 @@ export async function startServerDetached(opts: {
       };
     }
     if (current.pidFile.running && current.pidFile.pid != null) {
-      throw new Error(
-        `Panopticon server process is still running but unhealthy (PID ${current.pidFile.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server process is still running but unhealthy after stop status ${stopped.status} (PID ${current.pidFile.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
   }
@@ -551,7 +582,7 @@ export async function startServerDetached(opts: {
     unlinkPidFile(config.serverPidFile);
   }
 
-  if (!opts.ignoreStartBackoff) assertStartBackoffInactive();
+  if (!opts.ignoreStartBackoff) assertServerStartBackoffInactive();
 
   const logFd = openLogFd("server");
   const child = spawn(process.execPath, [opts.serverScript], {

@@ -254,7 +254,7 @@ Daemon stdout/stderr is written to platform-specific log directories:
 | Linux | `~/.local/state/panopticon/logs/` |
 | Windows | `%LOCALAPPDATA%/panopticon/logs/` |
 
-Log files: `server.log`, `otlp-receiver.log`, `mcp-server.log`, `proxy.log`, `hook-handler.log`. Daemon logs rotate before native daemon startup when they exceed the configured size.
+Log files: `server.log`, `otlp-receiver.log`, `mcp-server.log`, `proxy.log`, `hook-handler.log`. Daemon logs rotate before each native daemon spawn when they exceed the configured size.
 
 ## Configuration
 
@@ -297,8 +297,8 @@ Target-specific env vars are declared by each target adapter in `src/targets/`.
 | `PANOPTICON_PORT` | `4318` | Unified server port |
 | `PANOPTICON_HOST` | `127.0.0.1` | Server bind address |
 | `PANOPTICON_LOG_LEVEL` | `info` | Minimum log level for daemon logs and `hook-handler.log` (`silly`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`) |
-| `PANOPTICON_LOG_ROTATE_BYTES` | `10485760` | Rotate a daemon log before startup when it reaches this size |
-| `PANOPTICON_LOG_ROTATE_FILES` | `5` | Number of rotated daemon log files to keep |
+| `PANOPTICON_LOG_ROTATE_BYTES` | `10485760` | Rotate a daemon log before startup when it reaches this size; `0` disables rotation |
+| `PANOPTICON_LOG_ROTATE_FILES` | `5` | Number of rotated daemon log files to keep; `0` disables rotation |
 | `PANOPTICON_SERVER_START_BACKOFF_SCHEDULE_MS` | `5000,15000,30000,60000,120000,300000` | Consecutive native daemon start-failure delays before another spawn attempt |
 
 `hook-handler.log` now keeps server startup, warnings, and errors at the default `info` level. Per-event success-path lines are only written when `PANOPTICON_LOG_LEVEL=debug` (or lower).
