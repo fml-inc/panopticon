@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -33,10 +34,12 @@ const { originalDataDir, originalHost, originalPort, tmpDir, port } =
 import { config } from "./config.js";
 import {
   checkServerHealth,
+  clearServerStartBackoff,
   formatServerStatus,
   healthCheckHost,
   isPidRunning,
   readPidFileStatus,
+  readServerStartBackoffStatus,
   readServerStatus,
   startServerDetached,
   stopServer,
@@ -186,6 +189,19 @@ describe("server control", () => {
       expect(started.pid).toEqual(expect.any(Number));
       await expect(checkServerHealth()).resolves.toMatchObject({ ok: true });
 
+      fs.writeFileSync(config.serverPidFile, `${process.pid}\n`);
+      const alreadyRunning = await startServerDetached({
+        serverScript: scriptPath,
+        timeoutMs: 3000,
+      });
+      expect(alreadyRunning).toMatchObject({
+        status: "already_running",
+        pid: started.pid,
+      });
+      expect(fs.readFileSync(config.serverPidFile, "utf-8").trim()).toBe(
+        String(started.pid),
+      );
+
       const stopped = await stopServer({ timeoutMs: 3000 });
       expect(stopped).toEqual({ status: "stopped", pid: started.pid });
       await expect(checkServerHealth()).resolves.toMatchObject({ ok: false });
@@ -226,5 +242,132 @@ describe("server control", () => {
     } finally {
       await stopServer({ killTimeoutMs: 1000, timeoutMs: 100 });
     }
+  });
+
+  it("stops an unhealthy PID-file process before starting a replacement", async () => {
+    const idleScript = path.join(tmpDir, "idle-process.mjs");
+    fs.writeFileSync(
+      idleScript,
+      [
+        "setInterval(() => {}, 1000);",
+        'process.on("SIGTERM", () => process.exit(0));',
+        "",
+      ].join("\n"),
+    );
+    const idle = spawn(process.execPath, [idleScript], { stdio: "ignore" });
+    const idleExited = new Promise<boolean>((resolve) => {
+      idle.once("exit", () => resolve(true));
+    });
+    expect(idle.pid).toEqual(expect.any(Number));
+    fs.writeFileSync(config.serverPidFile, `${idle.pid}\n`);
+
+    const serverScript = path.join(tmpDir, "replacement-server.mjs");
+    fs.writeFileSync(
+      serverScript,
+      [
+        'import http from "node:http";',
+        "const port = Number(process.env.PANOPTICON_PORT);",
+        "const server = http.createServer((req, res) => {",
+        '  if (req.url === "/health") {',
+        '    res.writeHead(200, {"content-type":"application/json"});',
+        '    res.end(JSON.stringify({status:"ok", port, pid: process.pid}));',
+        "    return;",
+        "  }",
+        "  res.writeHead(404).end();",
+        "});",
+        'server.listen(port, "127.0.0.1");',
+        'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
+        "",
+      ].join("\n"),
+    );
+
+    const started = await startServerDetached({
+      serverScript,
+      timeoutMs: 3000,
+    });
+    try {
+      expect(started.status).toBe("started");
+      await expect(
+        Promise.race([
+          idleExited,
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), 1000),
+          ),
+        ]),
+      ).resolves.toBe(true);
+      await expect(checkServerHealth()).resolves.toMatchObject({ ok: true });
+    } finally {
+      if (idle.pid && isPidRunning(idle.pid)) {
+        try {
+          process.kill(idle.pid, "SIGKILL");
+        } catch {}
+      }
+      await stopServer({ timeoutMs: 1000 });
+    }
+  });
+
+  it("terminates a spawned child that never becomes healthy", async () => {
+    const stoppedPath = path.join(tmpDir, "bad-health-stopped");
+    const scriptPath = path.join(tmpDir, "bad-health-server.mjs");
+    fs.writeFileSync(
+      scriptPath,
+      [
+        'import fs from "node:fs";',
+        'import http from "node:http";',
+        "const port = Number(process.env.PANOPTICON_PORT);",
+        "const stoppedPath = process.env.STOPPED_PATH;",
+        "const server = http.createServer((req, res) => {",
+        '  if (req.url === "/health") {',
+        '    res.writeHead(200, {"content-type":"application/json"});',
+        '    res.end(JSON.stringify({status:"starting", port, pid: process.pid}));',
+        "    return;",
+        "  }",
+        "  res.writeHead(404).end();",
+        "});",
+        'server.listen(port, "127.0.0.1");',
+        'process.on("SIGTERM", () => {',
+        "  if (stoppedPath) fs.writeFileSync(stoppedPath, 'stopped');",
+        "  server.close(() => process.exit(0));",
+        "});",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(
+      startServerDetached({
+        env: { STOPPED_PATH: stoppedPath },
+        serverScript: scriptPath,
+        timeoutMs: 200,
+      }),
+    ).rejects.toThrow(/did not become healthy/);
+
+    expect(fs.readFileSync(stoppedPath, "utf-8")).toBe("stopped");
+    clearServerStartBackoff();
+  });
+
+  it("records and respects start failure backoff", async () => {
+    const scriptPath = path.join(tmpDir, "crashing-server.mjs");
+    fs.writeFileSync(scriptPath, "process.exit(42);\n");
+
+    await expect(
+      startServerDetached({ serverScript: scriptPath, timeoutMs: 200 }),
+    ).rejects.toThrow(/did not become healthy/);
+
+    const backoff = readServerStartBackoffStatus();
+    expect(backoff).toMatchObject({
+      exists: true,
+      active: true,
+      attempts: 1,
+    });
+
+    await expect(
+      startServerDetached({ serverScript: scriptPath, timeoutMs: 200 }),
+    ).rejects.toThrow(/start backoff active/);
+
+    clearServerStartBackoff();
+    expect(readServerStartBackoffStatus()).toMatchObject({
+      exists: false,
+      active: false,
+    });
   });
 });

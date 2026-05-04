@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Logger } from "tslog";
+import { config } from "./config.js";
 
 function getLogDir(): string {
   switch (process.platform) {
@@ -81,6 +82,37 @@ export function shouldWriteLog(level: PanopticonLogLevelName): boolean {
   return shouldWriteLogAtLevel(PANOPTICON_LOG_LEVEL, level);
 }
 
+export function rotateLogFileIfNeeded(
+  logPath: string,
+  opts?: { maxBytes?: number; maxFiles?: number },
+): boolean {
+  const maxBytes = opts?.maxBytes ?? config.logRotateBytes;
+  const maxFiles = opts?.maxFiles ?? config.logRotateFiles;
+  if (maxBytes <= 0 || maxFiles <= 0) return false;
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(logPath);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile() || stat.size < maxBytes) return false;
+
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.rmSync(`${logPath}.${maxFiles}`, { force: true });
+    for (let i = maxFiles - 1; i >= 1; i -= 1) {
+      const from = `${logPath}.${i}`;
+      const to = `${logPath}.${i + 1}`;
+      if (fs.existsSync(from)) fs.renameSync(from, to);
+    }
+    fs.renameSync(logPath, `${logPath}.1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Open a log file in append mode, returning the fd.
  * Pass the fd to spawn's stdio array: ["ignore", fd, fd]
@@ -88,6 +120,7 @@ export function shouldWriteLog(level: PanopticonLogLevelName): boolean {
  */
 export function openLogFd(daemon: DaemonName): number {
   fs.mkdirSync(LOG_DIR, { recursive: true });
+  rotateLogFileIfNeeded(logPaths[daemon]);
   return fs.openSync(logPaths[daemon], "a");
 }
 

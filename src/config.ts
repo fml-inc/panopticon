@@ -127,6 +127,16 @@ const DEFAULT_ATTEMPT_BACKOFF_SCHEDULE_MS = [
 ] as const;
 const DEFAULT_ATTEMPT_BACKOFF_JITTER_RATIO = 0.1;
 const DEFAULT_SESSION_SUMMARY_ENRICH_CONCURRENCY = 2;
+const DEFAULT_SERVER_START_BACKOFF_SCHEDULE_MS = [
+  5_000,
+  15_000,
+  30_000,
+  60_000,
+  2 * 60_000,
+  5 * 60_000,
+] as const;
+const DEFAULT_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_LOG_ROTATE_FILES = 5;
 
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
@@ -148,6 +158,7 @@ export const config = {
   ),
   host: process.env.PANOPTICON_HOST ?? "127.0.0.1",
   serverPidFile: path.join(DATA_DIR, "panopticon.pid"),
+  serverStartBackoffFile: path.join(DATA_DIR, "server-start-backoff.json"),
   scannerStatusFile: path.join(DATA_DIR, "scanner-status.json"),
   // Legacy — kept for backward compat during transition
   pidFile: path.join(DATA_DIR, "otlp-receiver.pid"),
@@ -220,6 +231,18 @@ export const config = {
   attemptBackoffJitterRatio: envRatio(
     "PANOPTICON_ATTEMPT_BACKOFF_JITTER_RATIO",
     DEFAULT_ATTEMPT_BACKOFF_JITTER_RATIO,
+  ),
+  serverStartBackoffScheduleMs: envIntList(
+    "PANOPTICON_SERVER_START_BACKOFF_SCHEDULE_MS",
+    DEFAULT_SERVER_START_BACKOFF_SCHEDULE_MS,
+  ),
+  logRotateBytes: envInt(
+    "PANOPTICON_LOG_ROTATE_BYTES",
+    DEFAULT_LOG_ROTATE_BYTES,
+  ),
+  logRotateFiles: envInt(
+    "PANOPTICON_LOG_ROTATE_FILES",
+    DEFAULT_LOG_ROTATE_FILES,
   ),
 } as const;
 
