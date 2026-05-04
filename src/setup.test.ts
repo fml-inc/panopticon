@@ -356,7 +356,7 @@ describe("writePanopticonEnvFile", () => {
       const out = execFileSync(
         "bash",
         ["-c", `source "${envFile}" && echo "$OTEL_EXPORTER_OTLP_HEADERS"`],
-        { encoding: "utf-8" },
+        { encoding: "utf-8", windowsHide: true },
       ).trim();
       expect(out).toBe("Authorization=Bearer%20test-token-source");
     },

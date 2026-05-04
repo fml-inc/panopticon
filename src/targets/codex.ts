@@ -70,6 +70,45 @@ function quoteCommandArg(value: string): string {
   return `"${value.replaceAll('"', '\\"')}"`;
 }
 
+function writeWindowsHookLauncher(pluginRoot: string): string {
+  const launcherPath = path.join(
+    pluginRoot,
+    "bin",
+    "panopticon-codex-hook.cmd",
+  );
+  const nodePath = process.execPath.replaceAll("%", "%%");
+  fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+  fs.writeFileSync(
+    launcherPath,
+    [
+      "@echo off",
+      "setlocal",
+      `"${nodePath}" "%~dp0hook-handler" %*`,
+      "exit /b %ERRORLEVEL%",
+      "",
+    ].join("\r\n"),
+  );
+  return launcherPath;
+}
+
+function codexHookCommand(
+  pluginRoot: string,
+  port: number,
+  proxy: boolean | undefined,
+): string {
+  const hookBin = path.join(pluginRoot, "bin", "hook-handler");
+  if (process.platform !== "win32") {
+    return `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+      hookBin,
+    )} codex ${port}${proxy ? " --proxy" : ""}`;
+  }
+
+  const launcherPath = writeWindowsHookLauncher(pluginRoot);
+  return `cmd.exe /d /s /c ""${launcherPath}" codex ${port}${
+    proxy ? " --proxy" : ""
+  }"`;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -224,7 +263,6 @@ const codex: TargetAdapter = {
     events: HOOK_EVENTS,
     applyInstallConfig(existing, opts) {
       const codexConfig = { ...existing };
-      const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Enable the codex_hooks feature flag
@@ -240,10 +278,7 @@ const codex: TargetAdapter = {
       // Write hooks.json (the format the new hooks engine expects)
       const hooksFile = readHooksJson();
       const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
-      const proxyFlag = opts.proxy ? " --proxy" : "";
-      const command = `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
-        hookBin,
-      )} codex ${opts.port}${proxyFlag}`;
+      const command = codexHookCommand(opts.pluginRoot, opts.port, opts.proxy);
       for (const event of HOOK_EVENTS) {
         const groups = (hooks[event] ?? []) as Array<Record<string, unknown>>;
         // Remove existing panopticon groups

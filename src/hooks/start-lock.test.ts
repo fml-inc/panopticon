@@ -36,7 +36,10 @@ describe("start lock", () => {
    * eventually recycle it, but for the lifetime of one test it's dead.
    */
   function getDeadPid(): number {
-    const child = spawnSync("node", ["-e", ""], { stdio: "ignore" });
+    const child = spawnSync("node", ["-e", ""], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
     if (child.pid == null) throw new Error("could not spawn child");
     return child.pid;
   }

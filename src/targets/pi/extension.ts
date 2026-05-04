@@ -97,6 +97,7 @@ function detectRepo(dir: string): string | undefined {
         timeout: 3000,
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       }).trim() || undefined
     );
   } catch {

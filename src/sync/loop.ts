@@ -79,6 +79,7 @@ function resolveToken(target: SyncTarget): string | undefined {
       encoding: "utf-8",
       timeout: 10_000,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
     if (token) {
       tokenCache.set(target.name, {
