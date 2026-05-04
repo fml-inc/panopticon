@@ -172,6 +172,7 @@ export const config = {
   proxyIdleSessionMs: 30 * 60 * 1000,
   enableSessionSummaryEnrichment: envBool(
     "PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT",
+    true,
   ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
