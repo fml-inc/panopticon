@@ -60,6 +60,7 @@ import {
   loadSyncConfig,
   removeTarget,
 } from "../sync/config.js";
+import { readSyncPending } from "../sync/pending.js";
 import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
 import type { SyncTarget } from "../sync/types.js";
 import {
@@ -76,7 +77,6 @@ import type {
   ReconcileLandedStatusInput,
   ScanInput,
   ScanResult,
-  SyncPendingResult,
   SyncTargetAddInput,
 } from "./types.js";
 
@@ -317,83 +317,8 @@ export function createDirectPanopticonService(): PanopticonService {
     async claimEvidenceIntegrity() {
       return runIntegrityCheck();
     },
-    async syncPending(target: string): Promise<SyncPendingResult> {
-      const db = getDb();
-
-      const wmColumns: Record<string, string> = {
-        messages: "wm_messages",
-        tool_calls: "wm_tool_calls",
-        scanner_turns: "wm_scanner_turns",
-        scanner_events: "wm_scanner_events",
-        hook_events: "wm_hook_events",
-        otel_logs: "wm_otel_logs",
-        otel_metrics: "wm_otel_metrics",
-        otel_spans: "wm_otel_spans",
-      };
-
-      const pending: Record<
-        string,
-        { total: number; synced: number; pending: number }
-      > = {};
-      for (const desc of TABLE_SYNC_REGISTRY) {
-        const wmCol = wmColumns[desc.table];
-        if (desc.sessionLinked && wmCol) {
-          const total =
-            (
-              db
-                .prepare(
-                  `SELECT COUNT(*) as c FROM ${desc.table} t
-                   INNER JOIN target_session_sync tss
-                     ON tss.session_id = t.session_id AND tss.target = ?
-                   WHERE tss.confirmed = 1`,
-                )
-                .get(target) as { c: number }
-            )?.c ?? 0;
-          const pendingCount =
-            (
-              db
-                .prepare(
-                  `SELECT COUNT(*) as c FROM ${desc.table} t
-                   INNER JOIN target_session_sync tss
-                     ON tss.session_id = t.session_id AND tss.target = ?
-                   WHERE tss.confirmed = 1 AND t.id > tss.${wmCol}`,
-                )
-                .get(target) as { c: number }
-            )?.c ?? 0;
-          if (pendingCount > 0) {
-            pending[desc.table] = {
-              total,
-              synced: total - pendingCount,
-              pending: pendingCount,
-            };
-          }
-          continue;
-        }
-
-        const key = watermarkKey(desc.table, target);
-        const wm = readWatermark(key);
-        const maxId =
-          (
-            db
-              .prepare(
-                `SELECT MAX(${desc.table === "sessions" ? "sync_seq" : "id"}) as m FROM ${desc.table}`,
-              )
-              .get() as { m: number | null }
-          )?.m ?? 0;
-        const count = Math.max(0, maxId - wm);
-        if (count > 0) {
-          pending[desc.table] = { total: maxId, synced: wm, pending: count };
-        }
-      }
-
-      return {
-        target,
-        totalPending: Object.values(pending).reduce(
-          (sum, value) => sum + value.pending,
-          0,
-        ),
-        tables: pending,
-      };
+    async syncPending(target: string) {
+      return readSyncPending(target);
     },
     async syncTargetList() {
       return { targets: listTargets() };

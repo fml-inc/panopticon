@@ -5,11 +5,13 @@
  */
 
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
+import path from "node:path";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
+import { checkServerHealth, healthCheckHost } from "./server-control.js";
+import { readSyncPending } from "./sync/pending.js";
 import { allTargets } from "./targets/index.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
@@ -41,41 +43,24 @@ export interface DoctorResult {
   recentErrors: RecentError[];
 }
 
-function checkHealth(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const req = http.request(
-      { hostname: host, port, path: "/health", method: "GET", timeout: 2000 },
-      (res) => {
-        res.resume();
-        resolve(res.statusCode === 200);
-      },
-    );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(false);
-    });
-    req.end();
-  });
+function formatCount(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function readSyncTargetLabel(targetName: string): string {
+export function readSyncTargetLabel(targetName: string): string {
   const db = getDb();
   const row = db
     .prepare(
       `SELECT COUNT(*) AS confirmed,
               SUM(CASE
-                    WHEN COALESCE(sync_seq, 0) > COALESCE(synced_seq, 0)
-                      OR COALESCE(derived_synced_seq, 0) < (
-                        SELECT COALESCE(s.derived_sync_seq, 0)
-                        FROM sessions s
-                        WHERE s.session_id = target_session_sync.session_id
-                      )
+                    WHEN COALESCE(s.sync_seq, 0) > COALESCE(target_session_sync.synced_seq, 0)
+                      OR COALESCE(s.derived_sync_seq, 0) > COALESCE(target_session_sync.derived_synced_seq, 0)
                     THEN 1 ELSE 0
                   END) AS pending,
               MAX(COALESCE(synced_seq, 0)) AS max_synced_seq
        FROM target_session_sync
-       WHERE target = ? AND confirmed = 1`,
+       LEFT JOIN sessions s ON s.session_id = target_session_sync.session_id
+       WHERE target_session_sync.target = ? AND target_session_sync.confirmed = 1`,
     )
     .get(targetName) as
     | {
@@ -86,14 +71,29 @@ function readSyncTargetLabel(targetName: string): string {
     | undefined;
 
   const confirmed = row?.confirmed ?? 0;
-  if (confirmed === 0) return "not synced yet";
-
-  const pending = row?.pending ?? 0;
-  const maxSyncedSeq = row?.max_synced_seq ?? 0;
-  if (pending > 0) {
-    return `${confirmed} session${confirmed === 1 ? "" : "s"} synced, ${pending} pending`;
+  const pendingSessions = row?.pending ?? 0;
+  const pendingRows = readSyncPending(targetName).totalPending;
+  if (confirmed === 0) {
+    return pendingRows > 0
+      ? `not synced yet, ${formatCount(pendingRows, "row")} pending`
+      : "not synced yet";
   }
-  return `${confirmed} session${confirmed === 1 ? "" : "s"} synced to #${maxSyncedSeq}`;
+
+  const pendingParts: string[] = [];
+  if (pendingSessions > 0) {
+    pendingParts.push(formatCount(pendingSessions, "session"));
+  }
+  if (pendingRows > 0) {
+    pendingParts.push(formatCount(pendingRows, "row"));
+  }
+  if (pendingParts.length > 0) {
+    return `${formatCount(confirmed, "session")} confirmed, ${pendingParts.join(" and ")} pending`;
+  }
+
+  const maxSyncedSeq = row?.max_synced_seq ?? 0;
+  return maxSyncedSeq > 0
+    ? `${formatCount(confirmed, "session")} synced to #${maxSyncedSeq}`
+    : `${formatCount(confirmed, "session")} synced`;
 }
 
 /**
@@ -135,12 +135,17 @@ export async function doctor(): Promise<DoctorResult> {
   }
 
   // 2. Server
-  const serverUp = await checkHealth(config.port, "127.0.0.1");
-  if (serverUp) {
+  const serverHost = healthCheckHost();
+  const serverHealth = await checkServerHealth({
+    host: serverHost,
+    port: config.port,
+    timeoutMs: 2000,
+  });
+  if (serverHealth.ok) {
     checks.push({
       label: "Server",
       status: "ok",
-      detail: `Listening on 127.0.0.1:${config.port}`,
+      detail: `Listening on ${serverHost}:${config.port}`,
     });
   } else {
     checks.push({
@@ -269,7 +274,16 @@ export async function doctor(): Promise<DoctorResult> {
   try {
     const cfg = loadUnifiedConfig();
     const targets = cfg.sync.targets;
-    if (targets.length === 0) {
+    if (cfg.sync.enabled === false) {
+      checks.push({
+        label: "Sync",
+        status: "ok",
+        detail:
+          targets.length === 0
+            ? "Disabled"
+            : `Disabled (${formatCount(targets.length, "target")} configured)`,
+      });
+    } else if (targets.length === 0) {
       checks.push({
         label: "Sync",
         status: "ok",
@@ -360,5 +374,3 @@ export async function doctor(): Promise<DoctorResult> {
     recentErrors,
   };
 }
-
-import path from "node:path";

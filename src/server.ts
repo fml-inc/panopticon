@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import http from "node:http";
 import { handleApiRequest } from "./api/routes.js";
 import { getOrCreateAuthToken, requireBearerToken } from "./auth.js";
@@ -18,6 +17,7 @@ import {
   initSentry,
   setTag,
 } from "./sentry.js";
+import { removePidFileIfOwned, writeOwnPidFile } from "./server-control.js";
 import { createSyncLoop } from "./sync/loop.js";
 import {
   CORE_SESSION_TABLES,
@@ -49,7 +49,9 @@ export function createUnifiedServer(): http.Server {
     // including waitForServer() which runs before any client has the token).
     if (url === "/health" && method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", port: config.port }));
+      res.end(
+        JSON.stringify({ status: "ok", port: config.port, pid: process.pid }),
+      );
       return;
     }
 
@@ -136,6 +138,7 @@ export function createUnifiedServer(): http.Server {
 // When run directly, start the unified server
 const entryScript = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
+  const BACKGROUND_START_DELAY_MS = 500;
   const PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
   function runPrune(): void {
@@ -164,39 +167,10 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   let otelSyncHandle: SyncHandle | null = null;
   let scannerHandle: ScannerHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
+  let backgroundStartTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let takeoverAttempted = false;
-  server.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code === "EADDRINUSE") {
-      if (takeoverAttempted) {
-        log.server.warn(`Already running on ${config.host}:${config.port}`);
-        process.exit(0);
-      }
-      takeoverAttempted = true;
-      log.server.warn(`Port ${config.port} in use, attempting takeover...`);
-      try {
-        // Only kill the old panopticon server via PID file, not all
-        // processes on the port (which could include Claude Code CLI)
-        const pidFile = config.serverPidFile;
-        const pidStr = fs.readFileSync(pidFile, "utf-8").trim();
-        const oldPid = parseInt(pidStr, 10);
-        if (oldPid && oldPid !== process.pid) {
-          try {
-            process.kill(oldPid, "SIGTERM");
-          } catch {}
-        }
-        setTimeout(() => server.listen(config.port, config.host), 1500);
-      } catch {
-        log.server.warn(`Already running on ${config.host}:${config.port}`);
-        process.exit(0);
-      }
-      return;
-    }
-    captureException(err, { component: "server" });
-    throw err;
-  });
-  server.listen(config.port, config.host, () => {
-    log.server.info(`Listening on ${config.host}:${config.port}`);
+  function startBackgroundWork(): void {
+    backgroundStartTimer = null;
 
     const cfg = loadUnifiedConfig();
 
@@ -241,15 +215,38 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     runPrune();
     pruneTimer = setInterval(runPrune, PRUNE_INTERVAL_MS);
     pruneTimer.unref();
+  }
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      log.server.error(
+        `Port ${config.port} is already in use on ${config.host}`,
+      );
+      process.exit(1);
+      return;
+    }
+    captureException(err, { component: "server" });
+    throw err;
+  });
+  server.listen(config.port, config.host, () => {
+    writeOwnPidFile();
+    log.server.info(`Listening on ${config.host}:${config.port}`);
+    backgroundStartTimer = setTimeout(
+      startBackgroundWork,
+      BACKGROUND_START_DELAY_MS,
+    );
+    backgroundStartTimer.unref();
   });
 
   const shutdown = async () => {
+    if (backgroundStartTimer) clearTimeout(backgroundStartTimer);
     if (pruneTimer) clearInterval(pruneTimer);
     scannerHandle?.stop();
     syncHandle?.stop();
     otelSyncHandle?.stop();
     await flushSentry();
     server.close();
+    removePidFileIfOwned(process.pid);
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);

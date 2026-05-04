@@ -8,7 +8,6 @@
  * to stdout. Drops events if the server is unreachable.
  */
 
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -19,11 +18,11 @@ import { config, ensureDataDir } from "../config.js";
 import { refreshIfStale } from "../db/pricing.js";
 import {
   logPaths,
-  openLogFd,
   type PanopticonLogLevelName,
   shouldWriteLog,
 } from "../log.js";
 import { addBreadcrumb, captureException, initSentry } from "../sentry.js";
+import { startServerDetached } from "../server-control.js";
 import type { HookInput } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
@@ -62,7 +61,7 @@ function logHook(
  * If the existing lock file's writer is dead (SIGKILL, OOM, reboot mid-hook),
  * the lock is reclaimed and we retry once. Without this, a single hard crash
  * would wedge ingest until the user manually removed the lock file — every
- * subsequent hook would see the lock, skip startServer(), then waitForServer()
+ * subsequent hook would see the lock, skip server startup, then waitForServer()
  * would time out and silently drop events.
  */
 export function acquireStartLock(lockFile?: string): boolean {
@@ -133,32 +132,12 @@ function releaseStartLock(): void {
   } catch {}
 }
 
-function startServer(): void {
-  ensureDataDir();
-
-  const serverScript = path.resolve(
+function getServerScript(): string {
+  return path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
     "server.js",
   );
-
-  const logFd = openLogFd("server");
-
-  const child = spawn(process.execPath, [serverScript], {
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", logFd, logFd],
-    env: {
-      ...process.env,
-      PANOPTICON_PORT: String(config.port),
-    },
-  });
-
-  if (child.pid) {
-    fs.writeFileSync(config.serverPidFile, String(child.pid));
-  }
-  child.unref();
-  fs.closeSync(logFd);
 }
 
 async function readStdin(): Promise<string> {
@@ -348,14 +327,19 @@ export async function runHandler(opts: {
     // concurrent ones. Uses an atomic lock file (O_EXCL) to prevent two
     // concurrent hook invocations from both spawning a server (TOCTOU race).
     if (eventType === "SessionStart" || eventType === "session_start") {
-      const serverRunning = isServerRunning();
+      const serverRunning = await isServerRunning(port);
       logHook("debug", "session start", { serverRunning });
       if (!serverRunning) {
         if (acquireStartLock()) {
           try {
             logHook("info", "starting server (lock acquired)");
-            startServer();
+            const result = await startServerDetached({
+              serverScript: getServerScript(),
+              port,
+              timeoutMs: 3000,
+            });
             const ready = await waitForServer(port);
+            logHook("debug", "server start result", result);
             logHook("info", "server readiness", { ready });
           } finally {
             releaseStartLock();

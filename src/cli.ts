@@ -2,7 +2,7 @@
 
 declare const __PANOPTICON_VERSION__: string;
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,19 +16,21 @@ import { getOrCreateAuthToken } from "./auth.js";
 import { config, ensureDataDir } from "./config.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
-import {
-  DAEMON_NAMES,
-  type DaemonName,
-  LOG_DIR,
-  logPaths,
-  openLogFd,
-} from "./log.js";
+import { DAEMON_NAMES, type DaemonName, LOG_DIR, logPaths } from "./log.js";
 import {
   permissionsApply,
   permissionsPreview,
   permissionsShow,
 } from "./mcp/permissions.js";
 import { readScannerStatus } from "./scanner/status.js";
+import {
+  formatServerStatus,
+  isPidRunning,
+  readServerStatus,
+  type ServerStatus,
+  startServerDetached,
+  stopServer,
+} from "./server-control.js";
 import { httpPanopticonService } from "./service/http.js";
 import {
   configureShellEnvDetailed,
@@ -56,60 +58,11 @@ function getPluginRoot(): string {
   return dir;
 }
 
-function stopExistingDaemons(): void {
-  const pidsKilled = new Set<number>();
-
-  // 1. Try PID files first
-  for (const pidFile of [config.serverPidFile, config.pidFile]) {
-    try {
-      const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-      process.kill(pid, "SIGTERM");
-      pidsKilled.add(pid);
-    } catch {}
-    try {
-      fs.unlinkSync(pidFile);
-    } catch {}
-  }
-
-  // 2. Fallback: kill whatever is listening on our port (covers purged PID files)
-  try {
-    const out = execFileSync("lsof", ["-ti", `tcp:${config.port}`], {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true,
-    }).trim();
-    for (const line of out.split("\n")) {
-      const pid = parseInt(line, 10);
-      if (pid && !pidsKilled.has(pid)) {
-        try {
-          process.kill(pid, "SIGTERM");
-          pidsKilled.add(pid);
-        } catch {}
-      }
-    }
-  } catch {}
-
-  // 3. Wait for port to be free (up to 3s)
-  if (pidsKilled.size > 0) {
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      try {
-        execFileSync("lsof", ["-ti", `tcp:${config.port}`], {
-          encoding: "utf-8",
-          timeout: 1000,
-          stdio: ["ignore", "pipe", "ignore"],
-          windowsHide: true,
-        });
-        // lsof succeeded = port still in use, wait and retry
-      } catch {
-        break; // lsof failed = port is free
-      }
-      const waitMs = Math.min(200, deadline - Date.now());
-      if (waitMs > 0)
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
-    }
-  }
+function getServerScript(): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "server.js",
+  );
 }
 
 function isGitAvailable(): boolean {
@@ -169,18 +122,20 @@ function writeJsonFile(filePath: string, data: any): void {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
-function isProcessRunning(pidFile: string): {
-  running: boolean;
-  pid: number | null;
-} {
-  if (!fs.existsSync(pidFile)) return { running: false, pid: null };
-  const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-  try {
-    process.kill(pid, 0);
-    return { running: true, pid };
-  } catch {
-    return { running: false, pid };
+function readActiveScannerStatus(server: ServerStatus) {
+  if (!server.running) return null;
+  const status = readScannerStatus();
+  if (!status) return null;
+  if (server.pidFile.running && server.pidFile.pid != null) {
+    return status.pid === server.pidFile.pid ? status : null;
   }
+  if (server.health.ok) {
+    if (server.health.pid != null) {
+      return status.pid === server.health.pid ? status : null;
+    }
+    if (isPidRunning(status.pid)) return status;
+  }
+  return null;
 }
 
 function parseAge(value: string): number {
@@ -551,9 +506,8 @@ program
 
     console.log("Uninstalling panopticon...\n");
 
-    // Stop running daemons
     console.log("[1/6] Stopping daemons...");
-    stopExistingDaemons();
+    await stopServer({ includeLegacy: true });
     console.log();
 
     // Ask Claude Code to uninstall the plugin so the MCP server process is
@@ -881,25 +835,14 @@ async function install(
   console.log("[5/5] Configuring shell environment...");
   configureShellEnv(force, target, !!opts.proxy);
 
-  // Start the server so it's ready for the first hook event
-  stopExistingDaemons();
-  const serverScript = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "server.js",
-  );
-  const logFd = openLogFd("server");
-  const child = spawn(process.execPath, [serverScript], {
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", logFd, logFd],
-    env: { ...process.env, PANOPTICON_PORT: String(config.port) },
+  const started = await startServerDetached({
+    serverScript: getServerScript(),
+    stopExisting: true,
   });
-  if (child.pid) {
-    fs.writeFileSync(config.serverPidFile, String(child.pid));
-    console.log(`\nServer started (PID ${child.pid}) on :${config.port}`);
-  }
-  child.unref();
-  fs.closeSync(logFd);
+  const pidText = started.pid != null ? `PID ${started.pid}, ` : "";
+  console.log(
+    `\nServer ${started.status === "already_running" ? "running" : "started"} (${pidText}port ${started.port})`,
+  );
 
   const assistant =
     target === "all"
@@ -916,92 +859,44 @@ program
   .description("Start panopticon server (background)")
   .action(async () => {
     ensureDataDir();
-
-    // Check for already-running unified server
-    if (fs.existsSync(config.serverPidFile)) {
-      const pid = parseInt(
-        fs.readFileSync(config.serverPidFile, "utf-8").trim(),
-        10,
-      );
-      try {
-        process.kill(pid, 0);
-        console.log(`Panopticon already running (PID ${pid})`);
-        return;
-      } catch {
-        fs.unlinkSync(config.serverPidFile);
-      }
-    }
-
-    // Clean up legacy PID files from old separate daemons
-    for (const legacyPid of [config.pidFile, config.proxyPidFile]) {
-      if (fs.existsSync(legacyPid)) {
-        try {
-          const pid = parseInt(fs.readFileSync(legacyPid, "utf-8").trim(), 10);
-          process.kill(pid, "SIGTERM");
-        } catch {}
-        try {
-          fs.unlinkSync(legacyPid);
-        } catch {}
-      }
-    }
-
-    const serverScript = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "server.js",
-    );
-    const logFd = openLogFd("server");
-
-    const child = spawn(process.execPath, [serverScript], {
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", logFd, logFd],
-      env: {
-        ...process.env,
-        PANOPTICON_PORT: String(config.port),
-      },
+    const result = await startServerDetached({
+      serverScript: getServerScript(),
     });
-
-    await new Promise<void>((resolve, reject) => {
-      child.on("error", (err) => {
-        reject(new Error(`Failed to start: ${err.message}`));
-      });
-      setTimeout(() => {
-        if (child.pid) {
-          fs.writeFileSync(config.serverPidFile, String(child.pid));
-          child.unref();
-          fs.closeSync(logFd);
-          console.log(
-            `Panopticon started (PID ${child.pid}) on :${config.port}`,
-          );
-          console.log(`Log: ${logPaths.server}`);
-          resolve();
-        } else {
-          fs.closeSync(logFd);
-          reject(new Error("Failed to start panopticon server"));
-        }
-      }, 500);
-    });
+    const pidText = result.pid != null ? `PID ${result.pid}, ` : "";
+    if (result.status === "already_running") {
+      console.log(`Panopticon already running (${pidText}port ${result.port})`);
+    } else {
+      console.log(`Panopticon started (${pidText}port ${result.port})`);
+    }
+    console.log(`Log: ${logPaths.server}`);
   });
 
 program
   .command("stop")
   .description("Stop panopticon server")
-  .action(() => {
-    if (!fs.existsSync(config.serverPidFile)) {
-      console.log("Panopticon is not running (no PID file)");
-      return;
-    }
-    const pid = parseInt(
-      fs.readFileSync(config.serverPidFile, "utf-8").trim(),
-      10,
-    );
-    try {
-      process.kill(pid, "SIGTERM");
-      fs.unlinkSync(config.serverPidFile);
-      console.log(`Panopticon stopped (PID ${pid})`);
-    } catch {
-      fs.unlinkSync(config.serverPidFile);
-      console.log("Panopticon was not running (stale PID file removed)");
+  .action(async () => {
+    const result = await stopServer({ includeLegacy: true });
+    switch (result.status) {
+      case "stopped":
+        console.log(`Panopticon stopped (PID ${result.pid})`);
+        break;
+      case "killed":
+        console.log(`Panopticon force stopped (PID ${result.pid})`);
+        break;
+      case "signal_sent":
+        console.log(`Panopticon stop signal sent (PID ${result.pid})`);
+        break;
+      case "permission_denied":
+        console.log(
+          `Panopticon is running but could not be stopped (permission denied, PID ${result.pid})`,
+        );
+        break;
+      case "stale_pid_removed":
+        console.log("Panopticon was not running (stale PID file removed)");
+        break;
+      case "not_running":
+        console.log("Panopticon is not running");
+        break;
     }
   });
 
@@ -1068,21 +963,13 @@ program
   .command("status")
   .description("Show server status and database stats")
   .action(async () => {
-    const server = isProcessRunning(config.serverPidFile);
-    const activeScannerStatus =
-      server.running && server.pid != null
-        ? (() => {
-            const status = readScannerStatus();
-            return status && status.pid === server.pid ? status : null;
-          })()
-        : null;
+    const server = await readServerStatus();
+    const activeScannerStatus = readActiveScannerStatus(server);
 
     console.log("Panopticon Status");
     console.log("=================");
     console.log();
-    console.log(
-      `Server: ${server.running ? `running (PID ${server.pid}, port ${config.port})` : "stopped"}`,
-    );
+    console.log(`Server: ${formatServerStatus(server)}`);
     console.log(`Database: ${config.dbPath}`);
 
     if (activeScannerStatus) {
@@ -1152,7 +1039,7 @@ program
       const stat = fs.statSync(config.dbPath);
       console.log(`Database size: ${(stat.size / 1024).toFixed(1)} KB`);
 
-      if (server.running && !activeScannerStatus) {
+      if (server.health.ok && !activeScannerStatus) {
         try {
           const stats = (await service.dbStats()) as Record<string, number>;
           console.log();
@@ -1194,7 +1081,7 @@ program
         for (const t of targets) {
           console.log(`  ${t.name} → ${t.url}`);
 
-          if (server.running && !activeScannerStatus) {
+          if (server.health.ok && !activeScannerStatus) {
             try {
               const result = await service.syncPending(t.name);
               if (result.totalPending === 0) {
