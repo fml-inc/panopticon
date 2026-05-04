@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { config, ensureDataDir } from "./config.js";
 import { logPaths, openLogFd } from "./log.js";
 
@@ -23,6 +24,15 @@ export interface ServerStatus {
   pidFile: PidFileStatus;
 }
 
+export interface ServerStartBackoffStatus {
+  exists: boolean;
+  active: boolean;
+  attempts: number;
+  lastFailureAtMs: number | null;
+  nextAllowedAtMs: number | null;
+  lastError: string | null;
+}
+
 export type StartServerResult =
   | { status: "already_running"; pid: number | null; port: number }
   | { status: "started"; pid: number | null; port: number };
@@ -42,6 +52,140 @@ export function healthCheckHost(host = config.host): string {
 
 function hasErrnoCode(err: unknown, code: string): boolean {
   return (err as NodeJS.ErrnoException)?.code === code;
+}
+
+function truncateStartFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const logSuffix = `. Log: ${logPaths.server}`;
+  const cleaned = message.endsWith(logSuffix)
+    ? message.slice(0, -logSuffix.length)
+    : message;
+  return cleaned.length > 500 ? `${cleaned.slice(0, 497)}...` : cleaned;
+}
+
+function startBackoffDelayMs(
+  attempts: number,
+  scheduleMs: readonly number[] = config.serverStartBackoffScheduleMs,
+): number {
+  if (scheduleMs.length === 0) return 0;
+  const index = Math.min(Math.max(attempts - 1, 0), scheduleMs.length - 1);
+  return scheduleMs[index];
+}
+
+function emptyServerStartBackoffStatus(): ServerStartBackoffStatus {
+  return {
+    exists: false,
+    active: false,
+    attempts: 0,
+    lastFailureAtMs: null,
+    nextAllowedAtMs: null,
+    lastError: null,
+  };
+}
+
+export function readServerStartBackoffStatus(opts?: {
+  backoffFile?: string;
+  nowMs?: number;
+}): ServerStartBackoffStatus {
+  const backoffFile = opts?.backoffFile ?? config.serverStartBackoffFile;
+  const nowMs = opts?.nowMs ?? Date.now();
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(backoffFile, "utf-8"));
+  } catch {
+    return emptyServerStartBackoffStatus();
+  }
+
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return emptyServerStartBackoffStatus();
+  }
+
+  const record = raw as Record<string, unknown>;
+  const attempts =
+    typeof record.attempts === "number" && record.attempts > 0
+      ? Math.floor(record.attempts)
+      : 0;
+  const lastFailureAtMs =
+    typeof record.lastFailureAtMs === "number" && record.lastFailureAtMs > 0
+      ? record.lastFailureAtMs
+      : null;
+  const nextAllowedAtMs =
+    typeof record.nextAllowedAtMs === "number" && record.nextAllowedAtMs > 0
+      ? record.nextAllowedAtMs
+      : null;
+  const lastError =
+    typeof record.lastError === "string" && record.lastError.length > 0
+      ? record.lastError
+      : null;
+
+  return {
+    exists: true,
+    active: nextAllowedAtMs != null && nextAllowedAtMs > nowMs,
+    attempts,
+    lastFailureAtMs,
+    nextAllowedAtMs,
+    lastError,
+  };
+}
+
+export function clearServerStartBackoff(
+  backoffFile = config.serverStartBackoffFile,
+): void {
+  try {
+    fs.unlinkSync(backoffFile);
+  } catch {}
+}
+
+export function recordServerStartFailure(
+  error: unknown,
+  opts?: {
+    backoffFile?: string;
+    nowMs?: number;
+    scheduleMs?: readonly number[];
+  },
+): void {
+  const backoffFile = opts?.backoffFile ?? config.serverStartBackoffFile;
+  const nowMs = opts?.nowMs ?? Date.now();
+  const previous = readServerStartBackoffStatus({ backoffFile, nowMs });
+  const attempts = previous.attempts + 1;
+  const delayMs = startBackoffDelayMs(
+    attempts,
+    opts?.scheduleMs ?? config.serverStartBackoffScheduleMs,
+  );
+  const record = {
+    attempts,
+    lastFailureAtMs: nowMs,
+    nextAllowedAtMs: nowMs + delayMs,
+    lastError: truncateStartFailure(error),
+  };
+
+  fs.mkdirSync(path.dirname(backoffFile), { recursive: true });
+  fs.writeFileSync(backoffFile, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+export function assertServerStartBackoffInactive(opts?: {
+  backoffFile?: string;
+  nowMs?: number;
+}): void {
+  const backoff = readServerStartBackoffStatus(opts);
+  if (!backoff.active) return;
+
+  const nextAllowed =
+    backoff.nextAllowedAtMs != null
+      ? new Date(backoff.nextAllowedAtMs).toISOString()
+      : "later";
+  const lastError = backoff.lastError
+    ? ` Last error: ${backoff.lastError}`
+    : "";
+  throw new Error(
+    `Panopticon server start backoff active until ${nextAllowed} after ${backoff.attempts} failed start attempt${backoff.attempts === 1 ? "" : "s"}.${lastError} Log: ${logPaths.server}`,
+  );
+}
+
+function recordServerStartFailureAndThrow(error: Error): never {
+  recordServerStartFailure(error);
+  throw error;
 }
 
 export function isPidRunning(pid: number): boolean {
@@ -89,6 +233,15 @@ export function removePidFileIfOwned(
 export function writeOwnPidFile(pid = process.pid): void {
   ensureDataDir();
   fs.writeFileSync(config.serverPidFile, `${pid}\n`);
+}
+
+function repairPidFileFromHealth(
+  health: ServerHealth,
+  pidFile: PidFileStatus,
+): void {
+  if (!health.ok || health.pid == null) return;
+  if (pidFile.running && pidFile.pid === health.pid) return;
+  writeOwnPidFile(health.pid);
 }
 
 export function checkServerHealth(opts?: {
@@ -250,6 +403,28 @@ async function waitForStopped(
   return false;
 }
 
+async function stopSpawnedChildAfterFailedStart(
+  pid: number | undefined,
+  opts?: { host?: string; port?: number },
+): Promise<void> {
+  if (pid == null) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    removePidFileIfOwned(pid);
+    return;
+  }
+
+  const stopped = await waitForStopped(pid, 2000, opts);
+  if (!stopped) {
+    try {
+      process.kill(pid, "SIGKILL");
+      await waitForStopped(pid, 1000, opts);
+    } catch {}
+  }
+  removePidFileIfOwned(pid);
+}
+
 export async function stopServer(opts?: {
   forceKill?: boolean;
   host?: string;
@@ -319,6 +494,8 @@ export async function stopServer(opts?: {
 export async function startServerDetached(opts: {
   serverScript: string;
   env?: NodeJS.ProcessEnv;
+  host?: string;
+  ignoreStartBackoff?: boolean;
   port?: number;
   stopExisting?: boolean;
   timeoutMs?: number;
@@ -333,19 +510,25 @@ export async function startServerDetached(opts: {
       timeoutMs: 3000,
     });
     if (stopped.status === "signal_sent") {
-      throw new Error(
-        `Panopticon server did not stop after SIGTERM/SIGKILL (PID ${stopped.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server did not stop after SIGTERM/SIGKILL (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
     if (stopped.status === "permission_denied") {
-      throw new Error(
-        `Panopticon server could not be stopped because permission was denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server could not be stopped because permission was denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
       );
     }
   }
 
-  const current = await readServerStatus({ port });
+  let current = await readServerStatus({ host: opts.host, port });
   if (current.health.ok) {
+    repairPidFileFromHealth(current.health, current.pidFile);
+    clearServerStartBackoff();
     return {
       status: "already_running",
       pid: current.health.pid ?? current.pidFile.pid,
@@ -353,9 +536,53 @@ export async function startServerDetached(opts: {
     };
   }
 
+  if (current.pidFile.running && current.pidFile.pid != null) {
+    if (!opts.ignoreStartBackoff) assertServerStartBackoffInactive();
+
+    const stopped = await stopServer({
+      host: opts.host,
+      port,
+      timeoutMs: 3000,
+    });
+    if (stopped.status === "signal_sent") {
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server process is running but unhealthy and stop returned signal_sent (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
+      );
+    }
+    if (stopped.status === "permission_denied") {
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server process is running but unhealthy and stop returned permission_denied (PID ${stopped.pid}). Log: ${logPaths.server}`,
+        ),
+      );
+    }
+
+    current = await readServerStatus({ host: opts.host, port });
+    if (current.health.ok) {
+      repairPidFileFromHealth(current.health, current.pidFile);
+      clearServerStartBackoff();
+      return {
+        status: "already_running",
+        pid: current.health.pid ?? current.pidFile.pid,
+        port: current.health.port,
+      };
+    }
+    if (current.pidFile.running && current.pidFile.pid != null) {
+      recordServerStartFailureAndThrow(
+        new Error(
+          `Panopticon server process is still running but unhealthy after stop status ${stopped.status} (PID ${current.pidFile.pid}). Log: ${logPaths.server}`,
+        ),
+      );
+    }
+  }
+
   if (current.pidFile.exists && !current.pidFile.running) {
     unlinkPidFile(config.serverPidFile);
   }
+
+  if (!opts.ignoreStartBackoff) assertServerStartBackoffInactive();
 
   const logFd = openLogFd("server");
   const child = spawn(process.execPath, [opts.serverScript], {
@@ -388,19 +615,30 @@ export async function startServerDetached(opts: {
     timeoutMs: opts.timeoutMs ?? 8000,
   });
   if (childState.spawnError) {
-    throw new Error(
+    const error = new Error(
       `Failed to start panopticon server: ${childState.spawnError.message}`,
     );
+    recordServerStartFailure(error);
+    throw error;
   }
   if (!health.ok) {
     const exitText = childState.exit
       ? ` (process exited code=${childState.exit.code ?? "null"} signal=${childState.exit.signal ?? "null"})`
       : "";
-    throw new Error(
+    const error = new Error(
       `Panopticon server did not become healthy on port ${port}${exitText}. Log: ${logPaths.server}`,
     );
+    if (!childState.exit) {
+      await stopSpawnedChildAfterFailedStart(child.pid, {
+        host: opts.host,
+        port,
+      });
+    }
+    recordServerStartFailure(error);
+    throw error;
   }
 
+  clearServerStartBackoff();
   return {
     status: "started",
     pid: health.pid ?? child.pid ?? null,

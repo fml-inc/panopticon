@@ -26,6 +26,7 @@ import { readScannerStatus } from "./scanner/status.js";
 import {
   formatServerStatus,
   isPidRunning,
+  readServerStartBackoffStatus,
   readServerStatus,
   type ServerStatus,
   startServerDetached,
@@ -836,6 +837,7 @@ async function install(
   configureShellEnv(force, target, !!opts.proxy);
 
   const started = await startServerDetached({
+    ignoreStartBackoff: true,
     serverScript: getServerScript(),
     stopExisting: true,
   });
@@ -857,9 +859,11 @@ async function install(
 program
   .command("start")
   .description("Start panopticon server (background)")
-  .action(async () => {
+  .option("--force", "Bypass server start-failure backoff")
+  .action(async (opts: Opts) => {
     ensureDataDir();
     const result = await startServerDetached({
+      ignoreStartBackoff: !!opts.force,
       serverScript: getServerScript(),
     });
     const pidText = result.pid != null ? `PID ${result.pid}, ` : "";
@@ -970,6 +974,15 @@ program
     console.log("=================");
     console.log();
     console.log(`Server: ${formatServerStatus(server)}`);
+    const startBackoff = readServerStartBackoffStatus();
+    if (startBackoff.exists) {
+      const retryText = startBackoff.nextAllowedAtMs
+        ? new Date(startBackoff.nextAllowedAtMs).toISOString()
+        : "unknown";
+      console.log(
+        `Start backoff: ${startBackoff.active ? "active" : "inactive"} (${startBackoff.attempts} failed start attempt${startBackoff.attempts === 1 ? "" : "s"}, retry ${retryText})`,
+      );
+    }
     console.log(`Database: ${config.dbPath}`);
 
     if (activeScannerStatus) {
