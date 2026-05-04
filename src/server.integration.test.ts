@@ -382,6 +382,7 @@ describe("server integration", () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe("ok");
+      expect(body.pid).toBe(process.pid);
     });
   });
 

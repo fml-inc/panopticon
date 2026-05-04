@@ -1,3 +1,4 @@
+import type { SyncPendingResult } from "../sync/pending.js";
 import type {
   ActivitySummaryResult,
   SearchResult,
@@ -5,6 +6,8 @@ import type {
   SessionTimelineResult,
   SpendingResult,
 } from "../types.js";
+
+export type { SyncPendingResult } from "../sync/pending.js";
 
 export interface ListSessionsInput {
   limit?: number;
@@ -109,12 +112,6 @@ export interface ScanResult {
   filesScanned: number;
   newTurns: number;
   summariesUpdated: number;
-}
-
-export interface SyncPendingResult {
-  target: string;
-  totalPending: number;
-  tables: Record<string, { total: number; synced: number; pending: number }>;
 }
 
 export interface SyncTargetAddInput {
