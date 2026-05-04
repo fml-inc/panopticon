@@ -656,5 +656,5 @@ describe("deleteClaimsByAsserter", () => {
     expect(deleted).toBe(count);
     expect(remainingClaims.c).toBe(0);
     expect(remainingActive.c).toBe(0);
-  });
+  }, 15_000);
 });

@@ -39,6 +39,7 @@ describe("auth module", () => {
   });
 
   it("token file is mode 0600 (owner read/write only)", async () => {
+    if (process.platform === "win32") return;
     const { getOrCreateAuthToken } = await import("./auth.js");
     getOrCreateAuthToken();
     const stat = fs.statSync(path.join(tmpDir, "auth-token"));

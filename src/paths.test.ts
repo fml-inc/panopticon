@@ -104,7 +104,11 @@ describe("paths", () => {
   it("infers the git root from an absolute file path when available", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "panopticon-paths-"));
     tempDirs.push(repo);
-    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["init"], {
+      cwd: repo,
+      stdio: "ignore",
+      windowsHide: true,
+    });
     fs.mkdirSync(path.join(repo, "src"), { recursive: true });
     const file = path.join(repo, "src", "index.ts");
     fs.writeFileSync(file, "export const x = 1;\n");

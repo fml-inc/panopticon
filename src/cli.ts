@@ -696,6 +696,33 @@ async function install(
     },
   });
 
+  const hooksJsonPath = path.join(pluginRoot, "hooks", "hooks.json");
+  const hooksJson = readJsonFile(hooksJsonPath);
+  if (hooksJson && typeof hooksJson === "object") {
+    const quotedNode = JSON.stringify(process.execPath);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
+    const quotedHook = JSON.stringify("${CLAUDE_PLUGIN_ROOT}/bin/hook-handler");
+    const command = `${quotedNode} ${quotedHook} claude`;
+    const hooks = (hooksJson as Record<string, unknown>).hooks as
+      | Record<string, unknown>
+      | undefined;
+    if (hooks && typeof hooks === "object") {
+      for (const entries of Object.values(hooks)) {
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+          const hookGroup = entry as { hooks?: Array<Record<string, unknown>> };
+          if (!Array.isArray(hookGroup.hooks)) continue;
+          for (const hook of hookGroup.hooks) {
+            if (hook.type === "command") {
+              hook.command = command;
+            }
+          }
+        }
+      }
+      writeJsonFile(hooksJsonPath, hooksJson);
+    }
+  }
+
   // Fetch model pricing from LiteLLM (non-blocking if it fails)
   const pricing = await refreshPricingDirect();
   console.log(

@@ -29,7 +29,7 @@ describe("codex install config", () => {
     const { getTarget } = await import("./index.js");
     const codex = getTarget("codex")!;
 
-    const pluginRoot = path.join("/tmp", "panopticon app");
+    const pluginRoot = path.join(tmpCodexDir, "panopticon app");
     const result = codex.hooks.applyInstallConfig(
       {
         mcp_servers: {
@@ -67,10 +67,27 @@ describe("codex install config", () => {
       hooks: Array<{ command: string }>;
     }>;
     expect(permissionRequest).toBeDefined();
+    const expectedHookCommand =
+      process.platform === "win32"
+        ? `cmd.exe /d /s /c ""${path.join(
+            pluginRoot,
+            "bin",
+            "panopticon-codex-hook.cmd",
+          )}" codex 4318 --proxy"`
+        : `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+            path.join(pluginRoot, "bin", "hook-handler"),
+          )} codex 4318 --proxy`;
     expect(permissionRequest.at(-1)?.hooks[0].command).toBe(
-      `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
-        path.join(pluginRoot, "bin", "hook-handler"),
-      )} codex 4318 --proxy`,
+      expectedHookCommand,
     );
+
+    if (process.platform === "win32") {
+      expect(
+        fs.readFileSync(
+          path.join(pluginRoot, "bin", "panopticon-codex-hook.cmd"),
+          "utf-8",
+        ),
+      ).toContain(quoteCommandArg(process.execPath));
+    }
   });
 });

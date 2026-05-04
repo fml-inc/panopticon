@@ -15,13 +15,13 @@ import path from "node:path";
 import { registerTarget } from "./registry.js";
 import type { TargetAdapter } from "./types.js";
 
-const PI_DIR = path.join(os.homedir(), ".pi");
-const EXTENSION_DEST = path.join(
-  PI_DIR,
-  "agent",
-  "extensions",
-  "panopticon.js",
-);
+function piDir(): string {
+  return path.join(process.env.HOME ?? os.homedir(), ".pi");
+}
+
+function extensionDest(): string {
+  return path.join(piDir(), "agent", "extensions", "panopticon.js");
+}
 
 /**
  * Read the bundled extension source produced by scripts/bundle-pi-extension.js.
@@ -54,8 +54,12 @@ const pi: TargetAdapter = {
   id: "pi",
 
   config: {
-    dir: PI_DIR,
-    configPath: path.join(PI_DIR, "agent", "settings.json"),
+    get dir() {
+      return piDir();
+    },
+    get configPath() {
+      return path.join(piDir(), "agent", "settings.json");
+    },
     configFormat: "json",
   },
 
@@ -80,16 +84,18 @@ const pi: TargetAdapter = {
       // Copy the bundled extension into Pi's global extensions dir. Pi
       // auto-discovers files here — no settings.json entry is required
       // (see @mariozechner/pi-coding-agent loader.js).
-      const extDir = path.dirname(EXTENSION_DEST);
+      const dest = extensionDest();
+      const extDir = path.dirname(dest);
       fs.mkdirSync(extDir, { recursive: true });
-      fs.writeFileSync(EXTENSION_DEST, extension);
+      fs.writeFileSync(dest, extension);
 
       return existing;
     },
 
     removeInstallConfig(existing) {
-      if (fs.existsSync(EXTENSION_DEST)) {
-        fs.unlinkSync(EXTENSION_DEST);
+      const dest = extensionDest();
+      if (fs.existsSync(dest)) {
+        fs.unlinkSync(dest);
       }
       return existing;
     },
@@ -124,11 +130,11 @@ const pi: TargetAdapter = {
 
   detect: {
     displayName: "Pi",
-    isInstalled: () => fs.existsSync(PI_DIR),
+    isInstalled: () => fs.existsSync(piDir()),
 
     isConfigured() {
       // Check if the extension file exists
-      return fs.existsSync(EXTENSION_DEST);
+      return fs.existsSync(extensionDest());
     },
   },
 

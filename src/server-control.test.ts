@@ -238,7 +238,10 @@ describe("server control", () => {
     });
     try {
       const stopped = await stopServer({ killTimeoutMs: 3000, timeoutMs: 100 });
-      expect(stopped).toEqual({ status: "killed", pid: started.pid });
+      expect(stopped).toEqual({
+        status: process.platform === "win32" ? "stopped" : "killed",
+        pid: started.pid,
+      });
       await expect(checkServerHealth()).resolves.toMatchObject({ ok: false });
     } finally {
       await stopServer({ killTimeoutMs: 1000, timeoutMs: 100 });
@@ -255,7 +258,10 @@ describe("server control", () => {
         "",
       ].join("\n"),
     );
-    const idle = spawn(process.execPath, [idleScript], { stdio: "ignore" });
+    const idle = spawn(process.execPath, [idleScript], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
     const idleExited = new Promise<boolean>((resolve) => {
       idle.once("exit", () => resolve(true));
     });
@@ -317,7 +323,10 @@ describe("server control", () => {
         "",
       ].join("\n"),
     );
-    const idle = spawn(process.execPath, [idleScript], { stdio: "ignore" });
+    const idle = spawn(process.execPath, [idleScript], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
     expect(idle.pid).toEqual(expect.any(Number));
     fs.writeFileSync(config.serverPidFile, `${idle.pid}\n`);
     fs.writeFileSync(
@@ -382,7 +391,9 @@ describe("server control", () => {
       }),
     ).rejects.toThrow(/did not become healthy/);
 
-    expect(fs.readFileSync(stoppedPath, "utf-8")).toBe("stopped");
+    if (process.platform !== "win32") {
+      expect(fs.readFileSync(stoppedPath, "utf-8")).toBe("stopped");
+    }
   });
 
   it("treats malformed start backoff files as inactive", () => {

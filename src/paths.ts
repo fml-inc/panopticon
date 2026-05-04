@@ -80,6 +80,9 @@ export function resolveGitRoot(cwd: string): string | null {
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
       }).trim() || null;
+    if (root && canUseLocalPathApis(root)) {
+      root = fs.realpathSync.native(root);
+    }
   } catch {
     root = null;
   }

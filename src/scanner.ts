@@ -405,6 +405,9 @@ export function resolveGitRoot(cwd: string): string | null {
       stdio: ["ignore", "pipe", "ignore"],
       windowsHide: true,
     }).trim();
+    if (root) {
+      root = fs.realpathSync.native(root);
+    }
   } catch {
     // Not a git repo
   }
@@ -462,39 +465,28 @@ function findPerDirectoryClaudeMd(
     }
   }
 
-  // Fallback: use find command
-  try {
-    const output = execFileSync(
-      "find",
-      [
-        root,
-        "-name",
-        "CLAUDE.md",
-        "-not",
-        "-path",
-        "*/node_modules/*",
-        "-not",
-        "-path",
-        "*/.git/*",
-      ],
-      {
-        encoding: "utf-8",
-        timeout: 10000,
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
-      },
-    ).trim();
-    if (output) {
-      return output
-        .split("\n")
-        .map((p) => path.resolve(p))
-        .filter((p) => !excludePaths.has(p));
+  const results: string[] = [];
+  const visit = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
     }
-  } catch {
-    // Fall through
-  }
 
-  return [];
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === ".git" || entry.name === "node_modules") continue;
+        visit(fullPath);
+      } else if (entry.isFile() && entry.name === "CLAUDE.md") {
+        const resolved = path.resolve(fullPath);
+        if (!excludePaths.has(resolved)) results.push(resolved);
+      }
+    }
+  };
+  visit(root);
+  return results;
 }
 
 function buildInstruction(
