@@ -57,7 +57,7 @@ export function readSyncTargetLabel(targetName: string): string {
                       OR COALESCE(s.derived_sync_seq, 0) > COALESCE(target_session_sync.derived_synced_seq, 0)
                     THEN 1 ELSE 0
                   END) AS pending,
-              MAX(COALESCE(synced_seq, 0)) AS max_synced_seq
+              MAX(COALESCE(target_session_sync.synced_seq, 0)) AS max_synced_seq
        FROM target_session_sync
        LEFT JOIN sessions s ON s.session_id = target_session_sync.session_id
        WHERE target_session_sync.target = ? AND target_session_sync.confirmed = 1`,

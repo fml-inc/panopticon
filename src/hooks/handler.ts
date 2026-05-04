@@ -338,9 +338,15 @@ export async function runHandler(opts: {
               port,
               timeoutMs: 3000,
             });
-            const ready = await waitForServer(port);
             logHook("debug", "server start result", result);
-            logHook("info", "server readiness", { ready });
+            logHook("info", "server readiness", { ready: true });
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            logHook("warn", "server start failed", { error });
+            captureException(err, {
+              component: "hook-handler",
+              event_type: eventType,
+            });
           } finally {
             releaseStartLock();
           }

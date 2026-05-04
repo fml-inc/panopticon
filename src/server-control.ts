@@ -36,7 +36,8 @@ export type StopServerResult =
   | { status: "signal_sent"; pid: number };
 
 export function healthCheckHost(host = config.host): string {
-  return host && host !== "0.0.0.0" && host !== "::" ? host : "127.0.0.1";
+  if (host === "::") return "::1";
+  return host && host !== "0.0.0.0" ? host : "127.0.0.1";
 }
 
 function hasErrnoCode(err: unknown, code: string): boolean {

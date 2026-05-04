@@ -34,6 +34,7 @@ import { config } from "./config.js";
 import {
   checkServerHealth,
   formatServerStatus,
+  healthCheckHost,
   isPidRunning,
   readPidFileStatus,
   readServerStatus,
@@ -103,6 +104,12 @@ describe("server control", () => {
     } finally {
       kill.mockRestore();
     }
+  });
+
+  it("maps wildcard health-check hosts to loopback addresses", () => {
+    expect(healthCheckHost("0.0.0.0")).toBe("127.0.0.1");
+    expect(healthCheckHost("::")).toBe("::1");
+    expect(healthCheckHost("::1")).toBe("::1");
   });
 
   it("checks health and includes the server pid", async () => {
