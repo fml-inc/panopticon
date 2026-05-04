@@ -10,7 +10,6 @@ import os from "node:os";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
-import { readWatermark, watermarkKey } from "./sync/watermark.js";
 import { allTargets } from "./targets/index.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
@@ -58,6 +57,43 @@ function checkHealth(port: number, host: string): Promise<boolean> {
     });
     req.end();
   });
+}
+
+function readSyncTargetLabel(targetName: string): string {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS confirmed,
+              SUM(CASE
+                    WHEN COALESCE(sync_seq, 0) > COALESCE(synced_seq, 0)
+                      OR COALESCE(derived_synced_seq, 0) < (
+                        SELECT COALESCE(s.derived_sync_seq, 0)
+                        FROM sessions s
+                        WHERE s.session_id = target_session_sync.session_id
+                      )
+                    THEN 1 ELSE 0
+                  END) AS pending,
+              MAX(COALESCE(synced_seq, 0)) AS max_synced_seq
+       FROM target_session_sync
+       WHERE target = ? AND confirmed = 1`,
+    )
+    .get(targetName) as
+    | {
+        confirmed: number;
+        pending: number | null;
+        max_synced_seq: number | null;
+      }
+    | undefined;
+
+  const confirmed = row?.confirmed ?? 0;
+  if (confirmed === 0) return "not synced yet";
+
+  const pending = row?.pending ?? 0;
+  const maxSyncedSeq = row?.max_synced_seq ?? 0;
+  if (pending > 0) {
+    return `${confirmed} session${confirmed === 1 ? "" : "s"} synced, ${pending} pending`;
+  }
+  return `${confirmed} session${confirmed === 1 ? "" : "s"} synced to #${maxSyncedSeq}`;
 }
 
 /**
@@ -240,14 +276,9 @@ export async function doctor(): Promise<DoctorResult> {
         detail: "No targets configured",
       });
     } else {
-      const tables = ["hook_events", "otel_logs", "otel_metrics"];
       const targetDetails: string[] = [];
       for (const t of targets) {
-        const watermarks = tables.map((table) =>
-          readWatermark(watermarkKey(table, t.name)),
-        );
-        const minWm = Math.min(...watermarks);
-        const wmLabel = minWm > 0 ? `synced to #${minWm}` : "not synced yet";
+        const wmLabel = readSyncTargetLabel(t.name);
         targetDetails.push(`${t.name} → ${t.url} (${wmLabel})`);
       }
       checks.push({
