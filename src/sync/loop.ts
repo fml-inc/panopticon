@@ -9,6 +9,7 @@ import {
 import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
+import { buildSyncableSessionIds, repoMatchesFilter } from "./filter.js";
 import { postSync } from "./post.js";
 import {
   readSessionDerivedState,
@@ -20,12 +21,7 @@ import {
   DEFAULT_SESSION_TABLES,
   TABLE_SYNC_REGISTRY,
 } from "./registry.js";
-import type {
-  SyncFilter,
-  SyncHandle,
-  SyncOptions,
-  SyncTarget,
-} from "./types.js";
+import type { SyncHandle, SyncOptions, SyncTarget } from "./types.js";
 import { readWatermark, watermarkKey, writeWatermark } from "./watermark.js";
 
 const DEFAULT_BATCH_SIZE = 2000;
@@ -66,47 +62,6 @@ type PendingDerivedSessionRow = {
 
 function isSessionTableName(table: string): table is SessionTableName {
   return table in WM_COLUMNS && table in SESSION_READERS;
-}
-
-function matchesGlob(value: string, pattern: string): boolean {
-  if (pattern === "*/*") return true;
-  if (pattern.endsWith("/*")) {
-    return value.startsWith(pattern.slice(0, -1));
-  }
-  return value === pattern;
-}
-
-/** Returns true if the repository passes the include/exclude filter. */
-function repoMatchesFilter(repository: string, filter?: SyncFilter): boolean {
-  if (!filter) return true;
-  if (filter.excludeRepos?.some((p) => matchesGlob(repository, p)))
-    return false;
-  if (filter.includeRepos?.length) {
-    if (!filter.includeRepos.some((p) => matchesGlob(repository, p)))
-      return false;
-  }
-  return true;
-}
-
-/** Set of session IDs that have repo attribution matching the filter. */
-function buildSyncableSessionIds(opts: SyncOptions): Set<string> | null {
-  const requireRepo = opts.filter?.requireRepo ?? true;
-  if (!requireRepo && !opts.filter?.includeRepos?.length) return null; // no filtering
-
-  const db = getDb();
-  const rows = db
-    .prepare(
-      "SELECT DISTINCT sr.session_id, sr.repository FROM session_repositories sr",
-    )
-    .all() as Array<{ session_id: string; repository: string }>;
-
-  const sessionIds = new Set<string>();
-  for (const row of rows) {
-    if (!repoMatchesFilter(row.repository, opts.filter)) continue;
-    sessionIds.add(row.session_id);
-  }
-
-  return sessionIds;
 }
 
 const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -713,7 +668,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     let hasMore = false;
 
     const syncableSessionIds = syncSessionsEnabled
-      ? buildSyncableSessionIds(opts)
+      ? buildSyncableSessionIds(opts.filter)
       : null;
 
     for (const target of opts.targets) {

@@ -72,7 +72,14 @@ export function readSyncTargetLabel(targetName: string): string {
 
   const confirmed = row?.confirmed ?? 0;
   const pendingSessions = row?.pending ?? 0;
-  const pendingRows = readSyncPending(targetName).totalPending;
+  const pendingState = readSyncPending(targetName);
+  const pendingRows = Object.entries(pendingState.tables).reduce(
+    (sum, [table, value]) =>
+      table === "sessions" || table === "session_derived_state"
+        ? sum
+        : sum + value.pending,
+    0,
+  );
   if (confirmed === 0) {
     return pendingRows > 0
       ? `not synced yet, ${formatCount(pendingRows, "row")} pending`

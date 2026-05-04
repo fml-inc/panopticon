@@ -18,17 +18,44 @@ import { closeDb, getDb } from "../db/schema.js";
 import { readSyncPending } from "./pending.js";
 import { watermarkKey, writeWatermark } from "./watermark.js";
 
-function insertConfirmedSession(target = "fml"): void {
+function insertConfirmedSession(
+  target = "fml",
+  opts: {
+    syncSeq?: number;
+    syncedSeq?: number;
+    targetSyncSeq?: number;
+    derivedSyncSeq?: number;
+    derivedSyncedSeq?: number;
+    repository?: string | null;
+    wmMessages?: number;
+  } = {},
+): void {
   const db = getDb();
+  const syncSeq = opts.syncSeq ?? 1;
+  const targetSyncSeq = opts.targetSyncSeq ?? syncSeq;
+  const syncedSeq = opts.syncedSeq ?? targetSyncSeq;
+  const derivedSyncSeq = opts.derivedSyncSeq ?? 0;
+  const derivedSyncedSeq = opts.derivedSyncedSeq ?? derivedSyncSeq;
+  const repository =
+    "repository" in opts ? opts.repository : "fml-inc/panopticon";
+  const wmMessages = opts.wmMessages ?? 1;
   db.prepare(
-    `INSERT INTO sessions (session_id, sync_seq, machine, relationship_type)
-     VALUES ('session-1', 1, 'test-machine', 'standalone')`,
-  ).run();
+    `INSERT INTO sessions (
+       session_id, sync_seq, derived_sync_seq, machine, relationship_type
+     ) VALUES ('session-1', ?, ?, 'test-machine', 'standalone')`,
+  ).run(syncSeq, derivedSyncSeq);
+  if (repository !== null) {
+    db.prepare(
+      `INSERT INTO session_repositories (session_id, repository, first_seen_ms)
+       VALUES ('session-1', ?, 0)`,
+    ).run(repository);
+  }
   db.prepare(
     `INSERT INTO target_session_sync (
-       session_id, target, confirmed, sync_seq, synced_seq, wm_messages
-     ) VALUES ('session-1', ?, 1, 1, 1, 1)`,
-  ).run(target);
+       session_id, target, confirmed, sync_seq, synced_seq,
+       derived_synced_seq, wm_messages
+     ) VALUES ('session-1', ?, 1, ?, ?, ?, ?)`,
+  ).run(target, targetSyncSeq, syncedSeq, derivedSyncedSeq, wmMessages);
 }
 
 describe("readSyncPending", () => {
@@ -36,6 +63,10 @@ describe("readSyncPending", () => {
     fs.mkdirSync(path.join(os.tmpdir(), "panopticon-test-sync-pending"), {
       recursive: true,
     });
+    fs.writeFileSync(
+      path.join(os.tmpdir(), "panopticon-test-sync-pending", "config.json"),
+      JSON.stringify({ sync: { filter: { requireRepo: true }, targets: [] } }),
+    );
     getDb();
   });
 
@@ -61,6 +92,56 @@ describe("readSyncPending", () => {
     expect(result.tables.messages).toEqual({
       total: 2,
       synced: 1,
+      pending: 1,
+    });
+    expect(result.totalPending).toBe(1);
+  });
+
+  it("counts session rows that still need target confirmation", () => {
+    insertConfirmedSession("fml", {
+      syncSeq: 2,
+      targetSyncSeq: 1,
+      syncedSeq: 1,
+      wmMessages: 2,
+    });
+
+    const result = readSyncPending("fml");
+
+    expect(result.tables.sessions).toEqual({
+      total: 1,
+      synced: 0,
+      pending: 1,
+    });
+    expect(result.totalPending).toBe(1);
+  });
+
+  it("does not count no-repo session rows skipped by the default sync filter", () => {
+    insertConfirmedSession("fml", {
+      syncSeq: 2,
+      targetSyncSeq: 1,
+      syncedSeq: 1,
+      repository: null,
+      wmMessages: 2,
+    });
+
+    const result = readSyncPending("fml");
+
+    expect(result.tables.sessions).toBeUndefined();
+    expect(result.totalPending).toBe(0);
+  });
+
+  it("counts derived session state that still needs sync", () => {
+    insertConfirmedSession("fml", {
+      derivedSyncSeq: 2,
+      derivedSyncedSeq: 1,
+      wmMessages: 2,
+    });
+
+    const result = readSyncPending("fml");
+
+    expect(result.tables.session_derived_state).toEqual({
+      total: 1,
+      synced: 0,
       pending: 1,
     });
     expect(result.totalPending).toBe(1);
