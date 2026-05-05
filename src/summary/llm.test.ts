@@ -555,9 +555,9 @@ describe("summary llm wrapper", () => {
     const mcpArgs = args.find((arg) =>
       arg.startsWith("mcp_servers.panopticon.args="),
     );
-    expect(JSON.parse(mcpArgs?.split("=").slice(1).join("=") ?? "[]")).toEqual(
-      [expect.stringContaining(path.join("dist", "mcp", "server.js"))],
-    );
+    expect(JSON.parse(mcpArgs?.split("=").slice(1).join("=") ?? "[]")).toEqual([
+      expect.stringContaining(path.join("dist", "mcp", "server.js")),
+    ]);
   });
 
   it("logs debug context if stale codex output cleanup fails", async () => {
