@@ -292,6 +292,7 @@ export function invokeLlm(
       cwd,
       env,
       timeoutMs,
+      withMcp: opts.withMcp,
       systemPrompt: opts.systemPrompt,
       model: opts.model,
     });
@@ -332,6 +333,7 @@ export async function invokeLlmAsync(
       cwd,
       env,
       timeoutMs,
+      withMcp: opts.withMcp,
       systemPrompt: opts.systemPrompt,
       model: opts.model,
     });
@@ -406,16 +408,13 @@ function buildClaudeArgs(opts: {
 }
 
 function buildCodexArgs(
-  prompt: string,
   outputPath: string,
   opts: {
+    withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
   },
-): string[] {
-  const fullPrompt = opts.systemPrompt
-    ? `${opts.systemPrompt}\n\n${prompt}`
-    : prompt;
+): string[] | null {
   const args = [
     "exec",
     "--sandbox",
@@ -429,11 +428,31 @@ function buildCodexArgs(
     "--output-last-message",
     outputPath,
   ];
+  if (opts.withMcp) {
+    const mcpPath = getMcpServerPath();
+    if (!mcpPath) {
+      log.llm.warn("panopticon MCP server not found for Codex headless run");
+      return null;
+    }
+    args.push(
+      "-c",
+      `mcp_servers.panopticon.command=${JSON.stringify(process.execPath)}`,
+      "-c",
+      `mcp_servers.panopticon.args=${JSON.stringify([mcpPath])}`,
+    );
+  }
   if (opts.model) {
     args.push("--model", opts.model);
   }
-  args.push(fullPrompt);
+  args.push("-");
   return args;
+}
+
+function buildCodexPromptInput(
+  prompt: string,
+  opts: { systemPrompt?: string },
+): string {
+  return opts.systemPrompt ? `${opts.systemPrompt}\n\n${prompt}` : prompt;
 }
 
 function logChildStderr(stderr: string): void {
@@ -454,6 +473,7 @@ async function runExecFileCommand(
     cwd: string;
     env: Record<string, string>;
     timeoutMs: number;
+    stdin?: string;
   },
 ): Promise<AsyncCommandResult> {
   return await new Promise<AsyncCommandResult>((resolve) => {
@@ -461,7 +481,7 @@ async function runExecFileCommand(
     const child = spawn(command.binaryPath, command.args, {
       cwd: opts.cwd,
       env: opts.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     const stdoutChunks: Buffer[] = [];
@@ -483,6 +503,9 @@ async function runExecFileCommand(
         stderrChunks.push(chunk);
       }
     });
+    if (opts.stdin !== undefined) {
+      child.stdin?.end(opts.stdin);
+    }
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
@@ -637,6 +660,7 @@ function invokeCodexLlm(
     cwd: string;
     env: Record<string, string>;
     timeoutMs: number;
+    withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
   },
@@ -644,13 +668,16 @@ function invokeCodexLlm(
   const outputPath = getCodexOutputPath(opts.cwd);
   removeCodexOutputFile(outputPath, "stale");
 
-  const args = buildCodexArgs(prompt, outputPath, opts);
+  const args = buildCodexArgs(outputPath, opts);
+  if (!args) return null;
+  const stdin = buildCodexPromptInput(prompt, opts);
 
   const command = resolveCommand(opts.binaryPath, args);
   const result = spawnSync(command.binaryPath, command.args, {
     cwd: opts.cwd,
     env: opts.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    input: stdin,
+    stdio: ["pipe", "pipe", "pipe"],
     timeout: opts.timeoutMs,
     maxBuffer: CHILD_PROCESS_MAX_BUFFER,
     windowsHide: true,
@@ -704,6 +731,7 @@ async function invokeCodexLlmAsync(
     cwd: string;
     env: Record<string, string>;
     timeoutMs: number;
+    withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
   },
@@ -711,11 +739,14 @@ async function invokeCodexLlmAsync(
   const outputPath = getCodexOutputPath(opts.cwd);
   await removeCodexOutputFileAsync(outputPath, "stale");
 
-  const args = buildCodexArgs(prompt, outputPath, opts);
+  const args = buildCodexArgs(outputPath, opts);
+  if (!args) return null;
+  const stdin = buildCodexPromptInput(prompt, opts);
   const result = await runExecFileCommand(opts.binaryPath, args, {
     cwd: opts.cwd,
     env: opts.env,
     timeoutMs: opts.timeoutMs,
+    stdin,
   });
   const stdout = result.stdout.trim();
   logChildStderr(result.stderr);

@@ -86,10 +86,12 @@ describe("summary llm wrapper", () => {
       const child = new EventEmitter() as EventEmitter & {
         stdout: EventEmitter;
         stderr: EventEmitter;
+        stdin: { end: ReturnType<typeof vi.fn> };
         kill: () => void;
       };
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
+      child.stdin = { end: vi.fn() };
       child.kill = vi.fn();
       process.nextTick(() => {
         child.stdout.emit(
@@ -412,13 +414,12 @@ describe("summary llm wrapper", () => {
     const [binary, args, options] = spawnSyncMock.mock.calls[0] as [
       string,
       string[],
-      { cwd: string; windowsHide: boolean },
+      { cwd: string; input: string; windowsHide: boolean },
     ];
     expect(binary).toBe("/usr/local/bin/codex");
     expect(args).toEqual(
       expect.arrayContaining([
         "exec",
-        "Summarize this",
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
@@ -428,7 +429,9 @@ describe("summary llm wrapper", () => {
         "--output-last-message",
       ]),
     );
-    expect(args.at(-1)).toBe("Summarize this");
+    expect(args).not.toContain("Summarize this");
+    expect(args.at(-1)).toBe("-");
+    expect(options.input).toBe("Summarize this");
     expect(options.cwd).toBe(
       path.join("/tmp/panopticon-summary-tests", "codex-headless"),
     );
@@ -466,7 +469,8 @@ describe("summary llm wrapper", () => {
       expect(args[0]).toBe(
         "C:\\Users\\Gus\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
       );
-      expect(args).toContain("Summarize this");
+      expect(args).not.toContain("Summarize this");
+      expect(args.at(-1)).toBe("-");
     } finally {
       if (platform) Object.defineProperty(process, "platform", platform);
     }
@@ -493,7 +497,6 @@ describe("summary llm wrapper", () => {
     expect(args).toEqual(
       expect.arrayContaining([
         "exec",
-        "Summarize this",
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
@@ -503,14 +506,58 @@ describe("summary llm wrapper", () => {
         "--output-last-message",
       ]),
     );
-    expect(args.at(-1)).toBe("Summarize this");
+    expect(args).not.toContain("Summarize this");
+    expect(args.at(-1)).toBe("-");
     expect(options.cwd).toBe(
       path.join("/tmp/panopticon-summary-tests", "codex-headless"),
     );
+    const child = spawnMock.mock.results[0].value as {
+      stdin: { end: ReturnType<typeof vi.fn> };
+    };
+    expect(child.stdin.end).toHaveBeenCalledWith("Summarize this");
     const outputPath = args[args.indexOf("--output-last-message") + 1];
     expect(readFileAsyncMock).toHaveBeenCalledOnce();
     expect(rmAsyncMock).toHaveBeenCalledTimes(2);
     expect(rmAsyncMock).toHaveBeenCalledWith(outputPath, { force: true });
+  });
+
+  it("configures Panopticon MCP for Codex and still keeps the prompt on stdin", async () => {
+    execFileSyncMock.mockImplementation((_binary: string, args: string[]) => {
+      if (args[0] === "codex") return "/usr/local/bin/codex";
+      return "/usr/local/bin/claude";
+    });
+    const { invokeLlm } = await loadLlm();
+
+    expect(
+      invokeLlm("Session id: session-1", {
+        runner: "codex",
+        withMcp: true,
+        systemPrompt: "system prompt",
+      }),
+    ).toBe("OK");
+
+    const [, args, options] = spawnSyncMock.mock.calls[0] as [
+      string,
+      string[],
+      { input: string },
+    ];
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-c",
+        `mcp_servers.panopticon.command=${JSON.stringify(process.execPath)}`,
+        "-c",
+      ]),
+    );
+    expect(args).not.toContain("Session id: session-1");
+    expect(args.at(-1)).toBe("-");
+    expect(options.input).toBe("system prompt\n\nSession id: session-1");
+
+    const mcpArgs = args.find((arg) =>
+      arg.startsWith("mcp_servers.panopticon.args="),
+    );
+    expect(JSON.parse(mcpArgs?.split("=").slice(1).join("=") ?? "[]")).toEqual(
+      [expect.stringContaining(path.join("dist", "mcp", "server.js"))],
+    );
   });
 
   it("logs debug context if stale codex output cleanup fails", async () => {
