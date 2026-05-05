@@ -9,7 +9,10 @@ vi.mock("./config.js", () => {
     config: {
       dataDir: tmpDir,
       dbPath: path.join(tmpDir, "data.db"),
+      host: "127.0.0.1",
       port: 4318,
+      serverPidFile: path.join(tmpDir, "panopticon.pid"),
+      serverStartBackoffFile: path.join(tmpDir, "server-start-backoff.json"),
     },
     ensureDataDir: () => fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -19,8 +22,17 @@ vi.mock("./targets/index.js", () => ({
   allTargets: () => [],
 }));
 
+vi.mock("./startup-task.js", () => ({
+  readWindowsStartupTaskStatus: () => ({
+    supported: true,
+    installed: false,
+    taskName: "Panopticon",
+    detail: "not installed",
+  }),
+}));
+
 import { closeDb, getDb } from "./db/schema.js";
-import { readSyncTargetLabel } from "./doctor.js";
+import { doctor, readSyncTargetLabel } from "./doctor.js";
 
 function insertSyncedSession(): void {
   const db = getDb();
@@ -76,6 +88,37 @@ describe("readSyncTargetLabel", () => {
 
     expect(readSyncTargetLabel("fml")).toBe(
       "1 session confirmed, 1 session pending",
+    );
+  });
+});
+
+describe("doctor lifecycle checks", () => {
+  beforeEach(() => {
+    fs.mkdirSync(path.join(os.tmpdir(), "panopticon-test-doctor"), {
+      recursive: true,
+    });
+    getDb();
+  });
+
+  afterEach(() => {
+    closeDb();
+    fs.rmSync(path.join(os.tmpdir(), "panopticon-test-doctor"), {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("includes server lifecycle diagnostics", async () => {
+    const result = await doctor();
+    const labels = result.checks.map((check) => check.label);
+
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        "Server",
+        "Start Backoff",
+        "PID File",
+        "Server Log",
+      ]),
     );
   });
 });

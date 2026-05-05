@@ -10,7 +10,15 @@ import path from "node:path";
 import { config } from "./config.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
-import { checkServerHealth, healthCheckHost } from "./server-control.js";
+import { logPaths } from "./log.js";
+import {
+  formatServerStatus,
+  healthCheckHost,
+  readPidFileStatus,
+  readServerStartBackoffStatus,
+  readServerStatus,
+} from "./server-control.js";
+import { readWindowsStartupTaskStatus } from "./startup-task.js";
 import { readSyncPending } from "./sync/pending.js";
 import { allTargets } from "./targets/index.js";
 import { loadUnifiedConfig } from "./unified-config.js";
@@ -141,24 +149,83 @@ export async function doctor(): Promise<DoctorResult> {
     }
   }
 
-  // 2. Server
+  // 2. Server lifecycle
   const serverHost = healthCheckHost();
-  const serverHealth = await checkServerHealth({
+  const serverStatus = await readServerStatus({
     host: serverHost,
     port: config.port,
-    timeoutMs: 2000,
   });
-  if (serverHealth.ok) {
+  if (serverStatus.health.ok) {
     checks.push({
       label: "Server",
       status: "ok",
-      detail: `Listening on ${serverHost}:${config.port}`,
+      detail: `${formatServerStatus(serverStatus)} on ${serverHost}:${config.port}`,
     });
   } else {
     checks.push({
       label: "Server",
       status: "warn",
-      detail: `Not responding on port ${config.port}`,
+      detail: `${formatServerStatus(serverStatus)} on ${serverHost}:${config.port}`,
+    });
+  }
+
+  const startBackoff = readServerStartBackoffStatus();
+  if (startBackoff.exists) {
+    const retry =
+      startBackoff.nextAllowedAtMs != null
+        ? new Date(startBackoff.nextAllowedAtMs).toISOString()
+        : "unknown";
+    checks.push({
+      label: "Start Backoff",
+      status: startBackoff.active ? "warn" : "ok",
+      detail: `${startBackoff.active ? "active" : "inactive"}; ${formatCount(startBackoff.attempts, "failed attempt")}; retry ${retry}${startBackoff.lastError ? `; last error: ${startBackoff.lastError}` : ""}`,
+    });
+  } else {
+    checks.push({
+      label: "Start Backoff",
+      status: "ok",
+      detail: "inactive",
+    });
+  }
+
+  const pidFile = readPidFileStatus();
+  checks.push({
+    label: "PID File",
+    status:
+      !pidFile.exists ||
+      (pidFile.valid && (pidFile.running || serverStatus.health.ok))
+        ? "ok"
+        : "warn",
+    detail: pidFile.exists
+      ? pidFile.valid
+        ? `${pidFile.pid}${pidFile.running ? " running" : " stale"} at ${config.serverPidFile}`
+        : `invalid at ${config.serverPidFile}`
+      : `not present at ${config.serverPidFile}`,
+  });
+
+  try {
+    const stat = fs.statSync(logPaths.server);
+    checks.push({
+      label: "Server Log",
+      status: "ok",
+      detail: `${logPaths.server} (${stat.size} bytes)`,
+    });
+  } catch {
+    checks.push({
+      label: "Server Log",
+      status: "warn",
+      detail: `Not created yet at ${logPaths.server}`,
+    });
+  }
+
+  if (process.platform === "win32") {
+    const startupTask = readWindowsStartupTaskStatus();
+    checks.push({
+      label: "Startup Task",
+      status: startupTask.installed ? "ok" : "ok",
+      detail: startupTask.installed
+        ? `${startupTask.taskName}: ${startupTask.detail}`
+        : "not installed (optional)",
     });
   }
 
