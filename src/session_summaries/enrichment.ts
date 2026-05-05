@@ -442,7 +442,10 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
         return 0;
       }
 
-      const prompt = buildLlmPrompt(context);
+      const usePanopticonMcp = selection.runner === "codex";
+      const prompt = usePanopticonMcp
+        ? buildLlmMcpPrompt(row.session_id)
+        : buildLlmPrompt(context);
       const startedAtMs = Date.now();
       log(
         `Session summary enrichment start: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} model=${selection.model ?? "default"} messages=${row.message_count}`,
@@ -450,7 +453,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
       const result = await invokeLlmAsync(prompt, {
         runner: selection.runner,
         timeoutMs,
-        withMcp: false,
+        withMcp: usePanopticonMcp,
         systemPrompt: SYSTEM_PROMPT,
         model: selection.model,
       });
@@ -702,6 +705,16 @@ function buildLlmPrompt(context: {
     "Write the per-session summary.",
   ].filter((value): value is string => Boolean(value));
   return lines.join("\n\n");
+}
+
+function buildLlmMcpPrompt(sessionId: string): string {
+  return [
+    `Session id: ${sessionId}`,
+    "",
+    "Use Panopticon MCP tools to load the session summary details for this exact session id.",
+    "Prefer the session_summary_detail tool. Use timeline, query, search, or get only if needed to resolve ambiguity.",
+    "Write the per-session summary.",
+  ].join("\n");
 }
 
 function loadDeterministicSearchCorpus(

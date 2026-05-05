@@ -217,6 +217,46 @@ describe("session summary enrichment refresh", () => {
     });
   });
 
+  it("uses Panopticon MCP with a short session-id prompt for Codex enrichment", async () => {
+    const db = state.db!;
+    db.prepare(
+      `UPDATE sessions
+       SET target = 'codex'
+       WHERE session_id = 'session-1'`,
+    ).run();
+    state.invokeLlmMock.mockResolvedValue("Codex MCP summary.");
+
+    const result = await refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+      force: true,
+    });
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+    expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+    const [prompt, options] = state.invokeLlmMock.mock.calls[0] as [
+      string,
+      { runner: string; withMcp: boolean; systemPrompt: string },
+    ];
+    expect(prompt).toContain("Session id: session-1");
+    expect(prompt).toContain("Use Panopticon MCP tools");
+    expect(prompt).not.toContain("Recent messages:");
+    expect(prompt).not.toContain("fix the summary contention bug");
+    expect(options.runner).toBe("codex");
+    expect(options.withMcp).toBe(true);
+
+    const row = db
+      .prepare(
+        `SELECT summary_text, summary_runner
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as { summary_text: string; summary_runner: string };
+    expect(row).toEqual({
+      summary_text: "Codex MCP summary.",
+      summary_runner: "codex",
+    });
+  });
+
   it("releases a stale claim instead of persisting outdated output", async () => {
     const db = state.db!;
     state.invokeLlmMock.mockImplementation(async () => {
