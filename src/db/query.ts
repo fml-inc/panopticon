@@ -809,8 +809,6 @@ export function search(opts: {
   hookParams.push(pattern);
   hookSearchClauses.push("h.event_type LIKE ? ESCAPE '\\'");
   hookParams.push(pattern);
-  hookSearchClauses.push("h.tool_result LIKE ? ESCAPE '\\'");
-  hookParams.push(pattern);
   hookConditions.push(`(${hookSearchClauses.join(" OR ")})`);
 
   if (opts.eventTypes?.length) {

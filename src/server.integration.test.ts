@@ -175,7 +175,6 @@ const hookEvents = [
     hook_event_name: "PostToolUse",
     cwd: "/workspace/my-project",
     tool_name: "Bash",
-    tool_response: "tests passed",
   },
   {
     session_id: SESSION_1,
@@ -482,21 +481,6 @@ describe("server integration", () => {
         .get(SESSION_1) as { payload: Buffer };
       const json = JSON.parse(gunzipSync(row.payload).toString());
       expect(typeof json).toBe("object");
-    });
-
-    it("stores hook tool results outside the compressed payload", () => {
-      const db = getDb();
-      const row = db
-        .prepare(
-          "SELECT payload, tool_result FROM hook_events WHERE session_id = ? AND event_type = 'PostToolUse' AND tool_name = 'Bash'",
-        )
-        .get(SESSION_1) as { payload: Buffer; tool_result: string };
-      const json = JSON.parse(gunzipSync(row.payload).toString());
-
-      expect(row.tool_result).toBe("tests passed");
-      expect(json.tool_response).toBeUndefined();
-      expect(json.tool_result).toBeUndefined();
-      expect(json.tool_name).toBe("Bash");
     });
 
     it("populates FTS index", () => {
