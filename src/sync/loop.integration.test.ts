@@ -81,19 +81,18 @@ function insertSessionSummary(sessionId: string, summaryText: string): void {
   ).run(`summary:${sessionId}`, sessionId, summaryText);
 }
 
-function insertMessage(sessionId: string, ordinal: number): number {
+function insertMessage(
+  sessionId: string,
+  ordinal: number,
+  content = `msg-${ordinal}`,
+): number {
   const db = getDb();
   const result = db
     .prepare(
       `INSERT INTO messages (session_id, ordinal, role, content, sync_id)
        VALUES (?, ?, 'assistant', ?, ?)`,
     )
-    .run(
-      sessionId,
-      ordinal,
-      `msg-${ordinal}`,
-      buildMessageSyncId(sessionId, ordinal),
-    );
+    .run(sessionId, ordinal, content, buildMessageSyncId(sessionId, ordinal));
   return Number(result.lastInsertRowid);
 }
 
@@ -662,6 +661,35 @@ describe("createSyncLoop integration", () => {
       );
       expect(allPostedMessageSyncIds).toEqual([buildMessageSyncId("s1", 2)]);
       expect(getTss("s1", "fml")?.wm_messages).toBe(m3);
+    });
+
+    it("splits posts by serialized byte size as well as row count", async () => {
+      insertSession("s1", 1);
+      insertSessionRepo("s1");
+      const largeContent = "x".repeat(600 * 1024);
+      const firstMessage = insertMessage("s1", 0, largeContent);
+      const secondMessage = insertMessage("s1", 1, largeContent);
+
+      const handle = createSyncLoop({
+        targets: [makeTarget()],
+        sessionTables: ["messages"],
+        nonSessionTables: [],
+        batchSize: 10,
+        postBatchSize: 100,
+      });
+      await handle.runOnce();
+
+      const messageCalls = mockedPostSync.mock.calls.filter(
+        ([, body]) => body.table === "messages",
+      );
+      expect(messageCalls).toHaveLength(2);
+      expect(messageCalls.map(([, body]) => body.rows.length)).toEqual([1, 1]);
+
+      const postedMessageIds = messageCalls.flatMap(([, body]) =>
+        body.rows.map((r) => (r as { id: number }).id),
+      );
+      expect(postedMessageIds).toEqual([firstMessage, secondMessage]);
+      expect(getTss("s1", "fml")?.wm_messages).toBe(secondMessage);
     });
 
     it("revives stuck per-table watermarks on the next runOnce after the fix", async () => {

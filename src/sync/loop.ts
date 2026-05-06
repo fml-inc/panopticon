@@ -26,6 +26,7 @@ import { readWatermark, watermarkKey, writeWatermark } from "./watermark.js";
 
 const DEFAULT_BATCH_SIZE = 2000;
 const DEFAULT_POST_BATCH_SIZE = 100;
+const DEFAULT_POST_BATCH_MAX_BYTES = 900 * 1024;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 100;
 const DEFAULT_MAX_SESSIONS_PER_TICK = 10;
@@ -59,6 +60,37 @@ type PendingDerivedSessionRow = {
   derived_sync_seq: number;
   derived_synced_seq: number;
 };
+
+function syncPostBodyBytes(table: string, rows: unknown[]): number {
+  return Buffer.byteLength(JSON.stringify({ table, rows }));
+}
+
+function splitRowsForPost(
+  table: string,
+  rows: unknown[],
+  maxRows: number,
+  maxBytes: number,
+): unknown[][] {
+  const batches: unknown[][] = [];
+  let batch: unknown[] = [];
+
+  for (const row of rows) {
+    const candidate = [...batch, row];
+    if (
+      batch.length > 0 &&
+      (candidate.length > maxRows ||
+        syncPostBodyBytes(table, candidate) > maxBytes)
+    ) {
+      batches.push(batch);
+      batch = [row];
+      continue;
+    }
+    batch = candidate;
+  }
+
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
 
 function isSessionTableName(table: string): table is SessionTableName {
   return table in WM_COLUMNS && table in SESSION_READERS;
@@ -99,6 +131,7 @@ function resolveToken(target: SyncTarget): string | undefined {
 export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
   const postBatchSize = opts.postBatchSize ?? DEFAULT_POST_BATCH_SIZE;
+  const postBatchMaxBytes = DEFAULT_POST_BATCH_MAX_BYTES;
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
   const maxSessionsPerTick =
@@ -141,6 +174,22 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       headers.Authorization = `Bearer ${token}`;
     }
     return headers;
+  }
+
+  async function postRowsInBatches(
+    url: string,
+    table: string,
+    rows: unknown[],
+    headers: Record<string, string>,
+  ): Promise<void> {
+    for (const batch of splitRowsForPost(
+      table,
+      rows,
+      postBatchSize,
+      postBatchMaxBytes,
+    )) {
+      await postSync(url, { table, rows: batch }, headers);
+    }
   }
 
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -230,8 +279,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     if (rows.length > 0) {
       log.sync.debug(formatLog(`sessions: ${rows.length} sessions to sync`));
 
-      for (let j = 0; j < rows.length; j += postBatchSize) {
-        const batch = rows.slice(j, j + postBatchSize);
+      for (const batch of splitRowsForPost(
+        "sessions",
+        rows,
+        postBatchSize,
+        postBatchMaxBytes,
+      )) {
         const response = await postSync(
           `${target.url}/v1/sync`,
           { table: "sessions", rows: batch },
@@ -418,10 +471,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           anyData = true;
           progressedInPass = true;
 
-          for (let i = 0; i < rows.length; i += postBatchSize) {
-            const batch = rows.slice(i, i + postBatchSize);
-            await postSync(url, { table, rows: batch }, headers);
-          }
+          await postRowsInBatches(url, table, rows, headers);
 
           watermarks[table] = maxId;
           remainingBudget -= rows.length;
@@ -626,14 +676,12 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           ),
         );
 
-        for (let j = 0; j < filtered.length; j += postBatchSize) {
-          const batch = filtered.slice(j, j + postBatchSize);
-          await postSync(
-            `${target.url}/v1/sync`,
-            { table: desc.table, rows: batch },
-            resolveHeaders(target),
-          );
-        }
+        await postRowsInBatches(
+          `${target.url}/v1/sync`,
+          desc.table,
+          filtered,
+          resolveHeaders(target),
+        );
       }
 
       writeWatermark(wmKey, maxId);
