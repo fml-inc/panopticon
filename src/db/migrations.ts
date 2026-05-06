@@ -34,6 +34,7 @@
  *    upgrade forward. Rolling back means reinstalling.
  */
 
+import { gunzipSync, gzipSync } from "node:zlib";
 import {
   ALL_DATA_COMPONENTS,
   CLAIM_DERIVED_COMPONENTS,
@@ -42,6 +43,7 @@ import {
   SESSION_SUMMARY_PROJECTION_COMPONENT,
 } from "./data-versions.js";
 import type { Database } from "./driver.js";
+import { removeDuplicatedHookResultFields } from "./hook-payload.js";
 import {
   buildMessageSyncId,
   buildScannerEventSyncId,
@@ -808,6 +810,66 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
   `);
 }
 
+function normalizeStoredHookPayloads(db: Database): void {
+  if (!tableExists(db, "hook_events")) return;
+  if (
+    !tableHasColumn(db, "hook_events", "payload") ||
+    !tableHasColumn(db, "hook_events", "tool_result")
+  ) {
+    return;
+  }
+
+  const hasFts = tableExists(db, "hook_events_fts");
+  const rows = db
+    .prepare(
+      `SELECT id, payload, tool_result
+       FROM hook_events
+       WHERE tool_result IS NOT NULL`,
+    )
+    .all() as Array<{
+    id: number;
+    payload: Uint8Array;
+    tool_result: string | null;
+  }>;
+
+  const updatePayload = db.prepare(
+    "UPDATE hook_events SET payload = ? WHERE id = ?",
+  );
+  const deleteFts = hasFts
+    ? db.prepare("DELETE FROM hook_events_fts WHERE rowid = ?")
+    : null;
+  const insertFts = hasFts
+    ? db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)")
+    : null;
+
+  for (const row of rows) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(gunzipSync(Buffer.from(row.payload)).toString());
+    } catch {
+      continue;
+    }
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload)
+    ) {
+      continue;
+    }
+
+    const normalized = removeDuplicatedHookResultFields(
+      payload as Record<string, unknown>,
+      row.tool_result !== null,
+    );
+    if (normalized === payload) continue;
+
+    const storedJson = JSON.stringify(normalized);
+    updatePayload.run(gzipSync(Buffer.from(storedJson)), row.id);
+    deleteFts?.run(row.id);
+    insertFts?.run(row.id, storedJson);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Migration registry — append only, never reorder or remove
 // ---------------------------------------------------------------------------
@@ -1283,6 +1345,13 @@ export const MIGRATIONS: Migration[] = [
         );
       }
       seedDerivedSyncSeqForExistingSessionSummaries(db);
+    },
+  },
+  {
+    id: 20,
+    name: "dedupe_hook_result_payloads",
+    up: (db) => {
+      normalizeStoredHookPayloads(db);
     },
   },
 ];

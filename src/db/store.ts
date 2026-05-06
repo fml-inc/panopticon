@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
+import {
+  extractHookToolResult,
+  removeDuplicatedHookResultFields,
+} from "./hook-payload.js";
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -607,17 +611,16 @@ export function insertHookEvent(row: HookEventRow): number {
   const filePath = extractStr(toolInput, "file_path");
   const command = extractStr(toolInput, "command");
   const plan = extractStr(toolInput, "plan");
-  const toolResultRaw = data.tool_result ?? data.tool_response;
-  const toolResult = toolResultRaw
-    ? typeof toolResultRaw === "string"
-      ? toolResultRaw
-      : JSON.stringify(toolResultRaw)
-    : undefined;
+  const toolResult = extractHookToolResult(data);
   const allowedPrompts = toolInput?.allowedPrompts
     ? JSON.stringify(toolInput.allowedPrompts)
     : undefined;
 
-  const fullJson = JSON.stringify(data);
+  const storedPayload = removeDuplicatedHookResultFields(
+    data,
+    toolResult !== undefined,
+  );
+  const storedJson = JSON.stringify(storedPayload);
 
   let insertedId = 0;
   const insertWithFts = db.transaction(() => {
@@ -635,7 +638,7 @@ export function insertHookEvent(row: HookEventRow): number {
       tool_result: toolResult ?? null,
       plan: plan ?? null,
       allowed_prompts: allowedPrompts ?? null,
-      payload: gzipSync(Buffer.from(fullJson)),
+      payload: gzipSync(Buffer.from(storedJson)),
     });
     const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
       id: number;
@@ -643,7 +646,7 @@ export function insertHookEvent(row: HookEventRow): number {
     insertedId = id;
     db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(
       id,
-      fullJson,
+      storedJson,
     );
   });
   insertWithFts();

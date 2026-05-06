@@ -1,3 +1,4 @@
+import { removeDuplicatedHookResultFields } from "../db/hook-payload.js";
 import { getDb } from "../db/schema.js";
 import type {
   CodeProvenanceSyncRecord,
@@ -64,25 +65,51 @@ export function readHookEvents(
     target: string | null;
   }>;
 
-  const rows: HookEventRecord[] = rawRows.map((r) => ({
-    hookId: r.id,
-    sessionId: r.session_id,
-    syncId: r.sync_id,
-    eventType: r.event_type,
-    timestampMs: r.timestamp_ms,
-    cwd: r.cwd,
-    repository: r.repository,
-    toolName: r.tool_name,
-    payload: parseJson(r.payload),
-    userPrompt: r.user_prompt,
-    filePath: r.file_path,
-    command: r.command,
-    toolResult: r.tool_result,
-    target: r.target,
-  }));
+  const rows = mapHookEventRows(rawRows);
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
   return { rows, maxId };
+}
+
+function mapHookEventRows(
+  rawRows: Array<{
+    id: number;
+    session_id: string;
+    sync_id: string | null;
+    event_type: string;
+    timestamp_ms: number;
+    cwd: string | null;
+    repository: string | null;
+    tool_name: string | null;
+    payload: string | null;
+    user_prompt: string | null;
+    file_path: string | null;
+    command: string | null;
+    tool_result: string | null;
+    target: string | null;
+  }>,
+): HookEventRecord[] {
+  return rawRows.map((r) => {
+    const payload = parseJson(r.payload);
+    return {
+      hookId: r.id,
+      sessionId: r.session_id,
+      syncId: r.sync_id,
+      eventType: r.event_type,
+      timestampMs: r.timestamp_ms,
+      cwd: r.cwd,
+      repository: r.repository,
+      toolName: r.tool_name,
+      payload: payload
+        ? removeDuplicatedHookResultFields(payload, r.tool_result !== null)
+        : null,
+      userPrompt: r.user_prompt,
+      filePath: r.file_path,
+      command: r.command,
+      toolResult: r.tool_result,
+      target: r.target,
+    };
+  });
 }
 
 // ── OTLP logs ────────────────────────────────────────────────────────────────
@@ -1350,22 +1377,7 @@ export function readSessionHookEvents(
     target: string | null;
   }>;
 
-  const rows: HookEventRecord[] = rawRows.map((r) => ({
-    hookId: r.id,
-    sessionId: r.session_id,
-    syncId: r.sync_id,
-    eventType: r.event_type,
-    timestampMs: r.timestamp_ms,
-    cwd: r.cwd,
-    repository: r.repository,
-    toolName: r.tool_name,
-    payload: parseJson(r.payload),
-    userPrompt: r.user_prompt,
-    filePath: r.file_path,
-    command: r.command,
-    toolResult: r.tool_result,
-    target: r.target,
-  }));
+  const rows = mapHookEventRows(rawRows);
 
   const maxId = rows.length > 0 ? rows[rows.length - 1].hookId : afterId;
   return { rows, maxId };

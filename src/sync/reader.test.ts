@@ -26,7 +26,12 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { readHookEvents, readMetrics, readOtelLogs } from "./reader.js";
+import {
+  readHookEvents,
+  readMetrics,
+  readOtelLogs,
+  readSessionHookEvents,
+} from "./reader.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,12 +43,23 @@ function insertHook(
   eventType: string,
   timestampMs: number,
   toolName: string | null = null,
+  payloadValue: Record<string, unknown> = { test: true },
+  toolResult: string | null = null,
 ): void {
   const db = getDb();
-  const payload = gzipSync(Buffer.from(JSON.stringify({ test: true })));
+  const payload = gzipSync(Buffer.from(JSON.stringify(payloadValue)));
   db.prepare(
-    "INSERT INTO hook_events (id, session_id, event_type, timestamp_ms, tool_name, cwd, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, SESSION, eventType, timestampMs, toolName, "/workspace", payload);
+    "INSERT INTO hook_events (id, session_id, event_type, timestamp_ms, tool_name, cwd, payload, tool_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    id,
+    SESSION,
+    eventType,
+    timestampMs,
+    toolName,
+    "/workspace",
+    payload,
+    toolResult,
+  );
 }
 
 function insertOtelLog(
@@ -138,6 +154,50 @@ describe("readHookEvents", () => {
 
     const { rows } = readHookEvents(0, 100);
     expect(rows[0].toolName).toBe("mcp__plugin_fml_fml__fml_whoami");
+  });
+
+  it("omits duplicate tool responses from hook payloads for sync", () => {
+    const hugeText = "x".repeat(1_100_000);
+    insertHook(
+      1,
+      "PostToolUse",
+      BASE_MS,
+      "mcp__panopticon__search_intent",
+      {
+        tool_response: hugeText,
+        tool_result: hugeText,
+        small: "kept",
+      },
+      hugeText,
+    );
+
+    const { rows } = readHookEvents(0, 100);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].toolResult).toBe(hugeText);
+    expect(rows[0].payload).toEqual({
+      small: "kept",
+    });
+    expect(JSON.stringify(rows[0])).not.toContain("panopticon sync truncated");
+
+    const { rows: sessionRows } = readSessionHookEvents(SESSION, 0, 100);
+    expect(sessionRows[0].toolResult).toBe(hugeText);
+    expect(sessionRows[0].payload).toEqual({
+      small: "kept",
+    });
+  });
+
+  it("preserves payload tool responses when no top-level tool result exists", () => {
+    insertHook(1, "PostToolUse", BASE_MS, "Bash", {
+      tool_response: "only-copy",
+      small: "kept",
+    });
+
+    const { rows } = readHookEvents(0, 100);
+    expect(rows[0].toolResult).toBeNull();
+    expect(rows[0].payload).toEqual({
+      tool_response: "only-copy",
+      small: "kept",
+    });
   });
 });
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ALL_DATA_COMPONENTS,
@@ -1887,6 +1888,69 @@ describe("runMigrations — existing DB", () => {
       { session_id: "session:with-summary", derived_synced_seq: 0 },
       { session_id: "session:without-summary", derived_synced_seq: 0 },
     ]);
+  });
+
+  it("removes duplicated tool results from stored hook payloads", () => {
+    const db = createExistingDb();
+    db.exec(SCHEMA_SQL);
+
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 20) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    const payload = {
+      tool_response: "large result text",
+      tool_result: "large result text",
+      small: "kept",
+    };
+    const payloadJson = JSON.stringify(payload);
+    db.prepare(
+      `INSERT INTO hook_events (
+         id, session_id, event_type, timestamp_ms, payload, tool_result
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "session:hook",
+      "PostToolUse",
+      1000,
+      gzipSync(Buffer.from(payloadJson)),
+      "large result text",
+    );
+    db.prepare("INSERT INTO hook_events_fts(rowid, payload) VALUES (?, ?)").run(
+      1,
+      payloadJson,
+    );
+
+    runMigrations(db);
+
+    const row = db
+      .prepare("SELECT payload, tool_result FROM hook_events WHERE id = ?")
+      .get(1) as { payload: Uint8Array; tool_result: string };
+    const stored = JSON.parse(gunzipSync(Buffer.from(row.payload)).toString());
+    expect(row.tool_result).toBe("large result text");
+    expect(stored).toEqual({ small: "kept" });
+
+    const smallMatches = (
+      db
+        .prepare(
+          "SELECT COUNT(*) as c FROM hook_events_fts WHERE payload MATCH 'kept'",
+        )
+        .get() as { c: number }
+    ).c;
+    expect(smallMatches).toBe(1);
+
+    const resultMatches = (
+      db
+        .prepare(
+          "SELECT COUNT(*) as c FROM hook_events_fts WHERE payload MATCH 'large'",
+        )
+        .get() as { c: number }
+    ).c;
+    expect(resultMatches).toBe(0);
   });
 
   it("runs up() function migration", () => {
