@@ -42,6 +42,7 @@ function isCodexSystemMessage(content: string): boolean {
 const CODEX_DIR =
   process.env.PANOPTICON_CODEX_DIR ?? path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
+const CODEX_SKILLS_DIR = path.join(CODEX_DIR, "skills");
 
 // PascalCase event names matching the Codex hooks engine schema
 const HOOK_EVENTS = [
@@ -408,6 +409,12 @@ const codex: TargetAdapter = {
     // Codex CLI reads its config from TOML, no shell env vars needed
     envVars() {
       return [];
+    },
+  },
+
+  skills: {
+    installDirs() {
+      return [CODEX_SKILLS_DIR];
     },
   },
 

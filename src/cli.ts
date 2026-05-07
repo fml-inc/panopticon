@@ -118,6 +118,12 @@ function readJsonFile(filePath: string): any {
   }
 }
 
+function skillInstallDirs(
+  targets: import("./targets/types.js").TargetAdapter[],
+): string[] {
+  return [...new Set(targets.flatMap((t) => t.skills?.installDirs() ?? []))];
+}
+
 function writeJsonFile(filePath: string, data: any): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
@@ -573,14 +579,20 @@ program
         console.log(`      Removed ${config.pluginCacheDir}`);
       } catch {}
       console.log();
+    } else {
+      console.log("[5/6] Skipping marketplace (target-specific uninstall)\n");
+    }
 
-      // Remove skills
-      console.log("[6/6] Removing skills...");
-      const pluginRoot = getPluginRoot();
-      const skillsSource = path.join(pluginRoot, "skills");
-      const skillsTarget = path.join(os.homedir(), ".claude", "skills");
-      if (fs.existsSync(skillsSource)) {
-        for (const name of fs.readdirSync(skillsSource)) {
+    // Remove skills (mirrors install: scope to selected targets)
+    console.log("[6/6] Removing skills...");
+    const pluginRoot = getPluginRoot();
+    const skillsSource = path.join(pluginRoot, "skills");
+    const skillTargets = skillInstallDirs(selectedTargets);
+    if (skillTargets.length === 0) {
+      console.log("      (no skill-supporting targets selected)");
+    } else if (fs.existsSync(skillsSource)) {
+      for (const name of fs.readdirSync(skillsSource)) {
+        for (const skillsTarget of skillTargets) {
           const dest = path.join(skillsTarget, name);
           try {
             fs.rmSync(dest, { recursive: true, force: true });
@@ -588,11 +600,8 @@ program
           } catch {}
         }
       }
-      console.log();
-    } else {
-      console.log("[5/6] Skipping marketplace (target-specific uninstall)");
-      console.log("[6/6] Skipping skills (target-specific uninstall)\n");
     }
+    console.log();
 
     if (purge) {
       console.log("Purging data...");
@@ -843,19 +852,18 @@ async function install(
 
   console.log("[4/5] Installing skills...");
   const skillsSource = path.join(pluginRoot, "skills");
-  const skillsTarget = path.join(os.homedir(), ".claude", "skills");
-  if (fs.existsSync(skillsSource)) {
+  const skillTargets = skillInstallDirs(selectedTargets);
+  if (skillTargets.length === 0) {
+    console.log("      (no skill-supporting targets selected)");
+  } else if (fs.existsSync(skillsSource)) {
     for (const skillName of fs.readdirSync(skillsSource)) {
       const src = path.join(skillsSource, skillName);
       if (!fs.statSync(src).isDirectory()) continue;
-      const dest = path.join(skillsTarget, skillName);
-      fs.mkdirSync(dest, { recursive: true });
-      for (const file of fs.readdirSync(src)) {
-        fs.cpSync(path.join(src, file), path.join(dest, file), {
-          recursive: true,
-        });
+      for (const skillsTarget of skillTargets) {
+        const dest = path.join(skillsTarget, skillName);
+        fs.cpSync(src, dest, { recursive: true });
+        console.log(`      ${skillName} -> ${dest}`);
       }
-      console.log(`      ${skillName} -> ${dest}`);
     }
   }
   console.log();

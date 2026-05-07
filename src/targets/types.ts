@@ -393,6 +393,11 @@ export interface TargetScannerSpec {
   normalizeToolCategory(toolName: string): string;
 }
 
+export interface TargetSkillsSpec {
+  /** Absolute directory paths where this harness loads skills from. */
+  installDirs(): string[];
+}
+
 // ── The Adapter ─────────────────────────────────────────────────────────────
 
 export interface TargetAdapter {
@@ -411,4 +416,6 @@ export interface TargetAdapter {
   ident?: TargetIdentSpec;
   /** Session file scanner — reads local transcript files for token usage */
   scanner?: TargetScannerSpec;
+  /** Harness-specific skill install locations, if supported. */
+  skills?: TargetSkillsSpec;
 }
