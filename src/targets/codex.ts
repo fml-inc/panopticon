@@ -42,12 +42,7 @@ function isCodexSystemMessage(content: string): boolean {
 const CODEX_DIR =
   process.env.PANOPTICON_CODEX_DIR ?? path.join(os.homedir(), ".codex");
 const CODEX_HOOKS_JSON = path.join(CODEX_DIR, "hooks.json");
-
-function codexSkillsDir(): string {
-  const home =
-    process.env.CODEX_HOME ?? process.env.PANOPTICON_CODEX_DIR ?? CODEX_DIR;
-  return path.join(home, "skills");
-}
+const CODEX_SKILLS_DIR = path.join(CODEX_DIR, "skills");
 
 // PascalCase event names matching the Codex hooks engine schema
 const HOOK_EVENTS = [
@@ -419,7 +414,7 @@ const codex: TargetAdapter = {
 
   skills: {
     installDirs() {
-      return [codexSkillsDir()];
+      return [CODEX_SKILLS_DIR];
     },
   },
 

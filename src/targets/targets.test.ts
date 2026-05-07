@@ -42,22 +42,17 @@ describe("target skills install dirs", () => {
     const codex = getTarget("codex")!;
     const pi = getTarget("pi")!;
 
-    const prevCodexHome = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = "/tmp/codex-home";
-    try {
-      expect(claude.skills?.installDirs()).toEqual([
-        path.join(os.homedir(), ".claude", "skills"),
-      ]);
-      expect(codex.skills?.installDirs()).toEqual([
-        path.join("/tmp/codex-home", "skills"),
-      ]);
-      expect(pi.skills?.installDirs()).toEqual([
-        path.join(os.homedir(), ".pi", "agent", "skills"),
-      ]);
-    } finally {
-      if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = prevCodexHome;
-    }
+    expect(claude.skills?.installDirs()).toEqual([
+      path.join(os.homedir(), ".claude", "skills"),
+    ]);
+    // Codex skills live under the same CODEX_DIR as hooks/config. The test
+    // doesn't set PANOPTICON_CODEX_DIR, so the default ~/.codex/skills wins.
+    expect(codex.skills?.installDirs()).toEqual([
+      path.join(os.homedir(), ".codex", "skills"),
+    ]);
+    expect(pi.skills?.installDirs()).toEqual([
+      path.join(os.homedir(), ".pi", "agent", "skills"),
+    ]);
   });
 });
 
