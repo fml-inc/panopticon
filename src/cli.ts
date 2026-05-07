@@ -578,14 +578,20 @@ program
       console.log("[6/6] Removing skills...");
       const pluginRoot = getPluginRoot();
       const skillsSource = path.join(pluginRoot, "skills");
-      const skillsTarget = path.join(os.homedir(), ".claude", "skills");
+      const skillTargets = [
+        ...new Set(
+          selectedTargets.flatMap((t) => t.skills?.installDirs() ?? []),
+        ),
+      ];
       if (fs.existsSync(skillsSource)) {
         for (const name of fs.readdirSync(skillsSource)) {
-          const dest = path.join(skillsTarget, name);
-          try {
-            fs.rmSync(dest, { recursive: true, force: true });
-            console.log(`      Removed ${dest}`);
-          } catch {}
+          for (const skillsTarget of skillTargets) {
+            const dest = path.join(skillsTarget, name);
+            try {
+              fs.rmSync(dest, { recursive: true, force: true });
+              console.log(`      Removed ${dest}`);
+            } catch {}
+          }
         }
       }
       console.log();
@@ -843,19 +849,23 @@ async function install(
 
   console.log("[4/5] Installing skills...");
   const skillsSource = path.join(pluginRoot, "skills");
-  const skillsTarget = path.join(os.homedir(), ".claude", "skills");
+  const skillTargets = [
+    ...new Set(selectedTargets.flatMap((t) => t.skills?.installDirs() ?? [])),
+  ];
   if (fs.existsSync(skillsSource)) {
     for (const skillName of fs.readdirSync(skillsSource)) {
       const src = path.join(skillsSource, skillName);
       if (!fs.statSync(src).isDirectory()) continue;
-      const dest = path.join(skillsTarget, skillName);
-      fs.mkdirSync(dest, { recursive: true });
-      for (const file of fs.readdirSync(src)) {
-        fs.cpSync(path.join(src, file), path.join(dest, file), {
-          recursive: true,
-        });
+      for (const skillsTarget of skillTargets) {
+        const dest = path.join(skillsTarget, skillName);
+        fs.mkdirSync(dest, { recursive: true });
+        for (const file of fs.readdirSync(src)) {
+          fs.cpSync(path.join(src, file), path.join(dest, file), {
+            recursive: true,
+          });
+        }
+        console.log(`      ${skillName} -> ${dest}`);
       }
-      console.log(`      ${skillName} -> ${dest}`);
     }
   }
   console.log();

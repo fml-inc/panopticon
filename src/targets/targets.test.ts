@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HookInput } from "../hooks/ingest.js";
@@ -32,6 +33,31 @@ describe("target registry", () => {
     expect(ids).toContain("claude");
     expect(ids).toContain("gemini");
     expect(ids).toContain("codex");
+  });
+});
+
+describe("target skills install dirs", () => {
+  it("declares harness-specific skill locations for claude/codex/pi", () => {
+    const claude = getTarget("claude")!;
+    const codex = getTarget("codex")!;
+    const pi = getTarget("pi")!;
+
+    const prevCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = "/tmp/codex-home";
+    try {
+      expect(claude.skills?.installDirs()).toEqual([
+        path.join(os.homedir(), ".claude", "skills"),
+      ]);
+      expect(codex.skills?.installDirs()).toEqual([
+        path.join("/tmp/codex-home", "skills"),
+      ]);
+      expect(pi.skills?.installDirs()).toEqual([
+        path.join(os.homedir(), ".pi", "agent", "skills"),
+      ]);
+    } finally {
+      if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prevCodexHome;
+    }
   });
 });
 

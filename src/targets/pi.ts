@@ -114,6 +114,12 @@ const pi: TargetAdapter = {
     },
   },
 
+  skills: {
+    installDirs() {
+      return [path.join(piDir(), "agent", "skills")];
+    },
+  },
+
   events: {
     // Empty: the extension emits canonical event names directly
     // (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
