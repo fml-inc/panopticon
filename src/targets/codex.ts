@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -53,6 +54,15 @@ const HOOK_EVENTS = [
   "PostToolUse",
   "Stop",
 ];
+const HOOK_EVENT_KEY_LABELS: Record<string, string> = {
+  SessionStart: "session_start",
+  UserPromptSubmit: "user_prompt_submit",
+  PreToolUse: "pre_tool_use",
+  PermissionRequest: "permission_request",
+  PostToolUse: "post_tool_use",
+  Stop: "stop",
+};
+const HOOK_TIMEOUT_SEC = 10;
 
 function readHooksJson(): Record<string, unknown> {
   try {
@@ -65,6 +75,21 @@ function readHooksJson(): Record<string, unknown> {
 function writeHooksJson(data: Record<string, unknown>): void {
   fs.mkdirSync(CODEX_DIR, { recursive: true });
   fs.writeFileSync(CODEX_HOOKS_JSON, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function codexSourcePath(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    try {
+      return path.join(
+        fs.realpathSync(path.dirname(filePath)),
+        path.basename(filePath),
+      );
+    } catch {
+      return filePath;
+    }
+  }
 }
 
 function quoteCommandArg(value: string): string {
@@ -114,6 +139,148 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function codexHookStateKey(
+  sourcePath: string,
+  event: string,
+  groupIndex: number,
+  handlerIndex: number,
+): string {
+  return `${sourcePath}:${
+    HOOK_EVENT_KEY_LABELS[event] ?? event
+  }:${groupIndex}:${handlerIndex}`;
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalJsonValue);
+  }
+  const record = asRecord(value);
+  if (!record) return value;
+
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    const child = record[key];
+    if (child !== undefined) {
+      sorted[key] = canonicalJsonValue(child);
+    }
+  }
+  return sorted;
+}
+
+function codexVersionForToml(value: unknown): string {
+  const serialized = JSON.stringify(canonicalJsonValue(value));
+  return `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+}
+
+function codexCommandHookHash(event: string, command: string): string {
+  return codexVersionForToml({
+    event_name: HOOK_EVENT_KEY_LABELS[event] ?? event,
+    hooks: [
+      {
+        async: false,
+        command,
+        timeout: HOOK_TIMEOUT_SEC,
+        type: "command",
+      },
+    ],
+  });
+}
+
+function panopticonHookHandlerIndexes(
+  group: Record<string, unknown>,
+): number[] {
+  const hooks = Array.isArray(group.hooks) ? group.hooks : [];
+  const indexes: number[] = [];
+  hooks.forEach((entry, index) => {
+    const command = asRecord(entry)?.command;
+    if (typeof command === "string" && command.includes("panopticon")) {
+      indexes.push(index);
+    }
+  });
+  return indexes;
+}
+
+function removePanopticonHookGroups(
+  hooks: Record<string, unknown>,
+  sourcePath: string,
+): string[] {
+  const removedStateKeys: string[] = [];
+
+  for (const event of HOOK_EVENTS) {
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) continue;
+
+    const kept: unknown[] = [];
+    groups.forEach((group, groupIndex) => {
+      const groupRecord = asRecord(group);
+      if (!groupRecord) {
+        kept.push(group);
+        return;
+      }
+
+      const handlerIndexes = panopticonHookHandlerIndexes(groupRecord);
+      if (handlerIndexes.length === 0) {
+        kept.push(groupRecord);
+        return;
+      }
+
+      for (const handlerIndex of handlerIndexes) {
+        removedStateKeys.push(
+          codexHookStateKey(sourcePath, event, groupIndex, handlerIndex),
+        );
+      }
+    });
+
+    if (kept.length > 0) {
+      hooks[event] = kept;
+    } else {
+      delete hooks[event];
+    }
+  }
+
+  return removedStateKeys;
+}
+
+function removeHookStateEntries(
+  config: Record<string, unknown>,
+  keys: string[],
+): void {
+  if (keys.length === 0) return;
+
+  const hooks = asRecord(config.hooks);
+  const state = asRecord(hooks?.state);
+  if (!hooks || !state) return;
+
+  for (const key of keys) {
+    delete state[key];
+  }
+
+  if (Object.keys(state).length === 0) {
+    delete hooks.state;
+  }
+  if (Object.keys(hooks).length === 0) {
+    delete config.hooks;
+  }
+}
+
+function addHookTrustEntries(
+  config: Record<string, unknown>,
+  entries: Array<{ key: string; trustedHash: string }>,
+): void {
+  if (entries.length === 0) return;
+
+  const hooks = asRecord(config.hooks) ?? {};
+  const state = asRecord(hooks.state) ?? {};
+  for (const { key, trustedHash } of entries) {
+    state[key] = {
+      ...(asRecord(state[key]) ?? {}),
+      trusted_hash: trustedHash,
+    };
+  }
+  hooks.state = state;
+  config.hooks = hooks;
 }
 
 function stringifyValue(value: unknown): string | undefined {
@@ -266,38 +433,49 @@ const codex: TargetAdapter = {
       const codexConfig = { ...existing };
       const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
-      // Enable the codex_hooks feature flag
-      codexConfig.features =
-        (codexConfig.features as Record<string, unknown>) ?? {};
-      (codexConfig.features as Record<string, unknown>).codex_hooks = true;
-      // Codex reads this at top level, not under [features]
-      codexConfig.suppress_unstable_features_warning = true;
+      // Enable the current hooks feature flag and remove the deprecated alias.
+      codexConfig.features = asRecord(codexConfig.features) ?? {};
+      delete (codexConfig.features as Record<string, unknown>).codex_hooks;
+      (codexConfig.features as Record<string, unknown>).hooks = true;
 
-      // Remove any legacy TOML hook entries
-      delete codexConfig.hooks;
+      const staleStateKeys: string[] = [];
+      const configSourcePath = codexSourcePath(codex.config.configPath);
+      const tomlHooks = asRecord(codexConfig.hooks);
+      if (tomlHooks) {
+        staleStateKeys.push(
+          ...removePanopticonHookGroups(tomlHooks, configSourcePath),
+        );
+      }
 
       // Write hooks.json (the format the new hooks engine expects)
+      fs.mkdirSync(CODEX_DIR, { recursive: true });
+      const hooksSourcePath = codexSourcePath(CODEX_HOOKS_JSON);
       const hooksFile = readHooksJson();
-      const hooks = (hooksFile.hooks as Record<string, unknown[]>) ?? {};
+      const hooks = asRecord(hooksFile.hooks) ?? {};
+      staleStateKeys.push(
+        ...removePanopticonHookGroups(hooks, hooksSourcePath),
+      );
       const command = codexHookCommand(opts.pluginRoot, opts.port, opts.proxy);
+      const trustEntries: Array<{ key: string; trustedHash: string }> = [];
       for (const event of HOOK_EVENTS) {
-        const groups = (hooks[event] ?? []) as Array<Record<string, unknown>>;
-        // Remove existing panopticon groups
-        hooks[event] = groups.filter((g) => {
-          const h = ((g.hooks as unknown[]) ?? []) as Array<
-            Record<string, unknown>
-          >;
-          return !h.some((entry) =>
-            (entry.command as string)?.includes("panopticon"),
-          );
-        });
+        const groups = Array.isArray(hooks[event])
+          ? (hooks[event] as Array<Record<string, unknown>>)
+          : [];
+        hooks[event] = groups;
+        const groupIndex = groups.length;
         // Add panopticon hook group
         (hooks[event] as unknown[]).push({
-          hooks: [{ type: "command", command, timeout: 10 }],
+          hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_SEC }],
+        });
+        trustEntries.push({
+          key: codexHookStateKey(hooksSourcePath, event, groupIndex, 0),
+          trustedHash: codexCommandHookHash(event, command),
         });
       }
       hooksFile.hooks = hooks;
       writeHooksJson(hooksFile);
+      removeHookStateEntries(codexConfig, staleStateKeys);
+      addHookTrustEntries(codexConfig, trustEntries);
 
       // Configure API proxy (opt-in via --proxy)
       if (opts.proxy) {
@@ -337,33 +515,30 @@ const codex: TargetAdapter = {
       const cfg = { ...existing };
 
       // Remove feature flags
-      const features = cfg.features as Record<string, unknown> | undefined;
+      const features = asRecord(cfg.features);
       if (features) {
         delete features.codex_hooks;
         if (Object.keys(features).length === 0) delete cfg.features;
       }
       delete cfg.suppress_unstable_features_warning;
 
-      // Remove any legacy TOML hook entries
-      delete cfg.hooks;
+      const staleStateKeys: string[] = [];
+      const configSourcePath = codexSourcePath(codex.config.configPath);
+      const tomlHooks = asRecord(cfg.hooks);
+      if (tomlHooks) {
+        staleStateKeys.push(
+          ...removePanopticonHookGroups(tomlHooks, configSourcePath),
+        );
+      }
 
       // Remove panopticon hooks from hooks.json
+      const hooksSourcePath = codexSourcePath(CODEX_HOOKS_JSON);
       const hooksFile = readHooksJson();
-      const hooks = hooksFile.hooks as Record<string, unknown[]> | undefined;
+      const hooks = asRecord(hooksFile.hooks);
       if (hooks) {
-        for (const event of Object.keys(hooks)) {
-          hooks[event] = (
-            hooks[event] as Array<Record<string, unknown>>
-          ).filter((g) => {
-            const h = ((g.hooks as unknown[]) ?? []) as Array<
-              Record<string, unknown>
-            >;
-            return !h.some((entry) =>
-              (entry.command as string)?.includes("panopticon"),
-            );
-          });
-          if ((hooks[event] as unknown[]).length === 0) delete hooks[event];
-        }
+        staleStateKeys.push(
+          ...removePanopticonHookGroups(hooks, hooksSourcePath),
+        );
         if (Object.keys(hooks).length === 0) {
           // Remove hooks.json entirely if empty
           try {
@@ -374,6 +549,7 @@ const codex: TargetAdapter = {
           writeHooksJson(hooksFile);
         }
       }
+      removeHookStateEntries(cfg, staleStateKeys);
 
       // Remove proxy URL if it points to panopticon
       if (
