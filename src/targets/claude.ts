@@ -519,6 +519,12 @@ const claude: TargetAdapter = {
       // Per-message and per-turn: which line index produced it (-1 = no DAG)
       const msgLineIdx: number[] = [];
       const turnLineIdx: number[] = [];
+      // Full uuid -> parentUuid map across all line types. Claude Code JSONL
+      // can interleave system/attachment/file-history-snapshot entries between
+      // user/assistant turns; compressing through those intermediate nodes
+      // keeps a linear conversation from looking like a forked DAG.
+      const uuidToParent = new Map<string, string>();
+      const userAssistantUuids = new Set<string>();
 
       for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
         const line = lines[lineIdx];
@@ -545,7 +551,11 @@ const claude: TargetAdapter = {
         // Track uuid/parentUuid for DAG fork detection
         const uuid = obj.uuid as string | undefined;
         const parentUuid = obj.parentUuid as string | undefined;
+        if (uuid) {
+          uuidToParent.set(uuid, parentUuid ?? "");
+        }
         if (uuid && (type === "user" || type === "assistant")) {
+          userAssistantUuids.add(uuid);
           dagEntries.push({
             uuid,
             parentUuid: parentUuid ?? "",
@@ -1153,6 +1163,19 @@ const claude: TargetAdapter = {
 
       if (meta && firstPrompt && !meta.firstPrompt)
         meta.firstPrompt = firstPrompt;
+
+      // Walk dagEntries' parentUuid links up through non-conversation lines
+      // until another user/assistant node or the root is reached. The seen set
+      // protects parser state from malformed cyclic parent links.
+      for (const entry of dagEntries) {
+        let cur = entry.parentUuid;
+        const seen = new Set<string>();
+        while (cur && !userAssistantUuids.has(cur) && !seen.has(cur)) {
+          seen.add(cur);
+          cur = uuidToParent.get(cur) ?? "";
+        }
+        entry.parentUuid = cur;
+      }
 
       // Annotate tool calls with subagent session IDs
       if (subagentMap.size > 0) {
