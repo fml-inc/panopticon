@@ -154,7 +154,7 @@ fi
 if [ -n "$HAS_CODEX" ]; then
   log_info "── Codex artifacts ──"
   assert_file_exists "$HOME/.codex/config.toml" "Codex config.toml"
-  assert_grep "$HOME/.codex/config.toml" "codex_hooks" "Codex hooks enabled"
+  assert_grep "$HOME/.codex/config.toml" "hooks = true" "Codex hooks enabled"
   assert_file_exists "$HOME/.codex/hooks.json" "Codex hooks.json"
   assert_grep "$HOME/.codex/hooks.json" "panopticon" "Codex hooks reference panopticon"
 fi

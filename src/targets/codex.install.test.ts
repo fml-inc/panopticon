@@ -90,4 +90,95 @@ describe("codex install config", () => {
       ).toContain(quoteCommandArg(process.execPath));
     }
   });
+
+  it("uses the current hooks feature flag and trusts installed hooks", async () => {
+    tmpCodexDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-codex-install-"),
+    );
+    process.env.PANOPTICON_CODEX_DIR = tmpCodexDir;
+    vi.resetModules();
+
+    const { getTarget } = await import("./index.js");
+    const codex = getTarget("codex")!;
+
+    const result = codex.hooks.applyInstallConfig(
+      {
+        features: {
+          codex_hooks: true,
+          goals: true,
+        },
+      },
+      { pluginRoot: "/tmp/panopticon", port: 4318, proxy: false },
+    ) as Record<string, unknown>;
+
+    expect(result.features).toEqual({
+      goals: true,
+      hooks: true,
+    });
+
+    const hooksConfig = result.hooks as Record<string, unknown>;
+    const state = hooksConfig.state as Record<
+      string,
+      { trusted_hash?: string }
+    >;
+    const hooksPath = path.join(fs.realpathSync(tmpCodexDir), "hooks.json");
+    expect(Object.keys(state).sort()).toEqual(
+      [
+        "permission_request",
+        "post_tool_use",
+        "pre_tool_use",
+        "session_start",
+        "stop",
+        "user_prompt_submit",
+      ].map((event) => `${hooksPath}:${event}:0:0`),
+    );
+    for (const entry of Object.values(state)) {
+      expect(entry.trusted_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    }
+  });
+
+  it("removes stale Panopticon hook state without disabling Codex hooks", async () => {
+    tmpCodexDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-codex-install-"),
+    );
+    process.env.PANOPTICON_CODEX_DIR = tmpCodexDir;
+    vi.resetModules();
+
+    const { getTarget } = await import("./index.js");
+    const codex = getTarget("codex")!;
+    const configPath = path.join(fs.realpathSync(tmpCodexDir), "config.toml");
+    const staleKey = `${configPath}:session_start:0:0`;
+    const otherKey = `${configPath}:pre_tool_use:1:0`;
+
+    const result = codex.hooks.removeInstallConfig({
+      features: {
+        codex_hooks: true,
+        hooks: true,
+      },
+      hooks: {
+        state: {
+          [staleKey]: { trusted_hash: "sha256:stale" },
+          [otherKey]: { trusted_hash: "sha256:other" },
+        },
+        SessionStart: [
+          {
+            hooks: [{ type: "command", command: "node /opt/panopticon/hook" }],
+          },
+        ],
+        PreToolUse: [
+          {
+            hooks: [{ type: "command", command: "echo keep" }],
+          },
+        ],
+      },
+    }) as Record<string, unknown>;
+
+    expect(result.features).toEqual({ hooks: true });
+    const hooksConfig = result.hooks as Record<string, unknown>;
+    expect(hooksConfig.SessionStart).toBeUndefined();
+    expect(hooksConfig.PreToolUse).toBeDefined();
+    expect(hooksConfig.state).toEqual({
+      [otherKey]: { trusted_hash: "sha256:other" },
+    });
+  });
 });
