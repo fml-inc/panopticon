@@ -110,4 +110,57 @@ describe("Windows startup task", () => {
       expect.objectContaining({ windowsHide: true }),
     );
   });
+
+  it("skips idempotent removal when the platform is unsupported", async () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    const { uninstallWindowsStartupTaskIfInstalled } = await loadStartupTask();
+
+    expect(uninstallWindowsStartupTaskIfInstalled("Panopticon Test")).toEqual({
+      supported: false,
+      taskName: "Panopticon Test",
+      detail: "Windows Task Scheduler is not available on this platform",
+    });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("skips idempotent removal when the task is not installed", async () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error("not found");
+    });
+    const { uninstallWindowsStartupTaskIfInstalled } = await loadStartupTask();
+
+    expect(uninstallWindowsStartupTaskIfInstalled("Panopticon Test")).toEqual({
+      supported: true,
+      taskName: "Panopticon Test",
+      detail: "not installed",
+    });
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      "schtasks.exe",
+      ["/Query", "/TN", "Panopticon Test", "/FO", "LIST", "/V"],
+      expect.objectContaining({ windowsHide: true }),
+    );
+  });
+
+  it("removes the startup task during idempotent removal when installed", async () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
+      if (args.includes("/Query"))
+        return "TaskName: Panopticon\r\nStatus: Ready\r\n";
+      return "SUCCESS";
+    });
+    const { uninstallWindowsStartupTaskIfInstalled } = await loadStartupTask();
+
+    expect(uninstallWindowsStartupTaskIfInstalled("Panopticon Test")).toEqual({
+      supported: true,
+      taskName: "Panopticon Test",
+      detail: "removed",
+    });
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      "schtasks.exe",
+      ["/Delete", "/TN", "Panopticon Test", "/F"],
+      expect.objectContaining({ windowsHide: true }),
+    );
+  });
 });

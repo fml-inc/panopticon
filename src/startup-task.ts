@@ -187,3 +187,24 @@ export function uninstallWindowsStartupTask(
     detail: "removed",
   };
 }
+
+export function uninstallWindowsStartupTaskIfInstalled(
+  taskName = WINDOWS_STARTUP_TASK_NAME,
+): WindowsStartupTaskResult {
+  const status = readWindowsStartupTaskStatus(taskName);
+  if (!status.supported) {
+    return {
+      supported: false,
+      taskName,
+      detail: status.detail,
+    };
+  }
+  if (!status.installed) {
+    return {
+      supported: true,
+      taskName,
+      detail: "not installed",
+    };
+  }
+  return uninstallWindowsStartupTask(taskName);
+}
