@@ -42,6 +42,7 @@ import {
   installWindowsStartupTask,
   readWindowsStartupTaskStatus,
   uninstallWindowsStartupTask,
+  uninstallWindowsStartupTaskIfInstalled,
 } from "./startup-task.js";
 import { setSyncEnabled } from "./sync/config.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
@@ -524,6 +525,17 @@ program
 
     console.log("[1/6] Stopping daemons...");
     await stopServer({ includeLegacy: true });
+    if (targetId === "all" && process.platform === "win32") {
+      try {
+        const result = uninstallWindowsStartupTaskIfInstalled();
+        console.log(`      Windows startup task: ${result.detail}`);
+      } catch (err: unknown) {
+        console.log(
+          `      warn: Windows startup task could not be removed: ${(err as Error).message}`,
+        );
+        console.log("      Run 'panopticon startup remove' to retry manually.");
+      }
+    }
     console.log();
 
     // Ask Claude Code to uninstall the plugin so the MCP server process is
