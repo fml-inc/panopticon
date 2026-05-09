@@ -38,6 +38,11 @@ import {
   removeShellEnvDetailed,
   writePanopticonEnvFile,
 } from "./setup.js";
+import {
+  installWindowsStartupTask,
+  readWindowsStartupTaskStatus,
+  uninstallWindowsStartupTask,
+} from "./startup-task.js";
 import { setSyncEnabled } from "./sync/config.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
@@ -477,6 +482,10 @@ program
   )
   .option("--proxy", "Also route API traffic through the panopticon proxy")
   .option("--disable-sync", "Disable remote sync and skip Git detection")
+  .option(
+    "--startup-task",
+    "Install a per-user Windows logon task that runs panopticon start",
+  )
   .option("--force", "Overwrite customized env vars with defaults")
   .action(async (opts: Opts) => {
     const validTargets = [...targetIds(), "all"];
@@ -650,6 +659,7 @@ async function install(
     target?: string;
     proxy?: boolean;
     disableSync?: boolean;
+    startupTask?: boolean;
   },
 ) {
   const force = opts.force ?? false;
@@ -881,6 +891,16 @@ async function install(
     `\nServer ${started.status === "already_running" ? "running" : "started"} (${pidText}port ${started.port})`,
   );
 
+  if (opts.startupTask) {
+    console.log("\nConfiguring Windows startup task...");
+    if (process.platform !== "win32") {
+      console.log("      Skipped: startup tasks are only supported on Windows");
+    } else {
+      const result = installWindowsStartupTask();
+      console.log(`      ${result.detail}`);
+    }
+  }
+
   const assistant =
     target === "all"
       ? allTargets()
@@ -937,6 +957,37 @@ program
         console.log("Panopticon is not running");
         break;
     }
+  });
+
+const startup = program
+  .command("startup")
+  .description("Manage optional per-user startup integration");
+
+startup
+  .command("status", { isDefault: true })
+  .description("Show Windows logon startup task status")
+  .action(() => {
+    const status = readWindowsStartupTaskStatus();
+    console.log(
+      `${status.taskName}: ${status.installed ? "installed" : "not installed"} (${status.detail})`,
+    );
+  });
+
+startup
+  .command("install")
+  .description("Install a hidden per-user Windows logon task")
+  .action(() => {
+    const result = installWindowsStartupTask();
+    console.log(`${result.taskName}: ${result.detail}`);
+  });
+
+startup
+  .command("remove")
+  .alias("uninstall")
+  .description("Remove the per-user Windows logon task")
+  .action(() => {
+    const result = uninstallWindowsStartupTask();
+    console.log(`${result.taskName}: ${result.detail}`);
   });
 
 program
