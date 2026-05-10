@@ -370,7 +370,13 @@ describe("isPanopticonMcpTool", () => {
     expect(isPanopticonMcpTool("mcp__panopticon__query")).toBe(true);
   });
 
+  it("matches Codex slash-form panopticon MCP tool names", () => {
+    expect(isPanopticonMcpTool("panopticon/session_summary_detail")).toBe(true);
+    expect(isPanopticonMcpTool("panopticon/query")).toBe(true);
+  });
+
   it("does not match other MCP tools", () => {
     expect(isPanopticonMcpTool("mcp__github__search_code")).toBe(false);
+    expect(isPanopticonMcpTool("github/search_code")).toBe(false);
   });
 });
