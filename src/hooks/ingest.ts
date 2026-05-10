@@ -75,7 +75,8 @@ function loadAllowed(): AllowedList | null {
 export function isPanopticonMcpTool(toolName: string): boolean {
   return (
     toolName.startsWith("mcp__plugin_panopticon_panopticon__") ||
-    toolName.startsWith("mcp__panopticon__")
+    toolName.startsWith("mcp__panopticon__") ||
+    toolName.startsWith("panopticon/")
   );
 }
 
