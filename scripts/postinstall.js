@@ -30,6 +30,7 @@ export function runPostinstall({
     // Supply-chain hardening: npm lifecycle scripts should not perform setup,
     // mutate user config, start daemons, or prompt unless explicitly opted in.
     // Run `panopticon install` after installation to configure the CLI.
+    warn("Panopticon installed. Run `panopticon install` to finish setup.");
     return 0;
   }
 

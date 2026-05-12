@@ -15,8 +15,7 @@ No Docker, no external services. Just Node.js.
 ## Install
 
 ```bash
-npm install -g @fml-inc/panopticon
-panopticon install
+npm install -g @fml-inc/panopticon && panopticon install
 ```
 
 This initializes the database, registers hooks and MCP servers in each detected tool, and configures OTel environment variables in your shell. Start a new session to activate.
@@ -45,8 +44,7 @@ Options:
 git clone https://github.com/fml-inc/panopticon.git && cd panopticon
 pnpm install && pnpm build
 npm pack
-npm install -g ./fml-inc-panopticon-*.tgz
-panopticon install
+npm install -g ./fml-inc-panopticon-*.tgz && panopticon install
 ```
 
 ## How it works
@@ -349,8 +347,7 @@ To test the full install flow:
 
 ```bash
 pnpm build && npm pack
-npm install -g ./fml-inc-panopticon-*.tgz
-panopticon install --target claude
+npm install -g ./fml-inc-panopticon-*.tgz && panopticon install --target claude
 ```
 
 For release validation against a copied production-sized DB and real home
