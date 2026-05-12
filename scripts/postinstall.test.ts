@@ -2,28 +2,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runPostinstall } from "./postinstall.js";
 
-const enabledEnv = { PANOPTICON_ENABLE_POSTINSTALL: "1" };
-
 describe("runPostinstall", () => {
-  it("skips install unless explicitly enabled, but hints at the next step", () => {
-    const runCommand = vi.fn();
-    const warn = vi.fn();
-
-    const exitCode = runPostinstall({
-      root: "/tmp/panopticon",
-      existsSync: () => true,
-      runCommand,
-      warn,
-      env: {},
-    });
-
-    expect(exitCode).toBe(0);
-    expect(runCommand).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("panopticon install"),
-    );
-  });
-
   it("skips install when dist is missing", () => {
     const runCommand = vi.fn();
 
@@ -31,7 +10,6 @@ describe("runPostinstall", () => {
       root: "/tmp/panopticon",
       existsSync: () => false,
       runCommand,
-      env: enabledEnv,
     });
 
     expect(exitCode).toBe(0);
@@ -47,7 +25,6 @@ describe("runPostinstall", () => {
       existsSync: () => true,
       runCommand,
       warn,
-      env: enabledEnv,
     });
 
     expect(exitCode).toBe(0);
@@ -70,7 +47,6 @@ describe("runPostinstall", () => {
       existsSync: (target) => target === path.join("/tmp/panopticon", "dist"),
       runCommand,
       warn,
-      env: enabledEnv,
     });
 
     expect(exitCode).toBe(0);
@@ -94,7 +70,6 @@ describe("runPostinstall", () => {
       root: "/tmp/panopticon",
       existsSync: () => true,
       runCommand,
-      env: enabledEnv,
     });
 
     expect(exitCode).toBe(0);
@@ -111,7 +86,6 @@ describe("runPostinstall", () => {
       root: "/tmp/panopticon",
       existsSync: () => true,
       runCommand,
-      env: enabledEnv,
     });
 
     expect(exitCode).toBe(23);
