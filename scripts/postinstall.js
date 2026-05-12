@@ -24,7 +24,15 @@ export function runPostinstall({
   existsSync = fs.existsSync,
   runCommand = spawnCommand,
   warn = console.warn,
+  env = process.env,
 } = {}) {
+  if (env.PANOPTICON_ENABLE_POSTINSTALL !== "1") {
+    // Supply-chain hardening: npm lifecycle scripts should not perform setup,
+    // mutate user config, start daemons, or prompt unless explicitly opted in.
+    // Run `panopticon install` after installation to configure the CLI.
+    return 0;
+  }
+
   if (!existsSync(path.join(root, "dist"))) {
     return 0;
   }

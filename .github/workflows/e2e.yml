@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   sync-validation:
     runs-on: ubuntu-latest
@@ -26,7 +29,7 @@ jobs:
 
       - name: Checkout
         if: steps.check_keys.outputs.has_key == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Run E2E test
         if: steps.check_keys.outputs.has_key == 'true'
