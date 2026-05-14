@@ -369,18 +369,24 @@ export function sessionSummaryDetail(opts: {
 export function listRecentSessionSummaryPreviewsForCwd(opts: {
   cwdCandidates: string[];
   currentSessionId?: string | null;
+  sinceMs?: number | null;
   limit?: number;
 }): SessionSummaryPreview[] {
   if (opts.cwdCandidates.length === 0) return [];
 
   const db = getDb();
   const cwdPlaceholders = opts.cwdCandidates.map(() => "?").join(", ");
+  const activityExpr =
+    "COALESCE(s.last_intent_ts_ms, s.source_last_seen_at_ms, s.projected_at_ms, 0)";
+  const useSinceMs =
+    typeof opts.sinceMs === "number" && Number.isFinite(opts.sinceMs);
   const params: unknown[] = [
     ...opts.cwdCandidates,
     ...opts.cwdCandidates,
     opts.currentSessionId ?? "",
-    opts.limit ?? 5,
   ];
+  if (useSinceMs) params.push(opts.sinceMs);
+  params.push(opts.limit ?? 5);
   const rows = (
     db
       .prepare(
@@ -399,7 +405,8 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
            ON s.session_id = m.session_id
          ${SESSION_SUMMARY_PROJECTION_JOINS}
          WHERE s.session_id != ?
-         ORDER BY COALESCE(s.last_intent_ts_ms, s.source_last_seen_at_ms, s.projected_at_ms, 0) DESC,
+         ${useSinceMs ? `AND ${activityExpr} >= ?` : ""}
+         ORDER BY ${activityExpr} DESC,
                   s.id DESC
          LIMIT ?`,
       )

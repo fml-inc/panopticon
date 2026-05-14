@@ -73,4 +73,12 @@ describe("session summary preview", () => {
       ),
     ).toBeNull();
   });
+
+  it("does not reject summaries that describe investigated cancellations", () => {
+    expect(
+      invalidSessionSummaryEnrichmentReason(
+        "Investigated why the Panopticon tool call to retrieve session details was cancelled by the user and documented the retry path.",
+      ),
+    ).toBeNull();
+  });
 });

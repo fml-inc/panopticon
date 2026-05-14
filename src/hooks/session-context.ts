@@ -4,6 +4,7 @@ import { listRecentSessionSummaryPreviewsForCwd } from "../session_summaries/que
 const RECENT_HISTORY_LIMIT = 5;
 const RECENT_HISTORY_MAX_CHARS = 2_800;
 const RECENT_HISTORY_ITEM_MAX_CHARS = 520;
+const RECENT_HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface SessionStartContextInput {
   session_id?: unknown;
@@ -21,6 +22,7 @@ export function buildSessionStartRecentHistoryContext(
     cwdCandidates,
     currentSessionId:
       typeof data.session_id === "string" ? data.session_id : null,
+    sinceMs: Date.now() - RECENT_HISTORY_MAX_AGE_MS,
     limit: RECENT_HISTORY_LIMIT,
   });
   if (previews.length === 0) return null;

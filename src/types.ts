@@ -19,6 +19,11 @@ export interface Repository {
   gitUserEmail: string | null;
 }
 
+export type SessionSummaryStaleReason =
+  | "dirty"
+  | "summary_version_changed"
+  | "summary_policy_changed";
+
 export interface SessionSummaryEnrichment {
   summaryText: string | null;
   searchText: string | null;
@@ -28,7 +33,7 @@ export interface SessionSummaryEnrichment {
   summaryVersion: number | null;
   currentSummaryVersion: number;
   stale: boolean;
-  staleReasons: string[];
+  staleReasons: SessionSummaryStaleReason[];
   invalidReason: string | null;
   generatedAt: string | null;
   dirty: boolean;

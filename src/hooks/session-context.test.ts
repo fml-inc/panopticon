@@ -22,6 +22,7 @@ import { closeDb, getDb } from "../db/schema.js";
 import { buildSessionStartRecentHistoryContext } from "./session-context.js";
 
 const cwd = path.join(os.tmpdir(), "panopticon-session-context-cwd");
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe("buildSessionStartRecentHistoryContext", () => {
   beforeEach(() => {
@@ -37,46 +38,47 @@ describe("buildSessionStartRecentHistoryContext", () => {
   });
 
   it("formats recent session summaries from the same cwd", () => {
+    const baseMs = Date.now() - 10_000;
     insertSession({
       id: "previous",
       sessionCwd: cwd,
       target: "codex",
-      startedAtMs: 1_000,
+      startedAtMs: baseMs + 1_000,
       firstPrompt: "old request",
     });
     insertSummary({
       sessionId: "previous",
       sessionCwd: cwd,
       status: "landed",
-      lastIntentTsMs: 2_000,
+      lastIntentTsMs: baseMs + 2_000,
       summaryText: "Added SessionStart context injection for recent history.",
     });
     insertSession({
       id: "other-cwd",
       sessionCwd: path.join(os.tmpdir(), "other-cwd"),
       target: "codex",
-      startedAtMs: 3_000,
+      startedAtMs: baseMs + 3_000,
       firstPrompt: "other cwd request",
     });
     insertSummary({
       sessionId: "other-cwd",
       sessionCwd: path.join(os.tmpdir(), "other-cwd"),
       status: "landed",
-      lastIntentTsMs: 3_500,
+      lastIntentTsMs: baseMs + 3_500,
       summaryText: "This should not be injected.",
     });
     insertSession({
       id: "current",
       sessionCwd: cwd,
       target: "codex",
-      startedAtMs: 4_000,
+      startedAtMs: baseMs + 4_000,
       firstPrompt: "current request",
     });
     insertSummary({
       sessionId: "current",
       sessionCwd: cwd,
       status: "active",
-      lastIntentTsMs: 4_500,
+      lastIntentTsMs: baseMs + 4_500,
       summaryText: "The current session should be excluded.",
     });
 
@@ -101,18 +103,19 @@ describe("buildSessionStartRecentHistoryContext", () => {
   });
 
   it("uses read-only summary projections instead of hook-local prompt fallback", () => {
+    const baseMs = Date.now() - 10_000;
     insertSession({
       id: "read-only",
       sessionCwd: cwd,
       target: "claude",
-      startedAtMs: 5_000,
+      startedAtMs: baseMs + 5_000,
       firstPrompt: "Investigate hook timing and sequencing.",
     });
     insertSummary({
       sessionId: "read-only",
       sessionCwd: cwd,
       status: "read-only",
-      lastIntentTsMs: 5_500,
+      lastIntentTsMs: baseMs + 5_500,
       summaryText: "Read-only: Investigated hook timing and sequencing.",
     });
 
@@ -128,18 +131,19 @@ describe("buildSessionStartRecentHistoryContext", () => {
   });
 
   it("matches sessions by session_cwds even when the summary cwd differs", () => {
+    const baseMs = Date.now() - 10_000;
     insertSession({
       id: "cwd-history",
       sessionCwd: cwd,
       target: "codex",
-      startedAtMs: 6_000,
+      startedAtMs: baseMs + 6_000,
       firstPrompt: "Continue recent history work.",
     });
     insertSummary({
       sessionId: "cwd-history",
       sessionCwd: path.join(os.tmpdir(), "summary-projection-cwd"),
       status: "mixed",
-      lastIntentTsMs: 6_500,
+      lastIntentTsMs: baseMs + 6_500,
       summaryText: "Continued recent-history context from the observed cwd.",
     });
 
@@ -152,6 +156,31 @@ describe("buildSessionStartRecentHistoryContext", () => {
     expect(context).toContain(
       "Continued recent-history context from the observed cwd.",
     );
+  });
+
+  it("does not inject matching cwd sessions older than the recent-history window", () => {
+    const oldBaseMs = Date.now() - 31 * DAY_MS;
+    insertSession({
+      id: "old-history",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: oldBaseMs,
+      firstPrompt: "Ancient request.",
+    });
+    insertSummary({
+      sessionId: "old-history",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: oldBaseMs + 1_000,
+      summaryText: "This old matching cwd history should not be injected.",
+    });
+
+    const context = buildSessionStartRecentHistoryContext({
+      session_id: "current",
+      cwd,
+    });
+
+    expect(context).toBeNull();
   });
 
   it("returns null when there is no cwd or no matching history", () => {

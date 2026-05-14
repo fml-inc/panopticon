@@ -1,16 +1,14 @@
+import type { SessionSummaryStaleReason } from "../types.js";
 import { invalidSessionSummaryEnrichmentReason } from "./enrichment-quality.js";
 import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
+
+export type { SessionSummaryStaleReason } from "../types.js";
 
 export type SessionSummaryDisplaySource =
   | "llm"
   | "deterministic"
   | "synthetic"
   | null;
-
-export type SessionSummaryStaleReason =
-  | "dirty"
-  | "summary_version_changed"
-  | "summary_policy_changed";
 
 export interface SessionSummaryDisplayInput {
   title?: string | null;
