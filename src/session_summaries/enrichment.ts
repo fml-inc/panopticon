@@ -13,6 +13,7 @@ import {
   SUMMARY_ROW_BACKOFF_SCOPE,
   SUMMARY_RUNNER_BACKOFF_SCOPE,
 } from "./backoff.js";
+import { invalidSessionSummaryEnrichmentReason } from "./enrichment-quality.js";
 import {
   SESSION_SUMMARY_COLD_WINDOW_MS,
   SESSION_SUMMARY_ENRICHMENT_VERSION,
@@ -46,18 +47,21 @@ const LAST_ACTIVITY_SQL = `MAX(
 
 // Prompt/template changes should bump SESSION_SUMMARY_ENRICHMENT_VERSION.
 // policyHash intentionally covers runner/config policy only, not prompt text.
-const SYSTEM_PROMPT = `You are enriching a per-session coding summary for retrieval.
+const SYSTEM_PROMPT = `You are enriching a per-session coding summary for retrieval and future pickup.
 
 Rules:
-1. Use only the structured session data provided in the prompt
-2. Write exactly one paragraph of 2-3 short sentences, max 140 words total
-3. Lead with the main outcome or highest-value finding
-4. For review sessions, emphasize findings, severity, and whether fixes landed
-5. For implementation or debugging sessions, emphasize what changed and how it was verified
-6. Do not mention the model, agent, message count, timestamps, absolute local paths, database paths, prompt engineering, validation batches, or investigation mechanics
-7. Do not mention any work that happened after the target session ended
-8. If no code changed, say that explicitly
-9. Output ONLY the summary text`;
+1. Use only the structured session data provided in the prompt or retrieved through the requested Panopticon MCP tools
+2. Existing summaries are useful scaffolding, but they are not authoritative; refine them with raw session evidence when the session has later activity, pivots, reverted work, deferred decisions, or ambiguous outcomes
+3. Follow the summary length target in the user prompt; use extra length for complex sessions to capture evolved decisions, deferred work, reverted approaches, and verification, but do not pad simple outcomes
+4. Lead with the main outcome, decision, or highest-value finding
+5. Capture what changed, what landed or was decided, and any context that would help someone pick up related work later
+6. For review sessions, emphasize findings, severity, and whether fixes landed
+7. For implementation or debugging sessions, emphasize what changed and how it was verified
+8. If there is no useful continuity context, do not invent it
+9. Do not mention the model, agent, message count, timestamps, absolute local paths, database paths, prompt engineering, validation batches, or investigation mechanics
+10. Do not mention any work that happened after the target session ended
+11. If no code changed, say that explicitly
+12. Output ONLY the summary text`;
 
 export interface SessionSummaryEnrichmentRefreshResult {
   attempted: number;
@@ -444,7 +448,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
 
       const usePanopticonMcp = selection.runner === "codex";
       const prompt = usePanopticonMcp
-        ? buildLlmMcpPrompt(row.session_id)
+        ? buildLlmMcpPrompt(row.session_id, context)
         : buildLlmPrompt(context);
       const startedAtMs = Date.now();
       log(
@@ -472,10 +476,34 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
         return 0;
       }
 
+      const parsed = parseSessionSummaryEnrichmentOutput(result);
+      if (!parsed) {
+        finishAttempt("summary enrichment returned empty output", {
+          scopeKind: SUMMARY_RUNNER_BACKOFF_SCOPE,
+          scopeKey: selection.runner,
+        });
+        return 0;
+      }
+
+      const invalidReason = invalidSessionSummaryEnrichmentReason(
+        parsed.summaryText,
+      );
+      if (invalidReason) {
+        const durationMs = Date.now() - startedAtMs;
+        log(
+          `Session summary enrichment rejected: session=${row.session_id} key=${row.session_summary_key} runner=${selection.runner} duration=${formatDurationMs(durationMs)} reason=${invalidReason}`,
+        );
+        finishAttempt(invalidReason, {
+          scopeKind: SUMMARY_ROW_BACKOFF_SCOPE,
+          scopeKey: row.session_summary_key,
+        });
+        return 0;
+      }
+
       const finishedAtMs = Date.now();
       const durationMs = finishedAtMs - startedAtMs;
       const write = updateSuccess.run(
-        result,
+        parsed.summaryText,
         selection.runner,
         selection.model,
         SESSION_SUMMARY_ENRICHMENT_VERSION,
@@ -496,7 +524,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
           row.session_id,
           SESSION_SUMMARY_SEARCH_CORPUS.llmSummary,
           SESSION_SUMMARY_SEARCH_PRIORITY.llmSummary,
-          result,
+          parsed.summaryText,
           row.summary_input_hash,
           finishedAtMs,
         );
@@ -505,7 +533,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
           row.session_id,
           SESSION_SUMMARY_SEARCH_CORPUS.llmSearch,
           SESSION_SUMMARY_SEARCH_PRIORITY.llmSearch,
-          result,
+          parsed.searchText,
           row.summary_input_hash,
           finishedAtMs,
         );
@@ -552,6 +580,58 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
   return { attempted: claimedRows.length, updated };
 }
 
+export interface ParsedSessionSummaryEnrichmentOutput {
+  summaryText: string;
+  searchText: string;
+}
+
+export function parseSessionSummaryEnrichmentOutput(
+  output: string,
+): ParsedSessionSummaryEnrichmentOutput | null {
+  const trimmed = output.trim();
+  if (!trimmed) return null;
+
+  const jsonText = stripJsonFence(trimmed);
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      const summaryText = normalizeGeneratedText(
+        record.summary_text ?? record.summaryText ?? record.summary,
+      );
+      if (summaryText) {
+        const searchText =
+          normalizeGeneratedText(record.search_text ?? record.searchText) ??
+          summaryText;
+        return {
+          summaryText,
+          searchText,
+        };
+      }
+    }
+  } catch {
+    // Existing installations and tests may still receive plain summary text.
+  }
+
+  const summaryText = normalizeGeneratedText(trimmed);
+  if (!summaryText) return null;
+  return {
+    summaryText,
+    searchText: summaryText,
+  };
+}
+
+function stripJsonFence(value: string): string {
+  const match = value.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : value;
+}
+
+function normalizeGeneratedText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 0 ? compact : null;
+}
+
 function formatDurationMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
   if (ms >= 100) return `${Math.round(ms)}ms`;
@@ -591,6 +671,9 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   editCount: number;
   landedEditCount: number;
   openEditCount: number;
+  priorSummaryText: string | null;
+  priorSummarySource: string | null;
+  priorEnrichedMessageCount: number | null;
   intents: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
   recentMessages: Array<{ role: string; content: string }>;
@@ -609,10 +692,15 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
               s.intent_count,
               s.edit_count,
               s.landed_edit_count,
-              s.open_edit_count
+              s.open_edit_count,
+              e.summary_text AS prior_summary_text,
+              e.summary_source AS prior_summary_source,
+              e.enriched_message_count AS prior_enriched_message_count
        FROM session_summaries s
        LEFT JOIN sessions sess
          ON sess.session_id = s.session_id
+       LEFT JOIN session_summary_enrichments e
+         ON e.session_summary_key = s.session_summary_key
        WHERE s.session_summary_key = ?`,
     )
     .get(sessionSummaryKey) as
@@ -628,6 +716,9 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
         edit_count: number;
         landed_edit_count: number;
         open_edit_count: number;
+        prior_summary_text: string | null;
+        prior_summary_source: string | null;
+        prior_enriched_message_count: number | null;
       }
     | undefined;
   if (!summary) return null;
@@ -655,6 +746,9 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     editCount: summary.edit_count,
     landedEditCount: summary.landed_edit_count,
     openEditCount: summary.open_edit_count,
+    priorSummaryText: validPriorSummaryText(summary.prior_summary_text),
+    priorSummarySource: summary.prior_summary_source,
+    priorEnrichedMessageCount: summary.prior_enriched_message_count,
     intents,
     files,
     recentMessages,
@@ -672,17 +766,25 @@ function buildLlmPrompt(context: {
   editCount: number;
   landedEditCount: number;
   openEditCount: number;
+  priorSummaryText: string | null;
+  priorSummarySource: string | null;
+  priorEnrichedMessageCount: number | null;
   intents: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
   recentMessages: Array<{ role: string; content: string }>;
   deterministicSearchCorpus: string | null;
 }): string {
+  const lengthTarget = selectSummaryLengthTarget(context);
   const lines = [
     `Title: ${context.title}`,
     `Status: ${context.status}`,
     context.repository ? `Repository: ${context.repository}` : null,
     context.branch ? `Branch: ${context.branch}` : null,
     `Counts: messages ${context.messageCount}; intents ${context.intentCount}; edits ${context.editCount}; landed ${context.landedEditCount}; open ${context.openEditCount}`,
+    `Summary length target: ${lengthTarget.description}.`,
+    context.priorSummaryText
+      ? `Existing summary scaffold (${context.priorSummarySource ?? "unknown"}${context.priorEnrichedMessageCount !== null ? `, covered ${context.priorEnrichedMessageCount} messages` : ""}):\n${context.priorSummaryText}`
+      : null,
     context.files.length > 0
       ? `Files:\n${context.files
           .map(
@@ -700,21 +802,88 @@ function buildLlmPrompt(context: {
           .join("\n")}`
       : null,
     context.deterministicSearchCorpus
-      ? `Deterministic search corpus:\n${context.deterministicSearchCorpus}`
+      ? `Existing deterministic summary/search scaffold:\n${context.deterministicSearchCorpus}`
       : null,
+    "Use existing scaffold material as a foundation, but prefer raw recent messages when they add pivots, corrections, reverted work, deferred decisions, or newer verification.",
     "Write the per-session summary.",
   ].filter((value): value is string => Boolean(value));
   return lines.join("\n\n");
 }
 
-function buildLlmMcpPrompt(sessionId: string): string {
+function validPriorSummaryText(value: string | null): string | null {
+  const text = normalizeGeneratedText(value);
+  if (!text) return null;
+  return invalidSessionSummaryEnrichmentReason(text) ? null : text;
+}
+
+function buildLlmMcpPrompt(
+  sessionId: string,
+  context: {
+    status: string;
+    messageCount: number;
+    intentCount: number;
+    editCount: number;
+    landedEditCount: number;
+    openEditCount: number;
+    files: Array<{ filePath: string; editCount: number; landedCount: number }>;
+  },
+): string {
+  const lengthTarget = selectSummaryLengthTarget(context);
   return [
     `Session id: ${sessionId}`,
     "",
-    "Use Panopticon MCP tools to load the session summary details for this exact session id.",
-    "Prefer the session_summary_detail tool. Use timeline, query, search, or get only if needed to resolve ambiguity.",
+    `Summary length target: ${lengthTarget.description}.`,
+    "Use Panopticon MCP tools to load this exact session.",
+    "Start with session_summary_detail to get the existing summary, counts, files, and enrichment timestamp as a cheap foundation.",
+    "Then inspect raw timeline evidence, especially messages/tool calls after the existing enrichment was generated; inspect earlier timeline pages too when the session is complex, mixed, contains pivots/reverts/deferred work, or the raw evidence changes the story.",
+    "Use query, search, or get only if needed to resolve ambiguity or avoid paging through irrelevant timeline data.",
+    "Do not simply rewrite the existing summary.",
     "Write the per-session summary.",
   ].join("\n");
+}
+
+function selectSummaryLengthTarget(context: {
+  status: string;
+  messageCount: number;
+  intentCount: number;
+  editCount: number;
+  landedEditCount: number;
+  openEditCount: number;
+  files: Array<{ filePath: string; editCount: number; landedCount: number }>;
+}): { tier: "small" | "normal" | "complex"; description: string } {
+  const mixedOutcome =
+    context.status === "mixed" ||
+    (context.editCount > 0 && context.landedEditCount < context.editCount) ||
+    context.openEditCount > 0;
+  const fileSpread = context.files.length;
+  if (
+    context.intentCount >= 10 ||
+    context.messageCount >= 80 ||
+    context.editCount >= 40 ||
+    fileSpread >= 5 ||
+    (mixedOutcome && (context.intentCount >= 5 || context.editCount >= 12))
+  ) {
+    return {
+      tier: "complex",
+      description:
+        "complex session, 4-6 concise sentences, max 240 words; use the extra length to capture evolved decisions, deferred work, reverted approaches, and verification",
+    };
+  }
+  if (
+    context.intentCount >= 3 ||
+    context.messageCount >= 20 ||
+    context.editCount >= 8 ||
+    mixedOutcome
+  ) {
+    return {
+      tier: "normal",
+      description: "normal session, 2-4 concise sentences, max 160 words",
+    };
+  }
+  return {
+    tier: "small",
+    description: "small session, 1-2 concise sentences, max 80 words",
+  };
 }
 
 function loadDeterministicSearchCorpus(

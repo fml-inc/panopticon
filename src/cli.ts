@@ -1544,6 +1544,58 @@ program
     );
   });
 
+const sessionSummaries = program
+  .command("session-summaries")
+  .description("Manage session summary enrichments");
+
+sessionSummaries
+  .command("regenerate")
+  .description(
+    "Mark scoped session summaries dirty so the enrichment worker regenerates them",
+  )
+  .option("--session <id>", "Regenerate one session")
+  .option("--cwd <path>", "Regenerate summaries from this cwd")
+  .option("--repository <path>", "Regenerate summaries from this repository")
+  .option(
+    "--since <time>",
+    'Lower time bound: ISO date or relative like "24h", "7d", "30m"',
+  )
+  .option(
+    "--before <time>",
+    'Upper time bound: ISO date or relative like "2026-05-14T00:00:00Z"',
+  )
+  .option(
+    "--by <field>",
+    "Time field: activity, generated-at, or projected-at",
+    "activity",
+  )
+  .option("--reason <reason>", "Structured regeneration reason", "manual")
+  .option("--all", "Allow selecting all session summaries")
+  .option("--stale-only", "Only select dirty/version/policy-stale summaries")
+  .option("--dirty-only", "Only select summaries already marked dirty")
+  .option("--clean-only", "Only select summaries not currently dirty")
+  .option("--limit <n>", "Maximum summaries to select", parseInt)
+  .option("--run", "Apply changes; default is dry-run")
+  .action(async (opts: Opts) => {
+    output(
+      await service.regenerateSessionSummaries({
+        sessionId: opts.session,
+        cwd: opts.cwd,
+        repository: opts.repository,
+        since: opts.since,
+        before: opts.before,
+        by: opts.by,
+        reason: opts.reason,
+        all: opts.all === true,
+        staleOnly: opts.staleOnly === true,
+        dirtyOnly: opts.dirtyOnly === true,
+        cleanOnly: opts.cleanOnly === true,
+        dryRun: opts.run !== true,
+        limit: opts.limit,
+      }),
+    );
+  });
+
 program
   .command("timeline")
   .description("Get messages and tool calls for a session")

@@ -114,6 +114,22 @@ export interface ScanResult {
   summariesUpdated: number;
 }
 
+export interface RegenerateSessionSummariesInput {
+  sessionId?: string;
+  cwd?: string;
+  repository?: string;
+  since?: string;
+  before?: string;
+  by?: "activity" | "generated-at" | "projected-at";
+  reason?: string;
+  all?: boolean;
+  staleOnly?: boolean;
+  dirtyOnly?: boolean;
+  cleanOnly?: boolean;
+  dryRun?: boolean;
+  limit?: number;
+}
+
 export interface SyncTargetAddInput {
   name: string;
   url: string;
@@ -155,6 +171,9 @@ export interface PanopticonService {
   pruneExecute(cutoffMs: number, opts?: PruneExecuteInput): Promise<unknown>;
   refreshPricing(): Promise<unknown>;
   scan(opts?: ScanInput): Promise<ScanResult>;
+  regenerateSessionSummaries(
+    opts?: RegenerateSessionSummariesInput,
+  ): Promise<unknown>;
   syncReset(target?: string): Promise<unknown>;
   syncWatermarkGet(target: string, table?: string): Promise<unknown>;
   syncWatermarkSet(

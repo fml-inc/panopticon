@@ -13,13 +13,17 @@ const DEFAULT_RUNNER: SessionSummaryRunnerName = "claude";
 const CLAUDE_HEADLESS_CWD_NAME = "claude-headless";
 const CODEX_HEADLESS_CWD_NAME = "codex-headless";
 const CODEX_OUTPUT_FILE_PREFIX = "last-message";
-const MCP_ALLOWED_TOOLS = [
-  "mcp__panopticon__timeline",
-  "mcp__panopticon__get",
-  "mcp__panopticon__query",
-  "mcp__panopticon__search",
-  "mcp__panopticon__status",
+const MCP_PANOPTICON_TOOL_NAMES = [
+  "timeline",
+  "get",
+  "query",
+  "search",
+  "status",
+  "session_summary_detail",
 ] as const;
+const MCP_ALLOWED_TOOLS = MCP_PANOPTICON_TOOL_NAMES.map(
+  (tool) => `mcp__panopticon__${tool}`,
+);
 
 const _agentPaths = new Map<SessionSummaryRunnerName, string | null>();
 
@@ -439,6 +443,10 @@ function buildCodexArgs(
       `mcp_servers.panopticon.command=${JSON.stringify(process.execPath)}`,
       "-c",
       `mcp_servers.panopticon.args=${JSON.stringify([mcpPath])}`,
+      "-c",
+      `mcp_servers.panopticon.enabled_tools=${JSON.stringify(MCP_PANOPTICON_TOOL_NAMES)}`,
+      "-c",
+      `mcp_servers.panopticon.default_tools_approval_mode=${JSON.stringify("approve")}`,
     );
   }
   if (opts.model) {

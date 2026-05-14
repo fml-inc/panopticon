@@ -10,6 +10,7 @@ import type {
   PanopticonService,
   PrintInput,
   RecentWorkOnPathInput,
+  RegenerateSessionSummariesInput,
   SearchInput,
   SearchIntentInput,
   SessionSummaryDetailInput,
@@ -83,6 +84,10 @@ export const EXEC_HANDLERS = {
   },
   "refresh-pricing": (service) => service.refreshPricing(),
   scan: (service, params) => service.scan(params as { summaries?: boolean }),
+  "session-summaries-regenerate": (service, params) =>
+    service.regenerateSessionSummaries(
+      asType<RegenerateSessionSummariesInput>(params),
+    ),
   "sync-reset": (service, params) =>
     service.syncReset(
       typeof params.target === "string" ? params.target : undefined,

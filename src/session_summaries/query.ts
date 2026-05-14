@@ -6,6 +6,13 @@ import {
   resolveCanonicalFilePath,
   resolveRepositoryRootForPath,
 } from "../paths.js";
+import { invalidSessionSummaryEnrichmentReason } from "./enrichment-quality.js";
+import {
+  buildSessionSummaryPreview,
+  rankSessionSummaryPreviewFiles,
+  type SessionSummaryPreview,
+  type SessionSummaryPreviewFile,
+} from "./preview.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
 import { SESSION_SUMMARY_SEARCH_CORPUS } from "./search-index.js";
 
@@ -13,6 +20,7 @@ export interface SessionSummaryProjectionRow {
   session_summary_id: number;
   session_summary_key: string;
   session_id: string;
+  target: string | null;
   title: string;
   status: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   repository: string | null;
@@ -44,6 +52,7 @@ export interface SessionSummaryProjectionRow {
 
 export interface SessionSummaryRow {
   session_id: string;
+  target: string | null;
   title: string;
   status: "active" | "landed" | "mixed" | "read-only" | "unlanded";
   repository: string | null;
@@ -71,6 +80,7 @@ export interface SessionSummaryRow {
   enrichment_model: string | null;
   enrichment_generated_at_ms: number | null;
   enrichment_dirty: boolean;
+  preview: SessionSummaryPreview;
 }
 
 type RawSessionSummaryProjectionRow = Omit<
@@ -96,6 +106,12 @@ type SessionSummaryFileRow = {
   file_path: string;
   edit_count: number;
   landed_count: number;
+  current_edit_count: number;
+  superseded_edit_count: number;
+  reverted_edit_count: number;
+  unknown_edit_count: number;
+  intent_count: number;
+  last_touched_ms: number | null;
 };
 
 interface SessionSummaryProjectionDetailResult {
@@ -106,9 +122,69 @@ interface SessionSummaryProjectionDetailResult {
 
 export interface SessionSummaryDetailResult {
   session_summary: SessionSummaryRow | null;
+  preview: SessionSummaryPreview | null;
   intents: SessionSummaryIntentRow[];
   files: SessionSummaryFileRow[];
 }
+
+const SESSION_SUMMARY_PROJECTION_SELECT = `
+  s.id AS session_summary_id,
+  s.session_summary_key,
+  s.session_id,
+  sess.target AS target,
+  s.title,
+  s.status,
+  s.repository,
+  s.cwd,
+  s.branch,
+  s.worktree,
+  s.actor,
+  s.machine,
+  s.origin_scope,
+  s.first_intent_ts_ms,
+  s.last_intent_ts_ms,
+  s.intent_count,
+  s.edit_count,
+  s.landed_edit_count,
+  s.open_edit_count,
+  s.summary_text AS summary_text,
+  s.projection_hash,
+  s.projected_at_ms,
+  s.source_last_seen_at_ms,
+  'deterministic' AS summary_source,
+  COALESCE(
+    esummary.search_text,
+    CASE
+      WHEN e.summary_source = 'llm' THEN e.summary_text
+      ELSE NULL
+    END
+  ) AS enriched_summary_text,
+  COALESCE(
+    esearch.search_text,
+    CASE
+      WHEN e.summary_source = 'llm' THEN e.summary_text
+      ELSE NULL
+    END
+  ) AS enriched_search_text,
+  CASE
+    WHEN e.summary_source = 'llm' AND e.summary_text IS NOT NULL THEN 'llm'
+    ELSE NULL
+  END AS enrichment_source,
+  e.summary_runner AS enrichment_runner,
+  e.summary_model AS enrichment_model,
+  e.summary_generated_at_ms AS enrichment_generated_at_ms,
+  COALESCE(e.dirty, 0) AS enrichment_dirty`;
+
+const SESSION_SUMMARY_PROJECTION_JOINS = `
+  LEFT JOIN sessions sess ON sess.session_id = s.session_id
+  LEFT JOIN session_summary_enrichments e
+    ON e.session_summary_key = s.session_summary_key
+  LEFT JOIN session_summary_search_index esummary
+    ON esummary.session_summary_key = s.session_summary_key
+   AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
+  LEFT JOIN session_summary_search_index esearch
+    ON esearch.session_summary_key = s.session_summary_key
+   AND esearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSearch}'`;
 
 export interface WhyCodeResult {
   path: string;
@@ -219,8 +295,15 @@ export function listSessionSummaries(opts?: {
   limit?: number;
   offset?: number;
 }): SessionSummaryRow[] {
-  return listSessionSummaryProjections(opts)
-    .map((row) => toSessionSummaryRow(row))
+  const rows = listSessionSummaryProjections(opts);
+  const previewFilesBySummaryId = loadSessionSummaryPreviewFiles(rows, 3);
+  return rows
+    .map((row) =>
+      toSessionSummaryRow(
+        row,
+        previewFilesBySummaryId.get(row.session_summary_id) ?? [],
+      ),
+    )
     .filter((row): row is SessionSummaryRow => row !== null);
 }
 
@@ -242,11 +325,67 @@ export function sessionSummaryDetail(opts: {
     session_summary_id: row.id,
   });
   if (!detail?.session_summary) return null;
+  const previewFiles =
+    loadSessionSummaryPreviewFiles([detail.session_summary], 3).get(
+      detail.session_summary.session_summary_id,
+    ) ?? [];
+  const sessionSummary = toSessionSummaryRow(
+    detail.session_summary,
+    previewFiles,
+  );
   return {
-    session_summary: toSessionSummaryRow(detail.session_summary),
+    session_summary: sessionSummary,
+    preview: sessionSummary?.preview ?? null,
     intents: detail.intents,
     files: detail.files,
   };
+}
+
+export function listRecentSessionSummaryPreviewsForCwd(opts: {
+  cwdCandidates: string[];
+  currentSessionId?: string | null;
+  limit?: number;
+}): SessionSummaryPreview[] {
+  if (opts.cwdCandidates.length === 0) return [];
+
+  const db = getDb();
+  const cwdPlaceholders = opts.cwdCandidates.map(() => "?").join(", ");
+  const params: unknown[] = [
+    opts.currentSessionId ?? "",
+    ...opts.cwdCandidates,
+    ...opts.cwdCandidates,
+    opts.limit ?? 5,
+  ];
+  const rows = (
+    db
+      .prepare(
+        `SELECT ${SESSION_SUMMARY_PROJECTION_SELECT}
+         FROM session_summaries s
+         ${SESSION_SUMMARY_PROJECTION_JOINS}
+         WHERE s.session_id != ?
+           AND (
+             s.cwd IN (${cwdPlaceholders})
+             OR EXISTS (
+               SELECT 1
+               FROM session_cwds c
+               WHERE c.session_id = s.session_id
+                 AND c.cwd IN (${cwdPlaceholders})
+             )
+           )
+         ORDER BY COALESCE(s.last_intent_ts_ms, s.source_last_seen_at_ms, s.projected_at_ms, 0) DESC,
+                  s.id DESC
+         LIMIT ?`,
+      )
+      .all(...params) as RawSessionSummaryProjectionRow[]
+  ).map((row) => toSessionSummaryProjectionRow(row));
+
+  const previewFilesBySummaryId = loadSessionSummaryPreviewFiles(rows, 3);
+  return rows.map((row) =>
+    buildSessionSummaryPreview(
+      row,
+      previewFilesBySummaryId.get(row.session_summary_id) ?? [],
+    ),
+  );
 }
 
 export function whyCode(opts: {
@@ -672,60 +811,9 @@ function listSessionSummaryProjections(opts?: {
   const db = getDb();
   const params: unknown[] = [];
   let sql = `
-    SELECT DISTINCT s.id AS session_summary_id,
-           s.session_summary_key,
-           s.session_id,
-           s.title,
-           s.status,
-           s.repository,
-           s.cwd,
-           s.branch,
-           s.worktree,
-           s.actor,
-           s.machine,
-           s.origin_scope,
-           s.first_intent_ts_ms,
-           s.last_intent_ts_ms,
-           s.intent_count,
-           s.edit_count,
-           s.landed_edit_count,
-           s.open_edit_count,
-           s.summary_text AS summary_text,
-           s.projection_hash,
-           s.projected_at_ms,
-           s.source_last_seen_at_ms,
-           'deterministic' AS summary_source,
-           COALESCE(
-             esummary.search_text,
-             CASE
-               WHEN e.summary_source = 'llm' THEN e.summary_text
-               ELSE NULL
-             END
-           ) AS enriched_summary_text,
-           COALESCE(
-             esearch.search_text,
-             CASE
-               WHEN e.summary_source = 'llm' THEN e.summary_text
-               ELSE NULL
-             END
-           ) AS enriched_search_text,
-           CASE
-             WHEN e.summary_source = 'llm' AND e.summary_text IS NOT NULL THEN 'llm'
-             ELSE NULL
-           END AS enrichment_source,
-           e.summary_runner AS enrichment_runner,
-           e.summary_model AS enrichment_model,
-           e.summary_generated_at_ms AS enrichment_generated_at_ms,
-           COALESCE(e.dirty, 0) AS enrichment_dirty
+    SELECT DISTINCT ${SESSION_SUMMARY_PROJECTION_SELECT}
     FROM session_summaries s
-    LEFT JOIN session_summary_enrichments e
-      ON e.session_summary_key = s.session_summary_key
-    LEFT JOIN session_summary_search_index esummary
-      ON esummary.session_summary_key = s.session_summary_key
-     AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
-    LEFT JOIN session_summary_search_index esearch
-      ON esearch.session_summary_key = s.session_summary_key
-     AND esearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSearch}'`;
+    ${SESSION_SUMMARY_PROJECTION_JOINS}`;
 
   if (opts?.path) {
     sql += `
@@ -774,60 +862,9 @@ function getSessionSummaryProjectionDetail(opts: {
   const db = getDb();
   const sessionSummary = db
     .prepare(
-      `SELECT s.id AS session_summary_id,
-              s.session_summary_key,
-              s.session_id,
-              s.title,
-              s.status,
-              s.repository,
-              s.cwd,
-              s.branch,
-              s.worktree,
-              s.actor,
-              s.machine,
-              s.origin_scope,
-              s.first_intent_ts_ms,
-              s.last_intent_ts_ms,
-              s.intent_count,
-              s.edit_count,
-              s.landed_edit_count,
-              s.open_edit_count,
-              s.summary_text AS summary_text,
-              s.projection_hash,
-              s.projected_at_ms,
-              s.source_last_seen_at_ms,
-              'deterministic' AS summary_source,
-              COALESCE(
-                esummary.search_text,
-                CASE
-                  WHEN e.summary_source = 'llm' THEN e.summary_text
-                  ELSE NULL
-                END
-              ) AS enriched_summary_text,
-              COALESCE(
-                esearch.search_text,
-                CASE
-                  WHEN e.summary_source = 'llm' THEN e.summary_text
-                  ELSE NULL
-                END
-              ) AS enriched_search_text,
-              CASE
-                WHEN e.summary_source = 'llm' AND e.summary_text IS NOT NULL THEN 'llm'
-                ELSE NULL
-              END AS enrichment_source,
-              e.summary_runner AS enrichment_runner,
-              e.summary_model AS enrichment_model,
-              e.summary_generated_at_ms AS enrichment_generated_at_ms,
-              COALESCE(e.dirty, 0) AS enrichment_dirty
+      `SELECT ${SESSION_SUMMARY_PROJECTION_SELECT}
        FROM session_summaries s
-       LEFT JOIN session_summary_enrichments e
-         ON e.session_summary_key = s.session_summary_key
-       LEFT JOIN session_summary_search_index esummary
-         ON esummary.session_summary_key = s.session_summary_key
-        AND esummary.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSummary}'
-       LEFT JOIN session_summary_search_index esearch
-         ON esearch.session_summary_key = s.session_summary_key
-        AND esearch.corpus_key = '${SESSION_SUMMARY_SEARCH_CORPUS.llmSearch}'
+       ${SESSION_SUMMARY_PROJECTION_JOINS}
        WHERE s.id = ?`,
     )
     .get(opts.session_summary_id) as RawSessionSummaryProjectionRow | undefined;
@@ -852,9 +889,48 @@ function getSessionSummaryProjectionDetail(opts: {
     .prepare(
       `SELECT e.file_path,
               COUNT(*) AS edit_count,
-              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS landed_count
+              COUNT(DISTINCT e.intent_unit_id) AS intent_count,
+              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS landed_count,
+              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS current_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed = 0
+                   AND e.landed_reason IN ('overwritten_in_session', 'write_replaced')
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS superseded_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed = 0
+                   AND e.landed_reason IN ('reverted_post_session', 'file_deleted')
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS reverted_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed IS NULL
+                    OR (
+                      e.landed = 0
+                      AND (
+                        e.landed_reason IS NULL
+                        OR e.landed_reason NOT IN (
+                          'overwritten_in_session',
+                          'write_replaced',
+                          'reverted_post_session',
+                          'file_deleted'
+                        )
+                      )
+                    )
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS unknown_edit_count,
+              MAX(COALESCE(e.timestamp_ms, u.prompt_ts_ms)) AS last_touched_ms
        FROM intent_session_summaries iss
        JOIN intent_edits e ON e.intent_unit_id = iss.intent_unit_id
+       JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE iss.session_summary_id = ?
        GROUP BY e.file_path
        ORDER BY edit_count DESC, e.file_path ASC`,
@@ -870,8 +946,123 @@ function getSessionSummaryProjectionDetail(opts: {
         cwd: sessionSummary.cwd,
         repositoryRoot: sessionSummary.repository,
       }),
+      landed_count: row.landed_count ?? 0,
+      current_edit_count: row.current_edit_count ?? 0,
+      superseded_edit_count: row.superseded_edit_count ?? 0,
+      reverted_edit_count: row.reverted_edit_count ?? 0,
+      unknown_edit_count: row.unknown_edit_count ?? 0,
+      intent_count: row.intent_count ?? 0,
     })),
   };
+}
+
+function loadSessionSummaryPreviewFiles(
+  summaries: Pick<
+    SessionSummaryProjectionRow,
+    "session_summary_id" | "cwd" | "repository"
+  >[],
+  limitPerSummary: number,
+): Map<number, SessionSummaryPreviewFile[]> {
+  if (summaries.length === 0) return new Map();
+
+  const summaryById = new Map(
+    summaries.map((summary) => [summary.session_summary_id, summary]),
+  );
+  const db = getDb();
+  const placeholders = summaries.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT iss.session_summary_id,
+              e.file_path,
+              COUNT(*) AS edit_count,
+              COUNT(DISTINCT e.intent_unit_id) AS intent_count,
+              SUM(CASE WHEN e.landed = 1 THEN 1 ELSE 0 END) AS current_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed = 0
+                   AND e.landed_reason IN ('overwritten_in_session', 'write_replaced')
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS superseded_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed = 0
+                   AND e.landed_reason IN ('reverted_post_session', 'file_deleted')
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS reverted_edit_count,
+              SUM(
+                CASE
+                  WHEN e.landed IS NULL
+                    OR (
+                      e.landed = 0
+                      AND (
+                        e.landed_reason IS NULL
+                        OR e.landed_reason NOT IN (
+                          'overwritten_in_session',
+                          'write_replaced',
+                          'reverted_post_session',
+                          'file_deleted'
+                        )
+                      )
+                    )
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS unknown_edit_count,
+              MAX(COALESCE(e.timestamp_ms, u.prompt_ts_ms)) AS last_touched_ms
+       FROM intent_session_summaries iss
+       JOIN intent_edits e ON e.intent_unit_id = iss.intent_unit_id
+       JOIN intent_units u ON u.id = e.intent_unit_id
+       WHERE iss.session_summary_id IN (${placeholders})
+       GROUP BY iss.session_summary_id, e.file_path`,
+    )
+    .all(...summaries.map((summary) => summary.session_summary_id)) as Array<{
+    session_summary_id: number;
+    file_path: string;
+    edit_count: number;
+    intent_count: number;
+    current_edit_count: number | null;
+    superseded_edit_count: number | null;
+    reverted_edit_count: number | null;
+    unknown_edit_count: number | null;
+    last_touched_ms: number | null;
+  }>;
+
+  const filesBySummaryId = new Map<number, SessionSummaryPreviewFile[]>();
+  for (const row of rows) {
+    const summary = summaryById.get(row.session_summary_id);
+    if (!summary) continue;
+    const currentEditCount = row.current_edit_count ?? 0;
+    const file: SessionSummaryPreviewFile = {
+      file_path: resolveCanonicalFilePath(row.file_path, {
+        cwd: summary.cwd,
+        repositoryRoot: summary.repository,
+      }),
+      score: 0,
+      edit_count: row.edit_count,
+      landed_count: currentEditCount,
+      current_edit_count: currentEditCount,
+      superseded_edit_count: row.superseded_edit_count ?? 0,
+      reverted_edit_count: row.reverted_edit_count ?? 0,
+      unknown_edit_count: row.unknown_edit_count ?? 0,
+      intent_count: row.intent_count,
+      last_touched_ms: row.last_touched_ms,
+    };
+    const files = filesBySummaryId.get(row.session_summary_id) ?? [];
+    files.push(file);
+    filesBySummaryId.set(row.session_summary_id, files);
+  }
+
+  for (const [summaryId, files] of filesBySummaryId) {
+    filesBySummaryId.set(
+      summaryId,
+      rankSessionSummaryPreviewFiles(files, limitPerSummary),
+    );
+  }
+  return filesBySummaryId;
 }
 
 function normalizeLookupPath(filePath: string, repository?: string): string {
@@ -947,9 +1138,11 @@ function inferStoredRepositoryRoot(filePath: string): string | null {
 
 function toSessionSummaryRow(
   row: SessionSummaryProjectionRow,
+  previewFiles: SessionSummaryPreviewFile[] = [],
 ): SessionSummaryRow | null {
-  return {
+  const summary: Omit<SessionSummaryRow, "preview"> = {
     session_id: row.session_id,
+    target: row.target,
     title: row.title,
     status: row.status,
     repository: row.repository,
@@ -978,6 +1171,10 @@ function toSessionSummaryRow(
     enrichment_generated_at_ms: row.enrichment_generated_at_ms,
     enrichment_dirty: row.enrichment_dirty,
   };
+  return {
+    ...summary,
+    preview: buildSessionSummaryPreview(summary, previewFiles),
+  };
 }
 
 export function sessionSummaryKeyForSession(sessionId: string): string {
@@ -987,13 +1184,27 @@ export function sessionSummaryKeyForSession(sessionId: string): string {
 function toSessionSummaryProjectionRow(
   row: RawSessionSummaryProjectionRow,
 ): SessionSummaryProjectionRow {
+  const enrichedSummaryText = validEnrichedText(row.enriched_summary_text);
+  const enrichedSearchText = validEnrichedText(row.enriched_search_text);
   return {
     ...row,
+    target: emptyToNull(row.target),
     repository: emptyToNull(row.repository),
     summary_source: parseSummarySource(row.summary_source),
-    enrichment_source: parseEnrichmentSource(row.enrichment_source),
+    enriched_summary_text: enrichedSummaryText,
+    enriched_search_text: enrichedSearchText,
+    enrichment_source:
+      enrichedSummaryText || enrichedSearchText
+        ? parseEnrichmentSource(row.enrichment_source)
+        : null,
     enrichment_dirty: row.enrichment_dirty === 1,
   };
+}
+
+function validEnrichedText(value: string | null): string | null {
+  const trimmed = emptyToNull(value);
+  if (!trimmed) return null;
+  return invalidSessionSummaryEnrichmentReason(trimmed) ? null : trimmed;
 }
 
 function parseSummarySource(

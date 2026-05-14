@@ -387,6 +387,7 @@ describe("summary llm wrapper", () => {
         "mcp__panopticon__query",
         "mcp__panopticon__search",
         "mcp__panopticon__status",
+        "mcp__panopticon__session_summary_detail",
       ].join(" "),
     );
   });
@@ -558,6 +559,22 @@ describe("summary llm wrapper", () => {
     expect(JSON.parse(mcpArgs?.split("=").slice(1).join("=") ?? "[]")).toEqual([
       expect.stringContaining(path.join("dist", "mcp", "server.js")),
     ]);
+    const enabledTools = args.find((arg) =>
+      arg.startsWith("mcp_servers.panopticon.enabled_tools="),
+    );
+    expect(
+      JSON.parse(enabledTools?.split("=").slice(1).join("=") ?? "[]"),
+    ).toEqual([
+      "timeline",
+      "get",
+      "query",
+      "search",
+      "status",
+      "session_summary_detail",
+    ]);
+    expect(args).toContain(
+      `mcp_servers.panopticon.default_tools_approval_mode=${JSON.stringify("approve")}`,
+    );
   });
 
   it("logs debug context if stale codex output cleanup fails", async () => {

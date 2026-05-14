@@ -11,6 +11,7 @@ import type {
 import type { ExecName, ToolName } from "./transport.js";
 import type {
   PanopticonService,
+  RegenerateSessionSummariesInput,
   ScanResult,
   SyncPendingResult,
 } from "./types.js";
@@ -135,6 +136,11 @@ export const httpPanopticonService: PanopticonService = {
   pruneExecute: (cutoffMs, opts) => callExec("prune", { cutoffMs, ...opts }),
   refreshPricing: () => callExec("refresh-pricing"),
   scan: (opts) => callExec("scan", toParams(opts) ?? {}) as Promise<ScanResult>,
+  regenerateSessionSummaries: (opts) =>
+    callExec(
+      "session-summaries-regenerate",
+      toParams(opts) ?? {},
+    ) as Promise<unknown>,
   syncReset: (target) => callExec("sync-reset", target ? { target } : {}),
   syncWatermarkGet: (target, table) =>
     callExec("sync-watermark-get", { target, table }),
@@ -175,6 +181,10 @@ export const pruneEstimate = httpPanopticonService.pruneEstimate;
 export const pruneExecute = httpPanopticonService.pruneExecute;
 export const refreshPricing = httpPanopticonService.refreshPricing;
 export const scan = httpPanopticonService.scan;
+export const regenerateSessionSummaries =
+  httpPanopticonService.regenerateSessionSummaries as (
+    opts?: RegenerateSessionSummariesInput,
+  ) => Promise<unknown>;
 export const syncReset = httpPanopticonService.syncReset;
 export const syncWatermarkGet = httpPanopticonService.syncWatermarkGet;
 export const syncWatermarkSet = httpPanopticonService.syncWatermarkSet;

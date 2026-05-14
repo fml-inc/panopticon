@@ -631,5 +631,67 @@ describe("listSessions session summaries", () => {
           row.matchSnippet.includes("LLM outcome summary."),
       ),
     ).toBe(true);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET dirty = 1
+         WHERE session_summary_key = ?`,
+      )
+      .run(`ss:local:${SESSION}`);
+
+    const dirtyResult = listSessions({ limit: 5 });
+    expect(dirtyResult.sessions[0].summary).not.toBe("LLM outcome summary.");
+    expect(dirtyResult.sessions[0].summary).toContain("draft implementation");
+    expect(dirtyResult.sessions[0].sessionSummary).toMatchObject({
+      summaryDirty: true,
+      enrichment: {
+        summaryText: "LLM outcome summary.",
+        source: "llm",
+        dirty: true,
+      },
+    });
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(`ss:local:${SESSION}`);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = 'llm',
+             summary_runner = ?,
+             summary_model = ?,
+             summary_generated_at_ms = ?,
+             dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "Session summary enrichment could not be completed because the required Panopticon MCP lookup for session session-1 was cancelled.",
+        "codex",
+        null,
+        1_700_000_020_000,
+        `ss:local:${SESSION}`,
+      );
+
+    const sanitizedResult = listSessions({ limit: 5 });
+    expect(sanitizedResult.sessions[0].summary).not.toContain("cancelled");
+    expect(sanitizedResult.sessions[0].sessionSummary).toMatchObject({
+      summarySource: "deterministic",
+      enrichment: {
+        summaryText: null,
+        searchText: null,
+        source: null,
+        runner: "codex",
+        model: null,
+        generatedAt: new Date(1_700_000_020_000).toISOString(),
+        dirty: false,
+      },
+    });
   });
 });

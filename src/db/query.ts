@@ -1,3 +1,4 @@
+import { invalidSessionSummaryEnrichmentReason } from "../session_summaries/enrichment-quality.js";
 import { ensureSessionSummaryProjections } from "../session_summaries/query.js";
 import {
   SESSION_SUMMARY_SEARCH_CORPUS,
@@ -339,10 +340,19 @@ export function listSessions(
 
   const summariesBySession = new Map<string, SessionSummary>();
   for (const row of sessionSummaryRows) {
+    const enrichedSummaryText = validSessionSummaryEnrichmentText(
+      row.enriched_summary_text,
+    );
+    const enrichedSearchText = validSessionSummaryEnrichmentText(
+      row.enriched_search_text,
+    );
     const enrichment = {
-      summaryText: row.enriched_summary_text,
-      searchText: row.enriched_search_text,
-      source: parseEnrichmentSource(row.enrichment_source),
+      summaryText: enrichedSummaryText,
+      searchText: enrichedSearchText,
+      source:
+        enrichedSummaryText || enrichedSearchText
+          ? parseEnrichmentSource(row.enrichment_source)
+          : null,
       runner: row.enrichment_runner,
       model: row.enrichment_model,
       generatedAt: row.enrichment_generated_at_ms
@@ -417,7 +427,10 @@ function formatExplicitSessionSummary(
   sessionSummary: SessionSummary | null,
 ): string | null {
   if (!sessionSummary) return null;
-  if (sessionSummary.enrichment?.summaryText) {
+  if (
+    sessionSummary.enrichment?.summaryText &&
+    !sessionSummary.enrichment.dirty
+  ) {
     return sessionSummary.enrichment.summaryText;
   }
   if (sessionSummary.summaryText) return sessionSummary.summaryText;
@@ -426,6 +439,14 @@ function formatExplicitSessionSummary(
       ? ` Top files: ${sessionSummary.topFiles.join(", ")}.`
       : "";
   return `${sessionSummary.title}. Status: ${sessionSummary.status}. ${sessionSummary.intentCount} intents, ${sessionSummary.editCount} edits, ${sessionSummary.landedEditCount} landed, ${sessionSummary.openEditCount} open.${files}`;
+}
+
+function validSessionSummaryEnrichmentText(
+  value: string | null,
+): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return invalidSessionSummaryEnrichmentReason(trimmed) ? null : trimmed;
 }
 
 function parseSummarySource(
