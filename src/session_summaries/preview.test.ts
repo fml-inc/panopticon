@@ -22,7 +22,7 @@ describe("session summary preview", () => {
     expect(preview.summary_source).toBe("deterministic");
   });
 
-  it("falls back to deterministic text when llm enrichment is dirty", () => {
+  it("keeps valid dirty llm enrichment and marks it stale", () => {
     const preview = buildSessionSummaryPreview({
       session_id: "session-1",
       target: "codex",
@@ -37,9 +37,33 @@ describe("session summary preview", () => {
     });
 
     expect(preview.summary).toBe(
-      "Mixed: 4 intents, 6/8 edits landed. Top files: src/hooks/session-context.ts.",
+      "Implemented an older version of the recent-history context injection.",
     );
-    expect(preview.summary_source).toBe("deterministic");
+    expect(preview.summary_source).toBe("llm");
+    expect(preview.summary_stale).toBe(true);
+    expect(preview.summary_stale_reasons).toEqual(["dirty"]);
+  });
+
+  it("keeps valid old-version llm enrichment and marks it stale", () => {
+    const preview = buildSessionSummaryPreview({
+      session_id: "session-1",
+      target: "codex",
+      status: "mixed",
+      summary_text:
+        "Mixed: 4 intents, 6/8 edits landed. Top files: src/hooks/session-context.ts.",
+      summary_source: "deterministic",
+      enriched_summary_text:
+        "Implemented an older version of the recent-history context injection.",
+      enrichment_source: "llm",
+      enrichment_summary_version: 1,
+    });
+
+    expect(preview.summary).toBe(
+      "Implemented an older version of the recent-history context injection.",
+    );
+    expect(preview.summary_source).toBe("llm");
+    expect(preview.summary_stale).toBe(true);
+    expect(preview.summary_stale_reasons).toEqual(["summary_version_changed"]);
   });
 
   it("does not reject legitimate no-code summaries", () => {

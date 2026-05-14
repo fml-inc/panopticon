@@ -6,7 +6,12 @@ import {
   resolveCanonicalFilePath,
   resolveRepositoryRootForPath,
 } from "../paths.js";
+import {
+  type SessionSummaryStaleReason,
+  selectSessionSummaryDisplay,
+} from "./display.js";
 import { invalidSessionSummaryEnrichmentReason } from "./enrichment-quality.js";
+import { getSessionSummaryRunnerPolicy } from "./policy.js";
 import {
   buildSessionSummaryPreview,
   rankSessionSummaryPreviewFiles,
@@ -46,6 +51,11 @@ export interface SessionSummaryProjectionRow {
   enrichment_source: "llm" | null;
   enrichment_runner: string | null;
   enrichment_model: string | null;
+  enrichment_summary_version: number | null;
+  enrichment_current_summary_version: number;
+  enrichment_stale: boolean;
+  enrichment_stale_reasons: SessionSummaryStaleReason[];
+  enrichment_invalid_reason: string | null;
   enrichment_generated_at_ms: number | null;
   enrichment_dirty: boolean;
 }
@@ -78,6 +88,11 @@ export interface SessionSummaryRow {
   enrichment_source: "llm" | null;
   enrichment_runner: string | null;
   enrichment_model: string | null;
+  enrichment_summary_version: number | null;
+  enrichment_current_summary_version: number;
+  enrichment_stale: boolean;
+  enrichment_stale_reasons: SessionSummaryStaleReason[];
+  enrichment_invalid_reason: string | null;
   enrichment_generated_at_ms: number | null;
   enrichment_dirty: boolean;
   preview: SessionSummaryPreview;
@@ -85,12 +100,20 @@ export interface SessionSummaryRow {
 
 type RawSessionSummaryProjectionRow = Omit<
   SessionSummaryProjectionRow,
-  "repository" | "summary_source" | "enrichment_source" | "enrichment_dirty"
+  | "repository"
+  | "summary_source"
+  | "enrichment_source"
+  | "enrichment_dirty"
+  | "enrichment_current_summary_version"
+  | "enrichment_stale"
+  | "enrichment_stale_reasons"
+  | "enrichment_invalid_reason"
 > & {
   repository: string | null;
   summary_source: string | null;
   enrichment_source: string | null;
   enrichment_dirty: number;
+  enrichment_policy_hash: string | null;
 };
 
 type SessionSummaryIntentRow = {
@@ -172,6 +195,8 @@ const SESSION_SUMMARY_PROJECTION_SELECT = `
   END AS enrichment_source,
   e.summary_runner AS enrichment_runner,
   e.summary_model AS enrichment_model,
+  e.summary_version AS enrichment_summary_version,
+  e.summary_policy_hash AS enrichment_policy_hash,
   e.summary_generated_at_ms AS enrichment_generated_at_ms,
   COALESCE(e.dirty, 0) AS enrichment_dirty`;
 
@@ -351,27 +376,29 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
   const db = getDb();
   const cwdPlaceholders = opts.cwdCandidates.map(() => "?").join(", ");
   const params: unknown[] = [
+    ...opts.cwdCandidates,
+    ...opts.cwdCandidates,
     opts.currentSessionId ?? "",
-    ...opts.cwdCandidates,
-    ...opts.cwdCandidates,
     opts.limit ?? 5,
   ];
   const rows = (
     db
       .prepare(
-        `SELECT ${SESSION_SUMMARY_PROJECTION_SELECT}
-         FROM session_summaries s
+        `WITH matched_sessions AS (
+           SELECT session_id
+           FROM session_summaries
+           WHERE cwd IN (${cwdPlaceholders})
+           UNION
+           SELECT session_id
+           FROM session_cwds
+           WHERE cwd IN (${cwdPlaceholders})
+         )
+         SELECT ${SESSION_SUMMARY_PROJECTION_SELECT}
+         FROM matched_sessions m
+         JOIN session_summaries s
+           ON s.session_id = m.session_id
          ${SESSION_SUMMARY_PROJECTION_JOINS}
          WHERE s.session_id != ?
-           AND (
-             s.cwd IN (${cwdPlaceholders})
-             OR EXISTS (
-               SELECT 1
-               FROM session_cwds c
-               WHERE c.session_id = s.session_id
-                 AND c.cwd IN (${cwdPlaceholders})
-             )
-           )
          ORDER BY COALESCE(s.last_intent_ts_ms, s.source_last_seen_at_ms, s.projected_at_ms, 0) DESC,
                   s.id DESC
          LIMIT ?`,
@@ -1168,6 +1195,11 @@ function toSessionSummaryRow(
     enrichment_source: row.enrichment_source,
     enrichment_runner: row.enrichment_runner,
     enrichment_model: row.enrichment_model,
+    enrichment_summary_version: row.enrichment_summary_version,
+    enrichment_current_summary_version: row.enrichment_current_summary_version,
+    enrichment_stale: row.enrichment_stale,
+    enrichment_stale_reasons: row.enrichment_stale_reasons,
+    enrichment_invalid_reason: row.enrichment_invalid_reason,
     enrichment_generated_at_ms: row.enrichment_generated_at_ms,
     enrichment_dirty: row.enrichment_dirty,
   };
@@ -1184,19 +1216,37 @@ export function sessionSummaryKeyForSession(sessionId: string): string {
 function toSessionSummaryProjectionRow(
   row: RawSessionSummaryProjectionRow,
 ): SessionSummaryProjectionRow {
-  const enrichedSummaryText = validEnrichedText(row.enriched_summary_text);
-  const enrichedSearchText = validEnrichedText(row.enriched_search_text);
+  const { enrichment_policy_hash: _policyHash, ...baseRow } = row;
+  const currentPolicyHash = getSessionSummaryRunnerPolicy().policyHash;
+  const display = selectSessionSummaryDisplay({
+    summary_text: row.summary_text,
+    summary_source: parseSummarySource(row.summary_source),
+    enriched_summary_text: row.enriched_summary_text,
+    enrichment_source: parseEnrichmentSource(row.enrichment_source),
+    enrichment_dirty: row.enrichment_dirty === 1,
+    enrichment_summary_version: row.enrichment_summary_version,
+    enrichment_policy_hash: row.enrichment_policy_hash,
+    current_policy_hash: currentPolicyHash,
+  });
+  const enrichedSearchText = display.enrichment.invalidReason
+    ? null
+    : validEnrichedText(row.enriched_search_text);
   return {
-    ...row,
+    ...baseRow,
     target: emptyToNull(row.target),
     repository: emptyToNull(row.repository),
     summary_source: parseSummarySource(row.summary_source),
-    enriched_summary_text: enrichedSummaryText,
+    enriched_summary_text: display.enrichment.summaryText,
     enriched_search_text: enrichedSearchText,
     enrichment_source:
-      enrichedSummaryText || enrichedSearchText
+      display.enrichment.summaryText || enrichedSearchText
         ? parseEnrichmentSource(row.enrichment_source)
         : null,
+    enrichment_current_summary_version:
+      display.enrichment.currentSummaryVersion,
+    enrichment_stale: display.enrichment.stale,
+    enrichment_stale_reasons: display.enrichment.staleReasons,
+    enrichment_invalid_reason: display.enrichment.invalidReason,
     enrichment_dirty: row.enrichment_dirty === 1,
   };
 }

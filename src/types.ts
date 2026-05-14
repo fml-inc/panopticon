@@ -25,6 +25,11 @@ export interface SessionSummaryEnrichment {
   source: "llm" | null;
   runner: string | null;
   model: string | null;
+  summaryVersion: number | null;
+  currentSummaryVersion: number;
+  stale: boolean;
+  staleReasons: string[];
+  invalidReason: string | null;
   generatedAt: string | null;
   dirty: boolean;
 }

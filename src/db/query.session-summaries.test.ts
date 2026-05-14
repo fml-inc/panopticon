@@ -34,6 +34,7 @@ import { config } from "../config.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "../session_summaries/model.js";
 import { listSessions, search } from "./query.js";
 import { closeDb, getDb } from "./schema.js";
 import {
@@ -614,6 +615,11 @@ describe("listSessions session summaries", () => {
         source: "llm",
         runner: "claude",
         model: "sonnet",
+        summaryVersion: SESSION_SUMMARY_ENRICHMENT_VERSION,
+        currentSummaryVersion: SESSION_SUMMARY_ENRICHMENT_VERSION,
+        stale: false,
+        staleReasons: [],
+        invalidReason: null,
         generatedAt: new Date(1_700_000_010_000).toISOString(),
         dirty: false,
       },
@@ -641,14 +647,15 @@ describe("listSessions session summaries", () => {
       .run(`ss:local:${SESSION}`);
 
     const dirtyResult = listSessions({ limit: 5 });
-    expect(dirtyResult.sessions[0].summary).not.toBe("LLM outcome summary.");
-    expect(dirtyResult.sessions[0].summary).toContain("draft implementation");
+    expect(dirtyResult.sessions[0].summary).toBe("LLM outcome summary.");
     expect(dirtyResult.sessions[0].sessionSummary).toMatchObject({
       summaryDirty: true,
       enrichment: {
         summaryText: "LLM outcome summary.",
         source: "llm",
         dirty: true,
+        stale: true,
+        staleReasons: ["dirty"],
       },
     });
 
@@ -689,6 +696,7 @@ describe("listSessions session summaries", () => {
         source: null,
         runner: "codex",
         model: null,
+        invalidReason: "summary text reports unavailable session data",
         generatedAt: new Date(1_700_000_020_000).toISOString(),
         dirty: false,
       },

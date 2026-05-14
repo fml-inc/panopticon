@@ -127,6 +127,33 @@ describe("buildSessionStartRecentHistoryContext", () => {
     );
   });
 
+  it("matches sessions by session_cwds even when the summary cwd differs", () => {
+    insertSession({
+      id: "cwd-history",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: 6_000,
+      firstPrompt: "Continue recent history work.",
+    });
+    insertSummary({
+      sessionId: "cwd-history",
+      sessionCwd: path.join(os.tmpdir(), "summary-projection-cwd"),
+      status: "mixed",
+      lastIntentTsMs: 6_500,
+      summaryText: "Continued recent-history context from the observed cwd.",
+    });
+
+    const context = buildSessionStartRecentHistoryContext({
+      session_id: "current",
+      cwd,
+    });
+
+    expect(context).toContain("session_id=cwd-history");
+    expect(context).toContain(
+      "Continued recent-history context from the observed cwd.",
+    );
+  });
+
   it("returns null when there is no cwd or no matching history", () => {
     expect(
       buildSessionStartRecentHistoryContext({ session_id: "current" }),

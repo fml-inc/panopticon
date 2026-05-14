@@ -1,4 +1,6 @@
+import { selectSessionSummaryDisplay } from "../session_summaries/display.js";
 import { invalidSessionSummaryEnrichmentReason } from "../session_summaries/enrichment-quality.js";
+import { getSessionSummaryRunnerPolicy } from "../session_summaries/policy.js";
 import { ensureSessionSummaryProjections } from "../session_summaries/query.js";
 import {
   SESSION_SUMMARY_SEARCH_CORPUS,
@@ -267,6 +269,8 @@ export function listSessions(
                     END AS enrichment_source,
                     e.summary_runner AS enrichment_runner,
                     e.summary_model AS enrichment_model,
+                    e.summary_version AS enrichment_summary_version,
+                    e.summary_policy_hash AS enrichment_policy_hash,
                     e.summary_generated_at_ms AS enrichment_generated_at_ms,
                     COALESCE(e.dirty, 0) AS enrichment_dirty
              FROM session_summaries s
@@ -305,6 +309,8 @@ export function listSessions(
           enrichment_source: string | null;
           enrichment_runner: string | null;
           enrichment_model: string | null;
+          enrichment_summary_version: number | null;
+          enrichment_policy_hash: string | null;
           enrichment_generated_at_ms: number | null;
           enrichment_dirty: number;
         }>)
@@ -339,27 +345,52 @@ export function listSessions(
   }
 
   const summariesBySession = new Map<string, SessionSummary>();
+  const summaryTextBySession = new Map<string, string | null>();
+  const currentPolicyHash = getSessionSummaryRunnerPolicy().policyHash;
   for (const row of sessionSummaryRows) {
-    const enrichedSummaryText = validSessionSummaryEnrichmentText(
-      row.enriched_summary_text,
-    );
-    const enrichedSearchText = validSessionSummaryEnrichmentText(
-      row.enriched_search_text,
-    );
+    const topFiles =
+      topFilesBySessionSummary.get(row.session_summary_key) ?? [];
+    const display = selectSessionSummaryDisplay({
+      title: row.title,
+      status: row.status,
+      intent_count: row.intent_count,
+      edit_count: row.edit_count,
+      landed_edit_count: row.landed_edit_count,
+      open_edit_count: row.open_edit_count,
+      top_files: topFiles,
+      summary_text: row.summary_text,
+      summary_source: parseSummarySource(row.summary_source),
+      enriched_summary_text: row.enriched_summary_text,
+      enrichment_source: parseEnrichmentSource(row.enrichment_source),
+      enrichment_dirty: row.enrichment_dirty === 1,
+      enrichment_summary_version: row.enrichment_summary_version,
+      enrichment_policy_hash: row.enrichment_policy_hash,
+      current_policy_hash: currentPolicyHash,
+      allow_synthetic_fallback: true,
+    });
+    const enrichedSearchText = display.enrichment.invalidReason
+      ? null
+      : validSessionSummaryEnrichmentText(row.enriched_search_text);
     const enrichment = {
-      summaryText: enrichedSummaryText,
+      summaryText: display.enrichment.summaryText,
       searchText: enrichedSearchText,
       source:
-        enrichedSummaryText || enrichedSearchText
+        display.enrichment.summaryText || enrichedSearchText
           ? parseEnrichmentSource(row.enrichment_source)
           : null,
       runner: row.enrichment_runner,
       model: row.enrichment_model,
+      summaryVersion: display.enrichment.summaryVersion,
+      currentSummaryVersion: display.enrichment.currentSummaryVersion,
+      stale: display.enrichment.stale,
+      staleReasons: display.enrichment.staleReasons,
+      invalidReason: display.enrichment.invalidReason,
       generatedAt: row.enrichment_generated_at_ms
         ? toIso(row.enrichment_generated_at_ms)
         : null,
       dirty: row.enrichment_dirty === 1,
     };
+    summaryTextBySession.set(row.session_id, display.summaryText);
     summariesBySession.set(row.session_id, {
       sessionId: row.session_id,
       title: row.title,
@@ -375,7 +406,7 @@ export function listSessions(
       editCount: row.edit_count,
       landedEditCount: row.landed_edit_count,
       openEditCount: row.open_edit_count,
-      topFiles: topFilesBySessionSummary.get(row.session_summary_key) ?? [],
+      topFiles,
       summaryText: row.summary_text,
       projectionHash: row.projection_hash,
       projectedAt: toIso(row.projected_at_ms),
@@ -411,7 +442,7 @@ export function listSessions(
       })),
       parentSessionId: row.parent_session_id,
       relationshipType: row.relationship_type,
-      summary: formatExplicitSessionSummary(sessionSummary),
+      summary: summaryTextBySession.get(row.session_id) ?? null,
       sessionSummary,
     };
   });
@@ -421,24 +452,6 @@ export function listSessions(
     totalCount: sessions.length,
     source: "local",
   };
-}
-
-function formatExplicitSessionSummary(
-  sessionSummary: SessionSummary | null,
-): string | null {
-  if (!sessionSummary) return null;
-  if (
-    sessionSummary.enrichment?.summaryText &&
-    !sessionSummary.enrichment.dirty
-  ) {
-    return sessionSummary.enrichment.summaryText;
-  }
-  if (sessionSummary.summaryText) return sessionSummary.summaryText;
-  const files =
-    sessionSummary.topFiles.length > 0
-      ? ` Top files: ${sessionSummary.topFiles.join(", ")}.`
-      : "";
-  return `${sessionSummary.title}. Status: ${sessionSummary.status}. ${sessionSummary.intentCount} intents, ${sessionSummary.editCount} edits, ${sessionSummary.landedEditCount} landed, ${sessionSummary.openEditCount} open.${files}`;
 }
 
 function validSessionSummaryEnrichmentText(

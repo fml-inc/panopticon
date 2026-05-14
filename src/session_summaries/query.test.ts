@@ -45,6 +45,7 @@ import {
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
 import {
@@ -409,6 +410,37 @@ describe("session_summaries", () => {
     getDb()
       .prepare(
         `UPDATE session_summary_enrichments
+         SET summary_version = 1
+         WHERE session_summary_key = ?`,
+      )
+      .run(sessionSummaryKeyForSession(SESSION));
+
+    const staleVersionRows = listSessionSummaries({ repository: repo });
+    expect(staleVersionRows[0]).toMatchObject({
+      enriched_summary_text: "LLM session summary.",
+      enrichment_summary_version: 1,
+      enrichment_current_summary_version: SESSION_SUMMARY_ENRICHMENT_VERSION,
+      enrichment_stale: true,
+      enrichment_stale_reasons: ["summary_version_changed"],
+    });
+    expect(staleVersionRows[0].preview.summary).toBe("LLM session summary.");
+    expect(staleVersionRows[0].preview.summary_source).toBe("llm");
+    expect(staleVersionRows[0].preview.summary_stale).toBe(true);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_version = ?
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        SESSION_SUMMARY_ENRICHMENT_VERSION,
+        sessionSummaryKeyForSession(SESSION),
+      );
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
          SET dirty = 1
          WHERE session_summary_key = ?`,
       )
@@ -419,9 +451,13 @@ describe("session_summaries", () => {
       enriched_summary_text: "LLM session summary.",
       enrichment_source: "llm",
       enrichment_dirty: true,
+      enrichment_stale: true,
+      enrichment_stale_reasons: ["dirty"],
     });
-    expect(dirtyRows[0].preview.summary).toContain("draft implementation");
-    expect(dirtyRows[0].preview.summary_source).toBe("deterministic");
+    expect(dirtyRows[0].preview.summary).toBe("LLM session summary.");
+    expect(dirtyRows[0].preview.summary_source).toBe("llm");
+    expect(dirtyRows[0].preview.summary_stale).toBe(true);
+    expect(dirtyRows[0].preview.summary_stale_reasons).toEqual(["dirty"]);
 
     getDb()
       .prepare(
@@ -456,6 +492,8 @@ describe("session_summaries", () => {
       enriched_summary_text: null,
       enriched_search_text: null,
       enrichment_source: null,
+      enrichment_invalid_reason:
+        "summary text reports unavailable session data",
     });
 
     const sanitizedDetail = sessionSummaryDetail({ session_id: SESSION });
@@ -464,6 +502,8 @@ describe("session_summaries", () => {
       enriched_summary_text: null,
       enriched_search_text: null,
       enrichment_source: null,
+      enrichment_invalid_reason:
+        "summary text reports unavailable session data",
     });
   });
 

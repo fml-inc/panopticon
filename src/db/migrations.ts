@@ -607,6 +607,10 @@ function resetSessionSummaryProjectionStorage(db: Database): void {
       ON session_summaries(repository)
   `);
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_cwd
+      ON session_summaries(cwd)
+  `);
+  db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_summaries_session
       ON session_summaries(session_id)
   `);
@@ -1283,6 +1287,24 @@ export const MIGRATIONS: Migration[] = [
         );
       }
       seedDerivedSyncSeqForExistingSessionSummaries(db);
+    },
+  },
+  {
+    id: 20,
+    name: "add_session_summary_cwd_lookup_indexes",
+    up: (db) => {
+      if (tableExists(db, "session_summaries")) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_session_summaries_cwd
+            ON session_summaries(cwd)
+        `);
+      }
+      if (tableExists(db, "session_cwds")) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_session_cwds_cwd_session
+            ON session_cwds(cwd, session_id)
+        `);
+      }
     },
   },
 ];

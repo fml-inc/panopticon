@@ -1,4 +1,7 @@
-import { invalidSessionSummaryEnrichmentReason } from "./enrichment-quality.js";
+import {
+  type SessionSummaryStaleReason,
+  selectSessionSummaryDisplay,
+} from "./display.js";
 
 export type SessionSummaryPreviewStatus =
   | "active"
@@ -40,6 +43,12 @@ export interface SessionSummaryPreviewInput {
   enriched_summary_text?: string | null;
   enrichment_source?: "llm" | null;
   enrichment_dirty?: boolean | null;
+  enrichment_summary_version?: number | null;
+  enrichment_policy_hash?: string | null;
+  current_policy_hash?: string | null;
+  enrichment_stale?: boolean | null;
+  enrichment_stale_reasons?: SessionSummaryStaleReason[] | null;
+  enrichment_invalid_reason?: string | null;
 }
 
 export interface SessionSummaryPreview {
@@ -53,6 +62,9 @@ export interface SessionSummaryPreview {
   last_activity_ms: number | null;
   summary: string | null;
   summary_source: "llm" | "deterministic" | null;
+  summary_stale: boolean;
+  summary_stale_reasons: SessionSummaryStaleReason[];
+  enrichment_invalid_reason: string | null;
   counts: {
     intents: number | null;
     edits: number | null;
@@ -66,20 +78,17 @@ export function buildSessionSummaryPreview(
   input: SessionSummaryPreviewInput,
   files: SessionSummaryPreviewFile[] = [],
 ): SessionSummaryPreview {
-  const rawEnrichedSummary = emptyToNull(input.enriched_summary_text ?? null);
-  const validEnrichedSummary =
-    rawEnrichedSummary &&
-    input.enrichment_source === "llm" &&
-    !invalidSessionSummaryEnrichmentReason(rawEnrichedSummary)
-      ? rawEnrichedSummary
-      : null;
-  const enrichedSummary =
-    validEnrichedSummary && input.enrichment_dirty !== true
-      ? validEnrichedSummary
-      : null;
-  const deterministicSummary = emptyToNull(input.summary_text ?? null);
-  const summary =
-    enrichedSummary ?? deterministicSummary ?? validEnrichedSummary;
+  const display = selectSessionSummaryDisplay(input);
+  const summarySource =
+    display.summarySource === "llm"
+      ? "llm"
+      : display.summarySource === "deterministic" &&
+          input.summary_source === "deterministic"
+        ? "deterministic"
+        : null;
+  const enrichmentStale = input.enrichment_stale ?? display.enrichment.stale;
+  const enrichmentStaleReasons =
+    input.enrichment_stale_reasons ?? display.enrichment.staleReasons;
 
   return {
     session_id: input.session_id,
@@ -94,13 +103,13 @@ export function buildSessionSummaryPreview(
       input.last_intent_ts_ms ??
       input.projected_at_ms ??
       null,
-    summary,
-    summary_source:
-      enrichedSummary && input.enrichment_source === "llm"
-        ? "llm"
-        : deterministicSummary && input.summary_source === "deterministic"
-          ? "deterministic"
-          : null,
+    summary: display.summaryText,
+    summary_source: summarySource,
+    summary_stale: summarySource === "llm" && enrichmentStale,
+    summary_stale_reasons:
+      summarySource === "llm" ? enrichmentStaleReasons : [],
+    enrichment_invalid_reason:
+      input.enrichment_invalid_reason ?? display.enrichment.invalidReason,
     counts: {
       intents: input.intent_count ?? null,
       edits: input.edit_count ?? null,
@@ -164,6 +173,7 @@ function formatSessionSummaryPreviewForContext(
   const text = preview.summary ?? preview.title ?? "No summary text";
   const counts = formatCounts(preview);
   const topFiles = formatTopFiles(preview.top_files);
+  const stale = formatStale(preview);
   const prefix = [
     `- ${when}`,
     tags.length > 0 ? `[${tags.join("/")}]` : null,
@@ -174,6 +184,7 @@ function formatSessionSummaryPreviewForContext(
   return trimToMaxChars(
     [
       `${prefix} ${sanitizeInline(text)}`,
+      stale,
       counts ? `(${counts})` : null,
       topFiles ? `top_files: ${topFiles}` : null,
     ]
@@ -181,6 +192,13 @@ function formatSessionSummaryPreviewForContext(
       .join(" "),
     maxChars,
   );
+}
+
+function formatStale(preview: SessionSummaryPreview): string | null {
+  if (!preview.summary_stale || preview.summary_stale_reasons.length === 0) {
+    return null;
+  }
+  return `stale=${preview.summary_stale_reasons.join(",")}`;
 }
 
 function scorePreviewFile(file: SessionSummaryPreviewFile): number {
