@@ -155,6 +155,21 @@ export function regenerateSessionSummaryEnrichments(
     where.push(`${timeSql} <= ?`);
     params.push(beforeMs);
   }
+  if (staleOnly) {
+    where.push(
+      `(COALESCE(e.dirty, 0) = 1
+        OR COALESCE(e.summary_version, -1) != ?
+        OR e.summary_policy_hash IS NULL
+        OR e.summary_policy_hash != ?)`,
+    );
+    params.push(SESSION_SUMMARY_ENRICHMENT_VERSION, policy.policyHash);
+  }
+  if (dirtyOnly) {
+    where.push("COALESCE(e.dirty, 0) = 1");
+  }
+  if (cleanOnly) {
+    where.push("COALESCE(e.dirty, 0) != 1");
+  }
 
   const rows = db
     .prepare(
@@ -186,13 +201,7 @@ export function regenerateSessionSummaryEnrichments(
       ...(limit !== undefined ? [limit] : []),
     ) as RawRegenerationRow[];
 
-  const selectedRows = rows.filter((row) => {
-    const stale = isStale(row, policy.policyHash);
-    if (staleOnly && !stale) return false;
-    if (dirtyOnly && row.dirty !== 1) return false;
-    if (cleanOnly && row.dirty === 1) return false;
-    return true;
-  });
+  const selectedRows = rows;
 
   const byVersion: Record<string, number> = {};
   const byRunner: Record<string, number> = {};

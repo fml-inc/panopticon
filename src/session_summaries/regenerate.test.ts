@@ -204,6 +204,37 @@ describe("regenerateSessionSummaryEnrichments", () => {
     expect(result.items[0].session_id).toBe("new-generated");
   });
 
+  it("applies stale filters before ordering and limiting candidates", () => {
+    insertSummary({
+      sessionId: "current-newest",
+      activityMs: NOW - 1_000,
+      version: SESSION_SUMMARY_ENRICHMENT_VERSION,
+    });
+    insertSummary({
+      sessionId: "current-second",
+      activityMs: NOW - 2_000,
+      version: SESSION_SUMMARY_ENRICHMENT_VERSION,
+    });
+    insertSummary({
+      sessionId: "stale-below-limit",
+      activityMs: NOW - 3_000,
+      version: 1,
+    });
+
+    const result = regenerateSessionSummaryEnrichments({
+      repository: path.join(os.tmpdir(), "repo"),
+      staleOnly: true,
+      limit: 1,
+      dryRun: true,
+    });
+
+    expect(result.selected).toBe(1);
+    expect(result.items[0]).toMatchObject({
+      session_id: "stale-below-limit",
+      stale: true,
+    });
+  });
+
   it("requires an explicit scope unless --all is provided", () => {
     expect(() => regenerateSessionSummaryEnrichments()).toThrow(
       "At least one regeneration scope is required",
