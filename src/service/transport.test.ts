@@ -31,6 +31,7 @@ function createMockService(): PanopticonService {
     pruneExecute: vi.fn(async (cutoffMs, opts) => ({ cutoffMs, opts })),
     refreshPricing: vi.fn(async () => ({ ok: true })),
     scan: vi.fn(async (opts) => ({ opts })),
+    regenerateSessionSummaries: vi.fn(async (opts) => ({ opts })),
     syncReset: vi.fn(async (target) => ({ target })),
     syncWatermarkGet: vi.fn(async (target, table) => ({ target, table })),
     syncWatermarkSet: vi.fn(async (target, table, value) => ({
@@ -133,6 +134,29 @@ describe("service transport", () => {
     await expect(dispatchExec(service, "prune", {})).rejects.toThrow(
       "cutoffMs is required and must be a number",
     );
+  });
+
+  it("dispatches session summary regeneration through exec transport", async () => {
+    const service = createMockService();
+
+    const result = await dispatchExec(service, "session-summaries-regenerate", {
+      since: "24h",
+      by: "activity",
+      dryRun: false,
+    });
+
+    expect(service.regenerateSessionSummaries).toHaveBeenCalledWith({
+      since: "24h",
+      by: "activity",
+      dryRun: false,
+    });
+    expect(result).toEqual({
+      opts: {
+        since: "24h",
+        by: "activity",
+        dryRun: false,
+      },
+    });
   });
 
   it("exposes tool and exec name guards", () => {

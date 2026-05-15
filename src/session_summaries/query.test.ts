@@ -45,6 +45,7 @@ import {
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
 import { rebuildSessionSummaryProjections } from "./project.js";
 import {
@@ -209,9 +210,14 @@ describe("session_summaries", () => {
       "Mixed: 2 intents, 1/2 edits landed",
     );
     expect(detail?.intents).toHaveLength(2);
-    expect(detail?.files).toEqual([
+    expect(detail?.files).toMatchObject([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
+    expect(detail?.preview?.top_files[0]).toMatchObject({
+      file_path: file,
+      edit_count: 2,
+      landed_count: 1,
+    });
   });
 
   it("marks prompt-only sessions as read-only", () => {
@@ -399,6 +405,105 @@ describe("session_summaries", () => {
       enrichment_model: "sonnet",
       enrichment_dirty: false,
       enrichment_generated_at_ms: 1_700_000_010_000,
+    });
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_version = 1
+         WHERE session_summary_key = ?`,
+      )
+      .run(sessionSummaryKeyForSession(SESSION));
+
+    const staleVersionRows = listSessionSummaries({ repository: repo });
+    expect(staleVersionRows[0]).toMatchObject({
+      enriched_summary_text: "LLM session summary.",
+      enrichment_summary_version: 1,
+      enrichment_current_summary_version: SESSION_SUMMARY_ENRICHMENT_VERSION,
+      enrichment_stale: true,
+      enrichment_stale_reasons: ["summary_version_changed"],
+    });
+    expect(staleVersionRows[0].preview.summary).toBe("LLM session summary.");
+    expect(staleVersionRows[0].preview.summary_source).toBe("llm");
+    expect(staleVersionRows[0].preview.summary_stale).toBe(true);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_version = ?
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        SESSION_SUMMARY_ENRICHMENT_VERSION,
+        sessionSummaryKeyForSession(SESSION),
+      );
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET dirty = 1
+         WHERE session_summary_key = ?`,
+      )
+      .run(sessionSummaryKeyForSession(SESSION));
+
+    const dirtyRows = listSessionSummaries({ repository: repo });
+    expect(dirtyRows[0]).toMatchObject({
+      enriched_summary_text: "LLM session summary.",
+      enrichment_source: "llm",
+      enrichment_dirty: true,
+      enrichment_stale: true,
+      enrichment_stale_reasons: ["dirty"],
+    });
+    expect(dirtyRows[0].preview.summary).toBe("LLM session summary.");
+    expect(dirtyRows[0].preview.summary_source).toBe("llm");
+    expect(dirtyRows[0].preview.summary_stale).toBe(true);
+    expect(dirtyRows[0].preview.summary_stale_reasons).toEqual(["dirty"]);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(sessionSummaryKeyForSession(SESSION));
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = 'llm',
+             summary_runner = ?,
+             summary_model = ?,
+             summary_generated_at_ms = ?,
+             dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "No code changed because the session details could not be loaded: the Panopticon MCP request for the exact session was cancelled.",
+        "codex",
+        null,
+        1_700_000_020_000,
+        sessionSummaryKeyForSession(SESSION),
+      );
+
+    const sanitizedRows = listSessionSummaries({ repository: repo });
+    expect(sanitizedRows[0].preview.summary_source).toBe("deterministic");
+    expect(sanitizedRows[0]).toMatchObject({
+      enriched_summary_text: null,
+      enriched_search_text: null,
+      enrichment_source: null,
+      enrichment_invalid_reason:
+        "summary text reports unavailable session data",
+    });
+
+    const sanitizedDetail = sessionSummaryDetail({ session_id: SESSION });
+    expect(sanitizedDetail?.preview?.summary_source).toBe("deterministic");
+    expect(sanitizedDetail?.session_summary).toMatchObject({
+      enriched_summary_text: null,
+      enriched_search_text: null,
+      enrichment_source: null,
+      enrichment_invalid_reason:
+        "summary text reports unavailable session data",
     });
   });
 
@@ -1055,7 +1160,7 @@ describe("session_summaries", () => {
     expect(detail?.session_summary?.summary_text).toContain(
       "Mixed: 2 intents, 1/2 edits landed",
     );
-    expect(detail?.files).toEqual([
+    expect(detail?.files).toMatchObject([
       { file_path: file, edit_count: 2, landed_count: 1 },
     ]);
   });

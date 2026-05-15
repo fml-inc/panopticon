@@ -32,6 +32,7 @@ import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
+import { buildSessionStartRecentHistoryContext } from "./session-context.js";
 
 // Last resolved repo per session — used as fallback for events without paths
 // (e.g. Stop, UserPromptSubmit). Long-lived in the server process.
@@ -327,12 +328,14 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
  *   3. Resolve the git repository from cwd/file paths
  *   4. Store the event in hook_events table (full payload as gzipped blob)
  *   5. Upsert session metadata (started_at, first_prompt, ended_at, etc.)
- *   6. For PreToolUse / PermissionRequest: check allowed.json and return a
+ *   6. For SessionStart: optionally return bounded recent history as
+ *      additional context
+ *   7. For PreToolUse / PermissionRequest: check allowed.json and return a
  *      target-specific permission decision
  *
- * Returns {} for most events. For PreToolUse / PermissionRequest, may return
- * a permission response that the target uses to auto-approve/deny the tool
- * call or approval prompt.
+ * Returns {} for most events. For SessionStart, may return additional context.
+ * For PreToolUse / PermissionRequest, may return a permission response that
+ * the target uses to auto-approve/deny the tool call or approval prompt.
  */
 export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionId = data.session_id ?? "unknown";
@@ -595,7 +598,30 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     return buildPermissionResponse(eventType, toolName, data, target);
   }
 
+  if (eventType === "SessionStart") {
+    const response = buildSessionStartContextResponse(data);
+    if (response) return response;
+  }
+
   return {};
+}
+
+function buildSessionStartContextResponse(
+  data: HookInput,
+): Record<string, unknown> | null {
+  try {
+    const additionalContext = buildSessionStartRecentHistoryContext(data);
+    if (!additionalContext) return null;
+    return {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext,
+      },
+    };
+  } catch (err) {
+    log.hooks.error("session start context build failed:", err);
+    return null;
+  }
 }
 
 /**

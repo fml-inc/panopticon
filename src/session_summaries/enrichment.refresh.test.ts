@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Database } from "../db/driver.js";
-import { refreshSessionSummaryEnrichmentsOnce } from "./enrichment.js";
+import {
+  parseSessionSummaryEnrichmentOutput,
+  refreshSessionSummaryEnrichmentsOnce,
+} from "./enrichment.js";
 import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
 
 const state = vi.hoisted(() => ({
@@ -97,6 +100,19 @@ describe("session summary enrichment refresh", () => {
         failure_count INTEGER NOT NULL DEFAULT 0,
         last_error TEXT
       );
+      CREATE TABLE session_summary_search_index (
+        session_summary_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        corpus_key TEXT NOT NULL,
+        source TEXT NOT NULL,
+        priority INTEGER NOT NULL,
+        search_text TEXT NOT NULL,
+        dirty INTEGER NOT NULL DEFAULT 0,
+        projection_hash TEXT,
+        enriched_input_hash TEXT,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (session_summary_key, corpus_key)
+      );
       CREATE TABLE attempt_backoffs (
         scope_kind TEXT NOT NULL,
         scope_key TEXT NOT NULL,
@@ -119,7 +135,8 @@ describe("session summary enrichment refresh", () => {
         edit_count INTEGER NOT NULL,
         landed_edit_count INTEGER NOT NULL,
         open_edit_count INTEGER NOT NULL,
-        last_intent_ts_ms INTEGER
+        last_intent_ts_ms INTEGER,
+        source_last_seen_at_ms INTEGER
       );
       CREATE TABLE sessions (
         session_id TEXT PRIMARY KEY,
@@ -217,6 +234,144 @@ describe("session summary enrichment refresh", () => {
     });
   });
 
+  it("persists plain summary enrichment output in the LLM search corpora", async () => {
+    const db = state.db!;
+    state.invokeLlmMock.mockResolvedValue(
+      "Implemented shared SessionStart recent-history rendering and verified it with focused hook tests.",
+    );
+
+    const result = await refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+      force: true,
+    });
+
+    const row = db
+      .prepare(
+        `SELECT summary_text, summary_source
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as
+      | {
+          summary_text: string;
+          summary_source: string;
+        }
+      | undefined;
+    const searchRows = db
+      .prepare(
+        `SELECT corpus_key, search_text
+         FROM session_summary_search_index
+         WHERE session_summary_key = 'ss:local:session-1'
+         ORDER BY corpus_key ASC`,
+      )
+      .all() as Array<{ corpus_key: string; search_text: string }>;
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+    expect(row).toMatchObject({
+      summary_text:
+        "Implemented shared SessionStart recent-history rendering and verified it with focused hook tests.",
+      summary_source: "llm",
+    });
+    expect(searchRows).toEqual([
+      {
+        corpus_key: "llm_search",
+        search_text:
+          "Implemented shared SessionStart recent-history rendering and verified it with focused hook tests.",
+      },
+      {
+        corpus_key: "llm_summary",
+        search_text:
+          "Implemented shared SessionStart recent-history rendering and verified it with focused hook tests.",
+      },
+    ]);
+  });
+
+  it("parses structured enrichment output with separate search text", () => {
+    expect(
+      parseSessionSummaryEnrichmentOutput(
+        [
+          "```json",
+          JSON.stringify({
+            summary_text: "Summary for compact preview.",
+            search_text: "Expanded retrieval text with aliases and decisions.",
+          }),
+          "```",
+        ].join("\n"),
+      ),
+    ).toEqual({
+      summaryText: "Summary for compact preview.",
+      searchText: "Expanded retrieval text with aliases and decisions.",
+    });
+  });
+
+  it("passes prior summary text as scaffold for non-MCP enrichment", async () => {
+    const db = state.db!;
+    db.prepare(
+      `UPDATE session_summary_enrichments
+       SET summary_text = ?,
+           summary_source = 'llm',
+           enriched_message_count = ?,
+           dirty = 1
+       WHERE session_summary_key = 'ss:local:session-1'`,
+    ).run("Prior summary before newer verification.", 4);
+    state.invokeLlmMock.mockImplementation(async (prompt: string) => {
+      expect(prompt).toContain("Summary length target: normal session");
+      expect(prompt).toContain(
+        "Existing summary scaffold (llm, covered 4 messages)",
+      );
+      expect(prompt).toContain("Prior summary before newer verification.");
+      expect(prompt).toContain(
+        "Use existing scaffold material as a foundation",
+      );
+      expect(prompt).toContain("Intent prompts:");
+      return "Updated summary with newer verification.";
+    });
+
+    const result = await refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+      force: true,
+    });
+
+    const row = db
+      .prepare(
+        `SELECT summary_text
+         FROM session_summary_enrichments
+         WHERE session_summary_key = 'ss:local:session-1'`,
+      )
+      .get() as { summary_text: string } | undefined;
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+    expect(row?.summary_text).toBe("Updated summary with newer verification.");
+  });
+
+  it("does not pass failure-shaped prior summary text as scaffold", async () => {
+    const db = state.db!;
+    db.prepare(
+      `UPDATE session_summary_enrichments
+       SET summary_text = ?,
+           summary_source = 'llm',
+           enriched_message_count = ?,
+           dirty = 1
+       WHERE session_summary_key = 'ss:local:session-1'`,
+    ).run(
+      "No code changed because the session detail request was cancelled before structured data could be loaded.",
+      4,
+    );
+    state.invokeLlmMock.mockImplementation(async (prompt: string) => {
+      expect(prompt).not.toContain("Existing summary scaffold");
+      expect(prompt).not.toContain("session detail request was cancelled");
+      expect(prompt).toContain("Intent prompts:");
+      return "Recovered summary from deterministic and raw context.";
+    });
+
+    const result = await refreshSessionSummaryEnrichmentsOnce({
+      sessionId: "session-1",
+      force: true,
+    });
+
+    expect(result).toEqual({ attempted: 1, updated: 1 });
+  });
+
   it("uses Panopticon MCP with a short session-id prompt for Codex enrichment", async () => {
     const db = state.db!;
     db.prepare(
@@ -239,8 +394,15 @@ describe("session summary enrichment refresh", () => {
     ];
     expect(prompt).toContain("Session id: session-1");
     expect(prompt).toContain("Use Panopticon MCP tools");
+    expect(prompt).toContain("Summary length target: normal session");
+    expect(prompt).toContain("Start with session_summary_detail");
+    expect(prompt).toContain("raw timeline evidence");
+    expect(prompt).toContain("Do not simply rewrite the existing summary");
     expect(prompt).not.toContain("Recent messages:");
     expect(prompt).not.toContain("fix the summary contention bug");
+    expect(options.systemPrompt).toContain(
+      "Existing summaries are useful scaffolding",
+    );
     expect(options.runner).toBe("codex");
     expect(options.withMcp).toBe(true);
 
@@ -429,6 +591,81 @@ describe("session summary enrichment refresh", () => {
       });
       expect(skipped).toEqual({ attempted: 0, updated: 0 });
       expect(state.invokeLlmMock).not.toHaveBeenCalled();
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects failure-shaped llm text without storing it as enrichment", async () => {
+    const db = state.db!;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(100_000));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    state.invokeLlmMock.mockResolvedValue(
+      "Session summary enrichment could not be completed because the required Panopticon MCP lookup for session session-1 was cancelled, and the prompt provided no structured session data to summarize.",
+    );
+
+    try {
+      const result = await refreshSessionSummaryEnrichmentsOnce({
+        sessionId: "session-1",
+        force: true,
+      });
+      const row = db
+        .prepare(
+          `SELECT summary_text, summary_source, last_attempted_at_ms,
+                  failure_count, last_error, dirty
+           FROM session_summary_enrichments
+           WHERE session_summary_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            summary_text: string | null;
+            summary_source: string;
+            last_attempted_at_ms: number | null;
+            failure_count: number;
+            last_error: string | null;
+            dirty: number;
+          }
+        | undefined;
+      const backoff = db
+        .prepare(
+          `SELECT failure_count, next_attempt_at_ms, last_error
+           FROM attempt_backoffs
+           WHERE scope_kind = 'session-summary-row'
+             AND scope_key = 'ss:local:session-1'`,
+        )
+        .get() as
+        | {
+            failure_count: number;
+            next_attempt_at_ms: number | null;
+            last_error: string | null;
+          }
+        | undefined;
+      const session = db
+        .prepare(
+          `SELECT derived_sync_seq
+           FROM sessions
+           WHERE session_id = 'session-1'`,
+        )
+        .get() as { derived_sync_seq: number } | undefined;
+
+      expect(result).toEqual({ attempted: 1, updated: 0 });
+      expect(state.invokeLlmMock).toHaveBeenCalledOnce();
+      expect(row).toMatchObject({
+        summary_text: null,
+        summary_source: "deterministic",
+        last_attempted_at_ms: 100_000,
+        failure_count: 1,
+        last_error: "summary text reports unavailable session data",
+        dirty: 1,
+      });
+      expect(backoff).toMatchObject({
+        failure_count: 1,
+        next_attempt_at_ms: 160_000,
+        last_error: "summary text reports unavailable session data",
+      });
+      expect(session).toEqual({ derived_sync_seq: 1 });
     } finally {
       randomSpy.mockRestore();
       vi.useRealTimers();

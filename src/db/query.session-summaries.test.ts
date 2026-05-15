@@ -34,6 +34,7 @@ import { config } from "../config.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "../session_summaries/model.js";
 import { listSessions, search } from "./query.js";
 import { closeDb, getDb } from "./schema.js";
 import {
@@ -614,6 +615,11 @@ describe("listSessions session summaries", () => {
         source: "llm",
         runner: "claude",
         model: "sonnet",
+        summaryVersion: SESSION_SUMMARY_ENRICHMENT_VERSION,
+        currentSummaryVersion: SESSION_SUMMARY_ENRICHMENT_VERSION,
+        stale: false,
+        staleReasons: [],
+        invalidReason: null,
         generatedAt: new Date(1_700_000_010_000).toISOString(),
         dirty: false,
       },
@@ -631,5 +637,69 @@ describe("listSessions session summaries", () => {
           row.matchSnippet.includes("LLM outcome summary."),
       ),
     ).toBe(true);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET dirty = 1
+         WHERE session_summary_key = ?`,
+      )
+      .run(`ss:local:${SESSION}`);
+
+    const dirtyResult = listSessions({ limit: 5 });
+    expect(dirtyResult.sessions[0].summary).toBe("LLM outcome summary.");
+    expect(dirtyResult.sessions[0].sessionSummary).toMatchObject({
+      summaryDirty: true,
+      enrichment: {
+        summaryText: "LLM outcome summary.",
+        source: "llm",
+        dirty: true,
+        stale: true,
+        staleReasons: ["dirty"],
+      },
+    });
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(`ss:local:${SESSION}`);
+
+    getDb()
+      .prepare(
+        `UPDATE session_summary_enrichments
+         SET summary_text = ?,
+             summary_source = 'llm',
+             summary_runner = ?,
+             summary_model = ?,
+             summary_generated_at_ms = ?,
+             dirty = 0
+         WHERE session_summary_key = ?`,
+      )
+      .run(
+        "Session summary enrichment could not be completed because the required Panopticon MCP lookup for session session-1 was cancelled.",
+        "codex",
+        null,
+        1_700_000_020_000,
+        `ss:local:${SESSION}`,
+      );
+
+    const sanitizedResult = listSessions({ limit: 5 });
+    expect(sanitizedResult.sessions[0].summary).not.toContain("cancelled");
+    expect(sanitizedResult.sessions[0].sessionSummary).toMatchObject({
+      summarySource: "deterministic",
+      enrichment: {
+        summaryText: null,
+        searchText: null,
+        source: null,
+        runner: "codex",
+        model: null,
+        invalidReason: "summary text reports unavailable session data",
+        generatedAt: new Date(1_700_000_020_000).toISOString(),
+        dirty: false,
+      },
+    });
   });
 });

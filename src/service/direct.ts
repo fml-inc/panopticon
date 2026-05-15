@@ -54,6 +54,7 @@ import {
   sessionSummaryDetail,
   whyCode,
 } from "../session_summaries/query.js";
+import { regenerateSessionSummaryEnrichments } from "../session_summaries/regenerate.js";
 import {
   addTarget,
   listTargets,
@@ -245,6 +246,9 @@ export function createDirectPanopticonService(): PanopticonService {
         summariesUpdated:
           opts?.summaries === false ? 0 : await runSummaryGeneration(),
       };
+    },
+    async regenerateSessionSummaries(opts) {
+      return regenerateSessionSummaryEnrichments(opts);
     },
     async syncReset(target?: string) {
       resetWatermarks(target);

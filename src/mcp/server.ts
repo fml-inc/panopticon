@@ -226,6 +226,9 @@ Schema:
   scanner_turns(id, session_id, source, turn_index, timestamp_ms, model, role, content_preview, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, sync_id)
   scanner_events(id, session_id, source, event_index, event_type, timestamp_ms, tool_name, tool_input, tool_output, content, metadata JSON, sync_id)
   hook_events(id, session_id, event_type, timestamp_ms, cwd, repository, tool_name, target, user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload BLOB)
+  session_summaries(id, session_summary_key, session_id, repository, cwd, branch, worktree, actor, machine, origin_scope, title, status, first_intent_ts_ms, last_intent_ts_ms, intent_count, edit_count, landed_edit_count, open_edit_count, summary_text, projection_hash, projected_at_ms, source_last_seen_at_ms, reason_json)
+  session_summary_enrichments(session_summary_key PK, session_id, summary_text, summary_source, summary_runner, summary_model, summary_version, summary_generated_at_ms, projection_hash, summary_input_hash, summary_policy_hash, enriched_input_hash, enriched_message_count, dirty, dirty_reason_json, last_material_change_at_ms, last_attempted_at_ms, failure_count, last_error)
+  session_summary_search_index(session_summary_key, session_id, corpus_key, source, priority, search_text, dirty, projection_hash, enriched_input_hash, updated_at_ms)
   otel_logs(id, timestamp_ns, observed_timestamp_ns, severity_number, severity_text, body, attributes JSON, resource_attributes JSON, session_id, prompt_id, trace_id, span_id)
   otel_metrics(id, timestamp_ns, name, value, metric_type, unit, attributes JSON, resource_attributes JSON, session_id)
   otel_spans(id, trace_id, span_id, parent_span_id, name, kind, start_time_ns, end_time_ns, status_code, status_message, attributes JSON, resource_attributes JSON, session_id)
@@ -358,7 +361,7 @@ server.tool(
 
 server.tool(
   "session_summaries",
-  "List session-derived summaries with provenance metadata. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
+  "List session-derived summaries with provenance metadata and the compact preview shape used for SessionStart context injection. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
   {
     repository: z
       .string()
@@ -400,7 +403,7 @@ server.tool(
 
 server.tool(
   "session_summary_detail",
-  "Get the explicit session-derived summary for a single session, including member intents and touched files.",
+  "Get the compact preview and explicit session-derived summary for a single session, including member intents and touched files.",
   {
     session_id: z.string().describe("ID of the session"),
   },

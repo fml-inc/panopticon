@@ -613,6 +613,8 @@ CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(reposi
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session ON session_cwds(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_cwds_session_first_seen
   ON session_cwds(session_id, first_seen_ms);
+CREATE INDEX IF NOT EXISTS idx_session_cwds_cwd_session
+  ON session_cwds(cwd, session_id);
 
 -- messages
 CREATE INDEX IF NOT EXISTS idx_messages_session_ordinal ON messages(session_id, ordinal);
@@ -670,6 +672,7 @@ CREATE INDEX IF NOT EXISTS idx_intent_edits_file ON intent_edits(file_path);
 
 -- session_summaries
 CREATE INDEX IF NOT EXISTS idx_session_summaries_repo ON session_summaries(repository);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_cwd ON session_summaries(cwd);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_status ON session_summaries(status);
 CREATE INDEX IF NOT EXISTS idx_session_summaries_last_ts ON session_summaries(last_intent_ts_ms);
 

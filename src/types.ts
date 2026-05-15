@@ -19,12 +19,22 @@ export interface Repository {
   gitUserEmail: string | null;
 }
 
+export type SessionSummaryStaleReason =
+  | "dirty"
+  | "summary_version_changed"
+  | "summary_policy_changed";
+
 export interface SessionSummaryEnrichment {
   summaryText: string | null;
   searchText: string | null;
   source: "llm" | null;
   runner: string | null;
   model: string | null;
+  summaryVersion: number | null;
+  currentSummaryVersion: number;
+  stale: boolean;
+  staleReasons: SessionSummaryStaleReason[];
+  invalidReason: string | null;
   generatedAt: string | null;
   dirty: boolean;
 }
