@@ -9,7 +9,7 @@ import {
   type SessionClassificationSignals,
 } from "./classifier.js";
 
-export const SESSION_CLASSIFIER_VERSION = 2;
+export const SESSION_CLASSIFIER_VERSION = 1;
 
 interface SessionClassificationRow extends SessionClassificationSignals {
   sessionId: string;

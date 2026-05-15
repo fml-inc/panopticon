@@ -96,21 +96,21 @@ describe("session classifications", () => {
         session_id: "automated-headless",
         classification: "automated",
         reason: "project=codex-headless",
-        classifier_version: 2,
+        classifier_version: 1,
         computed_at_ms: 12_345,
       },
       {
         session_id: "automated-model",
         classification: "automated",
         reason: "model=codex-auto-review",
-        classifier_version: 2,
+        classifier_version: 1,
         computed_at_ms: 12_345,
       },
       {
         session_id: "automated-subagent",
         classification: "automated",
         reason: "relationship_type=subagent",
-        classifier_version: 2,
+        classifier_version: 1,
         computed_at_ms: 12_345,
       },
       {
@@ -118,7 +118,7 @@ describe("session classifications", () => {
         classification: "interactive",
         reason:
           "top-level codex session with UserPromptSubmit hook and no deterministic automation markers",
-        classifier_version: 2,
+        classifier_version: 1,
         computed_at_ms: 12_345,
       },
     ]);
