@@ -32,7 +32,11 @@ vi.mock("../config.js", () => {
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { insertHookEvent } from "../db/store.js";
+import {
+  insertHookEvent,
+  insertPiHookMessageFromEvent,
+  upsertSession,
+} from "../db/store.js";
 import { rebuildIntentClaimsFromHooks } from "./asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "./asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "./project.js";
@@ -78,6 +82,7 @@ function ingest(opts: {
   cwd?: string;
   repository?: string;
   tool_name?: string;
+  target?: string;
 }): number {
   return insertHookEvent({
     session_id: SESSION,
@@ -86,7 +91,7 @@ function ingest(opts: {
     cwd: opts.cwd,
     repository: opts.repository,
     tool_name: opts.tool_name,
-    target: "claude-code",
+    target: opts.target ?? "claude-code",
     payload: opts.payload,
   });
 }
@@ -170,6 +175,72 @@ describe("rebuildIntentProjection", () => {
 });
 
 describe("query: intent_for_code", () => {
+  it("normalizes Pi prompt and tool hooks into messages", () => {
+    const promptId = ingest({
+      event_type: "UserPromptSubmit",
+      target: "pi",
+      ts: 1000,
+      payload: { prompt: "write a file", session_id: SESSION },
+    });
+    const toolId = ingest({
+      event_type: "PreToolUse",
+      target: "pi",
+      ts: 1100,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        tool_input: { path: "pi-message.md", content: "hello" },
+      },
+    });
+
+    upsertSession({ session_id: SESSION, target: "pi", has_hooks: 1 });
+    expect(insertPiHookMessageFromEvent(promptId)).toBe(true);
+    expect(insertPiHookMessageFromEvent(toolId)).toBe(true);
+
+    const rows = getDb()
+      .prepare(
+        `SELECT ordinal, role, content, has_tool_use, sync_id
+         FROM messages
+         WHERE session_id = ?
+         ORDER BY ordinal`,
+      )
+      .all(SESSION) as Array<{
+      ordinal: number;
+      role: string;
+      content: string;
+      has_tool_use: number;
+      sync_id: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        ordinal: 0,
+        role: "user",
+        content: "write a file",
+        has_tool_use: 0,
+        sync_id: expect.stringMatching(/^hook:/),
+      },
+      {
+        ordinal: 1,
+        role: "assistant",
+        content: "[write: pi-message.md]",
+        has_tool_use: 1,
+        sync_id: expect.stringMatching(/^hook:/),
+      },
+    ]);
+
+    const session = getDb()
+      .prepare(
+        `SELECT message_count, user_message_count
+         FROM sessions
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as
+      | { message_count: number; user_message_count: number }
+      | undefined;
+    expect(session).toEqual({ message_count: 2, user_message_count: 1 });
+  });
+
   it("projects Pi lowercase edit hook events into intent edits", () => {
     const file = path.join(scratchDir, "pi-edit.ts");
     fs.writeFileSync(file, "old value");

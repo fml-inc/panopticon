@@ -10,6 +10,7 @@ import {
   incrementEventTypeCount,
   incrementToolCount,
   insertHookEvent,
+  insertPiHookMessageFromEvent,
   insertRepoConfigSnapshot,
   upsertSession,
   upsertSessionCwd,
@@ -490,6 +491,12 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     sessionFields.ended_at_ms = timestampMs;
   }
   upsertSession(sessionFields);
+
+  try {
+    insertPiHookMessageFromEvent(hookEventId);
+  } catch (err) {
+    log.hooks.error("hook message normalization failed:", err);
+  }
 
   // Link subagent sessions to their parents in real-time.
   // SubagentStart fires on the PARENT session with agent_id identifying
