@@ -19,6 +19,7 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
+import { refreshSessionClassification } from "../session_classifications/project.js";
 import { buildSessionStartRecentHistoryContext } from "./session-context.js";
 
 const cwd = path.join(os.tmpdir(), "panopticon-session-context-cwd");
@@ -210,6 +211,28 @@ describe("buildSessionStartRecentHistoryContext", () => {
     expect(context).toBeNull();
   });
 
+  it("excludes sessions without an interactive classification", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "automated",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 7_000,
+      firstPrompt: "You are a code reviewer.",
+    });
+    insertSummary({
+      sessionId: "automated",
+      sessionCwd: cwd,
+      status: "read-only",
+      lastIntentTsMs: baseMs + 7_500,
+      summaryText: "Automated review should not be injected.",
+    });
+
+    expect(
+      buildSessionStartRecentHistoryContext({ session_id: "current", cwd }),
+    ).toBeNull();
+  });
+
   it("returns null when there is no cwd or no matching history", () => {
     expect(
       buildSessionStartRecentHistoryContext({ session_id: "current" }),
@@ -233,14 +256,15 @@ function insertSession(opts: {
   const db = getDb();
   db.prepare(
     `INSERT INTO sessions (
-       session_id, target, started_at_ms, first_prompt, has_hooks
+       session_id, target, started_at_ms, first_prompt, user_message_count, has_hooks
      )
-     VALUES (?, ?, ?, ?, 1)`,
+     VALUES (?, ?, ?, ?, 1, 1)`,
   ).run(opts.id, opts.target, opts.startedAtMs, opts.firstPrompt);
   db.prepare(
     `INSERT INTO session_cwds (session_id, cwd, first_seen_ms)
      VALUES (?, ?, ?)`,
   ).run(opts.id, opts.sessionCwd, opts.startedAtMs);
+  refreshSessionClassification(opts.id, opts.startedAtMs);
 }
 
 function insertSummary(opts: {

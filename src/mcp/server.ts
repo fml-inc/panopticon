@@ -218,7 +218,8 @@ server.tool(
   `Execute a read-only SQL query against the panopticon database.
 
 Schema:
-  sessions(session_id PK, target, started_at_ms, ended_at_ms, first_prompt, permission_mode, agent_version, model, cli_version, scanner_file_path, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens, total_reasoning_tokens, turn_count, otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner, message_count, user_message_count, parent_session_id, relationship_type, is_automated, created_at, project, machine)
+  sessions(session_id PK, target, started_at_ms, ended_at_ms, first_prompt, permission_mode, agent_version, model, cli_version, scanner_file_path, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens, total_reasoning_tokens, turn_count, otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner, message_count, user_message_count, parent_session_id, relationship_type, created_at, project, machine)
+  session_classifications(session_id PK, classification, reason, classifier_version, computed_at_ms)
   session_repositories(session_id, repository, first_seen_ms, git_user_name, git_user_email, branch)
   session_cwds(session_id, cwd, first_seen_ms)
   messages(id, session_id, ordinal, role, content, timestamp_ms, has_thinking, has_tool_use, content_length, is_system, model, token_usage, context_tokens, output_tokens, has_context_tokens, has_output_tokens, uuid, parent_uuid, sync_id)

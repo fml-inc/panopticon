@@ -9,6 +9,7 @@ import {
   markDataComponentsCurrentInDb,
   RAW_SCANNER_COMPONENT,
   RESYNC_DATA_COMPONENTS,
+  SESSION_CLASSIFICATION_COMPONENT,
   SESSION_SUMMARY_PROJECTION_COMPONENT,
   staleDataComponentsInDb,
   targetDataVersion,
@@ -137,8 +138,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_message_count INTEGER DEFAULT 0,
   parent_session_id TEXT,
   relationship_type TEXT DEFAULT '',
-  is_automated INTEGER DEFAULT 0,
   created_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS session_classifications (
+  session_id TEXT PRIMARY KEY,
+  classification TEXT NOT NULL CHECK (classification IN ('interactive', 'automated')),
+  reason TEXT NOT NULL,
+  classifier_version INTEGER NOT NULL,
+  computed_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS session_repositories (
@@ -605,6 +613,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_machine ON sessions(machine);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)
   WHERE parent_session_id IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS idx_session_classifications_classification
+  ON session_classifications(classification);
+
 -- session_repositories
 CREATE INDEX IF NOT EXISTS idx_session_repos_session ON session_repositories(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(repository);
@@ -822,6 +833,13 @@ export function needsSessionSummaryProjectionRebuild(): boolean {
   return _staleDataComponents.has(SESSION_SUMMARY_PROJECTION_COMPONENT);
 }
 
+export function needsSessionClassificationRebuild(): boolean {
+  if (!_db) {
+    getDb();
+  }
+  return _staleDataComponents.has(SESSION_CLASSIFICATION_COMPONENT);
+}
+
 export function markDataComponentsCurrent(
   components: readonly DataComponent[],
 ): void {
@@ -841,6 +859,10 @@ export function markClaimsRebuildComplete(): void {
 
 export function markSessionSummaryProjectionComplete(): void {
   markDataComponentsCurrent([SESSION_SUMMARY_PROJECTION_COMPONENT]);
+}
+
+export function markSessionClassificationComplete(): void {
+  markDataComponentsCurrent([SESSION_CLASSIFICATION_COMPONENT]);
 }
 
 export function markAllDataRebuildsComplete(): void {

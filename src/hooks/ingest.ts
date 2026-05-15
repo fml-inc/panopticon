@@ -504,7 +504,6 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         target: targetId,
         parent_session_id: sessionId,
         relationship_type: "subagent",
-        is_automated: 1,
       };
       if (eventType === "SubagentStart") {
         subagentFields.started_at_ms = timestampMs;

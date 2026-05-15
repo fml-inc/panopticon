@@ -27,10 +27,12 @@ import {
   getDb,
   markClaimsRebuildComplete,
   markResyncComplete,
+  markSessionClassificationComplete,
   markSessionSummaryProjectionComplete,
   needsClaimsRebuild,
   needsRawDataResync,
   needsResync,
+  needsSessionClassificationRebuild,
   needsSessionSummaryProjectionRebuild,
   SCANNER_DATA_VERSION,
   staleDataComponents,
@@ -57,6 +59,7 @@ describe("data version registry", () => {
     expect(needsRawDataResync()).toBe(false);
     expect(needsClaimsRebuild()).toBe(false);
     expect(needsSessionSummaryProjectionRebuild()).toBe(false);
+    expect(needsSessionClassificationRebuild()).toBe(false);
     expect(staleDataComponents()).toEqual([]);
   });
 
@@ -82,6 +85,7 @@ describe("data version registry", () => {
       "claims.active",
       "claims.projection",
       "session_summaries.projection",
+      "session_classifications",
     ]);
   });
 
@@ -145,6 +149,7 @@ describe("data version registry", () => {
     getDb();
     markClaimsRebuildComplete();
     markSessionSummaryProjectionComplete();
+    markSessionClassificationComplete();
     closeDb();
 
     const raw = new Database(config.dbPath);
@@ -164,6 +169,7 @@ describe("data version registry", () => {
     expect(needsClaimsRebuild()).toBe(false);
     expect(needsRawDataResync()).toBe(false);
     expect(needsSessionSummaryProjectionRebuild()).toBe(true);
+    expect(needsSessionClassificationRebuild()).toBe(false);
     expect(staleDataComponents()).toContain("session_summaries.projection");
 
     markSessionSummaryProjectionComplete();

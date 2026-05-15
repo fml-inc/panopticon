@@ -1420,6 +1420,7 @@ describe("runMigrations — existing DB", () => {
       .all() as Array<{ name: string }>;
     expect(sessionCols.map((col) => col.name)).not.toContain("summary");
     expect(sessionCols.map((col) => col.name)).not.toContain("summary_version");
+    expect(sessionCols.map((col) => col.name)).not.toContain("is_automated");
     expect(
       db
         .prepare(
@@ -1462,6 +1463,7 @@ describe("runMigrations — existing DB", () => {
          FROM sqlite_master
          WHERE type = 'table'
            AND name IN (
+             'session_classifications',
              'session_summary_enrichments',
              'session_summary_search_index',
              'attempt_backoffs'
@@ -1471,6 +1473,7 @@ describe("runMigrations — existing DB", () => {
       .all() as Array<{ name: string }>;
     expect(tables).toEqual([
       { name: "attempt_backoffs" },
+      { name: "session_classifications" },
       { name: "session_summary_enrichments" },
       { name: "session_summary_search_index" },
     ]);
@@ -1887,6 +1890,71 @@ describe("runMigrations — existing DB", () => {
       { session_id: "session:with-summary", derived_synced_seq: 0 },
       { session_id: "session:without-summary", derived_synced_seq: 0 },
     ]);
+  });
+
+  it("removes legacy session automation column and creates classification storage", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        target TEXT,
+        started_at_ms INTEGER,
+        scanner_file_path TEXT,
+        sync_seq INTEGER DEFAULT 0,
+        project TEXT,
+        machine TEXT NOT NULL DEFAULT 'local',
+        parent_session_id TEXT,
+        is_automated INTEGER DEFAULT 0
+      );
+    `);
+    db.prepare(
+      `INSERT INTO sessions (session_id, target, machine, is_automated)
+       VALUES (?, ?, ?, ?)`,
+    ).run("session:legacy-automation", "codex", "local", 1);
+
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 21) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const sessionCols = db
+      .prepare("PRAGMA table_info(sessions)")
+      .all() as Array<{ name: string }>;
+    expect(sessionCols.map((col) => col.name)).not.toContain("is_automated");
+    expect(
+      db
+        .prepare(
+          `SELECT session_id, target, machine
+           FROM sessions
+           WHERE session_id = ?`,
+        )
+        .get("session:legacy-automation"),
+    ).toEqual({
+      session_id: "session:legacy-automation",
+      target: "codex",
+      machine: "local",
+    });
+
+    const classificationTable = db
+      .prepare(
+        `SELECT name
+         FROM sqlite_master
+         WHERE type = 'table'
+           AND name = 'session_classifications'`,
+      )
+      .get() as { name: string } | undefined;
+    expect(classificationTable).toEqual({ name: "session_classifications" });
+
+    const version = db
+      .prepare(`SELECT version FROM data_versions WHERE component = ?`)
+      .get("session_classifications") as { version: number };
+    expect(version.version).toBe(0);
   });
 
   it("runs up() function migration", () => {

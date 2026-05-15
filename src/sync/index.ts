@@ -11,6 +11,7 @@ export type {
   CodeProvenanceSyncRecord,
   IntentSessionSummarySyncRecord,
   RepoConfigSnapshotRecord,
+  SessionClassificationSyncRecord,
   SessionDerivedStateSyncRecord,
   SessionSummaryEnrichmentSyncRecord,
   SessionSummarySyncRecord,
@@ -22,8 +23,4 @@ export type {
   TableSyncDescriptor,
   UserConfigSnapshotRecord,
 } from "./types.js";
-export {
-  readWatermark,
-  resetWatermarks,
-  watermarkKey,
-} from "./watermark.js";
+export { readWatermark, resetWatermarks, watermarkKey } from "./watermark.js";

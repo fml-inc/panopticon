@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
+import { refreshSessionClassification } from "../session_classifications/project.js";
 import { getDb } from "./schema.js";
 
 export interface OtelLogRow {
@@ -390,7 +391,6 @@ export interface SessionUpsert {
   has_scanner?: number;
   parent_session_id?: string;
   relationship_type?: string;
-  is_automated?: number;
 }
 
 export function upsertSession(row: SessionUpsert): void {
@@ -401,14 +401,14 @@ export function upsertSession(row: SessionUpsert): void {
        total_input_tokens, total_output_tokens, total_cache_read_tokens,
        total_cache_creation_tokens, total_reasoning_tokens, turn_count,
        otel_input_tokens, otel_output_tokens, otel_cache_read_tokens, otel_cache_creation_tokens,
-       models, project, created_at, parent_session_id, relationship_type, is_automated,
+       models, project, created_at, parent_session_id, relationship_type,
        has_hooks, has_otel, has_scanner)
      VALUES (@session_id, @target, @started_at_ms, @ended_at_ms, @first_prompt,
        @permission_mode, @agent_version, @model, @cli_version, @scanner_file_path,
        @total_input_tokens, @total_output_tokens, @total_cache_read_tokens,
        @total_cache_creation_tokens, @total_reasoning_tokens, @turn_count,
        @otel_input_tokens, @otel_output_tokens, @otel_cache_read_tokens, @otel_cache_creation_tokens,
-       @model, @project, @created_at, @parent_session_id, @relationship_type, @is_automated,
+       @model, @project, @created_at, @parent_session_id, @relationship_type,
        @has_hooks, @has_otel, @has_scanner)
      ON CONFLICT(session_id) DO UPDATE SET
        target = COALESCE(excluded.target, sessions.target),
@@ -439,7 +439,6 @@ export function upsertSession(row: SessionUpsert): void {
        project = COALESCE(sessions.project, excluded.project),
        parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
        relationship_type = COALESCE(excluded.relationship_type, sessions.relationship_type),
-       is_automated = COALESCE(excluded.is_automated, sessions.is_automated),
        has_hooks = MAX(COALESCE(sessions.has_hooks, 0), COALESCE(excluded.has_hooks, 0)),
        has_otel = MAX(COALESCE(sessions.has_otel, 0), COALESCE(excluded.has_otel, 0)),
        has_scanner = MAX(COALESCE(sessions.has_scanner, 0), COALESCE(excluded.has_scanner, 0)),
@@ -470,44 +469,17 @@ export function upsertSession(row: SessionUpsert): void {
     created_at: row.created_at ?? null,
     parent_session_id: row.parent_session_id ?? null,
     relationship_type: row.relationship_type ?? null,
-    is_automated: row.is_automated ?? null,
     has_hooks: row.has_hooks ?? null,
     has_otel: row.has_otel ?? null,
     has_scanner: row.has_scanner ?? null,
   });
-}
-
-/** Prefixes/substrings that identify automated (non-interactive) sessions. */
-const AUTOMATED_PREFIXES = [
-  "You are a code reviewer.",
-  "You are a security code reviewer.",
-  "You are a design reviewer.",
-  "You are a code assistant. Your task is to address",
-  "You are a code review insights analyst.",
-  "You are reviewing whether an implementation matches",
-  "You are a plan document reviewer.",
-  "You are a spec document reviewer.",
-  "You are summarizing a day of AI agent activity.",
-  "You are analyzing AI agent sessions.",
-  "## Analysis Request",
-  "# Fix Request",
-];
-const AUTOMATED_SUBSTRINGS = ["invoked by roborev to perform this review"];
-
-function isAutomatedPrompt(firstPrompt: string): boolean {
-  for (const p of AUTOMATED_PREFIXES) {
-    if (firstPrompt.startsWith(p)) return true;
-  }
-  for (const s of AUTOMATED_SUBSTRINGS) {
-    if (firstPrompt.includes(s)) return true;
-  }
-  return false;
+  refreshSessionClassification(row.session_id);
 }
 
 /**
- * Recompute message_count, user_message_count, and is_automated
- * from the messages table. is_automated is set when user_message_count <= 1
- * and first_prompt matches a known automated pattern.
+ * Recompute message_count and user_message_count from the messages table.
+ * Session interaction classification is derived separately from this count
+ * and other raw session signals.
  */
 export function updateSessionMessageCounts(sessionId: string): void {
   const db = getDb();
@@ -517,36 +489,21 @@ export function updateSessionMessageCounts(sessionId: string): void {
     .prepare(
       `SELECT
          (SELECT COUNT(*) FROM messages WHERE session_id = ?) as msg_count,
-         (SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND is_system = 0) as user_count,
-         (SELECT first_prompt FROM sessions WHERE session_id = ?) as first_prompt`,
+         (SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND is_system = 0) as user_count`,
     )
-    .get(sessionId, sessionId, sessionId) as {
+    .get(sessionId, sessionId) as {
     msg_count: number;
     user_count: number;
-    first_prompt: string | null;
   };
-
-  const isAutomated =
-    counts.user_count <= 1 &&
-    counts.first_prompt != null &&
-    isAutomatedPrompt(counts.first_prompt)
-      ? 1
-      : 0;
 
   db.prepare(
     `UPDATE sessions SET
        message_count = ?,
        user_message_count = ?,
-       is_automated = CASE WHEN ? > 1 THEN 0 ELSE ? END,
        sync_seq = COALESCE(sync_seq, 0) + 1
      WHERE session_id = ?`,
-  ).run(
-    counts.msg_count,
-    counts.user_count,
-    counts.user_count,
-    isAutomated,
-    sessionId,
-  );
+  ).run(counts.msg_count, counts.user_count, sessionId);
+  refreshSessionClassification(sessionId);
 }
 
 /**

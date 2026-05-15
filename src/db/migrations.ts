@@ -39,6 +39,7 @@ import {
   CLAIM_DERIVED_COMPONENTS,
   ensureDataVersionsTable,
   markDataComponentsStaleInDb,
+  SESSION_CLASSIFICATION_COMPONENT,
   SESSION_SUMMARY_PROJECTION_COMPONENT,
 } from "./data-versions.js";
 import type { Database } from "./driver.js";
@@ -679,6 +680,18 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
   // One-time unreleased-branch cleanup: released v0.2.10 still has the legacy
   // sessions.summary columns, but none of the intermediate PR-only summary
   // table shapes shipped, so we rebuild directly to the final sessions schema.
+  rebuildSessionsTableToCurrentShape(db);
+}
+
+function rebuildSessionsTableWithoutIsAutomated(db: Database): void {
+  if (!tableExists(db, "sessions")) return;
+  if (!tableHasColumn(db, "sessions", "is_automated")) return;
+  rebuildSessionsTableToCurrentShape(db);
+  ensureDataVersionsTable(db);
+  markDataComponentsStaleInDb(db, [SESSION_CLASSIFICATION_COMPONENT]);
+}
+
+function rebuildSessionsTableToCurrentShape(db: Database): void {
   const sessionValueExpr = (column: string, fallbackSql = "NULL"): string => {
     return tableHasColumn(db, "sessions", column) ? column : fallbackSql;
   };
@@ -723,7 +736,6 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
       user_message_count INTEGER DEFAULT 0,
       parent_session_id TEXT,
       relationship_type TEXT DEFAULT '',
-      is_automated INTEGER DEFAULT 0,
       created_at INTEGER
     )
   `);
@@ -738,8 +750,7 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
       otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner,
       sync_dirty, sync_seq, derived_sync_seq, tool_counts, hook_tool_counts, event_type_counts,
       hook_event_type_counts, project, machine, message_count,
-      user_message_count, parent_session_id, relationship_type, is_automated,
-      created_at
+      user_message_count, parent_session_id, relationship_type, created_at
     )
     SELECT
       ${sessionValueExpr("session_id")},
@@ -780,7 +791,6 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
       ${sessionValueExpr("user_message_count", "0")},
       ${sessionValueExpr("parent_session_id")},
       ${sessionValueExpr("relationship_type", "''")},
-      ${sessionValueExpr("is_automated", "0")},
       ${sessionValueExpr("created_at", "NULL")}
     FROM sessions
   `);
@@ -1305,6 +1315,28 @@ export const MIGRATIONS: Migration[] = [
             ON session_cwds(cwd, session_id)
         `);
       }
+    },
+  },
+  {
+    id: 21,
+    name: "move_session_automation_to_classification_projection",
+    up: (db) => {
+      rebuildSessionsTableWithoutIsAutomated(db);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS session_classifications (
+          session_id TEXT PRIMARY KEY,
+          classification TEXT NOT NULL CHECK (classification IN ('interactive', 'automated')),
+          reason TEXT NOT NULL,
+          classifier_version INTEGER NOT NULL,
+          computed_at_ms INTEGER NOT NULL
+        )
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_session_classifications_classification
+          ON session_classifications(classification)
+      `);
+      ensureDataVersionsTable(db);
+      markDataComponentsStaleInDb(db, [SESSION_CLASSIFICATION_COMPONENT]);
     },
   },
 ];

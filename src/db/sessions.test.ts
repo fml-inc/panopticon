@@ -39,6 +39,7 @@ function getSession(sessionId: string) {
 
 function clearSessions() {
   const db = getDb();
+  db.prepare("DELETE FROM session_classifications").run();
   db.prepare("DELETE FROM sessions").run();
 }
 

@@ -24,6 +24,7 @@ import {
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
+import { rebuildSessionClassifications } from "../session_classifications/project.js";
 import { scanOnce } from "./loop.js";
 import {
   clearScannerStatus,
@@ -59,7 +60,48 @@ const SESSION_MERGE_COLUMNS = [
   "otel_cache_read_tokens",
   "otel_cache_creation_tokens",
   "permission_mode",
-  "is_automated",
+  "created_at",
+];
+
+const SESSION_PRESERVE_COLUMNS = [
+  "session_id",
+  "target",
+  "started_at_ms",
+  "ended_at_ms",
+  "cwd",
+  "first_prompt",
+  "permission_mode",
+  "agent_version",
+  "model",
+  "cli_version",
+  "scanner_file_path",
+  "total_input_tokens",
+  "total_output_tokens",
+  "total_cache_read_tokens",
+  "total_cache_creation_tokens",
+  "total_reasoning_tokens",
+  "turn_count",
+  "otel_input_tokens",
+  "otel_output_tokens",
+  "otel_cache_read_tokens",
+  "otel_cache_creation_tokens",
+  "models",
+  "has_hooks",
+  "has_otel",
+  "has_scanner",
+  "sync_dirty",
+  "sync_seq",
+  "derived_sync_seq",
+  "tool_counts",
+  "hook_tool_counts",
+  "event_type_counts",
+  "hook_event_type_counts",
+  "project",
+  "machine",
+  "message_count",
+  "user_message_count",
+  "parent_session_id",
+  "relationship_type",
   "created_at",
 ];
 
@@ -81,6 +123,9 @@ export interface ReparseDerivedStateResult {
   projectedSessionSummaries: number;
   projectedMemberships: number;
   projectedProvenance: number;
+  classifiedSessions: number;
+  interactiveSessions: number;
+  automatedSessions: number;
   totalMs: number;
 }
 
@@ -249,10 +294,17 @@ export function rebuildDerivedStateFromRaw(
   log(
     `Derived-state phase intent-projection: ${formatMs(performance.now() - phaseStartedAt)} (intents=${projection.intents} edits=${projection.edits} summaries=${projection.sessionSummaries})`,
   );
+
+  log("Derived-state rebuild: classifying sessions...");
+  phaseStartedAt = performance.now();
+  const classifications = rebuildSessionClassifications();
+  log(
+    `Derived-state phase session-classification: ${formatMs(performance.now() - phaseStartedAt)} (classified=${classifications.classified} interactive=${classifications.interactive} automated=${classifications.automated})`,
+  );
   const totalMs = performance.now() - startedAt;
 
   log(
-    `Derived-state rebuild finished in ${formatMs(totalMs)} (hook_prompts=${hooks.prompts} hook_edits=${hooks.edits} active_heads_claims=${activeHeadsAfterClaims} landed_checked=${landed.checked} active_heads_landed=${activeHeadsAfterLanded} projected_intents=${projection.intents} projected_edits=${projection.edits} projected_summaries=${projection.sessionSummaries})`,
+    `Derived-state rebuild finished in ${formatMs(totalMs)} (hook_prompts=${hooks.prompts} hook_edits=${hooks.edits} active_heads_claims=${activeHeadsAfterClaims} landed_checked=${landed.checked} active_heads_landed=${activeHeadsAfterLanded} projected_intents=${projection.intents} projected_edits=${projection.edits} projected_summaries=${projection.sessionSummaries} classified_sessions=${classifications.classified})`,
   );
 
   return {
@@ -266,6 +318,9 @@ export function rebuildDerivedStateFromRaw(
     projectedSessionSummaries: projection.sessionSummaries,
     projectedMemberships: projection.memberships,
     projectedProvenance: projection.provenance,
+    classifiedSessions: classifications.classified,
+    interactiveSessions: classifications.interactive,
+    automatedSessions: classifications.automated,
     totalMs,
   };
 }
@@ -485,9 +540,10 @@ export function reparseAll(
       // sessions are rebuilt from raw files above and should remain owned by
       // the reparse output.
       try {
+        const cols = SESSION_PRESERVE_COLUMNS.join(", ");
         tempDb.exec(`
-          INSERT OR IGNORE INTO main.sessions
-          SELECT *
+          INSERT OR IGNORE INTO main.sessions (${cols})
+          SELECT ${cols}
           FROM old_db.sessions
           WHERE COALESCE(old_db.sessions.has_scanner, 0) = 0
         `);

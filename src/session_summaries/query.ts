@@ -6,6 +6,7 @@ import {
   resolveCanonicalFilePath,
   resolveRepositoryRootForPath,
 } from "../paths.js";
+import { ensureSessionClassifications } from "../session_classifications/project.js";
 import { sessionSummaryLastActivitySql } from "./activity.js";
 import {
   type SessionSummaryStaleReason,
@@ -376,6 +377,7 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
   if (opts.cwdCandidates.length === 0) return [];
 
   const db = getDb();
+  ensureSessionClassifications();
   const cwdPlaceholders = opts.cwdCandidates.map(() => "?").join(", ");
   const activityExpr = sessionSummaryLastActivitySql();
   const useSinceMs =
@@ -403,6 +405,9 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
          FROM matched_sessions m
          JOIN session_summaries s
            ON s.session_id = m.session_id
+         JOIN session_classifications sc
+           ON sc.session_id = s.session_id
+          AND sc.classification = 'interactive'
          ${SESSION_SUMMARY_PROJECTION_JOINS}
          WHERE s.session_id != ?
          ${useSinceMs ? `AND ${activityExpr} >= ?` : ""}

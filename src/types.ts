@@ -70,6 +70,8 @@ export interface Session {
   target: string | null;
   model: string | null;
   project: string | null;
+  classification: "interactive" | "automated" | null;
+  classificationReason: string | null;
   startedAt: string | null;
   endedAt: string | null;
   firstPrompt: string | null;
@@ -147,6 +149,8 @@ export interface SessionTimelineResult {
     project: string | null;
     parentSessionId: string | null;
     relationshipType: string | null;
+    classification: "interactive" | "automated" | null;
+    classificationReason: string | null;
     repositories: Repository[];
     childSessions: ChildSession[];
   } | null;
