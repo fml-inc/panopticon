@@ -219,6 +219,7 @@ describe("buildSessionStartRecentHistoryContext", () => {
       target: "codex",
       startedAtMs: baseMs + 7_000,
       firstPrompt: "You are a code reviewer.",
+      hasUserPromptSubmit: false,
     });
     insertSummary({
       sessionId: "automated",
@@ -252,14 +253,24 @@ function insertSession(opts: {
   target: string;
   startedAtMs: number;
   firstPrompt: string;
+  hasUserPromptSubmit?: boolean;
 }): void {
   const db = getDb();
   db.prepare(
     `INSERT INTO sessions (
-       session_id, target, started_at_ms, first_prompt, user_message_count, has_hooks
+       session_id, target, started_at_ms, first_prompt, user_message_count,
+       hook_event_type_counts, has_hooks
      )
-     VALUES (?, ?, ?, ?, 1, 1)`,
-  ).run(opts.id, opts.target, opts.startedAtMs, opts.firstPrompt);
+     VALUES (?, ?, ?, ?, 1, ?, 1)`,
+  ).run(
+    opts.id,
+    opts.target,
+    opts.startedAtMs,
+    opts.firstPrompt,
+    JSON.stringify(
+      opts.hasUserPromptSubmit === false ? {} : { UserPromptSubmit: 1 },
+    ),
+  );
   db.prepare(
     `INSERT INTO session_cwds (session_id, cwd, first_seen_ms)
      VALUES (?, ?, ?)`,

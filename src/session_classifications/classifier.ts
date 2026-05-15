@@ -5,7 +5,10 @@ export interface SessionClassificationSignals {
   firstPrompt: string | null;
   model: string | null;
   models: string | null;
+  project: string | null;
+  cwd: string | null;
   userMessageCount: number;
+  hasUserPromptSubmit: boolean;
   parentSessionId: string | null;
   relationshipType: string | null;
 }
@@ -17,62 +20,7 @@ export interface SessionClassificationResult {
 
 const INTERACTIVE_TARGETS = new Set(["claude", "codex"]);
 const AUTOMATED_MODELS = new Set(["codex-auto-review"]);
-
-const AUTOMATED_PROMPT_PREFIXES = [
-  {
-    prefix:
-      "The following is the Codex agent history whose request action you are assessing.",
-    reason: "codex approval-review prompt",
-  },
-  {
-    prefix:
-      "The following is the Codex agent history added since your last approval assessment.",
-    reason: "codex approval-review continuation prompt",
-  },
-  { prefix: "You are a code reviewer.", reason: "code reviewer prompt" },
-  {
-    prefix: "You are a security code reviewer.",
-    reason: "security reviewer prompt",
-  },
-  { prefix: "You are a design reviewer.", reason: "design reviewer prompt" },
-  {
-    prefix: "You are a code assistant. Your task is to address",
-    reason: "automated fix prompt",
-  },
-  {
-    prefix: "You are a code review insights analyst.",
-    reason: "review insights prompt",
-  },
-  {
-    prefix: "You are reviewing whether an implementation matches",
-    reason: "implementation review prompt",
-  },
-  {
-    prefix: "You are a plan document reviewer.",
-    reason: "plan reviewer prompt",
-  },
-  {
-    prefix: "You are a spec document reviewer.",
-    reason: "spec reviewer prompt",
-  },
-  {
-    prefix: "You are summarizing a day of AI agent activity.",
-    reason: "activity summary prompt",
-  },
-  {
-    prefix: "You are analyzing AI agent sessions.",
-    reason: "session analysis prompt",
-  },
-  { prefix: "## Analysis Request", reason: "analysis request prompt" },
-  { prefix: "# Fix Request", reason: "fix request prompt" },
-];
-
-const AUTOMATED_PROMPT_SUBSTRINGS = [
-  {
-    substring: "invoked by roborev to perform this review",
-    reason: "roborev marker",
-  },
-];
+const HEADLESS_PROJECTS = new Set(["claude-headless", "codex-headless"]);
 
 export function classifySession(
   signals: SessionClassificationSignals,
@@ -88,12 +36,13 @@ export function classifySession(
     signals.firstPrompt !== null &&
     signals.firstPrompt.trim().length > 0 &&
     signals.userMessageCount > 0 &&
+    signals.hasUserPromptSubmit &&
     signals.target !== null &&
     INTERACTIVE_TARGETS.has(signals.target)
   ) {
     return {
       classification: "interactive",
-      reason: `top-level ${signals.target} session with user messages and no deterministic automation markers`,
+      reason: `top-level ${signals.target} session with UserPromptSubmit hook and no deterministic automation markers`,
     };
   }
 
@@ -107,23 +56,34 @@ function definiteAutomationReason(
     return "relationship_type=subagent";
   }
 
+  const headlessProject = findHeadlessProject(signals.project);
+  if (headlessProject) {
+    return `project=${headlessProject}`;
+  }
+
+  const headlessCwd = findHeadlessCwd(signals.cwd);
+  if (headlessCwd) {
+    return `cwd=${headlessCwd}`;
+  }
+
   const automatedModel = findAutomatedModel(signals);
   if (automatedModel) {
     return `model=${automatedModel}`;
   }
 
-  const firstPrompt = signals.firstPrompt ?? "";
-  for (const { prefix, reason } of AUTOMATED_PROMPT_PREFIXES) {
-    if (firstPrompt.startsWith(prefix)) {
-      return reason;
-    }
-  }
-  for (const { substring, reason } of AUTOMATED_PROMPT_SUBSTRINGS) {
-    if (firstPrompt.includes(substring)) {
-      return reason;
-    }
-  }
+  return null;
+}
 
+function findHeadlessProject(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return HEADLESS_PROJECTS.has(normalized) ? normalized : null;
+}
+
+function findHeadlessCwd(value: string | null): string | null {
+  const normalized = value?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+  for (const project of HEADLESS_PROJECTS) {
+    if (normalized.endsWith(`/panopticon/${project}`)) return project;
+  }
   return null;
 }
 

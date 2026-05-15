@@ -9,7 +9,7 @@ import {
   type SessionClassificationSignals,
 } from "./classifier.js";
 
-export const SESSION_CLASSIFIER_VERSION = 1;
+export const SESSION_CLASSIFIER_VERSION = 2;
 
 interface SessionClassificationRow extends SessionClassificationSignals {
   sessionId: string;
@@ -220,7 +220,29 @@ function loadSessionClassificationRows(
               s.first_prompt,
               s.model,
               s.models,
+              s.project,
+              COALESCE(
+                s.cwd,
+                (
+                  SELECT scw.cwd
+                  FROM session_cwds scw
+                  WHERE scw.session_id = s.session_id
+                  ORDER BY scw.first_seen_ms ASC
+                  LIMIT 1
+                )
+              ) AS cwd,
               COALESCE(s.user_message_count, 0) AS user_message_count,
+              CASE
+                WHEN COALESCE(json_extract(s.hook_event_type_counts, '$.UserPromptSubmit'), 0) > 0
+                  OR EXISTS (
+                    SELECT 1
+                    FROM hook_events he
+                    WHERE he.session_id = s.session_id
+                      AND he.event_type = 'UserPromptSubmit'
+                  )
+                THEN 1
+                ELSE 0
+              END AS has_user_prompt_submit,
               s.parent_session_id,
               s.relationship_type
        FROM sessions s
@@ -235,7 +257,10 @@ function loadSessionClassificationRows(
         first_prompt: string | null;
         model: string | null;
         models: string | null;
+        project: string | null;
+        cwd: string | null;
         user_message_count: number;
+        has_user_prompt_submit: number;
         parent_session_id: string | null;
         relationship_type: string | null;
       };
@@ -245,7 +270,10 @@ function loadSessionClassificationRows(
         firstPrompt: r.first_prompt,
         model: r.model,
         models: r.models,
+        project: r.project,
+        cwd: r.cwd,
         userMessageCount: r.user_message_count,
+        hasUserPromptSubmit: r.has_user_prompt_submit > 0,
         parentSessionId: r.parent_session_id,
         relationshipType: r.relationship_type,
       };

@@ -42,6 +42,7 @@ describe("session classifications", () => {
       target: "codex",
       firstPrompt: "continue the implementation",
       userMessageCount: 1,
+      hasUserPromptSubmit: true,
     });
     insertSession({
       sessionId: "automated-model",
@@ -49,16 +50,33 @@ describe("session classifications", () => {
       firstPrompt: "review this implementation",
       model: "codex-auto-review",
       userMessageCount: 1,
+      hasUserPromptSubmit: true,
     });
     insertSession({
-      sessionId: "automated-prompt",
+      sessionId: "automated-subagent",
+      target: "claude",
+      firstPrompt: "inspect the auth module",
+      userMessageCount: 1,
+      parentSessionId: "parent-session",
+      relationshipType: "subagent",
+    });
+    insertSession({
+      sessionId: "automated-headless",
+      target: "codex",
+      firstPrompt: "summarize this session",
+      userMessageCount: 1,
+      project: "codex-headless",
+      hasUserPromptSubmit: true,
+    });
+    insertSession({
+      sessionId: "unclassified-prompt-template",
       target: "claude",
       firstPrompt: "You are a code reviewer. Review this diff.",
       userMessageCount: 1,
     });
     insertSession({
-      sessionId: "unclassified-gemini",
-      target: "gemini",
+      sessionId: "unclassified-scanner-only",
+      target: "codex",
       firstPrompt: "inspect this project",
       userMessageCount: 1,
     });
@@ -67,33 +85,40 @@ describe("session classifications", () => {
     const rows = getClassifications();
 
     expect(result).toMatchObject({
-      sessions: 4,
-      classified: 3,
+      sessions: 6,
+      classified: 4,
       interactive: 1,
-      automated: 2,
-      unclassified: 1,
+      automated: 3,
+      unclassified: 2,
     });
     expect(rows).toEqual([
+      {
+        session_id: "automated-headless",
+        classification: "automated",
+        reason: "project=codex-headless",
+        classifier_version: 2,
+        computed_at_ms: 12_345,
+      },
       {
         session_id: "automated-model",
         classification: "automated",
         reason: "model=codex-auto-review",
-        classifier_version: 1,
+        classifier_version: 2,
         computed_at_ms: 12_345,
       },
       {
-        session_id: "automated-prompt",
+        session_id: "automated-subagent",
         classification: "automated",
-        reason: "code reviewer prompt",
-        classifier_version: 1,
+        reason: "relationship_type=subagent",
+        classifier_version: 2,
         computed_at_ms: 12_345,
       },
       {
         session_id: "interactive-codex",
         classification: "interactive",
         reason:
-          "top-level codex session with user messages and no deterministic automation markers",
-        classifier_version: 1,
+          "top-level codex session with UserPromptSubmit hook and no deterministic automation markers",
+        classifier_version: 2,
         computed_at_ms: 12_345,
       },
     ]);
@@ -107,6 +132,13 @@ describe("session classifications", () => {
     });
     expect(getClassifications()).toEqual([]);
 
+    getDb()
+      .prepare(
+        `UPDATE sessions
+         SET hook_event_type_counts = ?
+         WHERE session_id = ?`,
+      )
+      .run(JSON.stringify({ UserPromptSubmit: 1 }), "live-codex");
     getDb()
       .prepare(
         `INSERT INTO messages
@@ -131,23 +163,30 @@ function insertSession(opts: {
   firstPrompt: string;
   userMessageCount: number;
   model?: string;
+  project?: string;
+  cwd?: string;
+  hasUserPromptSubmit?: boolean;
   parentSessionId?: string;
   relationshipType?: string;
 }): void {
   getDb()
     .prepare(
       `INSERT INTO sessions (
-         session_id, target, first_prompt, model, user_message_count,
-         parent_session_id, relationship_type
+         session_id, target, first_prompt, model, project, cwd,
+         user_message_count, hook_event_type_counts, parent_session_id,
+         relationship_type
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       opts.sessionId,
       opts.target,
       opts.firstPrompt,
       opts.model ?? null,
+      opts.project ?? null,
+      opts.cwd ?? null,
       opts.userMessageCount,
+      JSON.stringify(opts.hasUserPromptSubmit ? { UserPromptSubmit: 1 } : {}),
       opts.parentSessionId ?? null,
       opts.relationshipType ?? "",
     );
