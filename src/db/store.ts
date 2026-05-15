@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
-import { refreshSessionClassification } from "../session_classifications/project.js";
 import { getDb } from "./schema.js";
+
+const AUTOMATED_MODELS = new Set(["codex-auto-review"]);
+const HEADLESS_PROJECTS = new Set(["claude-headless", "codex-headless"]);
 
 export interface OtelLogRow {
   timestamp_ns: number;
@@ -204,9 +206,14 @@ export function upsertSessionCwd(
   timestampMs: number,
 ): void {
   const db = getDb();
-  db.prepare(
-    "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-  ).run(sessionId, cwd, timestampMs);
+  const result = db
+    .prepare(
+      "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+    )
+    .run(sessionId, cwd, timestampMs);
+  if (result.changes > 0) {
+    refreshSessionAutomation(sessionId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -473,13 +480,108 @@ export function upsertSession(row: SessionUpsert): void {
     has_otel: row.has_otel ?? null,
     has_scanner: row.has_scanner ?? null,
   });
-  refreshSessionClassification(row.session_id);
+  if (
+    row.model !== undefined ||
+    row.project !== undefined ||
+    row.parent_session_id !== undefined ||
+    row.relationship_type !== undefined
+  ) {
+    refreshSessionAutomation(row.session_id);
+  }
+}
+
+function isAutomatedProject(value: string | null): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return HEADLESS_PROJECTS.has(normalized);
+}
+
+function isAutomatedCwd(value: string | null): boolean {
+  const normalized = value?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+  for (const project of HEADLESS_PROJECTS) {
+    if (normalized.endsWith(`/panopticon/${project}`)) return true;
+  }
+  return false;
+}
+
+function splitModels(value: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function hasAutomatedModel(
+  model: string | null,
+  models: string | null,
+): boolean {
+  for (const value of [model, models]) {
+    for (const part of splitModels(value)) {
+      if (AUTOMATED_MODELS.has(part)) return true;
+    }
+  }
+  return false;
+}
+
+export function refreshSessionAutomation(sessionId: string): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT s.relationship_type,
+              s.model,
+              s.models,
+              s.project,
+              COALESCE(
+                s.cwd,
+                (
+                  SELECT scw.cwd
+                  FROM session_cwds scw
+                  WHERE scw.session_id = s.session_id
+                  ORDER BY scw.first_seen_ms ASC
+                  LIMIT 1
+                )
+              ) AS cwd
+       FROM sessions s
+       WHERE s.session_id = ?`,
+    )
+    .get(sessionId) as
+    | {
+        relationship_type: string | null;
+        model: string | null;
+        models: string | null;
+        project: string | null;
+        cwd: string | null;
+      }
+    | undefined;
+
+  if (!row) return false;
+
+  const isAutomated =
+    row.relationship_type?.trim().toLowerCase() === "subagent" ||
+    isAutomatedProject(row.project) ||
+    isAutomatedCwd(row.cwd) ||
+    hasAutomatedModel(row.model, row.models)
+      ? 1
+      : 0;
+
+  const result = db
+    .prepare(
+      `UPDATE sessions
+       SET is_automated = ?,
+           sync_dirty = 1,
+           sync_seq = COALESCE(sync_seq, 0) + 1
+       WHERE session_id = ?
+         AND COALESCE(is_automated, 0) != ?`,
+    )
+    .run(isAutomated, sessionId, isAutomated);
+  return result.changes > 0;
 }
 
 /**
  * Recompute message_count and user_message_count from the messages table.
- * Session interaction classification is derived separately from this count
- * and other raw session signals.
+ * Session automation is derived separately from deterministic provenance
+ * signals such as subagent relationship, headless project/cwd, and automated
+ * model metadata.
  */
 export function updateSessionMessageCounts(sessionId: string): void {
   const db = getDb();
@@ -503,7 +605,6 @@ export function updateSessionMessageCounts(sessionId: string): void {
        sync_seq = COALESCE(sync_seq, 0) + 1
      WHERE session_id = ?`,
   ).run(counts.msg_count, counts.user_count, sessionId);
-  refreshSessionClassification(sessionId);
 }
 
 /**

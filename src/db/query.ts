@@ -1,4 +1,3 @@
-import { ensureSessionClassifications } from "../session_classifications/project.js";
 import { selectSessionSummaryDisplay } from "../session_summaries/display.js";
 import { invalidSessionSummaryEnrichmentReason } from "../session_summaries/enrichment-quality.js";
 import { getSessionSummaryRunnerPolicy } from "../session_summaries/policy.js";
@@ -163,7 +162,6 @@ export function listSessions(
 ): SessionListResult {
   const db = getDb();
   ensureSessionSummaryProjections();
-  ensureSessionClassifications();
   const limit = opts.limit ?? 20;
   const sinceMs = parseSince(opts.since);
 
@@ -178,7 +176,6 @@ export function listSessions(
 
   const sql = `
     SELECT s.session_id, s.target, s.model, s.project,
-           sc.classification, sc.reason AS classification_reason,
            s.started_at_ms, s.ended_at_ms, s.first_prompt,
            COALESCE(s.turn_count, 0) as turn_count,
            COALESCE(s.message_count, 0) as message_count,
@@ -187,7 +184,6 @@ export function listSessions(
            s.parent_session_id, s.relationship_type,
            ${SESSION_COST_SQL} as total_cost
     FROM sessions s
-    LEFT JOIN session_classifications sc ON sc.session_id = s.session_id
     ${where}
     ORDER BY s.started_at_ms DESC
     LIMIT ?
@@ -199,8 +195,6 @@ export function listSessions(
     target: string | null;
     model: string | null;
     project: string | null;
-    classification: "interactive" | "automated" | null;
-    classification_reason: string | null;
     started_at_ms: number | null;
     ended_at_ms: number | null;
     first_prompt: string | null;
@@ -433,8 +427,6 @@ export function listSessions(
       target: row.target,
       model: row.model,
       project: row.project,
-      classification: row.classification,
-      classificationReason: row.classification_reason,
       startedAt: row.started_at_ms ? toIso(row.started_at_ms) : null,
       endedAt: row.ended_at_ms ? toIso(row.ended_at_ms) : null,
       firstPrompt: row.first_prompt,
@@ -491,7 +483,6 @@ export function sessionTimeline(opts: {
   fullPayloads?: boolean;
 }): SessionTimelineResult {
   const db = getDb();
-  ensureSessionClassifications();
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
   const truncate = !opts.fullPayloads;
@@ -499,12 +490,7 @@ export function sessionTimeline(opts: {
   // Session metadata
   const sessionRow = db
     .prepare(
-      `SELECT s.session_id, s.target, s.model, s.project,
-              s.parent_session_id, s.relationship_type,
-              sc.classification, sc.reason AS classification_reason
-       FROM sessions s
-       LEFT JOIN session_classifications sc ON sc.session_id = s.session_id
-       WHERE s.session_id = ?`,
+      "SELECT session_id, target, model, project, parent_session_id, relationship_type FROM sessions WHERE session_id = ?",
     )
     .get(opts.sessionId) as
     | {
@@ -514,8 +500,6 @@ export function sessionTimeline(opts: {
         project: string | null;
         parent_session_id: string | null;
         relationship_type: string | null;
-        classification: "interactive" | "automated" | null;
-        classification_reason: string | null;
       }
     | undefined;
 
@@ -715,8 +699,6 @@ export function sessionTimeline(opts: {
       project: sessionRow.project,
       parentSessionId: sessionRow.parent_session_id,
       relationshipType: sessionRow.relationship_type,
-      classification: sessionRow.classification,
-      classificationReason: sessionRow.classification_reason,
       repositories: repoRows.map((r) => ({
         name: r.repository,
         gitUserName: r.git_user_name,

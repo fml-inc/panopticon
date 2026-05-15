@@ -28,7 +28,11 @@ vi.mock("../config.js", () => {
 });
 
 import { closeDb, getDb } from "./schema.js";
-import { upsertSession } from "./store.js";
+import {
+  updateSessionMessageCounts,
+  upsertSession,
+  upsertSessionCwd,
+} from "./store.js";
 
 function getSession(sessionId: string) {
   const db = getDb();
@@ -39,7 +43,8 @@ function getSession(sessionId: string) {
 
 function clearSessions() {
   const db = getDb();
-  db.prepare("DELETE FROM session_classifications").run();
+  db.prepare("DELETE FROM session_cwds").run();
+  db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM sessions").run();
 }
 
@@ -132,6 +137,17 @@ describe("hooks only", () => {
     const s = getSession("prompt-test")!;
     expect(s.first_prompt).toBe("first"); // COALESCE(sessions.first_prompt, excluded.first_prompt)
   });
+
+  it("does not mark prompt-template sessions automated without provenance", () => {
+    upsertSession({
+      session_id: "prompt-template",
+      target: "codex",
+      first_prompt: "You are a code reviewer. Review this diff.",
+    });
+
+    const s = getSession("prompt-template")!;
+    expect(s.is_automated).toBe(0);
+  });
 });
 
 // ── Scanner only ────────────────────────────────────────────────────────────
@@ -187,6 +203,69 @@ describe("scanner only", () => {
     expect(s.model).toBe("gpt-5.4");
     expect(s.total_reasoning_tokens).toBe(50);
     expect(s.total_cache_read_tokens).toBe(3000);
+  });
+
+  it("marks explicit automated model sessions automated", () => {
+    upsertSession({
+      session_id: "auto-review",
+      target: "codex",
+      model: "codex-auto-review",
+    });
+
+    const s = getSession("auto-review")!;
+    expect(s.is_automated).toBe(1);
+  });
+
+  it("marks headless project and cwd sessions automated", () => {
+    upsertSession({
+      session_id: "headless-project",
+      target: "codex",
+      project: "codex-headless",
+    });
+    upsertSession({
+      session_id: "headless-cwd",
+      target: "claude",
+    });
+    upsertSessionCwd(
+      "headless-cwd",
+      "/Users/gus/Library/Application Support/panopticon/claude-headless",
+      1_700_000_000_000,
+    );
+
+    expect(getSession("headless-project")!.is_automated).toBe(1);
+    expect(getSession("headless-cwd")!.is_automated).toBe(1);
+  });
+
+  it("marks subagent sessions automated", () => {
+    upsertSession({
+      session_id: "agent-123",
+      target: "claude",
+      parent_session_id: "parent",
+      relationship_type: "subagent",
+    });
+
+    const s = getSession("agent-123")!;
+    expect(s.is_automated).toBe(1);
+  });
+
+  it("message count refresh does not infer automation from prompts", () => {
+    const db = getDb();
+    upsertSession({
+      session_id: "prompt-counts",
+      target: "codex",
+      first_prompt: "You are a code reviewer. Review this diff.",
+    });
+    db.prepare(
+      `INSERT INTO messages
+       (session_id, ordinal, role, content, is_system, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("prompt-counts", 0, "user", "review this diff", 0, "msg-1");
+
+    updateSessionMessageCounts("prompt-counts");
+
+    const s = getSession("prompt-counts")!;
+    expect(s.user_message_count).toBe(1);
+    expect(s.is_automated).toBe(0);
   });
 
   it("gemini: creates session with thoughts as reasoning", () => {

@@ -62,7 +62,6 @@ beforeEach(() => {
   db.prepare("DELETE FROM session_summary_search_index").run();
   db.prepare("DELETE FROM session_summary_enrichments").run();
   db.prepare("DELETE FROM session_summaries").run();
-  db.prepare("DELETE FROM session_classifications").run();
   db.prepare("DELETE FROM sessions").run();
 });
 

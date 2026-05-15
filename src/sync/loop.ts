@@ -9,7 +9,6 @@ import {
 import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
-import { ensureSessionClassifications } from "../session_classifications/project.js";
 import { buildSyncableSessionIds, repoMatchesFilter } from "./filter.js";
 import { postSync } from "./post.js";
 import {
@@ -565,7 +564,6 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   ): PendingDerivedSessionRow[] {
     if (!syncSessionsEnabled) return [];
 
-    ensureSessionClassifications();
     const cursor = pendingDerivedCursorByTarget.get(targetName) ?? 0;
     const firstPage = readPendingDerivedSessionsPage(
       targetName,

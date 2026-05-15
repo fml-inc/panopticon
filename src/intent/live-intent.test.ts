@@ -73,7 +73,6 @@ beforeEach(() => {
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM session_cwds").run();
-  db.prepare("DELETE FROM session_classifications").run();
   db.prepare("DELETE FROM sessions").run();
 });
 

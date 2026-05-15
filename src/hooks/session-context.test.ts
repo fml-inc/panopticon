@@ -19,7 +19,6 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { refreshSessionClassification } from "../session_classifications/project.js";
 import { buildSessionStartRecentHistoryContext } from "./session-context.js";
 
 const cwd = path.join(os.tmpdir(), "panopticon-session-context-cwd");
@@ -211,27 +210,53 @@ describe("buildSessionStartRecentHistoryContext", () => {
     expect(context).toBeNull();
   });
 
-  it("excludes sessions without an interactive classification", () => {
+  it("excludes known automated sessions from recent history", () => {
     const baseMs = Date.now() - 10_000;
     insertSession({
       id: "automated",
       sessionCwd: cwd,
       target: "codex",
       startedAtMs: baseMs + 7_000,
-      firstPrompt: "You are a code reviewer.",
-      hasUserPromptSubmit: false,
+      firstPrompt: "internal summary run",
+      isAutomated: true,
     });
     insertSummary({
       sessionId: "automated",
       sessionCwd: cwd,
       status: "read-only",
       lastIntentTsMs: baseMs + 7_500,
-      summaryText: "Automated review should not be injected.",
+      summaryText: "Automated summary should not be injected.",
     });
 
     expect(
       buildSessionStartRecentHistoryContext({ session_id: "current", cwd }),
     ).toBeNull();
+  });
+
+  it("does not require an affirmative interactive classification", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "not-known-automated",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 8_000,
+      firstPrompt: "Continue normal work.",
+    });
+    insertSummary({
+      sessionId: "not-known-automated",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 8_500,
+      summaryText: "Normal work should still be injected.",
+    });
+
+    const context = buildSessionStartRecentHistoryContext({
+      session_id: "current",
+      cwd,
+    });
+
+    expect(context).toContain("session_id=not-known-automated");
+    expect(context).toContain("Normal work should still be injected.");
   });
 
   it("returns null when there is no cwd or no matching history", () => {
@@ -253,29 +278,25 @@ function insertSession(opts: {
   target: string;
   startedAtMs: number;
   firstPrompt: string;
-  hasUserPromptSubmit?: boolean;
+  isAutomated?: boolean;
 }): void {
   const db = getDb();
   db.prepare(
     `INSERT INTO sessions (
-       session_id, target, started_at_ms, first_prompt, user_message_count,
-       hook_event_type_counts, has_hooks
+       session_id, target, started_at_ms, first_prompt, has_hooks, is_automated
      )
-     VALUES (?, ?, ?, ?, 1, ?, 1)`,
+     VALUES (?, ?, ?, ?, 1, ?)`,
   ).run(
     opts.id,
     opts.target,
     opts.startedAtMs,
     opts.firstPrompt,
-    JSON.stringify(
-      opts.hasUserPromptSubmit === false ? {} : { UserPromptSubmit: 1 },
-    ),
+    opts.isAutomated ? 1 : 0,
   );
   db.prepare(
     `INSERT INTO session_cwds (session_id, cwd, first_seen_ms)
      VALUES (?, ?, ?)`,
   ).run(opts.id, opts.sessionCwd, opts.startedAtMs);
-  refreshSessionClassification(opts.id, opts.startedAtMs);
 }
 
 function insertSummary(opts: {

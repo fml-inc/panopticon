@@ -241,6 +241,7 @@ export interface SessionSyncRecord {
   userMessageCount: number;
   parentSessionId: string | null;
   relationshipType: string;
+  isAutomated: boolean;
   createdAt: number | null;
   repositories: Array<{
     repository: string;
@@ -339,21 +340,12 @@ export interface CodeProvenanceSyncRecord {
   verifiedAtMs: number;
 }
 
-export interface SessionClassificationSyncRecord {
-  sessionId: string;
-  classification: "interactive" | "automated";
-  reason: string;
-  classifierVersion: number;
-  computedAtMs: number;
-}
-
 export interface SessionDerivedStateSyncRecord {
   sessionId: string;
   summaries: SessionSummarySyncRecord[];
   enrichments: SessionSummaryEnrichmentSyncRecord[];
   memberships: IntentSessionSummarySyncRecord[];
   codeProvenance: CodeProvenanceSyncRecord[];
-  classifications: SessionClassificationSyncRecord[];
 }
 
 // ── Message sync records ────────────────────────────────────────────────────

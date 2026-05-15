@@ -39,7 +39,6 @@ import {
   CLAIM_DERIVED_COMPONENTS,
   ensureDataVersionsTable,
   markDataComponentsStaleInDb,
-  SESSION_CLASSIFICATION_COMPONENT,
   SESSION_SUMMARY_PROJECTION_COMPONENT,
 } from "./data-versions.js";
 import type { Database } from "./driver.js";
@@ -680,18 +679,6 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
   // One-time unreleased-branch cleanup: released v0.2.10 still has the legacy
   // sessions.summary columns, but none of the intermediate PR-only summary
   // table shapes shipped, so we rebuild directly to the final sessions schema.
-  rebuildSessionsTableToCurrentShape(db);
-}
-
-function rebuildSessionsTableWithoutIsAutomated(db: Database): void {
-  if (!tableExists(db, "sessions")) return;
-  if (!tableHasColumn(db, "sessions", "is_automated")) return;
-  rebuildSessionsTableToCurrentShape(db);
-  ensureDataVersionsTable(db);
-  markDataComponentsStaleInDb(db, [SESSION_CLASSIFICATION_COMPONENT]);
-}
-
-function rebuildSessionsTableToCurrentShape(db: Database): void {
   const sessionValueExpr = (column: string, fallbackSql = "NULL"): string => {
     return tableHasColumn(db, "sessions", column) ? column : fallbackSql;
   };
@@ -736,6 +723,7 @@ function rebuildSessionsTableToCurrentShape(db: Database): void {
       user_message_count INTEGER DEFAULT 0,
       parent_session_id TEXT,
       relationship_type TEXT DEFAULT '',
+      is_automated INTEGER DEFAULT 0,
       created_at INTEGER
     )
   `);
@@ -750,7 +738,8 @@ function rebuildSessionsTableToCurrentShape(db: Database): void {
       otel_cache_creation_tokens, models, has_hooks, has_otel, has_scanner,
       sync_dirty, sync_seq, derived_sync_seq, tool_counts, hook_tool_counts, event_type_counts,
       hook_event_type_counts, project, machine, message_count,
-      user_message_count, parent_session_id, relationship_type, created_at
+      user_message_count, parent_session_id, relationship_type, is_automated,
+      created_at
     )
     SELECT
       ${sessionValueExpr("session_id")},
@@ -791,6 +780,7 @@ function rebuildSessionsTableToCurrentShape(db: Database): void {
       ${sessionValueExpr("user_message_count", "0")},
       ${sessionValueExpr("parent_session_id")},
       ${sessionValueExpr("relationship_type", "''")},
+      ${sessionValueExpr("is_automated", "0")},
       ${sessionValueExpr("created_at", "NULL")}
     FROM sessions
   `);
@@ -819,6 +809,60 @@ function rebuildSessionsTableToCurrentShape(db: Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)
       WHERE parent_session_id IS NOT NULL
+  `);
+}
+
+function sessionAutomationSql(db: Database): string {
+  const sessionColumn = (column: string, fallbackSql = "NULL") =>
+    tableHasColumn(db, "sessions", column) ? column : fallbackSql;
+  const normalizedCwd = (expr: string) =>
+    `replace(rtrim(COALESCE(${expr}, ''), '/'), char(92), '/')`;
+  const sessionCwdExpr = tableExists(db, "session_cwds")
+    ? `OR EXISTS (
+          SELECT 1
+          FROM session_cwds scw
+          WHERE scw.session_id = sessions.session_id
+            AND (
+              ${normalizedCwd("scw.cwd")} LIKE '%/panopticon/claude-headless'
+              OR ${normalizedCwd("scw.cwd")} LIKE '%/panopticon/codex-headless'
+            )
+        )`
+    : "";
+  return `
+    CASE
+      WHEN lower(trim(COALESCE(${sessionColumn("relationship_type")}, ''))) = 'subagent'
+        OR lower(trim(COALESCE(${sessionColumn("project")}, ''))) IN ('claude-headless', 'codex-headless')
+        OR ${normalizedCwd(sessionColumn("cwd"))} LIKE '%/panopticon/claude-headless'
+        OR ${normalizedCwd(sessionColumn("cwd"))} LIKE '%/panopticon/codex-headless'
+        ${sessionCwdExpr}
+        OR instr(',' || COALESCE(${sessionColumn("model")}, '') || ',' || COALESCE(${sessionColumn("models")}, '') || ',', ',codex-auto-review,') > 0
+      THEN 1
+      ELSE 0
+    END`;
+}
+
+function refreshSessionAutomationFlags(db: Database): void {
+  if (!tableExists(db, "sessions")) return;
+  addColumnIfMissing(
+    db,
+    "sessions",
+    "is_automated",
+    "is_automated INTEGER DEFAULT 0",
+  );
+  addColumnIfMissing(
+    db,
+    "sessions",
+    "sync_dirty",
+    "sync_dirty INTEGER DEFAULT 0",
+  );
+  addColumnIfMissing(db, "sessions", "sync_seq", "sync_seq INTEGER DEFAULT 0");
+  const automationSql = sessionAutomationSql(db);
+  db.exec(`
+    UPDATE sessions
+    SET is_automated = ${automationSql},
+        sync_dirty = 1,
+        sync_seq = COALESCE(sync_seq, 0) + 1
+    WHERE COALESCE(is_automated, 0) != ${automationSql}
   `);
 }
 
@@ -1319,24 +1363,16 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     id: 21,
-    name: "move_session_automation_to_classification_projection",
+    name: "refresh_deterministic_session_automation_flags",
     up: (db) => {
-      rebuildSessionsTableWithoutIsAutomated(db);
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS session_classifications (
-          session_id TEXT PRIMARY KEY,
-          classification TEXT NOT NULL CHECK (classification IN ('interactive', 'automated')),
-          reason TEXT NOT NULL,
-          classifier_version INTEGER NOT NULL,
-          computed_at_ms INTEGER NOT NULL
-        )
-      `);
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_session_classifications_classification
-          ON session_classifications(classification)
-      `);
-      ensureDataVersionsTable(db);
-      markDataComponentsStaleInDb(db, [SESSION_CLASSIFICATION_COMPONENT]);
+      refreshSessionAutomationFlags(db);
+    },
+  },
+  {
+    id: 22,
+    name: "restore_session_automation_flag_after_prerelease_projection",
+    up: (db) => {
+      refreshSessionAutomationFlags(db);
     },
   },
 ];

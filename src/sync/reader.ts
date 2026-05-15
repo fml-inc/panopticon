@@ -10,7 +10,6 @@ import type {
   RepoConfigSnapshotRecord,
   ScannerEventRecord,
   ScannerTurnRecord,
-  SessionClassificationSyncRecord,
   SessionDerivedStateSyncRecord,
   SessionSummaryEnrichmentSyncRecord,
   SessionSummarySyncRecord,
@@ -732,7 +731,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
               s.tool_counts, s.hook_tool_counts, s.event_type_counts,
               s.hook_event_type_counts, s.sync_seq, s.project, s.machine,
               s.message_count, s.user_message_count, s.parent_session_id,
-              s.relationship_type, s.created_at
+              s.relationship_type, s.is_automated, s.created_at
        FROM sessions s
        LEFT JOIN session_summaries ss ON ss.session_id = s.session_id
        WHERE s.session_id IN (${placeholders})`,
@@ -765,6 +764,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     user_message_count: number;
     parent_session_id: string | null;
     relationship_type: string;
+    is_automated: number;
     created_at: number | null;
   }>;
 
@@ -853,6 +853,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     userMessageCount: r.user_message_count,
     parentSessionId: r.parent_session_id,
     relationshipType: r.relationship_type,
+    isAutomated: r.is_automated === 1,
     createdAt: r.created_at,
     repositories: reposBySession.get(r.session_id) ?? [],
     cwds: cwdsBySession.get(r.session_id) ?? [],
@@ -996,22 +997,6 @@ export function readSessionDerivedState(
     verified_at_ms: number;
   }>;
 
-  const classifications = db
-    .prepare(
-      `SELECT session_id, classification, reason, classifier_version,
-              computed_at_ms
-       FROM session_classifications
-       WHERE session_id = ?
-       ORDER BY session_id ASC`,
-    )
-    .all(sessionId) as Array<{
-    session_id: string;
-    classification: "interactive" | "automated";
-    reason: string;
-    classifier_version: number;
-    computed_at_ms: number;
-  }>;
-
   return {
     sessionId: sessionId,
     summaries: summaries.map(
@@ -1098,15 +1083,6 @@ export function readSessionDerivedState(
         fileHash: row.file_hash,
         establishedAtMs: row.established_at_ms,
         verifiedAtMs: row.verified_at_ms,
-      }),
-    ),
-    classifications: classifications.map(
-      (row): SessionClassificationSyncRecord => ({
-        sessionId: row.session_id,
-        classification: row.classification,
-        reason: row.reason,
-        classifierVersion: row.classifier_version,
-        computedAtMs: row.computed_at_ms,
       }),
     ),
   };
