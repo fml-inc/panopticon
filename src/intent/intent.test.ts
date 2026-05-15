@@ -170,6 +170,52 @@ describe("rebuildIntentProjection", () => {
 });
 
 describe("query: intent_for_code", () => {
+  it("projects Pi lowercase edit hook events into intent edits", () => {
+    const file = path.join(scratchDir, "pi-edit.ts");
+    fs.writeFileSync(file, "old value");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      payload: { prompt: "update from pi", session_id: SESSION },
+      repository: scratchDir,
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      tool_name: "edit",
+      repository: scratchDir,
+      payload: {
+        tool_name: "edit",
+        tool_input: {
+          path: file,
+          edits: [{ oldText: "old value", newText: "new value" }],
+        },
+      },
+    });
+
+    const hookRow = getDb()
+      .prepare(
+        `SELECT file_path
+         FROM hook_events
+         WHERE tool_name = 'edit'`,
+      )
+      .get() as { file_path: string } | undefined;
+    expect(hookRow?.file_path).toBe(file);
+
+    rebuildClaimBackedProjection();
+
+    const row = getDb()
+      .prepare(
+        `SELECT file_path, tool_name
+         FROM intent_edits
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as { file_path: string; tool_name: string } | undefined;
+
+    expect(row).toEqual({ file_path: "pi-edit.ts", tool_name: "edit" });
+  });
+
   it("returns chronological intents touching a file with status", () => {
     const file = path.join(scratchDir, "history.ts");
     fs.writeFileSync(file, "current content here");

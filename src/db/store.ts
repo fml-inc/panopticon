@@ -604,7 +604,8 @@ export function insertHookEvent(row: HookEventRow): number {
   // Extract high-value fields into columns for indexed queries
   const userPrompt =
     extractStr(data, "prompt") ?? extractStr(data, "user_prompt");
-  const filePath = extractStr(toolInput, "file_path");
+  const filePath =
+    extractStr(toolInput, "file_path") ?? extractStr(toolInput, "path");
   const command = extractStr(toolInput, "command");
   const plan = extractStr(toolInput, "plan");
   const toolResultRaw = data.tool_result ?? data.tool_response;
