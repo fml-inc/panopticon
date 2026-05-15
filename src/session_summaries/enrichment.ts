@@ -7,6 +7,7 @@ import type { SessionSummaryRunnerName } from "../config.js";
 import { config } from "../config.js";
 import { getDb } from "../db/schema.js";
 import { detectAgent, invokeLlmAsync } from "../summary/llm.js";
+import { sessionSummaryLastActivitySql } from "./activity.js";
 import {
   SUMMARY_GLOBAL_BACKOFF_SCOPE,
   SUMMARY_GLOBAL_RUNNER_AVAILABILITY_KEY,
@@ -39,11 +40,7 @@ import {
 const DEFAULT_ENRICH_LIMIT = 5;
 const DEFAULT_ENRICH_CONCURRENCY = 2;
 const DEFAULT_ENRICH_TIMEOUT_MS = 90_000;
-const LAST_ACTIVITY_SQL = `MAX(
-  COALESCE(sess.started_at_ms, 0),
-  COALESCE(sess.ended_at_ms, 0),
-  COALESCE(s.last_intent_ts_ms, 0)
-)`;
+const LAST_ACTIVITY_SQL = sessionSummaryLastActivitySql();
 
 // Prompt/template changes should bump SESSION_SUMMARY_ENRICHMENT_VERSION.
 // policyHash intentionally covers runner/config policy only, not prompt text.

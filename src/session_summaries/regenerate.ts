@@ -1,5 +1,6 @@
 import { clearAttemptBackoff } from "../attempt-backoff.js";
 import { getDb } from "../db/schema.js";
+import { sessionSummaryLastActivitySql } from "./activity.js";
 import { SUMMARY_ROW_BACKOFF_SCOPE } from "./backoff.js";
 import {
   SESSION_SUMMARY_ENRICHMENT_VERSION,
@@ -89,12 +90,7 @@ interface RawRegenerationRow {
   time_ms: number | null;
 }
 
-const ACTIVITY_SQL = `MAX(
-  COALESCE(s.source_last_seen_at_ms, 0),
-  COALESCE(s.last_intent_ts_ms, 0),
-  COALESCE(sess.ended_at_ms, 0),
-  COALESCE(sess.started_at_ms, 0)
-)`;
+const ACTIVITY_SQL = sessionSummaryLastActivitySql();
 
 export function regenerateSessionSummaryEnrichments(
   opts: RegenerateSessionSummariesInput = {},

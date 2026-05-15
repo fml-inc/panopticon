@@ -135,7 +135,8 @@ describe("session summary enrichment refresh", () => {
         edit_count INTEGER NOT NULL,
         landed_edit_count INTEGER NOT NULL,
         open_edit_count INTEGER NOT NULL,
-        last_intent_ts_ms INTEGER
+        last_intent_ts_ms INTEGER,
+        source_last_seen_at_ms INTEGER
       );
       CREATE TABLE sessions (
         session_id TEXT PRIMARY KEY,

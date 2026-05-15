@@ -6,6 +6,7 @@ import {
   resolveCanonicalFilePath,
   resolveRepositoryRootForPath,
 } from "../paths.js";
+import { sessionSummaryLastActivitySql } from "./activity.js";
 import {
   type SessionSummaryStaleReason,
   selectSessionSummaryDisplay,
@@ -376,8 +377,7 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
 
   const db = getDb();
   const cwdPlaceholders = opts.cwdCandidates.map(() => "?").join(", ");
-  const activityExpr =
-    "COALESCE(s.last_intent_ts_ms, s.source_last_seen_at_ms, s.projected_at_ms, 0)";
+  const activityExpr = sessionSummaryLastActivitySql();
   const useSinceMs =
     typeof opts.sinceMs === "number" && Number.isFinite(opts.sinceMs);
   const params: unknown[] = [

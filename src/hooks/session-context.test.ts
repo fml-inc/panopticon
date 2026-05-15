@@ -183,6 +183,33 @@ describe("buildSessionStartRecentHistoryContext", () => {
     expect(context).toBeNull();
   });
 
+  it("does not treat a fresh projection timestamp as recent source activity", () => {
+    const oldBaseMs = Date.now() - 31 * DAY_MS;
+    insertSession({
+      id: "old-reprojected-history",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: oldBaseMs,
+      firstPrompt: "Ancient request with a fresh projection.",
+    });
+    insertSummary({
+      sessionId: "old-reprojected-history",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: oldBaseMs + 1_000,
+      projectedAtMs: Date.now() - 1_000,
+      summaryText:
+        "This old reprojected matching cwd history should not be injected.",
+    });
+
+    const context = buildSessionStartRecentHistoryContext({
+      session_id: "current",
+      cwd,
+    });
+
+    expect(context).toBeNull();
+  });
+
   it("returns null when there is no cwd or no matching history", () => {
     expect(
       buildSessionStartRecentHistoryContext({ session_id: "current" }),
@@ -221,6 +248,8 @@ function insertSummary(opts: {
   sessionCwd: string;
   status: string;
   lastIntentTsMs: number;
+  projectedAtMs?: number;
+  sourceLastSeenAtMs?: number | null;
   summaryText: string;
 }): void {
   const db = getDb();
@@ -229,9 +258,10 @@ function insertSummary(opts: {
     `INSERT INTO session_summaries (
        session_summary_key, session_id, cwd, title, status,
        last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
-       open_edit_count, summary_text, projection_hash, projected_at_ms
+       open_edit_count, summary_text, projection_hash, projected_at_ms,
+       source_last_seen_at_ms
      )
-     VALUES (?, ?, ?, ?, ?, ?, 2, 3, 2, 1, ?, 'hash', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 2, 3, 2, 1, ?, 'hash', ?, ?)`,
   ).run(
     key,
     opts.sessionId,
@@ -240,6 +270,7 @@ function insertSummary(opts: {
     opts.status,
     opts.lastIntentTsMs,
     opts.summaryText,
-    opts.lastIntentTsMs,
+    opts.projectedAtMs ?? opts.lastIntentTsMs,
+    opts.sourceLastSeenAtMs ?? null,
   );
 }
