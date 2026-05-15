@@ -1368,13 +1368,6 @@ export const MIGRATIONS: Migration[] = [
       refreshSessionAutomationFlags(db);
     },
   },
-  {
-    id: 22,
-    name: "restore_session_automation_flag_after_prerelease_projection",
-    up: (db) => {
-      refreshSessionAutomationFlags(db);
-    },
-  },
 ];
 
 // ---------------------------------------------------------------------------

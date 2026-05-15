@@ -1563,48 +1563,6 @@ describe("runMigrations — existing DB", () => {
     ]);
   });
 
-  it("restores is_automated for the prerelease classification-table migration", () => {
-    const db = createExistingDb();
-    for (let id = 1; id <= 21; id++) {
-      db.prepare("INSERT INTO schema_migrations (id, name) VALUES (?, ?)").run(
-        id,
-        `migration-${id}`,
-      );
-    }
-    db.exec(`
-      CREATE TABLE sessions (
-        session_id TEXT PRIMARY KEY,
-        relationship_type TEXT DEFAULT '',
-        project TEXT,
-        cwd TEXT,
-        model TEXT,
-        models TEXT,
-        sync_dirty INTEGER DEFAULT 0,
-        sync_seq INTEGER DEFAULT 0
-      );
-      CREATE TABLE session_cwds (
-        session_id TEXT NOT NULL,
-        cwd TEXT NOT NULL,
-        first_seen_ms INTEGER NOT NULL
-      );
-    `);
-    db.prepare(
-      `INSERT INTO sessions (session_id, relationship_type)
-       VALUES ('agent-1', 'subagent')`,
-    ).run();
-
-    runMigrations(db);
-
-    const cols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{
-      name: string;
-    }>;
-    const row = db
-      .prepare("SELECT is_automated FROM sessions WHERE session_id = ?")
-      .get("agent-1") as { is_automated: number };
-    expect(cols.map((col) => col.name)).toContain("is_automated");
-    expect(row.is_automated).toBe(1);
-  });
-
   it("resets derived file identity state for repo-relative path storage", () => {
     const db = createExistingDb();
     db.exec(SCHEMA_SQL);
