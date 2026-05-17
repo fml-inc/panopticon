@@ -812,6 +812,60 @@ function rebuildSessionsTableWithoutLegacySummary(db: Database): void {
   `);
 }
 
+function sessionAutomationSql(db: Database): string {
+  const sessionColumn = (column: string, fallbackSql = "NULL") =>
+    tableHasColumn(db, "sessions", column) ? column : fallbackSql;
+  const normalizedCwd = (expr: string) =>
+    `replace(rtrim(COALESCE(${expr}, ''), '/'), char(92), '/')`;
+  const sessionCwdExpr = tableExists(db, "session_cwds")
+    ? `OR EXISTS (
+          SELECT 1
+          FROM session_cwds scw
+          WHERE scw.session_id = sessions.session_id
+            AND (
+              ${normalizedCwd("scw.cwd")} LIKE '%/panopticon/claude-headless'
+              OR ${normalizedCwd("scw.cwd")} LIKE '%/panopticon/codex-headless'
+            )
+        )`
+    : "";
+  return `
+    CASE
+      WHEN lower(trim(COALESCE(${sessionColumn("relationship_type")}, ''))) = 'subagent'
+        OR lower(trim(COALESCE(${sessionColumn("project")}, ''))) IN ('claude-headless', 'codex-headless')
+        OR ${normalizedCwd(sessionColumn("cwd"))} LIKE '%/panopticon/claude-headless'
+        OR ${normalizedCwd(sessionColumn("cwd"))} LIKE '%/panopticon/codex-headless'
+        ${sessionCwdExpr}
+        OR instr(',' || COALESCE(${sessionColumn("model")}, '') || ',' || COALESCE(${sessionColumn("models")}, '') || ',', ',codex-auto-review,') > 0
+      THEN 1
+      ELSE 0
+    END`;
+}
+
+function refreshSessionAutomationFlags(db: Database): void {
+  if (!tableExists(db, "sessions")) return;
+  addColumnIfMissing(
+    db,
+    "sessions",
+    "is_automated",
+    "is_automated INTEGER DEFAULT 0",
+  );
+  addColumnIfMissing(
+    db,
+    "sessions",
+    "sync_dirty",
+    "sync_dirty INTEGER DEFAULT 0",
+  );
+  addColumnIfMissing(db, "sessions", "sync_seq", "sync_seq INTEGER DEFAULT 0");
+  const automationSql = sessionAutomationSql(db);
+  db.exec(`
+    UPDATE sessions
+    SET is_automated = ${automationSql},
+        sync_dirty = 1,
+        sync_seq = COALESCE(sync_seq, 0) + 1
+    WHERE COALESCE(is_automated, 0) != ${automationSql}
+  `);
+}
+
 // ---------------------------------------------------------------------------
 // Migration registry — append only, never reorder or remove
 // ---------------------------------------------------------------------------
@@ -1305,6 +1359,13 @@ export const MIGRATIONS: Migration[] = [
             ON session_cwds(cwd, session_id)
         `);
       }
+    },
+  },
+  {
+    id: 21,
+    name: "refresh_deterministic_session_automation_flags",
+    up: (db) => {
+      refreshSessionAutomationFlags(db);
     },
   },
 ];

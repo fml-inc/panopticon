@@ -405,6 +405,7 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
            ON s.session_id = m.session_id
          ${SESSION_SUMMARY_PROJECTION_JOINS}
          WHERE s.session_id != ?
+         AND COALESCE(sess.is_automated, 0) != 1
          ${useSinceMs ? `AND ${activityExpr} >= ?` : ""}
          ORDER BY ${activityExpr} DESC,
                   s.id DESC
