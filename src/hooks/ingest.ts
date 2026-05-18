@@ -616,7 +616,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     return buildPermissionResponse(eventType, toolName, data, target);
   }
 
-  if (eventType === "UserPromptSubmit") {
+  if (
+    eventType === "UserPromptSubmit" &&
+    config.enableUserPromptSubmitContextInjection
+  ) {
     const response = buildUserPromptSubmitContextResponse({
       ...data,
       repository: repo ?? data.repository,
@@ -626,7 +629,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     if (response) return response;
   }
 
-  if (eventType === "SessionStart") {
+  if (
+    eventType === "SessionStart" &&
+    config.enableSessionStartHistoryInjection
+  ) {
     const response = buildSessionStartContextResponse({
       ...data,
       now_ms: timestampMs,
@@ -673,6 +679,9 @@ function buildUserPromptSubmitContextResponse(
   }
 }
 
+// Counts the current UserPromptSubmit event, which step 4 of
+// processHookEvent has already persisted to hook_events by the time this
+// runs — so a count of 1 means this is the session's first prompt.
 function isFirstUserPromptSubmit(sessionId: string): boolean {
   try {
     const row = getDb()
@@ -686,7 +695,8 @@ function isFirstUserPromptSubmit(sessionId: string): boolean {
     return (row?.count ?? 0) <= 1;
   } catch (err) {
     log.hooks.error("user prompt submit count lookup failed:", err);
-    return false;
+    // Fail strict: treat as first prompt so the conservative gate applies.
+    return true;
   }
 }
 

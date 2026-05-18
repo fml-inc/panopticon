@@ -83,9 +83,9 @@ export function buildUserPromptSubmitLocalContext(
     untilMs: nowMs,
     limit: USER_PROMPT_CONTEXT_LIMIT,
     // Vague first-in-session prompts only match ambient repo vocabulary,
-    // so hold them to the strict generic-path bar; loosen mid-session
-    // where prompts are specific enough that a 3-term match is real.
-    minMatchCount: isFirstPrompt ? 4 : 3,
+    // so hold them to the strict generic-path bar (the query default);
+    // loosen mid-session where a 3-term match is specific enough to be real.
+    minMatchCount: isFirstPrompt ? undefined : 3,
   });
   if (previews.length === 0) return null;
 

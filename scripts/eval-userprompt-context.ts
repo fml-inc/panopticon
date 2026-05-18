@@ -141,7 +141,7 @@ interface LlmJudgeMissedContext {
 }
 
 type LabelReviewStatus = "unreviewed" | "llm_draft" | "human_reviewed";
-type ExpectedPanopticonKind = "session" | "query" | "none";
+type ExpectedPanopticonKind = "session" | "none";
 type ExpectedPanopticonUtility = "weak" | "useful" | "critical";
 type ExpectedPanopticonSource = "human" | "llm" | "placeholder";
 
@@ -175,7 +175,6 @@ interface ExpectedUsefulPanopticonData {
   utility: ExpectedPanopticonUtility;
   source: ExpectedPanopticonSource;
   sessionId?: string;
-  query?: string;
   reason: string;
   evidence?: string;
 }
@@ -187,12 +186,6 @@ interface LabelAssessment {
   injectedExpectedSessionIds: string[];
   missedExpectedSessionIds: string[];
   unexpectedInjectedSessionIds: string[];
-  expectedQueries: string[];
-  injectedExpectedQueries: string[];
-  missedExpectedQueries: string[];
-  queryContextLines: string[];
-  unexpectedQueryContextLines: string[];
-  sourceGapCount: number;
   noUsefulExpected: boolean;
   falseNegative: boolean;
   precisionLike: number | null;
@@ -875,27 +868,11 @@ function printResults(set: EvalSet, results: EvalResult[], opts: Args): void {
       sum + result.labelAssessment.injectedExpectedSessionIds.length,
     0,
   );
-  const sourceGapCount = labeled.reduce(
-    (sum, result) => sum + result.labelAssessment.sourceGapCount,
-    0,
-  );
-  const hitExpectedQueryCount = labeled.reduce(
-    (sum, result) =>
-      sum + result.labelAssessment.injectedExpectedQueries.length,
-    0,
-  );
-  const expectedQueryCount = labeled.reduce(
-    (sum, result) => sum + result.labelAssessment.expectedQueries.length,
-    0,
-  );
   const labelSessionCases = labeled.filter(
     (result) => result.labelAssessment.expectedSessionIds.length > 0,
   );
   const labelSessionMissCases = labeled.filter(
     (result) => result.labelAssessment.missedExpectedSessionIds.length > 0,
-  );
-  const labelQueryCases = labeled.filter(
-    (result) => result.labelAssessment.expectedQueries.length > 0,
   );
   const labelNoUsefulCases = labeled.filter(
     (result) => result.labelAssessment.noUsefulExpected,
@@ -904,9 +881,7 @@ function printResults(set: EvalSet, results: EvalResult[], opts: Args): void {
     (result) => result.userPromptLines.length === 0,
   );
   const labelNoUsefulUnexpected = labelNoUsefulCases.filter(
-    (result) =>
-      result.labelAssessment.unexpectedInjectedSessionIds.length > 0 ||
-      result.labelAssessment.unexpectedQueryContextLines.length > 0,
+    (result) => result.labelAssessment.unexpectedInjectedSessionIds.length > 0,
   );
 
   console.log("");
@@ -940,10 +915,10 @@ function printResults(set: EvalSet, results: EvalResult[], opts: Args): void {
     console.log(
       `  labels labeled=${labeled.length} false_negatives=${
         labelFalseNegatives.length
-      } expected_session_hits=${hitExpectedSessionCount}/${expectedSessionCount} source_gaps=${sourceGapCount}`,
+      } expected_session_hits=${hitExpectedSessionCount}/${expectedSessionCount}`,
     );
     console.log(
-      `  label_kinds session_cases=${labelSessionCases.length} session_hits=${hitExpectedSessionCount}/${expectedSessionCount} session_miss_cases=${labelSessionMissCases.length} query_cases=${labelQueryCases.length} query_hits=${hitExpectedQueryCount}/${expectedQueryCount} query_gaps=${sourceGapCount}/${expectedQueryCount} none_cases=${labelNoUsefulCases.length} none_correct=${labelNoUsefulCorrect.length} none_unexpected=${labelNoUsefulUnexpected.length}`,
+      `  label_kinds session_cases=${labelSessionCases.length} session_hits=${hitExpectedSessionCount}/${expectedSessionCount} session_miss_cases=${labelSessionMissCases.length} none_cases=${labelNoUsefulCases.length} none_correct=${labelNoUsefulCorrect.length} none_unexpected=${labelNoUsefulUnexpected.length}`,
     );
   }
 
@@ -996,9 +971,7 @@ function printResults(set: EvalSet, results: EvalResult[], opts: Args): void {
           label.precisionLike === null ? "n/a" : label.precisionLike.toFixed(2)
         } false_negative=${label.falseNegative} missed=${
           label.missedExpectedSessionIds.join(",") || "none"
-        } query_missed=${
-          label.missedExpectedQueries.length
-        } source_gaps=${label.sourceGapCount} no_useful_expected=${
+        } no_useful_expected=${
           label.noUsefulExpected
         } reasons=${label.reasons.join(",") || "none"}`,
       );
@@ -1346,17 +1319,6 @@ function expectedDataFromJudge(
     });
   }
 
-  for (const missed of judge.missedContext) {
-    items.push({
-      kind: "query",
-      query: missed.query,
-      utility: "useful",
-      source: "llm",
-      reason: missed.reason,
-      evidence: missed.evidence,
-    });
-  }
-
   return items;
 }
 
@@ -1387,12 +1349,6 @@ function assessAgainstLabel(opts: {
     injectedExpectedSessionIds: [],
     missedExpectedSessionIds: [],
     unexpectedInjectedSessionIds: [],
-    expectedQueries: [],
-    injectedExpectedQueries: [],
-    missedExpectedQueries: [],
-    queryContextLines: [],
-    unexpectedQueryContextLines: [],
-    sourceGapCount: 0,
     noUsefulExpected: false,
     falseNegative: false,
     precisionLike: null,
@@ -1409,24 +1365,12 @@ function assessAgainstLabel(opts: {
       .filter((item) => item.kind === "session" && item.sessionId)
       .map((item) => item.sessionId as string),
   );
-  const expectedQueries = uniqueStrings(
-    expected
-      .filter((item) => item.kind === "query" && item.query)
-      .map((item) => item.query as string),
-  );
-  const queryContextLines = extractQueryContextLines(opts.userPromptLines);
   const injectedSet = new Set(opts.userPromptSessionIds);
   const injectedExpectedSessionIds = expectedSessionIds.filter((id) =>
     injectedSet.has(id),
   );
   const missedExpectedSessionIds = expectedSessionIds.filter(
     (id) => !injectedSet.has(id),
-  );
-  const injectedExpectedQueries = expectedQueries.filter((query) =>
-    queryContextSatisfiesExpectedQuery(query, queryContextLines),
-  );
-  const missedExpectedQueries = expectedQueries.filter(
-    (query) => !injectedExpectedQueries.includes(query),
   );
   const noUsefulExpected = opts.label.noUsefulPanopticonExpected === true;
   const unexpectedInjectedSessionIds = noUsefulExpected
@@ -1436,13 +1380,9 @@ function assessAgainstLabel(opts: {
           (id) => !expectedSessionIds.includes(id),
         )
       : [];
-  const unexpectedQueryContextLines = noUsefulExpected ? queryContextLines : [];
-  const sourceGapCount = missedExpectedQueries.length;
-  const expectedUnitCount = expectedSessionIds.length + expectedQueries.length;
-  const injectedUsefulUnitCount =
-    injectedExpectedSessionIds.length + injectedExpectedQueries.length;
-  const injectedUnitCount =
-    opts.userPromptSessionIds.length + queryContextLines.length;
+  const expectedUnitCount = expectedSessionIds.length;
+  const injectedUsefulUnitCount = injectedExpectedSessionIds.length;
+  const injectedUnitCount = opts.userPromptSessionIds.length;
   const precisionLike = calculatePrecisionLike({
     noUsefulExpected,
     injectedCount: injectedUnitCount,
@@ -1453,20 +1393,13 @@ function assessAgainstLabel(opts: {
     expectedUnitCount === 0
       ? null
       : roundMetric(injectedUsefulUnitCount / expectedUnitCount);
-  const falseNegative =
-    missedExpectedSessionIds.length > 0 || missedExpectedQueries.length > 0;
+  const falseNegative = missedExpectedSessionIds.length > 0;
   const reasons: string[] = [];
 
   if (missedExpectedSessionIds.length > 0)
     reasons.push("missed_expected_session");
-  if (injectedExpectedQueries.length > 0)
-    reasons.push("matched_expected_query_context");
-  if (missedExpectedQueries.length > 0)
-    reasons.push("missed_expected_query_context");
   if (unexpectedInjectedSessionIds.length > 0)
     reasons.push("unexpected_injected_session");
-  if (unexpectedQueryContextLines.length > 0)
-    reasons.push("unexpected_query_context");
   if (noUsefulExpected && opts.userPromptLines.length === 0) {
     reasons.push("correctly_returned_no_context");
   }
@@ -1479,156 +1412,12 @@ function assessAgainstLabel(opts: {
     injectedExpectedSessionIds,
     missedExpectedSessionIds,
     unexpectedInjectedSessionIds,
-    expectedQueries,
-    injectedExpectedQueries,
-    missedExpectedQueries,
-    queryContextLines,
-    unexpectedQueryContextLines,
-    sourceGapCount,
     noUsefulExpected,
     falseNegative,
     precisionLike,
     recallLike,
     reasons,
   };
-}
-
-function extractQueryContextLines(lines: string[]): string[] {
-  return lines.filter((line) => line.includes("query_kind="));
-}
-
-function queryContextSatisfiesExpectedQuery(
-  expectedQuery: string,
-  queryContextLines: string[],
-): boolean {
-  if (queryContextLines.length === 0) return false;
-
-  const expectedText = expectedQuery.toLowerCase();
-  const expectedTerms = extractAssessmentTerms(expectedQuery);
-  const specificTerms = expectedTerms.filter(
-    (term) => term.strong || term.weight > 1,
-  );
-  const candidateTerms =
-    specificTerms.length > 0 ? specificTerms : expectedTerms.slice(0, 6);
-
-  for (const line of queryContextLines) {
-    const lineText = line.toLowerCase();
-    const kind = extractQueryKind(line);
-    if (queryKindMatchesExpectedQuery(kind, expectedText)) return true;
-
-    const matchedTerms = candidateTerms.filter((term) =>
-      lineText.includes(term.term),
-    );
-    const matchedStrongTerms = matchedTerms.filter((term) => term.strong);
-    const matchedWeight = matchedTerms.reduce(
-      (sum, term) => sum + term.weight,
-      0,
-    );
-    if (matchedStrongTerms.length > 0) return true;
-    if (matchedTerms.length >= 2 && matchedWeight >= 4) return true;
-    if (matchedTerms.length >= 3) return true;
-  }
-
-  return false;
-}
-
-function extractQueryKind(line: string): string | null {
-  return line.match(/\bquery_kind=([^\s]+)/)?.[1] ?? null;
-}
-
-function queryKindMatchesExpectedQuery(
-  kind: string | null,
-  expectedText: string,
-): boolean {
-  switch (kind) {
-    case "hook_code":
-      return (
-        hasAllExpectedTerms(expectedText, ["hook"]) &&
-        hasAnyExpectedTerm(expectedText, [
-          "additionalcontext",
-          "additional context",
-          "codex",
-          "injection",
-          "entry points",
-        ])
-      );
-    case "external_data_sources":
-      return hasAnyExpectedTerm(expectedText, ["fml", "anamnesis", "team"]);
-    case "panopticon_capabilities":
-      return (
-        hasAllExpectedTerms(expectedText, ["panopticon"]) &&
-        hasAnyExpectedTerm(expectedText, [
-          "capabilities",
-          "data model",
-          "tool surface",
-          "comparison",
-          "compare",
-        ])
-      );
-    case "schema_sync":
-      return hasAnyExpectedTerm(expectedText, [
-        "schema",
-        "sync",
-        "panopticon_v2",
-        "messageid",
-        "relationshiptype",
-      ]);
-    case "session_summary_api":
-      return hasAnyExpectedTerm(expectedText, [
-        "session_summary_detail",
-        "summary_detail",
-        "compact session-summary",
-        "compact context",
-        "preview shape",
-        "output contract",
-      ]);
-    case "hook_events":
-      return hasAnyExpectedTerm(expectedText, [
-        "hook_events",
-        "pretooluse",
-        "posttooluse",
-        "userpromptsubmit",
-      ]);
-    case "enrichment_stats":
-      return hasAnyExpectedTerm(expectedText, [
-        "session_summary_enrichments",
-        "enrichment",
-        "regenerated",
-      ]);
-    case "userpromptsubmit_corpus":
-      return (
-        hasAllExpectedTerms(expectedText, ["userpromptsubmit"]) &&
-        hasAnyExpectedTerm(expectedText, [
-          "corpus",
-          "prompt list",
-          "first",
-          "later",
-        ])
-      );
-    case "related_prompt":
-      return hasAnyExpectedTerm(expectedText, [
-        "deferred",
-        "prior",
-        "previous",
-        "related",
-        "session id",
-        "pr ",
-        "branch",
-        "review",
-        "left off",
-        "resume",
-      ]);
-    default:
-      return false;
-  }
-}
-
-function hasAllExpectedTerms(text: string, terms: string[]): boolean {
-  return terms.every((term) => text.includes(term));
-}
-
-function hasAnyExpectedTerm(text: string, terms: string[]): boolean {
-  return terms.some((term) => text.includes(term));
 }
 
 function hasActionableLabel(label: EvalPromptLabel): boolean {
