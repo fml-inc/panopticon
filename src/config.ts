@@ -194,6 +194,18 @@ export const config = {
     "PANOPTICON_ENABLE_SESSION_SUMMARY_ENRICHMENT",
     true,
   ),
+  // Inject bounded recent-history context on SessionStart. Default on;
+  // set the env var to a falsy value to disable the injection entirely.
+  enableSessionStartHistoryInjection: envBool(
+    "PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION",
+    true,
+  ),
+  // Inject prompt-relevant prior-session context on UserPromptSubmit.
+  // Default on; disable independently of the SessionStart injection.
+  enableUserPromptSubmitContextInjection: envBool(
+    "PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION",
+    true,
+  ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,
