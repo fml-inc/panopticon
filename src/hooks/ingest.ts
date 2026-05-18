@@ -6,6 +6,7 @@ import {
   extractWrittenFilePath,
   isTrackedUserConfigPath,
 } from "../config-capture.js";
+import { getDb } from "../db/schema.js";
 import {
   incrementEventTypeCount,
   incrementToolCount,
@@ -34,7 +35,10 @@ import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
-import { buildSessionStartRecentHistoryContext } from "./session-context.js";
+import {
+  buildSessionStartRecentHistoryContext,
+  buildUserPromptSubmitLocalContext,
+} from "./session-context.js";
 
 // Last resolved repo per session — used as fallback for events without paths
 // (e.g. Stop, UserPromptSubmit). Long-lived in the server process.
@@ -330,14 +334,15 @@ function resolveTarget(data: HookInput): TargetAdapter | undefined {
  *   3. Resolve the git repository from cwd/file paths
  *   4. Store the event in hook_events table (full payload as gzipped blob)
  *   5. Upsert session metadata (started_at, first_prompt, ended_at, etc.)
- *   6. For SessionStart: optionally return bounded recent history as
- *      additional context
+ *   6. For SessionStart/UserPromptSubmit: optionally return bounded local
+ *      history as additional context
  *   7. For PreToolUse / PermissionRequest: check allowed.json and return a
  *      target-specific permission decision
  *
- * Returns {} for most events. For SessionStart, may return additional context.
- * For PreToolUse / PermissionRequest, may return a permission response that
- * the target uses to auto-approve/deny the tool call or approval prompt.
+ * Returns {} for most events. For SessionStart/UserPromptSubmit, may return
+ * additional context. For PreToolUse / PermissionRequest, may return a
+ * permission response that the target uses to auto-approve/deny the tool call
+ * or approval prompt.
  */
 export function processHookEvent(data: HookInput): Record<string, unknown> {
   const sessionId = data.session_id ?? "unknown";
@@ -611,8 +616,21 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     return buildPermissionResponse(eventType, toolName, data, target);
   }
 
+  if (eventType === "UserPromptSubmit") {
+    const response = buildUserPromptSubmitContextResponse({
+      ...data,
+      repository: repo ?? data.repository,
+      is_first_user_prompt_submit: isFirstUserPromptSubmit(sessionId),
+      now_ms: timestampMs,
+    });
+    if (response) return response;
+  }
+
   if (eventType === "SessionStart") {
-    const response = buildSessionStartContextResponse(data);
+    const response = buildSessionStartContextResponse({
+      ...data,
+      now_ms: timestampMs,
+    });
     if (response) return response;
   }
 
@@ -634,6 +652,41 @@ function buildSessionStartContextResponse(
   } catch (err) {
     log.hooks.error("session start context build failed:", err);
     return null;
+  }
+}
+
+function buildUserPromptSubmitContextResponse(
+  data: HookInput,
+): Record<string, unknown> | null {
+  try {
+    const additionalContext = buildUserPromptSubmitLocalContext(data);
+    if (!additionalContext) return null;
+    return {
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext,
+      },
+    };
+  } catch (err) {
+    log.hooks.error("user prompt submit context build failed:", err);
+    return null;
+  }
+}
+
+function isFirstUserPromptSubmit(sessionId: string): boolean {
+  try {
+    const row = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM hook_events
+         WHERE session_id = ?
+           AND event_type = 'UserPromptSubmit'`,
+      )
+      .get(sessionId) as { count: number } | undefined;
+    return (row?.count ?? 0) <= 1;
+  } catch (err) {
+    log.hooks.error("user prompt submit count lookup failed:", err);
+    return false;
   }
 }
 
