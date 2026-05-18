@@ -676,11 +676,7 @@ function tokenizePromptForSummarySearch(prompt: string): PromptSearchTerm[] {
   const seen = new Map<string, number>();
   for (const [index, term] of terms.entries()) {
     const normalized = term.replace(/^-+|-+$/g, "");
-    if (
-      normalized.length < 3 ||
-      (/^\d+$/.test(normalized) && normalized.length < 3) ||
-      PROMPT_RELEVANCE_STOPWORDS.has(normalized)
-    ) {
+    if (normalized.length < 3 || PROMPT_RELEVANCE_STOPWORDS.has(normalized)) {
       continue;
     }
     if (!seen.has(normalized)) seen.set(normalized, index);
