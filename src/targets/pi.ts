@@ -12,8 +12,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { defaultToolCategory } from "../scanner/categories.js";
+import { readNewLines } from "../scanner/reader.js";
 import { registerTarget } from "./registry.js";
-import type { TargetAdapter } from "./types.js";
+import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
 
 function piDir(): string {
   return path.join(process.env.HOME ?? os.homedir(), ".pi");
@@ -21,6 +23,114 @@ function piDir(): string {
 
 function extensionDest(): string {
   return path.join(piDir(), "agent", "extensions", "panopticon.js");
+}
+
+function sessionsDir(): string {
+  return path.join(piDir(), "agent", "sessions");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function timestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = new Date(value).getTime();
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function textFromContent(content: unknown): {
+  text: string;
+  hasThinking: boolean;
+} {
+  if (typeof content === "string") return { text: content, hasThinking: false };
+  if (!Array.isArray(content)) return { text: "", hasThinking: false };
+  const parts: string[] = [];
+  let hasThinking = false;
+  for (const block of content) {
+    const b = asRecord(block);
+    if (!b) continue;
+    if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
+    if (b.type === "thinking") {
+      hasThinking = true;
+      if (typeof b.thinking === "string") {
+        parts.push(`[Thinking]\n${b.thinking}\n[/Thinking]`);
+      }
+    }
+  }
+  return { text: parts.join("\n"), hasThinking };
+}
+
+function resultContentLength(content: unknown): number {
+  return textFromContent(content).text.length;
+}
+
+function readNonNegativeNumber(
+  record: Record<string, unknown> | undefined,
+  keys: string[],
+): number {
+  if (!record) return 0;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function readSessionHeader(filePath: string): ParseResult["meta"] | undefined {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const chunks: Buffer[] = [];
+      const buffer = Buffer.alloc(1024);
+      let total = 0;
+      for (;;) {
+        const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+        chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+        if (Buffer.concat(chunks).includes(0x0a)) break;
+      }
+      const firstLine = Buffer.concat(chunks).toString("utf8").split("\n")[0];
+      if (!firstLine) return undefined;
+      const obj = JSON.parse(firstLine) as Record<string, unknown>;
+      if (obj.type !== "session") return undefined;
+      const sid =
+        typeof obj.id === "string" ? obj.id : path.basename(filePath, ".jsonl");
+      return {
+        sessionId: sid,
+        cwd: typeof obj.cwd === "string" ? obj.cwd : undefined,
+        startedAtMs: timestampMs(obj.timestamp),
+        parentSessionId:
+          typeof obj.parentSession === "string" ? obj.parentSession : undefined,
+        relationshipType:
+          typeof obj.parentSession === "string" ? "fork" : undefined,
+      };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function piToolCategory(toolName: string): string {
+  const lower = toolName.toLowerCase();
+  if (lower.includes("read")) return "Read";
+  if (lower.includes("edit") || lower.includes("patch")) return "Edit";
+  if (lower.includes("write") || lower.includes("create")) return "Write";
+  if (lower.includes("bash") || lower.includes("shell")) return "Bash";
+  if (lower.includes("grep") || lower.includes("search")) return "Grep";
+  if (lower.includes("glob") || lower.includes("list")) return "Glob";
+  if (lower.includes("web") || lower.includes("fetch")) return "Web";
+  return defaultToolCategory(toolName);
 }
 
 /**
@@ -146,7 +256,258 @@ const pi: TargetAdapter = {
 
   // No proxy spec: Pi routes API calls through its own provider configuration
   // No otel spec: Pi doesn't emit OTel natively
-  // No scanner spec: Pi doesn't write local session files (session data is in-memory)
+
+  scanner: {
+    normalizeToolCategory: piToolCategory,
+
+    discover() {
+      const root = sessionsDir();
+      const files: { filePath: string }[] = [];
+      const walk = (dir: string) => {
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const entryPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(entryPath);
+          else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+            files.push({ filePath: entryPath });
+          }
+        }
+      };
+      walk(root);
+      return files;
+    },
+
+    parseFile(filePath: string, fromByteOffset: number): ParseResult | null {
+      const { lines, newByteOffset } = readNewLines(filePath, fromByteOffset);
+      if (lines.length === 0) return null;
+
+      let meta: ParseResult["meta"] =
+        fromByteOffset > 0 ? readSessionHeader(filePath) : undefined;
+      const turns: ParseResult["turns"] = [];
+      const events: ParseResult["events"] = [];
+      const messages: ParseResult["messages"] = [];
+      const orphanedToolResults = new Map<
+        string,
+        { contentLength: number; contentRaw: string; timestampMs?: number }
+      >();
+      // Match the Claude/Codex scanner contract: parsers emit chunk-relative
+      // indices and scanner/loop.ts reindexes incrementals from DB state.
+      let ordinal = 0;
+      let turnIndex = 0;
+      let firstPrompt: string | undefined;
+
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(lines[lineIndex]);
+        } catch {
+          events.push({
+            sessionId: meta?.sessionId ?? path.basename(filePath, ".jsonl"),
+            eventType: "malformed",
+            timestampMs: meta?.startedAtMs ?? lineIndex,
+            metadata: { lineIndex },
+          });
+          continue;
+        }
+
+        if (obj.type === "session") {
+          const sid =
+            typeof obj.id === "string"
+              ? obj.id
+              : path.basename(filePath, ".jsonl");
+          meta = {
+            sessionId: sid,
+            cwd: typeof obj.cwd === "string" ? obj.cwd : undefined,
+            startedAtMs: timestampMs(obj.timestamp),
+            parentSessionId:
+              typeof obj.parentSession === "string"
+                ? obj.parentSession
+                : undefined,
+            relationshipType:
+              typeof obj.parentSession === "string" ? "fork" : undefined,
+          };
+          continue;
+        }
+
+        const msg = asRecord(obj.message);
+        if (obj.type !== "message" || !msg) continue;
+        const sid = meta?.sessionId ?? path.basename(filePath, ".jsonl");
+        const role = msg.role;
+        const tsMs =
+          timestampMs(msg.timestamp) ??
+          timestampMs(obj.timestamp) ??
+          meta?.startedAtMs ??
+          lineIndex;
+        const uuid = typeof obj.id === "string" ? obj.id : undefined;
+        const parentUuid =
+          typeof obj.parentId === "string" ? obj.parentId : undefined;
+
+        if (role === "user") {
+          const { text } = textFromContent(msg.content);
+          if (!firstPrompt && text) firstPrompt = text.slice(0, 200);
+          if (text.length > 0) {
+            messages.push({
+              sessionId: sid,
+              ordinal: ordinal++,
+              role: "user",
+              content: text,
+              timestampMs: tsMs,
+              hasThinking: false,
+              hasToolUse: false,
+              isSystem: false,
+              contentLength: text.length,
+              hasContextTokens: false,
+              hasOutputTokens: false,
+              uuid,
+              parentUuid,
+              toolCalls: [],
+              toolResults: new Map(),
+            });
+          }
+          turns.push({
+            sessionId: sid,
+            turnIndex: turnIndex++,
+            timestampMs: tsMs,
+            role: "user",
+            contentPreview: text.slice(0, 200),
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            reasoningTokens: 0,
+          });
+        } else if (role === "assistant") {
+          const content = Array.isArray(msg.content) ? msg.content : [];
+          const { text, hasThinking } = textFromContent(content);
+          const toolCalls: ParsedToolCall[] = [];
+          for (const block of content) {
+            const b = asRecord(block);
+            if (!b || b.type !== "toolCall") continue;
+            const toolName = typeof b.name === "string" ? b.name : "";
+            const inputJson = b.arguments
+              ? JSON.stringify(b.arguments)
+              : undefined;
+            const toolUseId =
+              typeof b.id === "string"
+                ? b.id
+                : `${sid}:${ordinal}:${toolCalls.length}`;
+            toolCalls.push({
+              toolUseId,
+              toolName,
+              category: piToolCategory(toolName),
+              inputJson,
+              timestampMs: tsMs,
+            });
+            events.push({
+              sessionId: sid,
+              eventType: "tool_call",
+              timestampMs: tsMs,
+              eventIndex: lineIndex,
+              toolName,
+              toolInput: inputJson?.slice(0, 10_000),
+              metadata: { tool_call_id: toolUseId },
+            });
+          }
+          const usage = asRecord(msg.usage);
+          const inputTokens =
+            typeof usage?.input === "number" ? usage.input : 0;
+          const outputTokens =
+            typeof usage?.output === "number" ? usage.output : 0;
+          const cacheReadTokens =
+            typeof usage?.cacheRead === "number" ? usage.cacheRead : 0;
+          const cacheCreationTokens =
+            typeof usage?.cacheWrite === "number" ? usage.cacheWrite : 0;
+          const contextTokens =
+            inputTokens + cacheReadTokens + cacheCreationTokens;
+          const model = typeof msg.model === "string" ? msg.model : undefined;
+          if (meta && model && !meta.model) meta.model = model;
+          messages.push({
+            sessionId: sid,
+            ordinal: ordinal++,
+            role: "assistant",
+            content: text,
+            timestampMs: tsMs,
+            hasThinking,
+            hasToolUse: toolCalls.length > 0,
+            isSystem: false,
+            contentLength: text.length,
+            model,
+            tokenUsage: usage ? JSON.stringify(usage) : undefined,
+            contextTokens: contextTokens > 0 ? contextTokens : undefined,
+            outputTokens: outputTokens > 0 ? outputTokens : undefined,
+            hasContextTokens: contextTokens > 0,
+            hasOutputTokens: outputTokens > 0,
+            uuid,
+            parentUuid,
+            toolCalls,
+            toolResults: new Map(),
+          });
+          turns.push({
+            sessionId: sid,
+            turnIndex: turnIndex++,
+            timestampMs: tsMs,
+            model,
+            role: "assistant",
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheCreationTokens,
+            reasoningTokens: 0,
+          });
+        } else if (role === "toolResult") {
+          const toolCallId =
+            typeof msg.toolCallId === "string" ? msg.toolCallId : undefined;
+          const { text } = textFromContent(msg.content);
+          if (toolCallId) {
+            orphanedToolResults.set(toolCallId, {
+              contentLength: resultContentLength(msg.content),
+              contentRaw: text,
+              timestampMs: tsMs,
+            });
+          }
+          events.push({
+            sessionId: sid,
+            eventType: "tool_result",
+            timestampMs: tsMs,
+            eventIndex: lineIndex,
+            toolName:
+              typeof msg.toolName === "string" ? msg.toolName : undefined,
+            toolOutput: text.slice(0, 500),
+            metadata: {
+              tool_call_id: toolCallId,
+              is_error: msg.isError === true,
+            },
+          });
+        }
+      }
+
+      if (meta && firstPrompt && !meta.firstPrompt)
+        meta.firstPrompt = firstPrompt;
+      if (
+        !meta &&
+        turns.length === 0 &&
+        events.length === 0 &&
+        messages.length === 0
+      )
+        return null;
+
+      return {
+        meta,
+        turns,
+        events,
+        messages,
+        newByteOffset,
+        orphanedToolResults:
+          orphanedToolResults.size > 0 ? orphanedToolResults : undefined,
+      };
+    },
+  },
+
   // No ident spec: Pi doesn't emit model names in events we capture
 };
 
