@@ -131,7 +131,7 @@ concurrency/workpooling follow-up, see
 | Gemini CLI | `settings.json` hooks | Native OTel SDK (HTTP) | `~/.gemini/tmp/` JSON | Google AI API | Scanner captures tool calls, reasoning thoughts |
 | Codex CLI | `hooks.json` | Native OTel SDK (HTTP) | `~/.codex/sessions/` JSONL | OpenAI API | Scanner captures tool calls, reasoning tokens, agent messages |
 | Claude Desktop | MCP server | — | — | — | MCP query tools only |
-| Pi | Extension (HTTP) | — | — | — | Extension emits hook events via fire-and-forget HTTP to panopticon server |
+| Pi | Extension (HTTP) | — | `~/.pi/agent/sessions/` JSONL | — | Extension and scanner capture hooks, normalized messages, assistant responses/tool calls/tokens when Pi exposes them; see [Pi coverage](docs/PI-COVERAGE.md) |
 
 Each tool is implemented as a **target adapter** in `src/targets/`. To add support for a new tool, create a single adapter file that declares config paths, hook events, shell env vars, event normalization, detection logic, and proxy routing — then register it in `src/targets/index.ts`.
 
@@ -171,6 +171,7 @@ but they become much richer once projections are enabled.
 - [Durable IDs and provenance foundation plan](docs/DURABLE-IDS-PLAN.md) captures the remaining repo/file provenance and evidence-ref follow-up work.
 - [Inference interfaces](docs/INFERENCE-INTERFACES.md) defines the deterministic-fallback and optional-LLM contract for future enrichments.
 - [Release validation runbook](docs/RELEASE-VALIDATION-RUNBOOK.md) covers validating changes against a copied production-sized DB and real home-directory config.
+- [Pi coverage matrix and verification](docs/PI-COVERAGE.md) documents Pi hook, message, assistant response, token, scanner, headless, and limitation coverage with SQL verification queries.
 - [Session summary split status](docs/SESSION-SUMMARY-SPLIT-STATUS.md) records the merged state of the session-summary split and the next post-merge harness tranche.
 
 ## CLI
