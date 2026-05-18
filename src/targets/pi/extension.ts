@@ -3,8 +3,11 @@
  *
  * Captures Pi session events (prompts, tool calls, results) and sends them
  * to the local Panopticon server using the same HookInput format that
- * Claude Code and Gemini CLI use. All events are fire-and-forget —
- * failures are silently swallowed so the agent is never blocked.
+ * Claude Code and Gemini CLI use. Events are emitted without awaiting during
+ * normal operation, but in-flight requests are tracked and flushed during
+ * session_shutdown so short-lived/headless Pi runs do not exit before hook
+ * POSTs reach Panopticon. Failures are silently swallowed so the agent is never
+ * blocked by observability.
  *
  * Install:
  *   panopticon install --target pi
@@ -51,6 +54,14 @@ function readAuthToken(): string | null {
 }
 
 const AUTH_TOKEN = readAuthToken();
+const REQUEST_TIMEOUT_MS = parseInt(
+  process.env.PANOPTICON_PI_REQUEST_TIMEOUT_MS ?? "5000",
+  10,
+);
+const SHUTDOWN_FLUSH_TIMEOUT_MS = parseInt(
+  process.env.PANOPTICON_PI_SHUTDOWN_FLUSH_TIMEOUT_MS ?? "5000",
+  10,
+);
 
 interface HookEvent {
   session_id: string;
@@ -65,28 +76,61 @@ interface HookEvent {
   [key: string]: unknown;
 }
 
-function post(event: HookEvent): void {
+const pendingPosts = new Set<Promise<void>>();
+
+function post(event: HookEvent): Promise<void> {
   const body = JSON.stringify(event);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Content-Length": String(Buffer.byteLength(body)),
   };
   if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-  const req = http.request(
-    {
-      hostname: HOST,
-      port: PORT,
-      path: "/hooks",
-      method: "POST",
-      headers,
-      timeout: 5000,
-    },
-    (res) => res.resume(),
-  );
-  req.on("error", () => {});
-  req.on("timeout", () => req.destroy());
-  req.write(body);
-  req.end();
+
+  const requestPromise = new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const req = http.request(
+      {
+        hostname: HOST,
+        port: PORT,
+        path: "/hooks",
+        method: "POST",
+        headers,
+        timeout: REQUEST_TIMEOUT_MS,
+      },
+      (res) => {
+        res.resume();
+        res.on("end", finish);
+        res.on("close", finish);
+      },
+    );
+    req.on("error", finish);
+    req.on("close", finish);
+    req.on("timeout", () => {
+      req.destroy();
+      finish();
+    });
+    req.write(body);
+    req.end();
+  });
+
+  pendingPosts.add(requestPromise);
+  requestPromise.finally(() => pendingPosts.delete(requestPromise));
+  return requestPromise;
+}
+
+async function flushPendingPosts(
+  timeoutMs = SHUTDOWN_FLUSH_TIMEOUT_MS,
+): Promise<void> {
+  if (pendingPosts.size === 0) return;
+  await Promise.race([
+    Promise.allSettled([...pendingPosts]),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
 }
 
 function detectRepo(dir: string): string | undefined {
@@ -179,5 +223,11 @@ export default function panopticon(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async () => {
     emit({ hook_event_name: "SessionEnd" });
+    await flushPendingPosts();
   });
 }
+
+export const __panopticonPiExtensionTest = {
+  flushPendingPosts,
+  pendingPostCount: () => pendingPosts.size,
+};
