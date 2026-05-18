@@ -138,6 +138,7 @@ export default function panopticon(pi: ExtensionAPI) {
     emit({
       hook_event_name: "PreToolUse",
       tool_name: event.toolName,
+      tool_call_id: event.toolCallId,
       tool_input: event.input as Record<string, unknown>,
     });
   });
@@ -149,6 +150,7 @@ export default function panopticon(pi: ExtensionAPI) {
     emit({
       hook_event_name: event.isError ? "PostToolUseFailure" : "PostToolUse",
       tool_name: event.toolName,
+      tool_call_id: event.toolCallId,
       tool_input: event.input,
       tool_result: { content: event.content, details: event.details },
     });

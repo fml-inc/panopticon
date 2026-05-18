@@ -35,6 +35,7 @@ import { closeDb, getDb } from "../db/schema.js";
 import {
   insertHookEvent,
   insertPiHookMessageFromEvent,
+  insertPiHookToolCallFromPostEvent,
   upsertSession,
 } from "../db/store.js";
 import { rebuildIntentClaimsFromHooks } from "./asserters/from_hooks.js";
@@ -239,6 +240,165 @@ describe("query: intent_for_code", () => {
       | { message_count: number; user_message_count: number }
       | undefined;
     expect(session).toEqual({ message_count: 2, user_message_count: 1 });
+  });
+
+  it("normalizes Pi lowercase hook tool events into tool_calls", () => {
+    upsertSession({ session_id: SESSION, target: "pi", has_hooks: 1 });
+    ingest({
+      event_type: "PreToolUse",
+      target: "pi",
+      ts: 1000,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        tool_call_id: "pi-call-1",
+        tool_input: { path: "pi-write.md", content: "hello" },
+      },
+    });
+    const messageId = getDb()
+      .prepare(`SELECT id FROM hook_events WHERE session_id = ?`)
+      .get(SESSION) as { id: number };
+    insertPiHookMessageFromEvent(messageId.id);
+
+    const postId = ingest({
+      event_type: "PostToolUse",
+      target: "pi",
+      ts: 1250,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        tool_call_id: "pi-call-1",
+        tool_input: { path: "pi-write.md", content: "hello" },
+        tool_result: { content: "ok" },
+      },
+    });
+
+    insertPiHookToolCallFromPostEvent(postId);
+
+    const row = getDb()
+      .prepare(
+        `SELECT tc.message_id, m.role, m.has_tool_use, tc.session_id,
+                tc.call_index, tc.tool_name, tc.category, tc.tool_use_id,
+                tc.input_json, tc.result_content, tc.duration_ms
+         FROM tool_calls tc
+         JOIN messages m ON m.id = tc.message_id
+         WHERE tc.session_id = ?`,
+      )
+      .get(SESSION) as
+      | {
+          message_id: number;
+          role: string;
+          has_tool_use: number;
+          session_id: string;
+          call_index: number;
+          tool_name: string;
+          category: string;
+          tool_use_id: string;
+          input_json: string;
+          result_content: string;
+          duration_ms: number;
+        }
+      | undefined;
+
+    expect(row).toMatchObject({
+      role: "assistant",
+      has_tool_use: 1,
+      session_id: SESSION,
+      call_index: 0,
+      tool_name: "write",
+      category: "hook",
+      tool_use_id: "pi-call-1",
+      duration_ms: 250,
+    });
+    expect(row?.message_id).toBeGreaterThan(0);
+    expect(JSON.parse(row?.input_json ?? "{}")).toEqual({
+      path: "pi-write.md",
+      content: "hello",
+    });
+    expect(JSON.parse(row?.result_content ?? "{}")).toEqual({ content: "ok" });
+  });
+
+  it("matches Pi hook tool events with camelCase toolCallId", () => {
+    upsertSession({ session_id: SESSION, target: "pi", has_hooks: 1 });
+    const preId = ingest({
+      event_type: "PreToolUse",
+      target: "pi",
+      ts: 1000,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        toolCallId: "pi-call-camel",
+        tool_input: { path: "pi-write.md", content: "hello" },
+      },
+    });
+    insertPiHookMessageFromEvent(preId);
+
+    const postId = ingest({
+      event_type: "PostToolUse",
+      target: "pi",
+      ts: 1250,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        toolCallId: "pi-call-camel",
+        tool_input: { path: "pi-write.md", content: "hello" },
+        tool_result: { content: "ok" },
+      },
+    });
+
+    insertPiHookToolCallFromPostEvent(postId);
+
+    const row = getDb()
+      .prepare(
+        `SELECT tool_use_id, duration_ms
+         FROM tool_calls
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as { tool_use_id: string; duration_ms: number } | undefined;
+
+    expect(row).toEqual({ tool_use_id: "pi-call-camel", duration_ms: 250 });
+  });
+
+  it("does not fall back to a different Pi pre-tool event when post has an unmatched call id", () => {
+    upsertSession({ session_id: SESSION, target: "pi", has_hooks: 1 });
+    const preId = ingest({
+      event_type: "PreToolUse",
+      target: "pi",
+      ts: 1000,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        tool_call_id: "pi-call-1",
+        tool_input: { path: "pi-write.md", content: "hello" },
+      },
+    });
+    insertPiHookMessageFromEvent(preId);
+
+    const postId = ingest({
+      event_type: "PostToolUse",
+      target: "pi",
+      ts: 1250,
+      tool_name: "write",
+      payload: {
+        tool_name: "write",
+        tool_call_id: "pi-call-2",
+        tool_input: { path: "pi-write.md", content: "hello" },
+        tool_result: { content: "ok" },
+      },
+    });
+
+    insertPiHookToolCallFromPostEvent(postId);
+
+    const count = (
+      getDb()
+        .prepare(
+          `SELECT COUNT(*) AS c
+           FROM tool_calls
+           WHERE session_id = ?`,
+        )
+        .get(SESSION) as { c: number }
+    ).c;
+    expect(count).toBe(0);
   });
 
   it("projects Pi lowercase edit hook events into intent edits", () => {
