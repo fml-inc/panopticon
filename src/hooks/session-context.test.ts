@@ -19,12 +19,15 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { buildSessionStartRecentHistoryContext } from "./session-context.js";
+import {
+  buildSessionStartRecentHistoryContext,
+  buildUserPromptSubmitLocalContext,
+} from "./session-context.js";
 
 const cwd = path.join(os.tmpdir(), "panopticon-session-context-cwd");
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-describe("buildSessionStartRecentHistoryContext", () => {
+describe("session context builders", () => {
   beforeEach(() => {
     closeDb();
     fs.rmSync(config.dataDir, { recursive: true, force: true });
@@ -270,6 +273,257 @@ describe("buildSessionStartRecentHistoryContext", () => {
       }),
     ).toBeNull();
   });
+
+  it("formats prompt-relevant local context for UserPromptSubmit", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "relevant",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 1_000,
+      firstPrompt: "Earlier UserPromptSubmit local data work.",
+    });
+    insertSummary({
+      sessionId: "relevant",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 2_000,
+      summaryText:
+        "Implemented user_prompt_submit local data context injection for prompt relevance.",
+    });
+    insertSession({
+      id: "unrelated",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 3_000,
+      firstPrompt: "Packaging cleanup.",
+    });
+    insertSummary({
+      sessionId: "unrelated",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 3_500,
+      summaryText: "Updated npm packaging and install verification.",
+    });
+    insertSession({
+      id: "current",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 4_000,
+      firstPrompt: "Current request.",
+    });
+    insertSummary({
+      sessionId: "current",
+      sessionCwd: cwd,
+      status: "active",
+      lastIntentTsMs: baseMs + 4_500,
+      summaryText:
+        "Current UserPromptSubmit local data work should not be injected.",
+    });
+
+    const context = buildUserPromptSubmitLocalContext({
+      session_id: "current",
+      cwd,
+      prompt: "ok lets do the user_prompt_submit using local data first",
+    });
+
+    expect(context).toContain("Panopticon prompt-relevant local context");
+    expect(context).toContain(`cwd: ${cwd}`);
+    expect(context).toContain("background memory only");
+    expect(context).toContain("session_summary_detail");
+    expect(context).toContain("timeline");
+    expect(context).toContain(
+      "Implemented user_prompt_submit local data context injection",
+    );
+    expect(context).toContain("session_id=relevant");
+    expect(context).not.toContain("Updated npm packaging");
+    expect(context).not.toContain("should not be injected");
+  });
+
+  it("uses repository scope for UserPromptSubmit when cwd is absent", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "repo-match",
+      sessionCwd: path.join(os.tmpdir(), "different-cwd"),
+      target: "codex",
+      startedAtMs: baseMs + 1_000,
+      firstPrompt: "Prompt context work.",
+    });
+    insertSummary({
+      sessionId: "repo-match",
+      sessionCwd: path.join(os.tmpdir(), "different-cwd"),
+      repository: "fml-inc/panopticon",
+      status: "landed",
+      lastIntentTsMs: baseMs + 2_000,
+      summaryText: "Added prompt-aware local memory lookup.",
+    });
+
+    const context = buildUserPromptSubmitLocalContext({
+      session_id: "current",
+      repository: "fml-inc/panopticon",
+      prompt: "prompt-aware local memory lookup",
+    });
+
+    expect(context).toContain("repository: fml-inc/panopticon");
+    expect(context).toContain("session_id=repo-match");
+    expect(context).toContain("Added prompt-aware local memory lookup.");
+  });
+
+  it("excludes known automated sessions from UserPromptSubmit context", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "automated-prompt-context",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 1_000,
+      firstPrompt: "UserPromptSubmit local data automation.",
+      isAutomated: true,
+    });
+    insertSummary({
+      sessionId: "automated-prompt-context",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 2_000,
+      summaryText: "UserPromptSubmit local data automation should not appear.",
+    });
+
+    expect(
+      buildUserPromptSubmitLocalContext({
+        session_id: "current",
+        cwd,
+        prompt: "userpromptsubmit local data automation",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for weak generic UserPromptSubmit terms", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "generic-match",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 1_000,
+      firstPrompt: "Add app mode.",
+    });
+    insertSummary({
+      sessionId: "generic-match",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 2_000,
+      summaryText: "Added app mode and todo cleanup.",
+    });
+
+    expect(
+      buildUserPromptSubmitLocalContext({
+        session_id: "current",
+        cwd,
+        prompt: "add dark mode to a todo app",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not duplicate SessionStart recent history on the first UserPromptSubmit", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "recent-sessionstart-context",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 1_000,
+      firstPrompt: "UserPromptSubmit local data work.",
+    });
+    insertSummary({
+      sessionId: "recent-sessionstart-context",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 2_000,
+      summaryText: "Implemented user_prompt_submit local data context.",
+    });
+
+    expect(
+      buildSessionStartRecentHistoryContext({ session_id: "current", cwd }),
+    ).toContain("session_id=recent-sessionstart-context");
+    expect(
+      buildUserPromptSubmitLocalContext({
+        session_id: "current",
+        cwd,
+        prompt: "user_prompt_submit local data",
+        is_first_user_prompt_submit: true,
+      }),
+    ).toBeNull();
+    expect(
+      buildUserPromptSubmitLocalContext({
+        session_id: "current",
+        cwd,
+        prompt: "user_prompt_submit local data",
+      }),
+    ).toContain("session_id=recent-sessionstart-context");
+  });
+
+  it("does not inject prompt context from future activity during replay", () => {
+    const baseMs = Date.now() - 20_000;
+    insertSession({
+      id: "future-match",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 10_000,
+      firstPrompt: "Future rare_topic injection work.",
+    });
+    insertSummary({
+      sessionId: "future-match",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 12_000,
+      summaryText:
+        "Implemented rare_topic injection after the replayed prompt.",
+    });
+
+    expect(
+      buildUserPromptSubmitLocalContext({
+        session_id: "current",
+        cwd,
+        prompt: "rare_topic injection",
+        now_ms: baseMs + 5_000,
+      }),
+    ).toBeNull();
+  });
+
+  it("prioritizes strong prompt terms that appear after generic terms", () => {
+    const baseMs = Date.now() - 10_000;
+    insertSession({
+      id: "late-term-match",
+      sessionCwd: cwd,
+      target: "codex",
+      startedAtMs: baseMs + 1_000,
+      firstPrompt: "Raretopic injection work.",
+    });
+    insertSummary({
+      sessionId: "late-term-match",
+      sessionCwd: cwd,
+      status: "landed",
+      lastIntentTsMs: baseMs + 2_000,
+      summaryText: "Implemented rare_topic injection for prompt lookup.",
+    });
+
+    const context = buildUserPromptSubmitLocalContext({
+      session_id: "current",
+      cwd,
+      prompt:
+        "review code worktree workspace repo github local session prompt context build install rare_topic injection",
+    });
+
+    expect(context).toContain("session_id=late-term-match");
+    expect(context).toContain("Implemented rare_topic injection");
+  });
+
+  it("returns null for a hook smoke-test prompt with no related history", () => {
+    const context = buildUserPromptSubmitLocalContext({
+      session_id: "current",
+      cwd,
+      prompt: "Reply with exactly: panopticon hook smoke test",
+    });
+
+    expect(context).toBeNull();
+  });
 });
 
 function insertSession(opts: {
@@ -302,6 +556,7 @@ function insertSession(opts: {
 function insertSummary(opts: {
   sessionId: string;
   sessionCwd: string;
+  repository?: string | null;
   status: string;
   lastIntentTsMs: number;
   projectedAtMs?: number;
@@ -312,15 +567,16 @@ function insertSummary(opts: {
   const key = `ss:local:${opts.sessionId}`;
   db.prepare(
     `INSERT INTO session_summaries (
-       session_summary_key, session_id, cwd, title, status,
+       session_summary_key, session_id, repository, cwd, title, status,
        last_intent_ts_ms, intent_count, edit_count, landed_edit_count,
        open_edit_count, summary_text, projection_hash, projected_at_ms,
        source_last_seen_at_ms
      )
-     VALUES (?, ?, ?, ?, ?, ?, 2, 3, 2, 1, ?, 'hash', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 2, 3, 2, 1, ?, 'hash', ?, ?)`,
   ).run(
     key,
     opts.sessionId,
+    opts.repository ?? null,
     opts.sessionCwd,
     `title for ${opts.sessionId}`,
     opts.status,

@@ -371,6 +371,7 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
   cwdCandidates: string[];
   currentSessionId?: string | null;
   sinceMs?: number | null;
+  untilMs?: number | null;
   limit?: number;
 }): SessionSummaryPreview[] {
   if (opts.cwdCandidates.length === 0) return [];
@@ -380,12 +381,15 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
   const activityExpr = sessionSummaryLastActivitySql();
   const useSinceMs =
     typeof opts.sinceMs === "number" && Number.isFinite(opts.sinceMs);
+  const useUntilMs =
+    typeof opts.untilMs === "number" && Number.isFinite(opts.untilMs);
   const params: unknown[] = [
     ...opts.cwdCandidates,
     ...opts.cwdCandidates,
     opts.currentSessionId ?? "",
   ];
   if (useSinceMs) params.push(opts.sinceMs);
+  if (useUntilMs) params.push(opts.untilMs);
   params.push(opts.limit ?? 5);
   const rows = (
     db
@@ -407,6 +411,7 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
          WHERE s.session_id != ?
          AND COALESCE(sess.is_automated, 0) != 1
          ${useSinceMs ? `AND ${activityExpr} >= ?` : ""}
+         ${useUntilMs ? `AND ${activityExpr} <= ?` : ""}
          ORDER BY ${activityExpr} DESC,
                   s.id DESC
          LIMIT ?`,
@@ -421,6 +426,311 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
       previewFilesBySummaryId.get(row.session_summary_id) ?? [],
     ),
   );
+}
+
+const PROMPT_RELEVANCE_TERM_LIMIT = 10;
+// Lowest weight a structurally-strong term can have (a bare numeric id, e.g.
+// a PR number). The gate requires >=1 strong term to match, so this is the
+// effective single-term floor — keep MIN_SCORE at or below it.
+const PROMPT_RELEVANCE_MIN_SCORE = 16;
+// Strict default for the generic (non-identifier) path. Callers loosen it
+// to 3 only for specific mid-session prompts; first prompts keep this.
+const PROMPT_RELEVANCE_DEFAULT_MIN_COUNT = 4;
+const PROMPT_RELEVANCE_STOPWORDS = new Set([
+  "about",
+  "actually",
+  "after",
+  "again",
+  "also",
+  "and",
+  "anything",
+  "are",
+  "before",
+  "but",
+  "can",
+  "confirm",
+  "could",
+  "did",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "just",
+  "into",
+  "let",
+  "lets",
+  "like",
+  "make",
+  "more",
+  "much",
+  "not",
+  "now",
+  "old",
+  "our",
+  "see",
+  "should",
+  "that",
+  "the",
+  "then",
+  "there",
+  "this",
+  "too",
+  "use",
+  "using",
+  "want",
+  "was",
+  "what",
+  "when",
+  "where",
+  "with",
+  "would",
+  "yes",
+  "you",
+]);
+interface PromptSearchTerm {
+  term: string;
+  weight: number;
+  strong: boolean;
+}
+
+export function listRelevantSessionSummaryPreviewsForPrompt(opts: {
+  prompt: string;
+  cwdCandidates?: string[];
+  repository?: string | null;
+  currentSessionId?: string | null;
+  excludeSessionIds?: string[];
+  sinceMs?: number | null;
+  untilMs?: number | null;
+  limit?: number;
+  minScore?: number;
+  // Min distinct generic terms for the non-identifier path. Scope-aware:
+  // vague first-in-session prompts use a stricter value (they only match
+  // ambient repo vocabulary), specific mid-session prompts a looser one.
+  minMatchCount?: number;
+}): SessionSummaryPreview[] {
+  const terms = tokenizePromptForSummarySearch(opts.prompt);
+  if (terms.length === 0) return [];
+
+  const cwdCandidates = [
+    ...new Set(
+      (opts.cwdCandidates ?? []).filter(
+        (value): value is string =>
+          typeof value === "string" && value.length > 0,
+      ),
+    ),
+  ];
+  const repository =
+    typeof opts.repository === "string" && opts.repository.length > 0
+      ? opts.repository
+      : null;
+  const excludeSessionIds = [
+    ...new Set(
+      (opts.excludeSessionIds ?? []).filter(
+        (value): value is string =>
+          typeof value === "string" && value.length > 0,
+      ),
+    ),
+  ];
+  const useSinceMs =
+    typeof opts.sinceMs === "number" && Number.isFinite(opts.sinceMs);
+  const useUntilMs =
+    typeof opts.untilMs === "number" && Number.isFinite(opts.untilMs);
+
+  const db = getDb();
+  const activityExpr = sessionSummaryLastActivitySql();
+  const searchTextExpr = `LOWER(
+    COALESCE(esearch.search_text, '') || ' ' ||
+    COALESCE(esummary.search_text, '') || ' ' ||
+    COALESCE(e.summary_text, '') || ' ' ||
+    COALESCE(s.summary_text, '') || ' ' ||
+    COALESCE(s.title, '') || ' ' ||
+    COALESCE(sess.first_prompt, '')
+  )`;
+  const cwdPlaceholders = cwdCandidates.map(() => "?").join(", ");
+  const cwdMatchExpr =
+    cwdCandidates.length > 0
+      ? `(s.cwd IN (${cwdPlaceholders})
+          OR EXISTS (
+            SELECT 1
+            FROM session_cwds sc
+            WHERE sc.session_id = s.session_id
+              AND sc.cwd IN (${cwdPlaceholders})
+          ))`
+      : "0";
+  const repositoryMatchExpr = repository ? "s.repository = ?" : "0";
+  const scopeFilter =
+    cwdCandidates.length > 0 || repository
+      ? "AND (prompt_cwd_match = 1 OR prompt_repository_match = 1)"
+      : "";
+  const excludeFilter =
+    excludeSessionIds.length > 0
+      ? `AND session_id NOT IN (${excludeSessionIds.map(() => "?").join(", ")})`
+      : "";
+  const matchScoreSql = terms
+    .map(
+      (term) =>
+        `CASE WHEN prompt_search_text LIKE ? ESCAPE '\\' THEN ${term.weight} ELSE 0 END`,
+    )
+    .join(" + ");
+  const matchCountSql = terms
+    .map(
+      () => "CASE WHEN prompt_search_text LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END",
+    )
+    .join(" + ");
+  const strongMatchCountSql = terms
+    .map(
+      (term) =>
+        `CASE WHEN prompt_search_text LIKE ? ESCAPE '\\' THEN ${
+          term.strong ? 1 : 0
+        } ELSE 0 END`,
+    )
+    .join(" + ");
+  const matchWhereSql = terms
+    .map(() => "prompt_search_text LIKE ? ESCAPE '\\'")
+    .join(" OR ");
+
+  const cteParams: unknown[] = [];
+  if (cwdCandidates.length > 0) {
+    cteParams.push(...cwdCandidates, ...cwdCandidates);
+  }
+  if (repository) cteParams.push(repository);
+  const matchParams = terms.map((term) => buildPromptLikePattern(term.term));
+  const params: unknown[] = [
+    ...cteParams,
+    ...matchParams,
+    ...matchParams,
+    ...matchParams,
+    opts.currentSessionId ?? "",
+    ...excludeSessionIds,
+  ];
+  if (useSinceMs) params.push(opts.sinceMs);
+  if (useUntilMs) params.push(opts.untilMs);
+  params.push(
+    ...matchParams,
+    opts.minScore ?? PROMPT_RELEVANCE_MIN_SCORE,
+    opts.minMatchCount ?? PROMPT_RELEVANCE_DEFAULT_MIN_COUNT,
+    opts.limit ?? 5,
+  );
+
+  const rows = (
+    db
+      .prepare(
+        `WITH candidates AS (
+           SELECT ${SESSION_SUMMARY_PROJECTION_SELECT},
+                  COALESCE(sess.is_automated, 0) AS prompt_is_automated,
+                  CASE WHEN ${cwdMatchExpr} THEN 1 ELSE 0 END AS prompt_cwd_match,
+                  CASE WHEN ${repositoryMatchExpr} THEN 1 ELSE 0 END AS prompt_repository_match,
+                  ${activityExpr} AS prompt_activity_ms,
+                  ${searchTextExpr} AS prompt_search_text
+           FROM session_summaries s
+           ${SESSION_SUMMARY_PROJECTION_JOINS}
+         )
+         SELECT *,
+                (${matchScoreSql}) AS prompt_match_score,
+                (${matchCountSql}) AS prompt_match_count,
+                (${strongMatchCountSql}) AS prompt_strong_match_count
+         FROM candidates
+         WHERE session_id != ?
+           ${excludeFilter}
+           AND prompt_is_automated != 1
+           ${useSinceMs ? "AND prompt_activity_ms >= ?" : ""}
+           ${useUntilMs ? "AND prompt_activity_ms <= ?" : ""}
+           ${scopeFilter}
+           AND (${matchWhereSql})
+           AND prompt_match_score >= ?
+           -- Precision gate. Fire only when the overlap is specific enough
+           -- to likely be the same work: either a structurally-specific
+           -- term (identifier / numeric id) matched, OR a broad topical
+           -- match strong enough that coincidence is unlikely. A
+           -- 2-generic-word overlap — the dominant low-utility injection
+           -- in the LLM-judge eval — no longer qualifies, and the generic
+           -- path needs >= N distinct terms (scope-aware: 4 for vague
+           -- first prompts, 3 mid-session) that carry real weight on
+           -- average (>= 6 each), which excludes thin coincidences like
+           -- add/app/mode/todo while keeping substantive topical overlap.
+           AND (prompt_strong_match_count > 0
+                OR (prompt_match_count >= ?
+                    AND prompt_match_score >= prompt_match_count * 6))
+         ORDER BY prompt_match_score DESC,
+                  prompt_cwd_match DESC,
+                  prompt_repository_match DESC,
+                  prompt_activity_ms DESC,
+                  session_summary_id DESC
+         LIMIT ?`,
+      )
+      .all(...params) as RawSessionSummaryProjectionRow[]
+  ).map((row) => toSessionSummaryProjectionRow(row));
+
+  const previewFilesBySummaryId = loadSessionSummaryPreviewFiles(rows, 3);
+  return rows.map((row) =>
+    buildSessionSummaryPreview(
+      row,
+      previewFilesBySummaryId.get(row.session_summary_id) ?? [],
+    ),
+  );
+}
+
+function tokenizePromptForSummarySearch(prompt: string): PromptSearchTerm[] {
+  const terms = prompt.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? [];
+  const seen = new Map<string, number>();
+  for (const [index, term] of terms.entries()) {
+    const normalized = term.replace(/^-+|-+$/g, "");
+    if (
+      normalized.length < 3 ||
+      (/^\d+$/.test(normalized) && normalized.length < 3) ||
+      PROMPT_RELEVANCE_STOPWORDS.has(normalized)
+    ) {
+      continue;
+    }
+    if (!seen.has(normalized)) seen.set(normalized, index);
+  }
+  return [...seen.entries()]
+    .map(([term, index]) => ({
+      term,
+      weight: scorePromptSearchTerm(term),
+      strong: isStrongPromptSearchTerm(term),
+      index,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.strong) - Number(a.strong) ||
+        b.weight - a.weight ||
+        a.index - b.index,
+    )
+    .slice(0, PROMPT_RELEVANCE_TERM_LIMIT)
+    .map(({ term, weight, strong }) => ({ term, weight, strong }));
+}
+
+// Scoring is purely structural — no curated repo-specific vocabulary. The
+// shape of a token (identifier-like, numeric id, length) is a corpus-agnostic
+// proxy for specificity, so this generalizes to any project's prompts.
+function scorePromptSearchTerm(term: string): number {
+  // Compound identifiers (snake_case, kebab-case) and alnum mixes
+  // (e.g. v2, pr226) are highly specific — strong enough to match alone.
+  if (term.includes("_") || term.includes("-")) return 18;
+  if (/[0-9]/.test(term) && /[a-z]/.test(term)) return 18;
+  // Bare numeric ids (issue/PR numbers) are specific but slightly weaker.
+  if (/^\d{3,}$/.test(term)) return 16;
+  // Plain words: longer is more specific, but never strong enough alone.
+  return Math.min(Math.max(term.length, 4), 12);
+}
+
+// "Strong" == structurally specific: a compound identifier, an alnum mix, or
+// a bare numeric id. Deliberately NOT keyed on length — a long plain English
+// word ("classification", "deterministic") is generic and was the main source
+// of low-utility ("tighten") injections in the LLM-judge eval.
+function isStrongPromptSearchTerm(term: string): boolean {
+  return (
+    term.includes("_") ||
+    term.includes("-") ||
+    (/[0-9]/.test(term) && /[a-z]/.test(term)) ||
+    /^\d{3,}$/.test(term)
+  );
+}
+
+function buildPromptLikePattern(term: string): string {
+  return `%${term.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
 export function whyCode(opts: {

@@ -162,7 +162,7 @@ export function formatSessionSummaryPreviewListForContext(opts: {
   return trimToMaxChars(lines.join("\n").trim(), opts.maxChars);
 }
 
-function formatSessionSummaryPreviewForContext(
+export function formatSessionSummaryPreviewForContext(
   preview: SessionSummaryPreview,
   maxChars: number,
 ): string {
