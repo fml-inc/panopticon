@@ -271,6 +271,112 @@ describe("query: intent_for_code", () => {
     expect(session).toEqual({ message_count: 3, user_message_count: 1 });
   });
 
+  it("captures Pi assistant token usage when provided and leaves missing usage absent", () => {
+    const withUsageId = ingest({
+      event_type: "Stop",
+      target: "pi",
+      ts: 1200,
+      payload: {
+        hook_event_name: "Stop",
+        assistant_message: {
+          role: "assistant",
+          model: "test-model",
+          content: [{ type: "text", text: "tokenized response" }],
+          usage: {
+            input: 11,
+            output: 7,
+            cacheRead: 3,
+            cacheWrite: 2,
+            totalTokens: 23,
+            cost: { total: 0.00042 },
+          },
+        },
+      },
+    });
+    const withoutUsageId = ingest({
+      event_type: "Stop",
+      target: "pi",
+      ts: 1250,
+      payload: {
+        hook_event_name: "Stop",
+        assistant_message: {
+          role: "assistant",
+          content: [{ type: "text", text: "untokenized response" }],
+        },
+      },
+    });
+
+    upsertSession({ session_id: SESSION, target: "pi", has_hooks: 1 });
+    expect(insertPiHookMessageFromEvent(withUsageId)).toBe(true);
+    expect(insertPiHookMessageFromEvent(withoutUsageId)).toBe(true);
+
+    const rows = getDb()
+      .prepare(
+        `SELECT content, model, token_usage, context_tokens, output_tokens,
+                has_context_tokens, has_output_tokens
+         FROM messages
+         WHERE session_id = ?
+         ORDER BY ordinal`,
+      )
+      .all(SESSION) as Array<{
+      content: string;
+      model: string;
+      token_usage: string;
+      context_tokens: number;
+      output_tokens: number;
+      has_context_tokens: number;
+      has_output_tokens: number;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        content: "tokenized response",
+        model: "test-model",
+        token_usage: JSON.stringify({
+          input: 11,
+          output: 7,
+          cacheRead: 3,
+          cacheWrite: 2,
+          totalTokens: 23,
+          cost: { total: 0.00042 },
+        }),
+        context_tokens: 16,
+        output_tokens: 7,
+        has_context_tokens: 1,
+        has_output_tokens: 1,
+      },
+      {
+        content: "untokenized response",
+        model: "",
+        token_usage: "",
+        context_tokens: 0,
+        output_tokens: 0,
+        has_context_tokens: 0,
+        has_output_tokens: 0,
+      },
+    ]);
+
+    const session = getDb()
+      .prepare(
+        `SELECT total_input_tokens, total_output_tokens,
+                total_cache_read_tokens, total_cache_creation_tokens
+         FROM sessions
+         WHERE session_id = ?`,
+      )
+      .get(SESSION) as {
+      total_input_tokens: number;
+      total_output_tokens: number;
+      total_cache_read_tokens: number;
+      total_cache_creation_tokens: number;
+    };
+    expect(session).toEqual({
+      total_input_tokens: 11,
+      total_output_tokens: 7,
+      total_cache_read_tokens: 3,
+      total_cache_creation_tokens: 2,
+    });
+  });
+
   it("normalizes Pi lowercase hook tool events into tool_calls", () => {
     upsertSession({ session_id: SESSION, target: "pi", has_hooks: 1 });
     ingest({

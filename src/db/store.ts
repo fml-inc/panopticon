@@ -729,6 +729,10 @@ function insertMessageFromHook(args: {
   hasToolUse?: boolean;
   hasThinking?: boolean;
   syncId: string;
+  model?: string;
+  tokenUsage?: string;
+  contextTokens?: number;
+  outputTokens?: number;
 }): void {
   const db = getDb();
   const ordinal = nextMessageOrdinal(args.sessionId);
@@ -751,12 +755,12 @@ function insertMessageFromHook(args: {
       args.hasToolUse ? 1 : 0,
       args.content.length,
       0,
-      "",
-      "",
-      0,
-      0,
-      0,
-      0,
+      args.model ?? "",
+      args.tokenUsage ?? "",
+      args.contextTokens ?? 0,
+      args.outputTokens ?? 0,
+      args.contextTokens == null ? 0 : 1,
+      args.outputTokens == null ? 0 : 1,
       `hook:${args.syncId}`,
       null,
       `hook:${args.syncId}`,
@@ -813,6 +817,90 @@ function extractPiAssistantContent(message: unknown): {
   }
   const text = parts.join("").trim();
   return text.length > 0 ? { text, hasThinking } : null;
+}
+
+interface PiTokenUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  totalTokens?: number;
+  cost?: unknown;
+}
+
+function readNonNegativeNumber(
+  record: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function extractPiTokenUsage(message: unknown): PiTokenUsage | null {
+  if (!message || typeof message !== "object") return null;
+  const record = message as Record<string, unknown>;
+  if (record.role !== "assistant") return null;
+  const usage = record.usage;
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as Record<string, unknown>;
+  const input = readNonNegativeNumber(u, ["input", "input_tokens"]);
+  const output = readNonNegativeNumber(u, ["output", "output_tokens"]);
+  if (input == null || output == null) return null;
+  const result: PiTokenUsage = { input, output };
+  const cacheRead = readNonNegativeNumber(u, [
+    "cacheRead",
+    "cache_read_input_tokens",
+  ]);
+  const cacheWrite = readNonNegativeNumber(u, [
+    "cacheWrite",
+    "cache_creation_input_tokens",
+  ]);
+  const totalTokens = readNonNegativeNumber(u, ["totalTokens", "total_tokens"]);
+  if (cacheRead != null) result.cacheRead = cacheRead;
+  if (cacheWrite != null) result.cacheWrite = cacheWrite;
+  if (totalTokens != null) result.totalTokens = totalTokens;
+  if (u.cost != null) result.cost = u.cost;
+  return result;
+}
+
+function refreshPiHookTokenTotals(sessionId: string): void {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT token_usage
+       FROM messages
+       WHERE session_id = ?
+         AND role = 'assistant'
+         AND token_usage != ''`,
+    )
+    .all(sessionId) as Array<{ token_usage: string }>;
+  if (rows.length === 0) return;
+
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  for (const row of rows) {
+    const usage = JSON.parse(row.token_usage) as PiTokenUsage;
+    input += usage.input;
+    output += usage.output;
+    cacheRead += usage.cacheRead ?? 0;
+    cacheWrite += usage.cacheWrite ?? 0;
+  }
+  upsertSession({
+    session_id: sessionId,
+    target: "pi",
+    total_input_tokens: input,
+    total_output_tokens: output,
+    total_cache_read_tokens: cacheRead,
+    total_cache_creation_tokens: cacheWrite,
+    has_hooks: 1,
+  });
 }
 
 export function insertPiHookMessageFromEvent(hookEventId: number): boolean {
@@ -882,6 +970,13 @@ export function insertPiHookMessageFromEvent(hookEventId: number): boolean {
     const assistantMessage = data.assistant_message;
     const content = extractPiAssistantContent(assistantMessage);
     if (!content) return false;
+    const usage = extractPiTokenUsage(assistantMessage);
+    const model =
+      assistantMessage &&
+      typeof assistantMessage === "object" &&
+      typeof (assistantMessage as Record<string, unknown>).model === "string"
+        ? ((assistantMessage as Record<string, unknown>).model as string)
+        : undefined;
     insertMessageFromHook({
       sessionId: row.session_id,
       role: "assistant",
@@ -889,8 +984,15 @@ export function insertPiHookMessageFromEvent(hookEventId: number): boolean {
       timestampMs: row.timestamp_ms,
       hasThinking: content.hasThinking,
       syncId: row.sync_id,
+      model,
+      tokenUsage: usage ? JSON.stringify(usage) : undefined,
+      contextTokens: usage
+        ? usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+        : undefined,
+      outputTokens: usage?.output,
     });
     updateSessionMessageCounts(row.session_id);
+    if (usage) refreshPiHookTokenTotals(row.session_id);
     return true;
   }
 
