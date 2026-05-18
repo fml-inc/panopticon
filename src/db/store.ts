@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { getDb } from "./schema.js";
 
@@ -707,4 +707,145 @@ export function insertHookEvent(row: HookEventRow): number {
   });
   insertWithFts();
   return insertedId;
+}
+
+function nextMessageOrdinal(sessionId: string): number {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT COALESCE(MAX(ordinal), -1) + 1 AS ordinal
+       FROM messages
+       WHERE session_id = ?`,
+    )
+    .get(sessionId) as { ordinal: number };
+  return row.ordinal;
+}
+
+function insertMessageFromHook(args: {
+  sessionId: string;
+  role: string;
+  content: string;
+  timestampMs: number;
+  hasToolUse?: boolean;
+  syncId: string;
+}): void {
+  const db = getDb();
+  const ordinal = nextMessageOrdinal(args.sessionId);
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO messages
+        (session_id, ordinal, role, content, timestamp_ms,
+         has_thinking, has_tool_use, content_length, is_system,
+         model, token_usage, context_tokens, output_tokens,
+         has_context_tokens, has_output_tokens, uuid, parent_uuid, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      args.sessionId,
+      ordinal,
+      args.role,
+      args.content,
+      args.timestampMs,
+      0,
+      args.hasToolUse ? 1 : 0,
+      args.content.length,
+      0,
+      "",
+      "",
+      0,
+      0,
+      0,
+      0,
+      `hook:${args.syncId}`,
+      null,
+      `hook:${args.syncId}`,
+    );
+  if (result.changes > 0) {
+    const { id } = db.prepare("SELECT last_insert_rowid() as id").get() as {
+      id: number;
+    };
+    db.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)").run(
+      id,
+      args.content,
+    );
+  }
+}
+
+function piToolUseSummary(toolName: string | null, toolInput: unknown): string {
+  if (!toolName) return "[tool]";
+  let label = "";
+  if (toolInput && typeof toolInput === "object") {
+    const input = toolInput as Record<string, unknown>;
+    const value =
+      input.path ??
+      input.file_path ??
+      input.command ??
+      input.pattern ??
+      input.query ??
+      input.prompt;
+    if (typeof value === "string") label = value;
+  }
+  return label ? `[${toolName}: ${label}]` : `[${toolName}]`;
+}
+
+export function insertPiHookMessageFromEvent(hookEventId: number): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT id, session_id, event_type, timestamp_ms, tool_name,
+              user_prompt, payload, sync_id
+       FROM hook_events
+       WHERE id = ? AND target = 'pi'`,
+    )
+    .get(hookEventId) as
+    | {
+        id: number;
+        session_id: string;
+        event_type: string;
+        timestamp_ms: number;
+        tool_name: string | null;
+        user_prompt: string | null;
+        payload: Uint8Array;
+        sync_id: string;
+      }
+    | undefined;
+  if (!row) return false;
+
+  const existing = db
+    .prepare(`SELECT 1 FROM messages WHERE sync_id = ? LIMIT 1`)
+    .get(`hook:${row.sync_id}`);
+  if (existing) return false;
+
+  if (row.event_type === "UserPromptSubmit") {
+    const content = row.user_prompt?.trim() ? row.user_prompt : null;
+    if (!content) return false;
+    insertMessageFromHook({
+      sessionId: row.session_id,
+      role: "user",
+      content,
+      timestampMs: row.timestamp_ms,
+      syncId: row.sync_id,
+    });
+    updateSessionMessageCounts(row.session_id);
+    return true;
+  }
+
+  if (row.event_type === "PreToolUse") {
+    const data = JSON.parse(gunzipSync(row.payload).toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    insertMessageFromHook({
+      sessionId: row.session_id,
+      role: "assistant",
+      content: piToolUseSummary(row.tool_name, data.tool_input),
+      timestampMs: row.timestamp_ms,
+      hasToolUse: true,
+      syncId: row.sync_id,
+    });
+    updateSessionMessageCounts(row.session_id);
+    return true;
+  }
+
+  return false;
 }
