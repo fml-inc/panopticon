@@ -911,6 +911,24 @@ describe("pi target adapter", () => {
     expect(pi.scanner!.parseFile).toBeTypeOf("function");
   });
 
+  it("declares the Pi native events captured by the extension", () => {
+    const pi = getTarget("pi")!;
+    expect(pi.hooks.events).toEqual([
+      "session_start",
+      "input",
+      "turn_start",
+      "turn_end",
+      "tool_call",
+      "tool_result",
+      "session_before_compact",
+      "session_compact",
+      "model_select",
+      "thinking_level_select",
+      "user_bash",
+      "session_shutdown",
+    ]);
+  });
+
   it("applyInstallConfig throws when extension bundle is missing", () => {
     const pi = getTarget("pi")!;
     expect(() =>

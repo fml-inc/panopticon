@@ -27,6 +27,65 @@ afterEach(() => {
   delete process.env.PANOPTICON_PI_REQUEST_TIMEOUT_MS;
 });
 
+describe("Pi extension payloads", () => {
+  it("preserves Panopticon target source when Pi event metadata has a source", async () => {
+    const received: any[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        received.push(JSON.parse(body));
+        res.statusCode = 204;
+        res.end();
+      });
+    });
+
+    const port = await onceListening(server);
+    process.env.PANOPTICON_HOST = "127.0.0.1";
+    process.env.PANOPTICON_PORT = String(port);
+
+    try {
+      const { default: install, __panopticonPiExtensionTest } = await import(
+        "./extension.js"
+      );
+      const handlers = new Map<string, Handler>();
+      install({
+        on: (name: string, handler: Handler) => handlers.set(name, handler),
+      } as any);
+
+      await handlers.get("session_start")?.(
+        {},
+        {
+          cwd: process.cwd(),
+          sessionManager: { getSessionId: () => "pi-source-session" },
+        },
+      );
+      await handlers.get("model_select")?.({
+        source: "user",
+        previousModel: { provider: "anthropic", id: "old" },
+        model: { provider: "anthropic", id: "new" },
+      });
+      await __panopticonPiExtensionTest.flushPendingPosts(1000);
+
+      const configChange = received.find(
+        (payload) => payload.hook_event_name === "ConfigChange",
+      );
+      expect(configChange).toMatchObject({
+        source: "pi",
+        config_source: "user",
+        config_key: "model",
+        previous_value: "anthropic:old",
+        new_value: "anthropic:new",
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 describe("Pi extension shutdown delivery", () => {
   it("awaits in-flight hook POSTs during session_shutdown", async () => {
     const received: string[] = [];

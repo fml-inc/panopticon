@@ -149,6 +149,18 @@ function detectRepo(dir: string): string | undefined {
   }
 }
 
+function modelLabel(model: unknown): string | undefined {
+  if (!model || typeof model !== "object") return undefined;
+  const record = model as Record<string, unknown>;
+  const id = record.id ?? record.name ?? record.model;
+  const provider = record.provider ?? record.providerId;
+  return (
+    [provider, id]
+      .filter((value) => typeof value === "string" && value.length > 0)
+      .join(":") || undefined
+  );
+}
+
 export default function panopticon(pi: ExtensionAPI) {
   let sessionId = randomUUID();
   let cwd: string | undefined;
@@ -158,11 +170,11 @@ export default function panopticon(pi: ExtensionAPI) {
     event: Omit<HookEvent, "session_id" | "source" | "cwd" | "repository">,
   ) {
     post({
+      ...event,
       session_id: sessionId,
       source: "pi",
       cwd,
       repository: repo,
-      ...event,
     });
   }
 
@@ -218,6 +230,55 @@ export default function panopticon(pi: ExtensionAPI) {
       tool_call_id: event.toolCallId,
       tool_input: event.input,
       tool_result: { content: event.content, details: event.details },
+    });
+  });
+
+  // Additional Pi parity events. These are emitted only for Pi extension events
+  // that exist in the public 0.75.x API. Claude-style permission prompts,
+  // notifications, task lifecycle, and subagent lifecycle have no Pi extension
+  // event equivalents, so Panopticon does not fabricate them.
+  pi.on("session_before_compact", async (event) => {
+    emit({
+      hook_event_name: "PreCompact",
+      branch_entry_count: event.branchEntries.length,
+      custom_instructions: event.customInstructions,
+    });
+  });
+
+  pi.on("session_compact", async (event) => {
+    emit({
+      hook_event_name: "PostCompact",
+      compaction_entry: event.compactionEntry,
+      from_extension: event.fromExtension,
+    });
+  });
+
+  pi.on("model_select", async (event) => {
+    emit({
+      hook_event_name: "ConfigChange",
+      config_key: "model",
+      config_source: event.source,
+      previous_value: modelLabel(event.previousModel),
+      new_value: modelLabel(event.model),
+    });
+  });
+
+  pi.on("thinking_level_select", async (event) => {
+    emit({
+      hook_event_name: "ConfigChange",
+      config_key: "thinking_level",
+      previous_value: event.previousLevel,
+      new_value: event.level,
+    });
+  });
+
+  pi.on("user_bash", async (event) => {
+    emit({
+      hook_event_name: "Notification",
+      notification_type: "user_bash",
+      command: event.command,
+      exclude_from_context: event.excludeFromContext,
+      event_cwd: event.cwd,
     });
   });
 

@@ -181,6 +181,11 @@ const pi: TargetAdapter = {
       "turn_end",
       "tool_call",
       "tool_result",
+      "session_before_compact",
+      "session_compact",
+      "model_select",
+      "thinking_level_select",
+      "user_bash",
       "session_shutdown",
     ],
 
