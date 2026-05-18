@@ -727,6 +727,7 @@ function insertMessageFromHook(args: {
   content: string;
   timestampMs: number;
   hasToolUse?: boolean;
+  hasThinking?: boolean;
   syncId: string;
 }): void {
   const db = getDb();
@@ -746,7 +747,7 @@ function insertMessageFromHook(args: {
       args.role,
       args.content,
       args.timestampMs,
-      0,
+      args.hasThinking ? 1 : 0,
       args.hasToolUse ? 1 : 0,
       args.content.length,
       0,
@@ -786,6 +787,32 @@ function piToolUseSummary(toolName: string | null, toolInput: unknown): string {
     if (typeof value === "string") label = value;
   }
   return label ? `[${toolName}: ${label}]` : `[${toolName}]`;
+}
+
+function extractPiAssistantContent(message: unknown): {
+  text: string;
+  hasThinking: boolean;
+} | null {
+  if (!message || typeof message !== "object") return null;
+  const record = message as Record<string, unknown>;
+  if (record.role !== "assistant") return null;
+  const content = record.content;
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  let hasThinking = false;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
+    if (b.type === "thinking") {
+      hasThinking = true;
+      if (typeof b.thinking === "string") {
+        parts.push(`[Thinking]\n${b.thinking}\n[/Thinking]`);
+      }
+    }
+  }
+  const text = parts.join("").trim();
+  return text.length > 0 ? { text, hasThinking } : null;
 }
 
 export function insertPiHookMessageFromEvent(hookEventId: number): boolean {
@@ -841,6 +868,26 @@ export function insertPiHookMessageFromEvent(hookEventId: number): boolean {
       content: piToolUseSummary(row.tool_name, data.tool_input),
       timestampMs: row.timestamp_ms,
       hasToolUse: true,
+      syncId: row.sync_id,
+    });
+    updateSessionMessageCounts(row.session_id);
+    return true;
+  }
+
+  if (row.event_type === "Stop") {
+    const data = JSON.parse(gunzipSync(row.payload).toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    const assistantMessage = data.assistant_message;
+    const content = extractPiAssistantContent(assistantMessage);
+    if (!content) return false;
+    insertMessageFromHook({
+      sessionId: row.session_id,
+      role: "assistant",
+      content: content.text,
+      timestampMs: row.timestamp_ms,
+      hasThinking: content.hasThinking,
       syncId: row.sync_id,
     });
     updateSessionMessageCounts(row.session_id);

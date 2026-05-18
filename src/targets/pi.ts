@@ -177,6 +177,8 @@ const pi: TargetAdapter = {
     events: [
       "session_start",
       "input",
+      "turn_start",
+      "turn_end",
       "tool_call",
       "tool_result",
       "session_shutdown",

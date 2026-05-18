@@ -106,7 +106,7 @@ function detectRepo(dir: string): string | undefined {
 }
 
 export default function panopticon(pi: ExtensionAPI) {
-  const sessionId = randomUUID();
+  let sessionId = randomUUID();
   let cwd: string | undefined;
   let repo: string | undefined;
 
@@ -123,6 +123,7 @@ export default function panopticon(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    sessionId = ctx.sessionManager?.getSessionId?.() ?? sessionId;
     cwd = ctx.cwd;
     repo = detectRepo(cwd);
     emit({ hook_event_name: "SessionStart" });
@@ -131,6 +132,26 @@ export default function panopticon(pi: ExtensionAPI) {
   // Pi's input event has event.text (not event.input)
   pi.on("input", async (event) => {
     emit({ hook_event_name: "UserPromptSubmit", prompt: event.text });
+  });
+
+  // Pi exposes live turn boundaries. turn_end carries the finalized assistant
+  // message, including the real response text; emit it as a canonical Stop so
+  // Panopticon records both the boundary and the assistant transcript without
+  // fabricating content.
+  pi.on("turn_start", async (event) => {
+    emit({
+      hook_event_name: "TurnStart",
+      turn_index: event.turnIndex,
+      pi_timestamp: event.timestamp,
+    });
+  });
+
+  pi.on("turn_end", async (event) => {
+    emit({
+      hook_event_name: "Stop",
+      turn_index: event.turnIndex,
+      assistant_message: event.message,
+    });
   });
 
   // PreToolUse — capture the tool call
