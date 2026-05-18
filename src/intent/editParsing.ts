@@ -2,6 +2,8 @@ export const EDIT_TOOL_NAMES = new Set([
   "Edit",
   "Write",
   "MultiEdit",
+  "edit",
+  "write",
   "edit_file",
   "write_file",
   "create_file",
@@ -44,8 +46,43 @@ export function parseEditEntries(
       : [];
   }
 
+  if (toolName === "edit") {
+    const filePath = readToolInputFilePath(toolInput);
+    if (!filePath) return [];
+    if (Array.isArray(toolInput.edits)) {
+      return toolInput.edits.flatMap((entry, index) => {
+        if (!entry || typeof entry !== "object") return [];
+        const newText = (entry as { newText?: unknown }).newText;
+        if (typeof newText !== "string") return [];
+        const oldText = (entry as { oldText?: unknown }).oldText;
+        return [
+          {
+            filePath,
+            newString: newText,
+            oldStrings: typeof oldText === "string" ? [oldText] : [],
+            multiEditIndex: index,
+            deletedFile: false,
+          },
+        ];
+      });
+    }
+    const newText = toolInput.newText ?? toolInput.new_string;
+    if (typeof newText !== "string") return [];
+    const oldText = toolInput.oldText ?? toolInput.old_string;
+    return [
+      {
+        filePath,
+        newString: newText,
+        oldStrings: typeof oldText === "string" ? [oldText] : [],
+        multiEditIndex: 0,
+        deletedFile: false,
+      },
+    ];
+  }
+
   if (
     toolName === "Write" ||
+    toolName === "write" ||
     toolName === "write_file" ||
     toolName === "create_file"
   ) {
