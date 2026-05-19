@@ -15,6 +15,16 @@ const SMOKE_TIMEOUT_MS = Number.parseInt(
 
 const cleanupDirs: string[] = [];
 const restorers: Array<() => void> = [];
+const envRestorers: Array<() => void> = [];
+
+function setEnvForTest(key: string, value: string): void {
+  const previous = process.env[key];
+  process.env[key] = value;
+  envRestorers.push(() => {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  });
+}
 
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -105,6 +115,7 @@ async function runPiPrompt(
 }
 
 afterEach(() => {
+  while (envRestorers.length > 0) envRestorers.pop()?.();
   while (restorers.length > 0) restorers.pop()?.();
   for (const dir of cleanupDirs.splice(0))
     fs.rmSync(dir, { recursive: true, force: true });
@@ -138,15 +149,15 @@ describe.skipIf(!RUN_HEADLESS_SMOKE)("gated headless Pi smoke", () => {
       const workDir = makeTempDir("pano-pi-headless-work-");
       const smokeFile = path.join(workDir, "pi-headless-smoke.txt");
       const authToken = "pi-headless-smoke-token";
-      process.env.PANOPTICON_DATA_DIR = dataDir;
-      process.env.PANOPTICON_AUTH_TOKEN = authToken;
-      process.env.PANOPTICON_HOST = "127.0.0.1";
+      setEnvForTest("PANOPTICON_DATA_DIR", dataDir);
+      setEnvForTest("PANOPTICON_AUTH_TOKEN", authToken);
+      setEnvForTest("PANOPTICON_HOST", "127.0.0.1");
 
       const { createUnifiedServer } = await import("../server.js");
       const { getDb, closeDb } = await import("../db/schema.js");
       const server = createUnifiedServer();
       const port = await waitForListening(server, "127.0.0.1");
-      process.env.PANOPTICON_PORT = String(port);
+      setEnvForTest("PANOPTICON_PORT", String(port));
 
       try {
         const env = {
@@ -177,7 +188,10 @@ describe.skipIf(!RUN_HEADLESS_SMOKE)("gated headless Pi smoke", () => {
                   (SELECT COUNT(*) FROM sessions WHERE target = 'pi' AND first_prompt LIKE '%pi headless smoke%') AS prompts,
                   (SELECT COUNT(*) FROM hook_events WHERE target = 'pi') AS hooks,
                   (SELECT COUNT(*) FROM hook_events WHERE target = 'pi' AND file_path = ?) AS paths,
-                  (SELECT COUNT(*) FROM messages WHERE target = 'pi') AS messages,
+                  (SELECT COUNT(*)
+                   FROM messages m
+                   JOIN sessions s ON s.session_id = m.session_id
+                   WHERE s.target = 'pi') AS messages,
                   (SELECT COUNT(*)
                    FROM tool_calls tc
                    JOIN sessions s ON s.session_id = tc.session_id
