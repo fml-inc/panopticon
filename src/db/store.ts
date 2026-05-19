@@ -216,6 +216,24 @@ export function upsertSessionCwd(
   }
 }
 
+/**
+ * The session's primary cwd: the earliest one observed. sessions has no
+ * usable cwd (it was never written; the column is dropped by migration 22)
+ * — session_cwds is the source of truth, and since a session can have
+ * several cwds, "primary" is defined as the first seen.
+ */
+export function getPrimarySessionCwd(sessionId: string): string | null {
+  const row = getDb()
+    .prepare(
+      `SELECT cwd FROM session_cwds
+       WHERE session_id = ?
+       ORDER BY first_seen_ms ASC, cwd ASC
+       LIMIT 1`,
+    )
+    .get(sessionId) as { cwd: string } | undefined;
+  return row?.cwd ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Config snapshots
 // ---------------------------------------------------------------------------
@@ -531,15 +549,12 @@ export function refreshSessionAutomation(sessionId: string): boolean {
               s.model,
               s.models,
               s.project,
-              COALESCE(
-                s.cwd,
-                (
-                  SELECT scw.cwd
-                  FROM session_cwds scw
-                  WHERE scw.session_id = s.session_id
-                  ORDER BY scw.first_seen_ms ASC
-                  LIMIT 1
-                )
+              (
+                SELECT scw.cwd
+                FROM session_cwds scw
+                WHERE scw.session_id = s.session_id
+                ORDER BY scw.first_seen_ms ASC
+                LIMIT 1
               ) AS cwd
        FROM sessions s
        WHERE s.session_id = ?`,

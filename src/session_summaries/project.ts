@@ -305,7 +305,6 @@ export function rebuildSessionSummaryProjections(opts?: {
           `SELECT machine,
                   target,
                   project,
-                  cwd,
                   first_prompt,
                   started_at_ms,
                   ended_at_ms,
@@ -318,7 +317,6 @@ export function rebuildSessionSummaryProjections(opts?: {
             machine: string | null;
             target: string | null;
             project: string | null;
-            cwd: string | null;
             first_prompt: string | null;
             started_at_ms: number | null;
             ended_at_ms: number | null;
@@ -364,7 +362,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         null;
       const cwd =
         cwdMeta?.cwd ??
-        sessionMeta?.cwd ??
         intents.map((intent) => intent.cwd).find(Boolean) ??
         null;
       const title = buildTitle(intents[0]?.prompt_text ?? "");

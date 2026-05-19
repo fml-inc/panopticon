@@ -1368,6 +1368,26 @@ export const MIGRATIONS: Migration[] = [
       refreshSessionAutomationFlags(db);
     },
   },
+  {
+    id: 22,
+    name: "drop_unused_sessions_cwd",
+    up: (db) => {
+      // sessions.cwd was never written; every consumer now resolves cwd
+      // from session_cwds (the backend likewise has no session.cwd and
+      // derives it from the cwds list). Drop the legacy column on existing
+      // DBs. Fresh DBs build from SCHEMA_SQL (no cwd) and stamp this
+      // without running it; the guard makes that and re-runs safe no-ops.
+      if (!tableExists(db, "sessions")) return;
+      const hasCwd = (
+        db.prepare("PRAGMA table_info(sessions)").all() as Array<{
+          name: string;
+        }>
+      ).some((c) => c.name === "cwd");
+      if (hasCwd) {
+        db.exec("ALTER TABLE sessions DROP COLUMN cwd");
+      }
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

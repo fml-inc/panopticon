@@ -722,7 +722,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
 
   const rawRows = db
     .prepare(
-      `SELECT s.session_id, s.target, s.started_at_ms, s.ended_at_ms, s.cwd,
+      `SELECT s.session_id, s.target, s.started_at_ms, s.ended_at_ms,
               s.first_prompt, s.permission_mode, s.agent_version,
               s.total_input_tokens, s.total_output_tokens,
               s.total_cache_read_tokens, s.total_cache_creation_tokens,
@@ -741,7 +741,6 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     target: string | null;
     started_at_ms: number | null;
     ended_at_ms: number | null;
-    cwd: string | null;
     first_prompt: string | null;
     permission_mode: string | null;
     agent_version: string | null;
@@ -822,7 +821,6 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     target: r.target,
     startedAtMs: r.started_at_ms,
     endedAtMs: r.ended_at_ms,
-    cwd: r.cwd,
     firstPrompt: r.first_prompt,
     permissionMode: r.permission_mode,
     agentVersion: r.agent_version,
