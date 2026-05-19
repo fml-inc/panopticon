@@ -618,12 +618,16 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
 
   if (
     eventType === "UserPromptSubmit" &&
-    config.enableUserPromptSubmitContextInjection
+    config.enableUserPromptSubmitContextInjection &&
+    // Injection is disabled on the session's first prompt by design: a vague
+    // opener only matches ambient repo vocabulary, and SessionStart history
+    // injection already covers session entry. Only mid-session prompts inject.
+    !isFirstUserPromptSubmit(sessionId)
   ) {
     const response = buildUserPromptSubmitContextResponse({
       ...data,
       repository: repo ?? data.repository,
-      is_first_user_prompt_submit: isFirstUserPromptSubmit(sessionId),
+      is_first_user_prompt_submit: false,
       now_ms: timestampMs,
     });
     if (response) return response;
@@ -682,7 +686,7 @@ function buildUserPromptSubmitContextResponse(
 // Counts the current UserPromptSubmit event, which step 4 of
 // processHookEvent has already persisted to hook_events by the time this
 // runs — so a count of 1 means this is the session's first prompt.
-function isFirstUserPromptSubmit(sessionId: string): boolean {
+export function isFirstUserPromptSubmit(sessionId: string): boolean {
   try {
     const row = getDb()
       .prepare(

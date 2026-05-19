@@ -19,6 +19,7 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
+import { isFirstUserPromptSubmit } from "./ingest.js";
 import {
   buildSessionStartRecentHistoryContext,
   buildUserPromptSubmitLocalContext,
@@ -422,7 +423,11 @@ describe("session context builders", () => {
     ).toBeNull();
   });
 
-  it("does not duplicate SessionStart recent history on the first UserPromptSubmit", () => {
+  // First-prompt injection is disabled at the ingest layer
+  // (isFirstUserPromptSubmit), not in this builder. The builder always
+  // applies mid-session semantics; SessionStart-history duplication on the
+  // first prompt is prevented structurally by never reaching this builder.
+  it("applies mid-session semantics for every prompt that reaches it", () => {
     const baseMs = Date.now() - 10_000;
     insertSession({
       id: "recent-sessionstart-context",
@@ -447,16 +452,25 @@ describe("session context builders", () => {
         session_id: "current",
         cwd,
         prompt: "user_prompt_submit local data",
-        is_first_user_prompt_submit: true,
-      }),
-    ).toBeNull();
-    expect(
-      buildUserPromptSubmitLocalContext({
-        session_id: "current",
-        cwd,
-        prompt: "user_prompt_submit local data",
       }),
     ).toContain("session_id=recent-sessionstart-context");
+  });
+
+  it("isFirstUserPromptSubmit gates the first prompt only", () => {
+    const db = getDb();
+    const insertEvent = () =>
+      db
+        .prepare(
+          `INSERT INTO hook_events (session_id, event_type, timestamp_ms, payload)
+           VALUES (?, 'UserPromptSubmit', ?, ?)`,
+        )
+        .run("gate-session", Date.now(), Buffer.from("{}"));
+
+    expect(isFirstUserPromptSubmit("gate-session")).toBe(true);
+    insertEvent();
+    expect(isFirstUserPromptSubmit("gate-session")).toBe(true);
+    insertEvent();
+    expect(isFirstUserPromptSubmit("gate-session")).toBe(false);
   });
 
   it("does not inject prompt context from future activity during replay", () => {
