@@ -32,7 +32,7 @@ vi.mock("../config.js", () => {
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
-import { insertHookEvent } from "../db/store.js";
+import { insertHookEvent, upsertSessionCwd } from "../db/store.js";
 import { buildMessageSyncId, buildToolCallSyncId } from "../db/sync-ids.js";
 import {
   rebuildIntentClaimsFromHooks,
@@ -159,16 +159,19 @@ function insertSession(args: {
   getDb()
     .prepare(
       `INSERT INTO sessions
-         (session_id, cwd, ended_at_ms, has_scanner, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+         (session_id, ended_at_ms, has_scanner, created_at)
+       VALUES (?, ?, ?, ?)`,
     )
     .run(
       args.sessionId,
-      args.cwd ?? null,
       args.endedAtMs ?? null,
       args.hasScanner ? 1 : 0,
       Date.now(),
     );
+  // Mirror production: cwd lives in session_cwds, not sessions.cwd.
+  if (args.cwd) {
+    upsertSessionCwd(args.sessionId, args.cwd, Date.now());
+  }
 }
 
 function insertSessionRepository(args: {

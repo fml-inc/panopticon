@@ -90,7 +90,12 @@ export function rebuildIntentClaimsFromScanner(opts?: { sessionId?: string }): {
   const userMessages = db
     .prepare(
       `SELECT m.session_id, m.ordinal, m.timestamp_ms, m.content, m.uuid,
-              m.sync_id, s.cwd, s.ended_at_ms
+              m.sync_id,
+              (SELECT scw.cwd FROM session_cwds scw
+               WHERE scw.session_id = m.session_id
+               ORDER BY scw.first_seen_ms ASC, scw.cwd ASC
+               LIMIT 1) AS cwd,
+              s.ended_at_ms
        FROM messages m
        JOIN sessions s ON s.session_id = m.session_id
        WHERE ${userFilters.join(" AND ")}

@@ -18,6 +18,7 @@ import {
   targetDataVersion,
 } from "../../db/data-versions.js";
 import { getDb } from "../../db/schema.js";
+import { getPrimarySessionCwd } from "../../db/store.js";
 import {
   canonicalizeRepoFilePath,
   resolveFilePathFromCwd,
@@ -744,11 +745,10 @@ function resolveSessionCwd(
   cwd: string | null,
 ): string | null {
   if (cwd) return cwd;
-  const db = getDb();
-  const row = db
-    .prepare(`SELECT cwd FROM sessions WHERE session_id = ?`)
-    .get(sessionId) as { cwd: string | null } | undefined;
-  return row?.cwd ?? null;
+  // session_cwds is the source of truth; sessions.cwd was never written
+  // in production (the always-null read here silently degraded hook-path
+  // edit convergence) and is dropped by migration 22.
+  return getPrimarySessionCwd(sessionId);
 }
 
 function resolveSessionRepository(
