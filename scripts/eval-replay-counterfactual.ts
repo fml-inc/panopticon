@@ -63,6 +63,13 @@ interface Scenario {
   started_at_ms: number;
   first_prompt: string;
   prompts: string[];
+  // Set when the scenario is anchored to a merged PR (the strong oracle):
+  // the judge scores each arm's diff against the PR's actual change.
+  pr_number?: number;
+  merge_commit?: string;
+  branch?: string;
+  pr_title?: string;
+  expected_diffstat?: string;
 }
 
 interface ArmResult {
@@ -113,7 +120,8 @@ async function main(): Promise<void> {
   for (const s of scenarios) {
     console.log(
       `=== ${s.session_id} @ ${s.head_sha.slice(0, 12)} ` +
-        `[${s.anchor}] (${s.prompts.length} prompt(s)) ===`,
+        `[${s.anchor}${s.pr_number ? ` PR#${s.pr_number}` : ""}] ` +
+        `(${s.prompts.length} prompt(s)) ===`,
     );
     console.log(`  goal: ${oneLine(s.first_prompt, 140)}`);
     results.push(await runScenario(s, args));
@@ -282,13 +290,21 @@ async function judge(
   treatment: ArmResult,
   args: Args,
 ): Promise<{ control: boolean; treatment: boolean; notes: string }> {
-  const prompt = `You are judging whether two automated attempts accomplished the SAME goal as a historical coding session.
-
-Historical goal (first user prompt):
+  // PR-anchored scenarios have a ground-truth outcome (the merged diff);
+  // judge each arm against THAT. Otherwise fall back to goal-equivalence
+  // against the historical prompts.
+  const oracle = s.expected_diffstat
+    ? `Ground truth — the change the historical session actually merged as PR #${s.pr_number} ("${s.pr_title}"). Resulting git diff --stat of the real merged PR:
+${s.expected_diffstat}`
+    : `Historical goal (first user prompt):
 ${s.first_prompt}
 
 All historical user prompts:
-${s.prompts.map((p, i) => `(${i + 1}) ${p}`).join("\n")}
+${s.prompts.map((p, i) => `(${i + 1}) ${p}`).join("\n")}`;
+
+  const prompt = `You are judging whether two automated attempts accomplished the SAME work as a historical coding session.
+
+${oracle}
 
 Attempt A (control) resulting git diff --stat:
 ${control.diffSummary || "(no changes)"}
@@ -296,7 +312,7 @@ ${control.diffSummary || "(no changes)"}
 Attempt B (treatment) resulting git diff --stat:
 ${treatment.diffSummary || "(no changes)"}
 
-For EACH attempt, decide if it plausibly accomplished the same goal as the historical session (the change set is in the right area and of the right shape — not a literal match). Respond as strict JSON:
+For EACH attempt, decide if it plausibly accomplished the same change as the ground truth above (same files/area and shape of change — NOT a literal match). Respond as strict JSON:
 {"control":"accomplished|partial|failed","treatment":"accomplished|partial|failed","notes":"one sentence"}`;
 
   const raw = await invokeLlmAsync(prompt, {
