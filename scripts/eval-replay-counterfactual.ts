@@ -193,8 +193,12 @@ function buildArmPlan(
       task,
       "--output-format",
       "json",
+      // Disposable, isolated worktree — the replay agent must be able to
+      // fully do the work (edit + git + build + tests), exactly as the
+      // original session could. acceptEdits silently blocks Bash in
+      // headless -p (no approver), which starved earlier runs.
       "--permission-mode",
-      "acceptEdits",
+      "bypassPermissions",
       "--add-dir",
       worktree,
     ],
@@ -234,9 +238,12 @@ async function executeArm(
         (err instanceof Error ? err.message : String(err));
     }
     const durationMs = Date.now() - start;
+    // Diff against the base commit, not just the working tree — the agent
+    // may commit its work (mimicking the original PR workflow), which a
+    // plain `git diff` would miss entirely.
     const diffSummary = execFileSync(
       "git",
-      ["-C", worktree, "diff", "--stat"],
+      ["-C", worktree, "diff", "--stat", s.head_sha, "--"],
       { encoding: "utf-8" },
     ).trim();
     console.log(
