@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  _resetPreToolUseFileContextSeen,
   _resetSessionRepoCache,
+  emitOncePerSessionPath,
   extractEventPaths,
   extractShellPwd,
   type HookInput,
@@ -378,5 +380,37 @@ describe("isPanopticonMcpTool", () => {
   it("does not match other MCP tools", () => {
     expect(isPanopticonMcpTool("mcp__github__search_code")).toBe(false);
     expect(isPanopticonMcpTool("github/search_code")).toBe(false);
+  });
+});
+
+describe("emitOncePerSessionPath", () => {
+  beforeEach(() => {
+    _resetPreToolUseFileContextSeen();
+  });
+
+  it("emits once per session+path then dedupes", () => {
+    const build = () => "ctx";
+    expect(emitOncePerSessionPath("s1", "/a.ts", build)).toBe("ctx");
+    expect(emitOncePerSessionPath("s1", "/a.ts", build)).toBeNull();
+  });
+
+  it("does not mark the key when build yields nothing", () => {
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => null)).toBeNull();
+    // History appeared later — the one shot is still available.
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => "ctx")).toBe("ctx");
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => "ctx")).toBeNull();
+  });
+
+  it("keys are independent across paths and sessions", () => {
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => "a")).toBe("a");
+    expect(emitOncePerSessionPath("s1", "/b.ts", () => "b")).toBe("b");
+    expect(emitOncePerSessionPath("s2", "/a.ts", () => "a2")).toBe("a2");
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => "a")).toBeNull();
+  });
+
+  it("reset clears the dedupe set", () => {
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => "ctx")).toBe("ctx");
+    _resetPreToolUseFileContextSeen();
+    expect(emitOncePerSessionPath("s1", "/a.ts", () => "ctx")).toBe("ctx");
   });
 });

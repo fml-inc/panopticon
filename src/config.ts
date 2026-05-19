@@ -206,6 +206,13 @@ export const config = {
     "PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION",
     true,
   ),
+  // Inject provenanced file context on PreToolUse for Write/Edit/MultiEdit:
+  // when Claude is about to edit a file with prior intent/edit history,
+  // surface it once per file per session. Default on; disable independently.
+  enablePreToolUseFileContextInjection: envBool(
+    "PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION",
+    true,
+  ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,

@@ -4,6 +4,8 @@ import {
   type SessionSummaryPreview,
 } from "../session_summaries/preview.js";
 import {
+  type FileOverviewResult,
+  fileOverview,
   listRecentSessionSummaryPreviewsForCwd,
   listRelevantSessionSummaryPreviewsForPrompt,
 } from "../session_summaries/query.js";
@@ -26,6 +28,10 @@ const USER_PROMPT_CONTEXT_LIMIT = 2;
 const USER_PROMPT_CONTEXT_MAX_CHARS = 3_600;
 const USER_PROMPT_CONTEXT_ITEM_MAX_CHARS = 680;
 const USER_PROMPT_CONTEXT_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
+const PRE_TOOL_FILE_CONTEXT_MAX_CHARS = 1_400;
+const PRE_TOOL_FILE_CONTEXT_PROMPT_MAX_CHARS = 240;
+const PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT = 4;
+const PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT = 4;
 
 interface SessionContextInput {
   session_id?: unknown;
@@ -38,6 +44,10 @@ interface SessionContextInput {
 interface UserPromptSubmitContextInput extends SessionContextInput {
   prompt?: unknown;
   user_prompt?: unknown;
+}
+
+interface PreToolUseFileContextInput extends SessionContextInput {
+  tool_input?: unknown;
 }
 
 export function buildSessionStartRecentHistoryContext(
@@ -92,6 +102,120 @@ export function buildUserPromptSubmitLocalContext(
     maxChars: USER_PROMPT_CONTEXT_MAX_CHARS,
     itemMaxChars: USER_PROMPT_CONTEXT_ITEM_MAX_CHARS,
   });
+}
+
+export function buildPreToolUseFileContext(
+  data: PreToolUseFileContextInput,
+): string | null {
+  const filePath = extractToolFilePath(data);
+  if (!filePath) return null;
+
+  const repository = extractRepository(data);
+  let overview: FileOverviewResult;
+  try {
+    overview = fileOverview({
+      path: filePath,
+      repository: repository ?? undefined,
+      recent_limit: PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT,
+      related_limit: PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT,
+    });
+  } catch {
+    return null;
+  }
+
+  // Precision gate: only surface when there is real provenance — a bound
+  // intent or prior edits. No history → stay silent (also the fast path
+  // that keeps this off the hot path for never-before-touched files).
+  const hasBoundIntent = overview.current.intent_unit_id !== null;
+  const hasHistory =
+    overview.recent.length > 0 || overview.summary.edit_count > 0;
+  if (!hasBoundIntent && !hasHistory) return null;
+
+  return formatPreToolUseFileContext(overview);
+}
+
+function extractToolFilePath(data: PreToolUseFileContextInput): string | null {
+  const toolInput = data.tool_input;
+  if (!toolInput || typeof toolInput !== "object") return null;
+  const record = toolInput as Record<string, unknown>;
+  for (const key of ["file_path", "notebook_path", "path"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function describeBindingStatus(
+  status: FileOverviewResult["current"]["status"],
+): string {
+  switch (status) {
+    case "current":
+      return "still current";
+    case "stale":
+      return "since superseded";
+    case "ambiguous":
+      return "ambiguous provenance";
+    default:
+      return "unverified";
+  }
+}
+
+export function formatPreToolUseFileContext(
+  overview: FileOverviewResult,
+): string {
+  const lines: string[] = [
+    `Panopticon file context for ${sanitizeInline(overview.path)}`,
+    "Treat this as background memory only; the current task and explicit instructions win.",
+  ];
+
+  // Provenance line first: it is the honesty payload (counts incl.
+  // reverted/superseded) and must never be the line a long narrative
+  // prompt crowds past the char budget.
+  const s = overview.summary;
+  const provenance: string[] = [];
+  if (s.reverted_edit_count > 0) {
+    provenance.push(`reverted=${s.reverted_edit_count}`);
+  }
+  if (s.superseded_edit_count > 0) {
+    provenance.push(`superseded=${s.superseded_edit_count}`);
+  }
+  lines.push(
+    `- History: ${s.edit_count} edit(s) across ${s.intent_count} intent(s)${
+      provenance.length > 0 ? ` (${provenance.join(", ")})` : ""
+    }`,
+  );
+
+  const current = overview.current;
+  if (current.prompt_text) {
+    const where = current.session_summary_title
+      ? ` (session "${sanitizeInline(current.session_summary_title)}")`
+      : "";
+    lines.push(
+      `- Last bound change: "${trimToMaxChars(
+        sanitizeInline(current.prompt_text),
+        PRE_TOOL_FILE_CONTEXT_PROMPT_MAX_CHARS,
+      )}" — ${describeBindingStatus(current.status)}${where}`,
+    );
+  }
+
+  if (overview.related_files.length > 0) {
+    const related = overview.related_files
+      .slice(0, PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT)
+      .map((r) => sanitizeInline(r.file_path))
+      .join(", ");
+    lines.push(`- Often changed together: ${related}`);
+  }
+
+  lines.push(
+    "Use `why_code` or `recent_work_on_path` with this path for full detail.",
+  );
+
+  return trimToMaxChars(
+    lines.join("\n").trim(),
+    PRE_TOOL_FILE_CONTEXT_MAX_CHARS,
+  );
 }
 
 function extractCwdCandidates(data: SessionContextInput): string[] {
