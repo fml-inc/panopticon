@@ -403,9 +403,25 @@ assert_db_zero \
    WHERE session_id IS NULL OR session_id = '';" \
   "hook_events: all session_id values are non-empty"
 
+# Keep this explicit allowlist in sync with src/targets/types.ts ALL_EVENTS.
+# The assertion remains strict: any hook event outside the canonical contract
+# fails the E2E.
 assert_db_zero \
   "SELECT COUNT(*) FROM hook_events
-   WHERE event_type NOT IN ('SessionStart','SessionEnd','UserPromptSubmit','PreToolUse','PostToolUse','PostToolUseFailure','Stop');" \
+   WHERE event_type NOT IN (
+     'SessionStart','SessionEnd','Setup',
+     'UserPromptSubmit',
+     'PreToolUse','PostToolUse','PostToolUseFailure',
+     'PermissionRequest','PermissionDenied',
+     'TurnStart','Stop','StopFailure',
+     'SubagentStart','SubagentStop',
+     'PreCompact','PostCompact',
+     'Notification',
+     'TeammateIdle','TaskCreated','TaskCompleted',
+     'Elicitation','ElicitationResult',
+     'ConfigChange','InstructionsLoaded','CwdChanged','FileChanged',
+     'WorktreeCreate','WorktreeRemove'
+   );" \
   "hook_events: all event_type values are canonical"
 
 assert_db_zero \
