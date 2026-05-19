@@ -5,6 +5,13 @@
  * The CLI is a thin UI layer over these functions.
  */
 
+// ── API client ────────────────────────────────────────────────────────────────
+// HTTP client for talking to a running panopticon server. Exported as a
+// namespace because many method names (listSessions, search, costBreakdown,
+// pruneExecute, refreshPricing, …) intentionally mirror the direct-DB query
+// exports below and would otherwise collide.
+export * as apiClient from "./api/client.js";
+export { isServerRunning, waitForServer } from "./api/util.js";
 export { ensureDataDir } from "./config.js";
 export { refreshPricing } from "./db/pricing.js";
 // ── Maintenance ───────────────────────────────────────────────────────────────
