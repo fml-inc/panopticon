@@ -306,12 +306,6 @@ const pi: TargetAdapter = {
         try {
           obj = JSON.parse(lines[lineIndex]);
         } catch {
-          events.push({
-            sessionId: meta?.sessionId ?? path.basename(filePath, ".jsonl"),
-            eventType: "malformed",
-            timestampMs: meta?.startedAtMs ?? lineIndex,
-            metadata: { lineIndex },
-          });
           continue;
         }
 
@@ -382,10 +376,10 @@ const pi: TargetAdapter = {
             reasoningTokens: 0,
           });
         } else if (role === "assistant") {
-          const content = Array.isArray(msg.content) ? msg.content : [];
-          const { text, hasThinking } = textFromContent(content);
+          const contentBlocks = Array.isArray(msg.content) ? msg.content : [];
+          const { text, hasThinking } = textFromContent(msg.content);
           const toolCalls: ParsedToolCall[] = [];
-          for (const block of content) {
+          for (const block of contentBlocks) {
             const b = asRecord(block);
             if (!b || b.type !== "toolCall") continue;
             const toolName = typeof b.name === "string" ? b.name : "";

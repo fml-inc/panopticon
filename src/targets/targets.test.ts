@@ -904,9 +904,11 @@ describe("pi target adapter", () => {
     expect(pi.otel).toBeUndefined();
   });
 
-  it("has no scanner spec (Pi doesn't write session files)", () => {
+  it("has scanner spec for persisted Pi session files", () => {
     const pi = getTarget("pi")!;
-    expect(pi.scanner).toBeUndefined();
+    expect(pi.scanner).toBeDefined();
+    expect(pi.scanner!.discover).toBeTypeOf("function");
+    expect(pi.scanner!.parseFile).toBeTypeOf("function");
   });
 
   it("applyInstallConfig throws when extension bundle is missing", () => {
