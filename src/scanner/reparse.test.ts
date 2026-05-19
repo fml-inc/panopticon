@@ -280,19 +280,24 @@ function seedPreUpgradeDb(args: {
   raw
     .prepare(
       `INSERT INTO sessions
-       (session_id, target, started_at_ms, cwd, first_prompt, scanner_file_path, has_scanner, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (session_id, target, started_at_ms, first_prompt, scanner_file_path, has_scanner, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       args.sessionId,
       "codex",
       1_713_670_416_000,
-      args.cwd,
       "stale prompt",
       args.scannerFilePath,
       1,
       1_713_670_416_000,
     );
+  raw
+    .prepare(
+      `INSERT INTO session_cwds (session_id, cwd, first_seen_ms)
+       VALUES (?, ?, ?)`,
+    )
+    .run(args.sessionId, args.cwd, 1_713_670_416_000);
 
   raw
     .prepare(
@@ -402,16 +407,15 @@ function seedPreRepoRelativePathUpgradeDb(args: {
   raw
     .prepare(
       `INSERT INTO sessions
-       (session_id, target, started_at_ms, ended_at_ms, cwd, first_prompt,
+       (session_id, target, started_at_ms, ended_at_ms, first_prompt,
         has_scanner, message_count, user_message_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       args.sessionId,
       "codex",
       1_713_670_416_000,
       1_713_670_420_000,
-      args.cwd,
       args.prompt,
       1,
       2,

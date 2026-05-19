@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   target TEXT,
   started_at_ms INTEGER,
   ended_at_ms INTEGER,
-  cwd TEXT,
+  -- (no cwd: never written; session_cwds is the source of truth.
+  --  Migration 22 drops the legacy column from existing DBs.)
   first_prompt TEXT,
   permission_mode TEXT,
   agent_version TEXT,

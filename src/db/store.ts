@@ -549,15 +549,12 @@ export function refreshSessionAutomation(sessionId: string): boolean {
               s.model,
               s.models,
               s.project,
-              COALESCE(
-                s.cwd,
-                (
-                  SELECT scw.cwd
-                  FROM session_cwds scw
-                  WHERE scw.session_id = s.session_id
-                  ORDER BY scw.first_seen_ms ASC
-                  LIMIT 1
-                )
+              (
+                SELECT scw.cwd
+                FROM session_cwds scw
+                WHERE scw.session_id = s.session_id
+                ORDER BY scw.first_seen_ms ASC
+                LIMIT 1
               ) AS cwd
        FROM sessions s
        WHERE s.session_id = ?`,
