@@ -414,14 +414,22 @@ const pi: TargetAdapter = {
             });
           }
           const usage = asRecord(msg.usage);
-          const inputTokens =
-            typeof usage?.input === "number" ? usage.input : 0;
-          const outputTokens =
-            typeof usage?.output === "number" ? usage.output : 0;
-          const cacheReadTokens =
-            typeof usage?.cacheRead === "number" ? usage.cacheRead : 0;
-          const cacheCreationTokens =
-            typeof usage?.cacheWrite === "number" ? usage.cacheWrite : 0;
+          const inputTokens = readNonNegativeNumber(usage, [
+            "input",
+            "input_tokens",
+          ]);
+          const outputTokens = readNonNegativeNumber(usage, [
+            "output",
+            "output_tokens",
+          ]);
+          const cacheReadTokens = readNonNegativeNumber(usage, [
+            "cacheRead",
+            "cache_read_input_tokens",
+          ]);
+          const cacheCreationTokens = readNonNegativeNumber(usage, [
+            "cacheWrite",
+            "cache_creation_input_tokens",
+          ]);
           const contextTokens =
             inputTokens + cacheReadTokens + cacheCreationTokens;
           const model = typeof msg.model === "string" ? msg.model : undefined;
