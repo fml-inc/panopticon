@@ -22,6 +22,7 @@ import type {
   TimelineMessage,
   TimelineToolCall,
 } from "../types.js";
+import { buildSafeFtsQuery, tokenizeSearchTerms } from "./fts.js";
 import { getDb } from "./schema.js";
 
 function parseSince(since?: string): number | null {
@@ -55,18 +56,6 @@ function escapeLikePattern(query: string): string {
 
 function buildLikePattern(query: string): string {
   return `%${escapeLikePattern(query)}%`;
-}
-
-function tokenizeSearchTerms(query: string, minLength: number): string[] {
-  const matches = query.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  return [...new Set(matches.filter((term) => term.length >= minLength))];
-}
-
-function buildSafeFtsQuery(query: string): string | null {
-  // FTS5 trigram matching is poor for sub-3-char tokens and raw punctuation can
-  // trigger MATCH parser errors, so keep this stricter than the LIKE fallback.
-  const terms = tokenizeSearchTerms(query, 3);
-  return terms.length > 0 ? terms.join(" AND ") : null;
 }
 
 function buildTokenLikeCondition(

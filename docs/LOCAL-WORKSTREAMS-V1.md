@@ -214,11 +214,18 @@ Current title derivation:
 
 Current status derivation:
 
-- `active`: has unreconciled edits or fresh intents with unknown outcome
-- `landed`: all known edits landed and no open edits remain
-- `mixed`: some landed, some churned/reverted, no open edits remain
+- `active`: has fresh unreconciled edits or fresh intents with unknown outcome
+  (currently within 24 hours of the last observed session activity)
+- `landed`: all edits landed and no open edits remain
+- `mixed`: some edits landed, while other edits churned, reverted, or remain
+  unresolved after the active freshness window
 - `read-only`: no edits were recorded for the session
-- `unlanded`: edits were recorded, but none landed and no open edits remain
+- `unlanded`: edits were recorded, but none landed; stale unresolved edits may
+  still be counted in `open_edit_count`
+
+Older unreconciled edits are retained in `open_edit_count`, but they no longer
+keep a historical session in the `active` bucket. Those sessions derive
+`mixed` or `unlanded` from the landed edits that are known.
 
 ### `intent_session_summaries`
 

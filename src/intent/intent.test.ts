@@ -753,6 +753,89 @@ describe("query: search_intent", () => {
       }),
     ]);
   });
+
+  it("sanitizes punctuation before passing queries to FTS5", () => {
+    const file = path.join(scratchDir, "follow-up.ts");
+    fs.writeFileSync(file, "follow up change");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { prompt: "finish follow-up cleanup", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd: scratchDir,
+      repository: scratchDir,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "follow up change",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildClaimBackedProjection();
+
+    expect(() => searchIntent({ query: "follow-up" })).not.toThrow();
+    expect(searchIntent({ query: "follow-up" })).toMatchObject([
+      { prompt_text: "finish follow-up cleanup" },
+    ]);
+  });
+
+  it("falls back to LIKE matching when FTS terms are too short", () => {
+    const file = path.join(scratchDir, "pr-88.ts");
+    fs.writeFileSync(file, "pr 88 change");
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { prompt: "review PR #88 todo list", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd: scratchDir,
+      repository: scratchDir,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "X",
+          new_string: "pr 88 change",
+        },
+      },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd: scratchDir,
+      repository: scratchDir,
+      payload: { session_id: SESSION },
+    });
+
+    rebuildClaimBackedProjection();
+
+    expect(searchIntent({ query: "pr 88" })).toMatchObject([
+      { prompt_text: "review PR #88 todo list" },
+    ]);
+  });
 });
 
 describe("query: outcomes_for_intent", () => {

@@ -47,7 +47,10 @@ import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_d
 import { rebuildIntentProjection } from "../intent/project.js";
 import { SESSION_SUMMARY_ENRICHMENT_VERSION } from "./model.js";
 import { getSessionSummaryRunnerPolicy } from "./policy.js";
-import { rebuildSessionSummaryProjections } from "./project.js";
+import {
+  rebuildSessionSummaryProjections,
+  SESSION_SUMMARY_ACTIVE_FRESH_WINDOW_MS,
+} from "./project.js";
 import {
   fileOverview,
   listSessionSummaries,
@@ -310,6 +313,69 @@ describe("session_summaries", () => {
     expect(rows[0].status).toBe("unlanded");
     expect(rows[0].summary_text).toContain(
       "Unlanded: 1 intent, 1 edit recorded, none landed",
+    );
+  });
+
+  it("ages unresolved historical sessions out of active status", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const file = path.join(scratchDir, "unresolved-open-summary.ts");
+    fs.writeFileSync(file, "open implementation");
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "start unresolved work", session_id: SESSION },
+    });
+    ingest({
+      event_type: "PostToolUse",
+      ts: 1100,
+      cwd,
+      repository: repo,
+      tool_name: "Edit",
+      payload: {
+        tool_name: "Edit",
+        tool_input: {
+          file_path: file,
+          old_string: "x",
+          new_string: "open implementation",
+        },
+      },
+    });
+
+    rebuildLocalReadModels();
+
+    rebuildSessionSummaryProjections({ sessionId: SESSION, nowMs: 1200 });
+
+    const fresh = listSessionSummaries({ repository: repo });
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0].status).toBe("active");
+    expect(fresh[0].summary_text).toContain(
+      "Active: 1 intent, 0/1 edits landed, 1 open",
+    );
+
+    rebuildSessionSummaryProjections({
+      sessionId: SESSION,
+      nowMs: 1100 + SESSION_SUMMARY_ACTIVE_FRESH_WINDOW_MS + 1,
+    });
+
+    const stale = listSessionSummaries({ repository: repo });
+    expect(stale).toHaveLength(1);
+    expect(stale[0].status).toBe("unlanded");
+    expect(stale[0].open_edit_count).toBe(1);
+    expect(stale[0].summary_text).toContain(
+      "Unlanded: 1 intent, 0/1 edits landed, 1 unresolved",
     );
   });
 
