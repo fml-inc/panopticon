@@ -1,12 +1,43 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+vi.mock("../config.js", () => {
+  const _fs = require("node:fs");
+  const _os = require("node:os");
+  const _path = require("node:path");
+  const tmpDir = _path.join(_os.tmpdir(), "pano-hooks-ingest-test");
+  return {
+    config: {
+      dataDir: tmpDir,
+      dbPath: _path.join(tmpDir, "panopticon.db"),
+      port: 4318,
+      host: "127.0.0.1",
+      serverPidFile: _path.join(tmpDir, "panopticon.pid"),
+    },
+    ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
+  };
+});
+
+import { config } from "../config.js";
+import { closeDb, getDb } from "../db/schema.js";
 import {
   _resetPreToolUseFileContextSeen,
   _resetSessionRepoCache,
+  _resetSessionTargetCache,
   emitOncePerSessionPath,
   extractEventPaths,
   extractShellPwd,
   type HookInput,
   isPanopticonMcpTool,
+  processHookEvent,
   resolveAllEventRepos,
   resolveEventRepo,
 } from "./ingest.js";
@@ -18,6 +49,38 @@ function makeInput(overrides: Partial<HookInput> = {}): HookInput {
     ...overrides,
   };
 }
+
+beforeAll(() => {
+  fs.rmSync(config.dataDir, { recursive: true, force: true });
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  getDb();
+});
+
+afterAll(() => {
+  closeDb();
+  fs.rmSync(config.dataDir, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  _resetSessionRepoCache();
+  _resetSessionTargetCache();
+  _resetPreToolUseFileContextSeen();
+  const db = getDb();
+  db.prepare("DELETE FROM claim_evidence").run();
+  db.prepare("DELETE FROM evidence_ref_paths").run();
+  db.prepare("DELETE FROM evidence_refs").run();
+  db.prepare("DELETE FROM active_claims").run();
+  db.prepare("DELETE FROM claims").run();
+  db.prepare("DELETE FROM intent_edits").run();
+  db.prepare("DELETE FROM intent_units_fts").run();
+  db.prepare("DELETE FROM intent_units").run();
+  db.prepare("DELETE FROM hook_events").run();
+  db.prepare("DELETE FROM tool_calls").run();
+  db.prepare("DELETE FROM messages").run();
+  db.prepare("DELETE FROM session_repositories").run();
+  db.prepare("DELETE FROM session_cwds").run();
+  db.prepare("DELETE FROM sessions").run();
+});
 
 // Stub resolver: returns "org/repo" if path contains a known repo name
 function stubResolve(dir: string): string | null {
@@ -380,6 +443,81 @@ describe("isPanopticonMcpTool", () => {
   it("does not match other MCP tools", () => {
     expect(isPanopticonMcpTool("mcp__github__search_code")).toBe(false);
     expect(isPanopticonMcpTool("github/search_code")).toBe(false);
+  });
+});
+
+describe("processHookEvent", () => {
+  it("keeps Pi hook events out of transcript messages and tool calls", () => {
+    const sessionId = "pi-hook-no-transcript";
+
+    processHookEvent({
+      session_id: sessionId,
+      source: "pi",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/workspace/panopticon",
+      prompt: "write a pi file",
+    });
+    processHookEvent({
+      session_id: sessionId,
+      source: "pi",
+      hook_event_name: "PreToolUse",
+      tool_name: "write",
+      cwd: "/workspace/panopticon",
+      tool_call_id: "pi-call-1",
+      tool_input: { path: "pi-output.txt", content: "hello" },
+    });
+    processHookEvent({
+      session_id: sessionId,
+      source: "pi",
+      hook_event_name: "PostToolUse",
+      tool_name: "write",
+      cwd: "/workspace/panopticon",
+      tool_call_id: "pi-call-1",
+      tool_input: { path: "pi-output.txt", content: "hello" },
+      tool_result: { content: "ok" },
+    });
+
+    const db = getDb();
+    const hookEvents = db
+      .prepare(
+        `SELECT event_type, target, tool_name
+         FROM hook_events
+         WHERE session_id = ?
+         ORDER BY id`,
+      )
+      .all(sessionId);
+    expect(hookEvents).toEqual([
+      { event_type: "UserPromptSubmit", target: "pi", tool_name: null },
+      { event_type: "PreToolUse", target: "pi", tool_name: "write" },
+      { event_type: "PostToolUse", target: "pi", tool_name: "write" },
+    ]);
+
+    const session = db
+      .prepare(
+        `SELECT target, has_hooks, first_prompt
+         FROM sessions
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          target: string;
+          has_hooks: number;
+          first_prompt: string;
+        }
+      | undefined;
+    expect(session).toMatchObject({
+      target: "pi",
+      has_hooks: 1,
+      first_prompt: "write a pi file",
+    });
+    const messageCount = db
+      .prepare("SELECT COUNT(*) AS c FROM messages WHERE session_id = ?")
+      .get(sessionId) as { c: number };
+    const toolCallCount = db
+      .prepare("SELECT COUNT(*) AS c FROM tool_calls WHERE session_id = ?")
+      .get(sessionId) as { c: number };
+    expect(messageCount.c).toBe(0);
+    expect(toolCallCount.c).toBe(0);
   });
 });
 
