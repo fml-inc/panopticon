@@ -39,6 +39,10 @@ interface SessionContextInput {
   shell_pwd?: unknown;
   repository?: unknown;
   now_ms?: unknown;
+  // Replay-time only: extra session ids to exclude from injection
+  // (the historical session being replayed + the replay agent's own id,
+  // so treatment cannot leak the answer or its own emerging work).
+  exclude_session_ids?: unknown;
 }
 
 interface UserPromptSubmitContextInput extends SessionContextInput {
@@ -60,6 +64,7 @@ export function buildSessionStartRecentHistoryContext(
   const previews = listRecentSessionSummaryPreviewsForCwd({
     cwdCandidates,
     currentSessionId: extractSessionId(data),
+    excludeSessionIds: extractExcludeSessionIds(data),
     sinceMs: nowMs - RECENT_HISTORY_MAX_AGE_MS,
     untilMs: nowMs,
     limit: RECENT_HISTORY_LIMIT,
@@ -88,6 +93,7 @@ export function buildUserPromptSubmitLocalContext(
     cwdCandidates,
     repository,
     currentSessionId: extractSessionId(data),
+    excludeSessionIds: extractExcludeSessionIds(data),
     sinceMs: nowMs - USER_PROMPT_CONTEXT_MAX_AGE_MS,
     untilMs: nowMs,
     limit: USER_PROMPT_CONTEXT_LIMIT,
@@ -245,6 +251,14 @@ function extractPrompt(data: UserPromptSubmitContextInput): string | null {
         : null;
   const trimmed = prompt?.trim() ?? "";
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function extractExcludeSessionIds(data: SessionContextInput): string[] {
+  const raw = data.exclude_session_ids;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
 }
 
 function extractNowMs(data: SessionContextInput): number {

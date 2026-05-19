@@ -306,6 +306,25 @@ export async function runHandler(opts: {
       data.proxy_enabled = true;
     }
 
+    // Replay env: when the Phase B replay harness spawns claude with these
+    // envs, the hook handler injects them into the event body so the
+    // (long-lived, env-unaware) panopticon server honors them per request:
+    // injection sees only data strictly before the historical session
+    // start, and excludes the historical + replay session ids.
+    const replayNowRaw = process.env.PANOPTICON_REPLAY_NOW_MS;
+    if (replayNowRaw) {
+      const n = Number(replayNowRaw);
+      if (Number.isFinite(n)) data.now_ms = n;
+    }
+    const replayExcludesRaw = process.env.PANOPTICON_REPLAY_EXCLUDE_SESSION_IDS;
+    if (replayExcludesRaw) {
+      const ids = replayExcludesRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (ids.length > 0) data.exclude_session_ids = ids;
+    }
+
     const eventType = data.hook_event_name ?? "Unknown";
     logHook("debug", "event parsed", {
       eventType,

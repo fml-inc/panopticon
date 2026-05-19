@@ -146,14 +146,15 @@ async function runScenario(s: Scenario, args: Args): Promise<ScenarioResult> {
       os.tmpdir(),
       `pano-replay-${s.session_id.slice(0, 8)}-${arm}`,
     );
-    const plan = buildArmPlan(s, args, env, worktree);
-
     if (!args.execute) {
       console.log(`  [dry-run] ${arm}: worktree ${worktree}`);
       console.log(
-        `    env: ${Object.keys(env).length ? JSON.stringify(env) : "(panopticon defaults)"}`,
+        `    env: ${Object.keys(env).length ? JSON.stringify(env) : "(panopticon defaults)"} ` +
+          `+ replay-now=${s.started_at_ms - 1} exclude=${s.session_id}`,
       );
-      console.log(`    ${plan.command} ${plan.args.join(" ")}`);
+      console.log(
+        `    ${s.prompts.length} turns via claude -p (first) + --resume <session> (rest)`,
+      );
       continue;
     }
 
@@ -170,39 +171,31 @@ async function runScenario(s: Scenario, args: Args): Promise<ScenarioResult> {
   return result;
 }
 
-function buildArmPlan(
-  s: Scenario,
-  _args: Args,
-  _env: Record<string, string>,
-  worktree: string,
-): { command: string; args: string[] } {
-  // Prompts are replayed as a single batched task instruction so one
-  // headless invocation drives the whole session; SessionStart /
-  // UserPromptSubmit / PreToolUse hooks fire under that process and inject
-  // (treatment) or not (control).
-  const task = [
-    "Replay of a historical coding session. Carry out the following",
-    "user request(s) in order, making the actual code changes:",
-    "",
-    ...s.prompts.map((p, i) => `(${i + 1}) ${p}`),
-  ].join("\n");
-  return {
-    command: "claude",
-    args: [
-      "-p",
-      task,
-      "--output-format",
-      "json",
-      // Disposable, isolated worktree — the replay agent must be able to
-      // fully do the work (edit + git + build + tests), exactly as the
-      // original session could. acceptEdits silently blocks Bash in
-      // headless -p (no approver), which starved earlier runs.
-      "--permission-mode",
-      "bypassPermissions",
-      "--add-dir",
-      worktree,
-    ],
-  };
+function turnArgs(prompt: string, worktree: string, resumeId: string | null) {
+  // Disposable, isolated worktree — bypassPermissions lets the replay agent
+  // fully operate (edit + git + build + tests) exactly as the original
+  // session could. acceptEdits silently blocks Bash in headless -p.
+  const a = [
+    "-p",
+    prompt,
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "bypassPermissions",
+    "--add-dir",
+    worktree,
+  ];
+  if (resumeId) a.push("--resume", resumeId);
+  return a;
+}
+
+function extractSessionId(stdout: string): string | null {
+  try {
+    const p = JSON.parse(stdout) as { session_id?: string; sessionId?: string };
+    return p.session_id ?? p.sessionId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function executeArm(
@@ -219,41 +212,81 @@ async function executeArm(
     { stdio: "ignore" },
   );
   try {
-    const plan = buildArmPlan(s, args, env, worktree);
-    const start = Date.now();
+    let resumeId: string | null = null;
+    let totalTokens = 0;
+    let anyTokens = false;
+    let totalDuration = 0;
     let exitOk = true;
-    let stdout = "";
-    try {
-      stdout = execFileSync(plan.command, plan.args, {
-        cwd: worktree,
-        env: { ...process.env, ...env },
-        timeout: args.agentTimeoutMs,
-        encoding: "utf-8",
-        maxBuffer: 64 * 1024 * 1024,
-      });
-    } catch (err) {
-      exitOk = false;
-      stdout =
-        (err as { stdout?: string }).stdout ??
-        (err instanceof Error ? err.message : String(err));
+    let turnsOk = 0;
+    for (let i = 0; i < s.prompts.length; i++) {
+      // Per-turn env: clamp injection to strictly before the historical
+      // session start, and exclude the historical + (once known) replay
+      // session ids so treatment cannot leak the answer or its own work.
+      const turnEnv: Record<string, string> = {
+        ...env,
+        PANOPTICON_REPLAY_NOW_MS: String(s.started_at_ms - 1),
+        PANOPTICON_REPLAY_EXCLUDE_SESSION_IDS: [s.session_id, resumeId]
+          .filter((v): v is string => typeof v === "string" && v.length > 0)
+          .join(","),
+        // No point-in-time path exists for fileOverview yet — disable
+        // PreToolUse file context in BOTH arms so the comparison is fair.
+        PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION: "0",
+      };
+      const turnStart = Date.now();
+      let turnOut = "";
+      try {
+        turnOut = execFileSync(
+          "claude",
+          turnArgs(s.prompts[i], worktree, resumeId),
+          {
+            cwd: worktree,
+            env: { ...process.env, ...turnEnv },
+            timeout: args.agentTimeoutMs,
+            encoding: "utf-8",
+            maxBuffer: 64 * 1024 * 1024,
+          },
+        );
+        turnsOk++;
+      } catch (err) {
+        exitOk = false;
+        turnOut =
+          (err as { stdout?: string }).stdout ??
+          (err instanceof Error ? err.message : String(err));
+      }
+      totalDuration += Date.now() - turnStart;
+      const t = extractTokens(turnOut);
+      if (t != null) {
+        totalTokens += t;
+        anyTokens = true;
+      }
+      if (!resumeId) {
+        resumeId = extractSessionId(turnOut);
+      }
+      process.stderr.write(
+        `    ${arm} turn ${i + 1}/${s.prompts.length}: ` +
+          `${t ?? "?"}tok ${((Date.now() - turnStart) / 1000) | 0}s` +
+          `${resumeId ? "" : " (no session id — cannot resume)"}\n`,
+      );
+      // If we never got a session id, can't continue the same conversation.
+      if (!resumeId && i + 1 < s.prompts.length) {
+        exitOk = false;
+        break;
+      }
     }
-    const durationMs = Date.now() - start;
-    // Diff against the base commit, not just the working tree — the agent
-    // may commit its work (mimicking the original PR workflow), which a
-    // plain `git diff` would miss entirely.
     const diffSummary = execFileSync(
       "git",
       ["-C", worktree, "diff", "--stat", s.head_sha, "--"],
       { encoding: "utf-8" },
     ).trim();
     console.log(
-      `  ${arm}: ${exitOk ? "ok" : "FAILED"} ${durationMs}ms ` +
-        `tokens=${extractTokens(stdout) ?? "?"}`,
+      `  ${arm}: ${exitOk ? "ok" : "PARTIAL"} ${totalDuration}ms ` +
+        `tokens=${anyTokens ? totalTokens : "?"} ` +
+        `(${turnsOk}/${s.prompts.length} turns)`,
     );
     return {
       arm,
-      durationMs,
-      totalTokens: extractTokens(stdout),
+      durationMs: totalDuration,
+      totalTokens: anyTokens ? totalTokens : null,
       exitOk,
       diffSummary,
     };

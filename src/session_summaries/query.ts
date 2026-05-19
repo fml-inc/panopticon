@@ -1,3 +1,8 @@
+import {
+  type CodeIntelFileOverview,
+  createCodeReviewGraphProvider,
+} from "../code_intelligence/index.js";
+import { config } from "../config.js";
 import { getDb, needsSessionSummaryProjectionRebuild } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import {
@@ -310,6 +315,7 @@ export interface FileOverviewResult {
     last_touched_ts_ms: number | null;
     last_status: "current" | "superseded" | "reverted" | "unknown";
   }>;
+  code_intel?: CodeIntelFileOverview;
 }
 
 export function listSessionSummaries(opts?: {
@@ -370,6 +376,7 @@ export function sessionSummaryDetail(opts: {
 export function listRecentSessionSummaryPreviewsForCwd(opts: {
   cwdCandidates: string[];
   currentSessionId?: string | null;
+  excludeSessionIds?: string[];
   sinceMs?: number | null;
   untilMs?: number | null;
   limit?: number;
@@ -383,10 +390,21 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
     typeof opts.sinceMs === "number" && Number.isFinite(opts.sinceMs);
   const useUntilMs =
     typeof opts.untilMs === "number" && Number.isFinite(opts.untilMs);
+  const excludes = [
+    ...new Set(
+      [opts.currentSessionId ?? "", ...(opts.excludeSessionIds ?? [])].filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      ),
+    ),
+  ];
+  const excludeClause =
+    excludes.length > 0
+      ? `AND s.session_id NOT IN (${excludes.map(() => "?").join(", ")})`
+      : "";
   const params: unknown[] = [
     ...opts.cwdCandidates,
     ...opts.cwdCandidates,
-    opts.currentSessionId ?? "",
+    ...excludes,
   ];
   if (useSinceMs) params.push(opts.sinceMs);
   if (useUntilMs) params.push(opts.untilMs);
@@ -408,8 +426,8 @@ export function listRecentSessionSummaryPreviewsForCwd(opts: {
          JOIN session_summaries s
            ON s.session_id = m.session_id
          ${SESSION_SUMMARY_PROJECTION_JOINS}
-         WHERE s.session_id != ?
-         AND COALESCE(sess.is_automated, 0) != 1
+         WHERE COALESCE(sess.is_automated, 0) != 1
+         ${excludeClause}
          ${useSinceMs ? `AND ${activityExpr} >= ?` : ""}
          ${useUntilMs ? `AND ${activityExpr} <= ?` : ""}
          ORDER BY ${activityExpr} DESC,
@@ -1072,9 +1090,10 @@ export function fileOverview(opts: {
     normalizedPath,
     opts.related_limit ?? 10,
   );
+  const displayPath = resolveDisplayPath(normalizedPath, repositoryRoot);
 
   return {
-    path: resolveDisplayPath(normalizedPath, repositoryRoot),
+    path: displayPath,
     repository:
       opts.repository ??
       current.repository ??
@@ -1096,6 +1115,14 @@ export function fileOverview(opts: {
       ...row,
       file_path: resolveDisplayPath(row.file_path, repositoryRoot),
     })),
+    ...(config.enableCodeIntelFileOverview
+      ? {
+          code_intel: createCodeReviewGraphProvider().fileOverview({
+            repoRoot: repositoryRoot,
+            filePath: displayPath,
+          }),
+        }
+      : {}),
   };
 }
 

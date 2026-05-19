@@ -660,7 +660,12 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       const additionalContext = buildPreToolUseFileContextOnce(sessionId, {
         ...data,
         repository: repo ?? data.repository,
-        now_ms: timestampMs,
+        // Preserve replay-injected now_ms (handler.ts) when set;
+        // otherwise use the server's receive timestamp.
+        now_ms:
+          typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
+            ? data.now_ms
+            : timestampMs,
       });
       if (additionalContext) {
         return mergePreToolUseContext(permission, additionalContext);
@@ -681,7 +686,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       ...data,
       repository: repo ?? data.repository,
       is_first_user_prompt_submit: false,
-      now_ms: timestampMs,
+      now_ms:
+        typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
+          ? data.now_ms
+          : timestampMs,
     });
     if (response) return response;
   }
@@ -692,7 +700,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   ) {
     const response = buildSessionStartContextResponse({
       ...data,
-      now_ms: timestampMs,
+      now_ms:
+        typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
+          ? data.now_ms
+          : timestampMs,
     });
     if (response) return response;
   }
