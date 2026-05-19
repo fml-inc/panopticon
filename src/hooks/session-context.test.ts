@@ -19,10 +19,13 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
+import type { FileOverviewResult } from "../session_summaries/query.js";
 import { isFirstUserPromptSubmit } from "./ingest.js";
 import {
+  buildPreToolUseFileContext,
   buildSessionStartRecentHistoryContext,
   buildUserPromptSubmitLocalContext,
+  formatPreToolUseFileContext,
 } from "./session-context.js";
 
 const cwd = path.join(os.tmpdir(), "panopticon-session-context-cwd");
@@ -537,6 +540,83 @@ describe("session context builders", () => {
     });
 
     expect(context).toBeNull();
+  });
+});
+
+describe("PreToolUse file context", () => {
+  beforeEach(() => {
+    closeDb();
+    fs.rmSync(config.dataDir, { recursive: true, force: true });
+    fs.mkdirSync(config.dataDir, { recursive: true });
+    getDb();
+  });
+  afterEach(() => {
+    closeDb();
+    fs.rmSync(config.dataDir, { recursive: true, force: true });
+  });
+
+  it("returns null when the tool input has no file path", () => {
+    expect(buildPreToolUseFileContext({})).toBeNull();
+    expect(
+      buildPreToolUseFileContext({ tool_input: { command: "ls" } }),
+    ).toBeNull();
+  });
+
+  it("stays silent for a file with no provenance (precision gate)", () => {
+    expect(
+      buildPreToolUseFileContext({
+        cwd,
+        tool_input: { file_path: path.join(cwd, "never/touched.ts") },
+      }),
+    ).toBeNull();
+  });
+
+  it("renders provenance with the lifecycle verb and reverted/superseded counts", () => {
+    const overview: FileOverviewResult = {
+      path: "src/auth.ts",
+      repository: "fml-inc/panopticon",
+      summary: {
+        intent_count: 3,
+        edit_count: 7,
+        session_summary_count: 2,
+        current_edit_count: 4,
+        superseded_edit_count: 1,
+        reverted_edit_count: 2,
+        unknown_edit_count: 0,
+        first_edit_ts_ms: 1,
+        last_edit_ts_ms: 2,
+      },
+      current: {
+        status: "stale",
+        confidence: 0.8,
+        binding_level: "file",
+        session_summary_id: 9,
+        session_summary_title: "switch auth source",
+        intent_unit_id: 42,
+        intent_edit_id: 7,
+        prompt_text: "read cfg.talk not cfg.tts",
+        snippet_preview: null,
+      },
+      recent: [],
+      related_files: [
+        {
+          file_path: "src/config.ts",
+          shared_intent_count: 2,
+          shared_session_summary_count: 1,
+          last_touched_ts_ms: 2,
+          last_status: "current",
+        },
+      ],
+    };
+    const out = formatPreToolUseFileContext(overview);
+    expect(out).toContain("src/auth.ts");
+    expect(out).toContain('"read cfg.talk not cfg.tts"');
+    expect(out).toContain("since superseded");
+    expect(out).toContain('session "switch auth source"');
+    expect(out).toContain("reverted=2");
+    expect(out).toContain("superseded=1");
+    expect(out).toContain("src/config.ts");
+    expect(out).toContain("why_code");
   });
 });
 

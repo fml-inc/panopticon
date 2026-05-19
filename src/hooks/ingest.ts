@@ -36,6 +36,7 @@ import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
 import {
+  buildPreToolUseFileContext,
   buildSessionStartRecentHistoryContext,
   buildUserPromptSubmitLocalContext,
 } from "./session-context.js";
@@ -46,6 +47,41 @@ const lastSessionRepo = new Map<string, string>();
 
 // Track sessions where we've already captured user config
 const userConfigCaptured = new Set<string>();
+
+// Anti-nag: PreToolUse file-context fires at most once per session+path so
+// iterative edits to one file don't re-inject. Long-lived in the server
+// process (mirrors userConfigCaptured); resets on restart, which is fine.
+const preToolUseFileContextSeen = new Set<string>();
+
+// Test seam: clear the once-per-session+path dedupe set.
+export function _resetPreToolUseFileContextSeen(): void {
+  preToolUseFileContextSeen.clear();
+}
+
+/**
+ * Dedupe a once-per-session+path emission. `build` is invoked only when the
+ * key has not been seen; the key is marked seen only when `build` yields
+ * content, so a file that gains history mid-session still gets its one shot.
+ */
+export function emitOncePerSessionPath(
+  sessionId: string,
+  filePath: string,
+  build: () => string | null,
+): string | null {
+  const key = `${sessionId}:${filePath}`;
+  if (preToolUseFileContextSeen.has(key)) return null;
+  const result = build();
+  if (!result) return null;
+  preToolUseFileContextSeen.add(key);
+  return result;
+}
+
+const FILE_CONTEXT_TOOLS = new Set([
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+]);
 
 // Track session:repo pairs where we've already captured repo config
 const seenSessionRepos = new Set<string>();
@@ -613,7 +649,31 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
     toolName
   ) {
-    return buildPermissionResponse(eventType, toolName, data, target);
+    const permission = buildPermissionResponse(
+      eventType,
+      toolName,
+      data,
+      target,
+    );
+    // Point-of-use provenanced file context: when Claude is about to edit a
+    // file with prior history, surface it alongside the permission decision.
+    // Native shape only (target adapters format their own responses).
+    if (
+      eventType === "PreToolUse" &&
+      !target &&
+      config.enablePreToolUseFileContextInjection &&
+      FILE_CONTEXT_TOOLS.has(toolName)
+    ) {
+      const additionalContext = buildPreToolUseFileContextOnce(sessionId, {
+        ...data,
+        repository: repo ?? data.repository,
+        now_ms: timestampMs,
+      });
+      if (additionalContext) {
+        return mergePreToolUseContext(permission, additionalContext);
+      }
+    }
+    return permission;
   }
 
   if (
@@ -681,6 +741,47 @@ function buildUserPromptSubmitContextResponse(
     log.hooks.error("user prompt submit context build failed:", err);
     return null;
   }
+}
+
+function buildPreToolUseFileContextOnce(
+  sessionId: string,
+  data: HookInput,
+): string | null {
+  try {
+    const filePath = extractWrittenFilePath(
+      data.tool_input as Record<string, unknown> | undefined,
+    );
+    if (!filePath) return null;
+    return emitOncePerSessionPath(sessionId, filePath, () =>
+      buildPreToolUseFileContext(data),
+    );
+  } catch (err) {
+    log.hooks.error("pre tool use file context build failed:", err);
+    return null;
+  }
+}
+
+function mergePreToolUseContext(
+  permission: Record<string, unknown>,
+  additionalContext: string,
+): Record<string, unknown> {
+  const existing = permission.hookSpecificOutput;
+  if (existing && typeof existing === "object") {
+    return {
+      ...permission,
+      hookSpecificOutput: {
+        ...(existing as Record<string, unknown>),
+        additionalContext,
+      },
+    };
+  }
+  return {
+    ...permission,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext,
+    },
+  };
 }
 
 // Counts the current UserPromptSubmit event, which step 4 of
