@@ -151,10 +151,6 @@ export interface SessionTimelineResult {
     childSessions: ChildSession[];
   } | null;
   messages: TimelineMessage[];
-  /** Hook events for this session, populated only when sessionTimeline is
-   * called with includeHooks: true. Empty array otherwise. Ordered by
-   * timestampMs ascending — consumers can merge with messages client-side. */
-  hookEvents: HookEvent[];
   totalMessages: number;
   hasMore: boolean;
   source: "local" | "remote";
@@ -164,8 +160,8 @@ export interface SessionTimelineResult {
 
 /**
  * Projection of a hook_events row, surfacing only the fields that aren't
- * already covered by messages/tool_calls. Powers both the includeHooks flag
- * on sessionTimeline and the cross-session hookTimeline query.
+ * already covered by messages/tool_calls. Powers the cross-session
+ * hookTimeline query.
  */
 export interface HookEvent {
   sessionId: string;

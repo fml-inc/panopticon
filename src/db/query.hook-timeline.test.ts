@@ -1,7 +1,6 @@
 /**
  * Tests for the hook event projection on the query path:
  *   - hookTimeline() for cross-session / per-session audit queries
- *   - sessionTimeline({ includeHooks: true }) populating hookEvents[]
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -20,7 +19,7 @@ vi.mock("../config.js", () => {
 });
 
 import { config } from "../config.js";
-import { hookTimeline, sessionTimeline } from "./query.js";
+import { hookTimeline } from "./query.js";
 import { closeDb, getDb } from "./schema.js";
 import { insertHookEvent, upsertSession } from "./store.js";
 
@@ -169,44 +168,5 @@ describe("hookTimeline", () => {
   it("returns empty result for unmatched filters", () => {
     expect(hookTimeline({ sessionId: "does-not-exist" }).events).toEqual([]);
     expect(hookTimeline({ eventTypes: ["Nope"] }).events).toEqual([]);
-  });
-});
-
-describe("sessionTimeline includeHooks flag", () => {
-  it("returns empty hookEvents[] by default", () => {
-    const result = sessionTimeline({ sessionId: SESSION_A });
-    expect(result.hookEvents).toEqual([]);
-  });
-
-  it("populates hookEvents[] ordered ASC when includeHooks=true", () => {
-    const result = sessionTimeline({
-      sessionId: SESSION_A,
-      includeHooks: true,
-    });
-    expect(result.hookEvents).toHaveLength(4);
-    expect(result.hookEvents.map((e) => e.timestampMs)).toEqual([
-      1000, 2000, 3000, 4000,
-    ]);
-    expect(result.hookEvents.every((e) => e.sessionId === SESSION_A)).toBe(
-      true,
-    );
-  });
-
-  it("ignores hook events from other sessions", () => {
-    const result = sessionTimeline({
-      sessionId: SESSION_B,
-      includeHooks: true,
-    });
-    expect(result.hookEvents).toHaveLength(1);
-    expect(result.hookEvents[0].userPrompt).toBe("different session");
-  });
-
-  it("returns empty hookEvents[] when the session does not exist", () => {
-    const result = sessionTimeline({
-      sessionId: "does-not-exist",
-      includeHooks: true,
-    });
-    expect(result.session).toBeNull();
-    expect(result.hookEvents).toEqual([]);
   });
 });

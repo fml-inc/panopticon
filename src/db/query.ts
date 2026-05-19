@@ -566,7 +566,6 @@ export function sessionTimeline(opts: {
   limit?: number;
   offset?: number;
   fullPayloads?: boolean;
-  includeHooks?: boolean;
 }): SessionTimelineResult {
   const db = getDb();
   const limit = opts.limit ?? 50;
@@ -593,7 +592,6 @@ export function sessionTimeline(opts: {
     return {
       session: null,
       messages: [],
-      hookEvents: [],
       totalMessages: 0,
       hasMore: false,
       source: "local",
@@ -778,19 +776,6 @@ export function sessionTimeline(opts: {
     };
   });
 
-  let hookEvents: HookEvent[] = [];
-  if (opts.includeHooks) {
-    const hookRows = db
-      .prepare(
-        `SELECT ${HOOK_EVENT_COLUMNS_SQL}
-         FROM hook_events
-         WHERE session_id = ?
-         ORDER BY timestamp_ms ASC, id ASC`,
-      )
-      .all(opts.sessionId) as RawHookEventRow[];
-    hookEvents = hookRows.map(projectHookEvent);
-  }
-
   return {
     session: {
       sessionId: opts.sessionId,
@@ -807,7 +792,6 @@ export function sessionTimeline(opts: {
       childSessions,
     },
     messages,
-    hookEvents,
     totalMessages,
     hasMore: offset + limit < totalMessages,
     source: "local",

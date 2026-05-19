@@ -45,7 +45,7 @@ server.tool(
 
 server.tool(
   "timeline",
-  "Get messages and tool calls for a session. Includes child sessions (forks, subagents) and DAG metadata (uuid/parentUuid). Content truncated to 500 chars by default. Pass includeHooks=true to also receive a hookEvents[] field with the session's hook events (UserPromptSubmit, ExitPlanMode, etc.) for client-side merging.",
+  "Get messages and tool calls for a session. Includes child sessions (forks, subagents) and DAG metadata (uuid/parentUuid). Content truncated to 500 chars by default. For this session's hook events (UserPromptSubmit, ExitPlanMode, etc.), call hook_timeline with the same sessionId and merge client-side.",
   {
     sessionId: z.string().describe("The session ID to query"),
     limit: z
@@ -60,20 +60,13 @@ server.tool(
       .boolean()
       .optional()
       .describe("Return full content instead of truncated (default false)"),
-    includeHooks: z
-      .boolean()
-      .optional()
-      .describe(
-        "Populate hookEvents[] with this session's hook events ordered by timestamp ASC (default false)",
-      ),
   },
-  async ({ sessionId, limit, offset, fullPayloads, includeHooks }) => {
+  async ({ sessionId, limit, offset, fullPayloads }) => {
     const result = await service.sessionTimeline({
       sessionId,
       limit,
       offset,
       fullPayloads,
-      includeHooks,
     });
     return {
       content: [

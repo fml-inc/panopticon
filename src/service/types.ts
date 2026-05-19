@@ -20,8 +20,6 @@ export interface SessionTimelineInput {
   limit?: number;
   offset?: number;
   fullPayloads?: boolean;
-  /** Populate hookEvents[] on the response with the session's hook events. */
-  includeHooks?: boolean;
 }
 
 export interface HookTimelineInput {
