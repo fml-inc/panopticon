@@ -11,8 +11,6 @@ import {
   incrementEventTypeCount,
   incrementToolCount,
   insertHookEvent,
-  insertPiHookMessageFromEvent,
-  insertPiHookToolCallFromPostEvent,
   insertRepoConfigSnapshot,
   upsertSession,
   upsertSessionCwd,
@@ -33,6 +31,10 @@ import {
 } from "../repo.js";
 import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
+import {
+  insertPiHookMessageFromEvent,
+  insertPiHookToolCallFromPostEvent,
+} from "../targets/pi/hook-normalize.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
 import {

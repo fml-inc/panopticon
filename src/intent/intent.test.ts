@@ -32,12 +32,11 @@ vi.mock("../config.js", () => {
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
+import { insertHookEvent, upsertSession } from "../db/store.js";
 import {
-  insertHookEvent,
   insertPiHookMessageFromEvent,
   insertPiHookToolCallFromPostEvent,
-  upsertSession,
-} from "../db/store.js";
+} from "../targets/pi/hook-normalize.js";
 import { rebuildIntentClaimsFromHooks } from "./asserters/from_hooks.js";
 import { reconcileLandedClaimsFromDisk } from "./asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "./project.js";
@@ -244,7 +243,7 @@ describe("query: intent_for_code", () => {
         ordinal: 1,
         role: "assistant",
         content:
-          "[Thinking]\nNeed to create the file.\n[/Thinking]I will write it.",
+          "[Thinking]\nNeed to create the file.\n[/Thinking]\nI will write it.",
         has_thinking: 1,
         has_tool_use: 0,
         sync_id: expect.stringMatching(/^hook:/),
