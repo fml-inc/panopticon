@@ -1046,14 +1046,13 @@ describe("session_summaries", () => {
 
     db.prepare(
       `INSERT INTO sessions
-       (session_id, target, project, cwd, first_prompt, started_at_ms,
+       (session_id, target, project, first_prompt, started_at_ms,
         ended_at_ms, machine, message_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       realSession,
       "claude",
       "fml-inc/panopticon",
-      scratchDir,
       "implement useful projection",
       1_000,
       2_000,
@@ -1062,7 +1061,6 @@ describe("session_summaries", () => {
       headlessSession,
       "claude",
       "claude-headless",
-      headlessCwd,
       "Summarize this coding session segment in 1-2 sentences.",
       3_000,
       4_000,
@@ -1071,7 +1069,6 @@ describe("session_summaries", () => {
       legacySummarySession,
       "claude",
       "tmp",
-      "/private/tmp",
       `Summarize session ${realSession}. Start by calling the timeline tool with sessionId "${realSession}" and limit 50.`,
       5_000,
       6_000,
