@@ -350,19 +350,27 @@ function report(results: ScenarioResult[], args: Args): void {
   );
   console.log(
     `Phase B: ${results.length} scenarios, ${comparable.length} ` +
-      "comparable (both arms accomplished the goal)",
+      "comparable (both arms accomplished the change)",
   );
-  for (const r of comparable) {
-    const c = r.control as ArmResult;
-    const t = r.treatment as ArmResult;
-    const tokDelta =
-      c.totalTokens != null && t.totalTokens != null
+  // Per-scenario detail for EVERY scenario — verdict + numbers + why,
+  // so a non-comparable result is interpretable (judge said no vs judge
+  // failed) instead of silent.
+  for (const r of results) {
+    const c = r.control;
+    const t = r.treatment;
+    const tok = (a: ArmResult | null) => a?.totalTokens ?? "?";
+    const min = (a: ArmResult | null) =>
+      a ? `${(a.durationMs / 60000).toFixed(1)}m` : "—";
+    const delta =
+      c?.totalTokens != null && t?.totalTokens != null
         ? `${(((c.totalTokens - t.totalTokens) / c.totalTokens) * 100).toFixed(0)}%`
         : "n/a";
     console.log(
-      `  ${r.session_id}: tokens ctl=${c.totalTokens} trt=${t.totalTokens} ` +
-        `(treatment saves ${tokDelta}); time ctl=${c.durationMs}ms ` +
-        `trt=${t.durationMs}ms`,
+      `\n  ${r.session_id}${r.control && r.treatment ? "" : " (incomplete)"}\n` +
+        `    control:   ${tok(c)} tok / ${min(c)}  diff:[${(c?.diffSummary || "(none)").split("\n")[0]}]\n` +
+        `    treatment: ${tok(t)} tok / ${min(t)}  diff:[${(t?.diffSummary || "(none)").split("\n")[0]}]\n` +
+        `    judge: control=${r.controlAccomplished} treatment=${r.treatmentAccomplished} (treatment Δtokens ${delta})\n` +
+        `    notes: ${r.judgeNotes || "(none)"}`,
     );
   }
   console.log(
