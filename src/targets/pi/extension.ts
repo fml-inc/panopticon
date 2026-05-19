@@ -3,8 +3,11 @@
  *
  * Captures Pi session events (prompts, tool calls, results) and sends them
  * to the local Panopticon server using the same HookInput format that
- * Claude Code and Gemini CLI use. All events are fire-and-forget —
- * failures are silently swallowed so the agent is never blocked.
+ * Claude Code and Gemini CLI use. Events are emitted without awaiting during
+ * normal operation, but in-flight requests are tracked and flushed during
+ * session_shutdown so short-lived/headless Pi runs do not exit before hook
+ * POSTs reach Panopticon. Failures are silently swallowed so the agent is never
+ * blocked by observability.
  *
  * Install:
  *   panopticon install --target pi
@@ -51,6 +54,14 @@ function readAuthToken(): string | null {
 }
 
 const AUTH_TOKEN = readAuthToken();
+const REQUEST_TIMEOUT_MS = parseInt(
+  process.env.PANOPTICON_PI_REQUEST_TIMEOUT_MS ?? "5000",
+  10,
+);
+const SHUTDOWN_FLUSH_TIMEOUT_MS = parseInt(
+  process.env.PANOPTICON_PI_SHUTDOWN_FLUSH_TIMEOUT_MS ?? "5000",
+  10,
+);
 
 interface HookEvent {
   session_id: string;
@@ -65,28 +76,61 @@ interface HookEvent {
   [key: string]: unknown;
 }
 
-function post(event: HookEvent): void {
+const pendingPosts = new Set<Promise<void>>();
+
+function post(event: HookEvent): Promise<void> {
   const body = JSON.stringify(event);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Content-Length": String(Buffer.byteLength(body)),
   };
   if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-  const req = http.request(
-    {
-      hostname: HOST,
-      port: PORT,
-      path: "/hooks",
-      method: "POST",
-      headers,
-      timeout: 5000,
-    },
-    (res) => res.resume(),
-  );
-  req.on("error", () => {});
-  req.on("timeout", () => req.destroy());
-  req.write(body);
-  req.end();
+
+  const requestPromise = new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const req = http.request(
+      {
+        hostname: HOST,
+        port: PORT,
+        path: "/hooks",
+        method: "POST",
+        headers,
+        timeout: REQUEST_TIMEOUT_MS,
+      },
+      (res) => {
+        res.resume();
+        res.on("end", finish);
+        res.on("close", finish);
+      },
+    );
+    req.on("error", finish);
+    req.on("close", finish);
+    req.on("timeout", () => {
+      req.destroy();
+      finish();
+    });
+    req.write(body);
+    req.end();
+  });
+
+  pendingPosts.add(requestPromise);
+  requestPromise.finally(() => pendingPosts.delete(requestPromise));
+  return requestPromise;
+}
+
+async function flushPendingPosts(
+  timeoutMs = SHUTDOWN_FLUSH_TIMEOUT_MS,
+): Promise<void> {
+  if (pendingPosts.size === 0) return;
+  await Promise.race([
+    Promise.allSettled([...pendingPosts]),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
 }
 
 function detectRepo(dir: string): string | undefined {
@@ -105,8 +149,20 @@ function detectRepo(dir: string): string | undefined {
   }
 }
 
+function modelLabel(model: unknown): string | undefined {
+  if (!model || typeof model !== "object") return undefined;
+  const record = model as Record<string, unknown>;
+  const id = record.id ?? record.name ?? record.model;
+  const provider = record.provider ?? record.providerId;
+  return (
+    [provider, id]
+      .filter((value) => typeof value === "string" && value.length > 0)
+      .join(":") || undefined
+  );
+}
+
 export default function panopticon(pi: ExtensionAPI) {
-  const sessionId = randomUUID();
+  let sessionId = randomUUID();
   let cwd: string | undefined;
   let repo: string | undefined;
 
@@ -114,15 +170,16 @@ export default function panopticon(pi: ExtensionAPI) {
     event: Omit<HookEvent, "session_id" | "source" | "cwd" | "repository">,
   ) {
     post({
+      ...event,
       session_id: sessionId,
       source: "pi",
       cwd,
       repository: repo,
-      ...event,
     });
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    sessionId = ctx.sessionManager?.getSessionId?.() ?? sessionId;
     cwd = ctx.cwd;
     repo = detectRepo(cwd);
     emit({ hook_event_name: "SessionStart" });
@@ -131,6 +188,26 @@ export default function panopticon(pi: ExtensionAPI) {
   // Pi's input event has event.text (not event.input)
   pi.on("input", async (event) => {
     emit({ hook_event_name: "UserPromptSubmit", prompt: event.text });
+  });
+
+  // Pi exposes live turn boundaries. turn_end carries the finalized assistant
+  // message, including the real response text; emit it as a canonical Stop so
+  // Panopticon records both the boundary and the assistant transcript without
+  // fabricating content.
+  pi.on("turn_start", async (event) => {
+    emit({
+      hook_event_name: "TurnStart",
+      turn_index: event.turnIndex,
+      pi_timestamp: event.timestamp,
+    });
+  });
+
+  pi.on("turn_end", async (event) => {
+    emit({
+      hook_event_name: "Stop",
+      turn_index: event.turnIndex,
+      assistant_message: event.message,
+    });
   });
 
   // PreToolUse — capture the tool call
@@ -156,7 +233,62 @@ export default function panopticon(pi: ExtensionAPI) {
     });
   });
 
+  // Additional Pi parity events. These are emitted only for Pi extension events
+  // that exist in the public 0.75.x API. Claude-style permission prompts,
+  // notifications, task lifecycle, and subagent lifecycle have no Pi extension
+  // event equivalents, so Panopticon does not fabricate them.
+  pi.on("session_before_compact", async (event) => {
+    emit({
+      hook_event_name: "PreCompact",
+      branch_entry_count: event.branchEntries.length,
+      custom_instructions: event.customInstructions,
+    });
+  });
+
+  pi.on("session_compact", async (event) => {
+    emit({
+      hook_event_name: "PostCompact",
+      compaction_entry: event.compactionEntry,
+      from_extension: event.fromExtension,
+    });
+  });
+
+  pi.on("model_select", async (event) => {
+    emit({
+      hook_event_name: "ConfigChange",
+      config_key: "model",
+      config_source: event.source,
+      previous_value: modelLabel(event.previousModel),
+      new_value: modelLabel(event.model),
+    });
+  });
+
+  pi.on("thinking_level_select", async (event) => {
+    emit({
+      hook_event_name: "ConfigChange",
+      config_key: "thinking_level",
+      previous_value: event.previousLevel,
+      new_value: event.level,
+    });
+  });
+
+  pi.on("user_bash", async (event) => {
+    emit({
+      hook_event_name: "Notification",
+      notification_type: "user_bash",
+      command: event.command,
+      exclude_from_context: event.excludeFromContext,
+      event_cwd: event.cwd,
+    });
+  });
+
   pi.on("session_shutdown", async () => {
     emit({ hook_event_name: "SessionEnd" });
+    await flushPendingPosts();
   });
 }
+
+export const __panopticonPiExtensionTest = {
+  flushPendingPosts,
+  pendingPostCount: () => pendingPosts.size,
+};
