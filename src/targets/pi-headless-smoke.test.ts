@@ -209,17 +209,17 @@ describe.skipIf(!RUN_HEADLESS_SMOKE)("gated headless Pi smoke", () => {
             row.sessions > 0 &&
             row.prompts > 0 &&
             row.hooks > 0 &&
-            row.paths > 0 &&
-            row.messages > 0 &&
-            row.toolCalls > 0,
+            row.paths > 0,
         );
 
         expect(counts.sessions).toBeGreaterThan(0);
         expect(counts.prompts).toBeGreaterThan(0);
         expect(counts.hooks).toBeGreaterThan(0);
         expect(counts.paths).toBeGreaterThan(0);
-        expect(counts.messages).toBeGreaterThan(0);
-        expect(counts.toolCalls).toBeGreaterThan(0);
+        // Live hooks intentionally do not materialize transcript rows; the Pi
+        // session scanner is the canonical source for messages/tool calls.
+        expect(counts.messages).toBe(0);
+        expect(counts.toolCalls).toBe(0);
       } finally {
         await closeServer(server);
         closeDb();

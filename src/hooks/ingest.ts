@@ -31,10 +31,6 @@ import {
 } from "../repo.js";
 import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
-import {
-  insertPiHookMessageFromEvent,
-  insertPiHookToolCallFromPostEvent,
-} from "../targets/pi/hook-normalize.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
 import {
@@ -535,18 +531,6 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     sessionFields.ended_at_ms = timestampMs;
   }
   upsertSession(sessionFields);
-
-  try {
-    insertPiHookMessageFromEvent(hookEventId);
-  } catch (err) {
-    log.hooks.error("hook message normalization failed:", err);
-  }
-
-  try {
-    insertPiHookToolCallFromPostEvent(hookEventId);
-  } catch (err) {
-    log.hooks.error("hook tool_call normalization failed:", err);
-  }
 
   // Link subagent sessions to their parents in real-time.
   // SubagentStart fires on the PARENT session with agent_id identifying
