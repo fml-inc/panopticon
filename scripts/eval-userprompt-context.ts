@@ -404,10 +404,50 @@ main()
     closeDb();
   });
 
+// Phase 0 precision floor (see docs/PROACTIVE-POINTOFUSE-CONTEXT-PLAN.md).
+// LATER weak-overlap-low baseline is 2 (later #10, later #19 off one weak
+// link); regressions above this, or any returned-but-none context, fail CI.
+const LATER_WEAK_LOW_CAP = 2;
+
+function evaluateGate(set: EvalSet, results: EvalResult[]): string[] {
+  const failures: string[] = [];
+  if (set === "first") {
+    const leaked = results.filter(
+      (r) => r.userPromptSessionIds.length > 0 || r.userPromptLines.length > 0,
+    );
+    if (leaked.length > 0) {
+      failures.push(
+        `FIRST must be silent (injection disabled), but ${leaked.length} prompt(s) returned context`,
+      );
+    }
+    return failures;
+  }
+  const noneButContext = results.filter(
+    (r) => r.userPromptSessionIds.length > 0 && r.usefulness.level === "none",
+  );
+  if (noneButContext.length > 0) {
+    failures.push(
+      `LATER returned context that scored 'none' in ${noneButContext.length} case(s) (expected 0)`,
+    );
+  }
+  const weakLow = results.filter(
+    (r) =>
+      r.usefulness.level === "low" &&
+      r.usefulness.reasons.includes("only_weak_or_no_prompt_overlap"),
+  );
+  if (weakLow.length > LATER_WEAK_LOW_CAP) {
+    failures.push(
+      `LATER weak-overlap 'low' cases=${weakLow.length} exceed cap ${LATER_WEAK_LOW_CAP}`,
+    );
+  }
+  return failures;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const sets: EvalSet[] = args.set === "both" ? ["first", "later"] : [args.set];
 
+  const gateFailures: string[] = [];
   for (const set of sets) {
     const fixture = loadOrCreateFixture(set, args);
     const labelsByKey = loadLabelsByKey(set, args.fixtureDir);
@@ -432,6 +472,22 @@ async function main(): Promise<void> {
     if (args.writeLabelTemplate) {
       writeLabelTemplate(set, args.fixtureDir, results);
     }
+    const failures = evaluateGate(set, results);
+    if (!args.json) {
+      console.log(
+        failures.length === 0
+          ? `  GATE ${set.toUpperCase()}: PASS`
+          : `  GATE ${set.toUpperCase()}: FAIL — ${failures.join("; ")}`,
+      );
+    }
+    gateFailures.push(...failures);
+  }
+
+  if (gateFailures.length > 0) {
+    console.error(
+      `\nPrecision gate FAILED (${gateFailures.length} issue(s)):\n- ${gateFailures.join("\n- ")}`,
+    );
+    process.exitCode = 1;
   }
 }
 
@@ -727,10 +783,15 @@ function evaluatePrompt(
     cwd: prompt.cwd ?? undefined,
     repository: prompt.repository ?? undefined,
     prompt: prompt.prompt,
-    is_first_user_prompt_submit: prompt.promptIndex === 1,
     now_ms: prompt.timestampMs,
   };
-  const userPromptContext = buildUserPromptSubmitLocalContext(input);
+  // Mirror the production ingest gate: UserPromptSubmit injection is disabled
+  // for the session's first prompt (see src/hooks/ingest.ts). The FIRST set
+  // therefore asserts silence; only mid-session prompts inject.
+  const isFirstPrompt = prompt.promptIndex === 1;
+  const userPromptContext = isFirstPrompt
+    ? null
+    : buildUserPromptSubmitLocalContext(input);
   const sessionStartContext =
     prompt.cwd && set === "first"
       ? buildSessionStartRecentHistoryContext({

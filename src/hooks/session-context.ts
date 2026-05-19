@@ -8,6 +8,13 @@ import {
   listRelevantSessionSummaryPreviewsForPrompt,
 } from "../session_summaries/query.js";
 
+// Min distinct generic terms required for the non-identifier match path.
+// First-in-session prompts never reach this builder (injection is disabled
+// for them at the ingest layer — see src/hooks/ingest.ts), so the strict
+// scope-aware first-prompt bar is gone: every prompt that reaches here is
+// mid-session and held to this single specificity threshold.
+const PROMPT_CONTEXT_MIN_MATCH_COUNT = 3;
+
 const RECENT_HISTORY_LIMIT = 5;
 const RECENT_HISTORY_MAX_CHARS = 2_800;
 const RECENT_HISTORY_ITEM_MAX_CHARS = 520;
@@ -31,7 +38,6 @@ interface SessionContextInput {
 interface UserPromptSubmitContextInput extends SessionContextInput {
   prompt?: unknown;
   user_prompt?: unknown;
-  is_first_user_prompt_submit?: unknown;
 }
 
 export function buildSessionStartRecentHistoryContext(
@@ -67,25 +73,15 @@ export function buildUserPromptSubmitLocalContext(
   const nowMs = extractNowMs(data);
   const cwdCandidates = extractCwdCandidates(data);
   const repository = extractRepository(data);
-  const isFirstPrompt = data.is_first_user_prompt_submit === true;
-  const excludeSessionIds = extractFirstPromptSessionStartSessionIds(
-    data,
-    cwdCandidates,
-    nowMs,
-  );
   const previews = listRelevantSessionSummaryPreviewsForPrompt({
     prompt,
     cwdCandidates,
     repository,
     currentSessionId: extractSessionId(data),
-    excludeSessionIds,
     sinceMs: nowMs - USER_PROMPT_CONTEXT_MAX_AGE_MS,
     untilMs: nowMs,
     limit: USER_PROMPT_CONTEXT_LIMIT,
-    // Vague first-in-session prompts only match ambient repo vocabulary,
-    // so hold them to the strict generic-path bar (the query default);
-    // loosen mid-session where a 3-term match is specific enough to be real.
-    minMatchCount: isFirstPrompt ? undefined : 3,
+    minMatchCount: PROMPT_CONTEXT_MIN_MATCH_COUNT,
   });
   if (previews.length === 0) return null;
 
@@ -96,23 +92,6 @@ export function buildUserPromptSubmitLocalContext(
     maxChars: USER_PROMPT_CONTEXT_MAX_CHARS,
     itemMaxChars: USER_PROMPT_CONTEXT_ITEM_MAX_CHARS,
   });
-}
-
-function extractFirstPromptSessionStartSessionIds(
-  data: UserPromptSubmitContextInput,
-  cwdCandidates: string[],
-  nowMs: number,
-): string[] {
-  if (data.is_first_user_prompt_submit !== true || cwdCandidates.length === 0) {
-    return [];
-  }
-  return listRecentSessionSummaryPreviewsForCwd({
-    cwdCandidates,
-    currentSessionId: extractSessionId(data),
-    sinceMs: nowMs - RECENT_HISTORY_MAX_AGE_MS,
-    untilMs: nowMs,
-    limit: RECENT_HISTORY_LIMIT,
-  }).map((preview) => preview.session_id);
 }
 
 function extractCwdCandidates(data: SessionContextInput): string[] {
