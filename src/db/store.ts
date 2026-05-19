@@ -165,7 +165,6 @@ export function upsertSessionRepository(
   sessionId: string,
   repository: string,
   timestampMs: number,
-  gitIdentity?: { name: string | null; email: string | null },
   branch?: string | null,
 ): void {
   const db = getDb();
@@ -176,20 +175,11 @@ export function upsertSessionRepository(
     .get(sessionId, repository);
 
   db.prepare(
-    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, branch)
+     VALUES (?, ?, ?, ?)
      ON CONFLICT(session_id, repository) DO UPDATE SET
-       git_user_name = COALESCE(session_repositories.git_user_name, excluded.git_user_name),
-       git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email),
        branch = COALESCE(excluded.branch, session_repositories.branch)`,
-  ).run(
-    sessionId,
-    repository,
-    timestampMs,
-    gitIdentity?.name ?? null,
-    gitIdentity?.email ?? null,
-    branch ?? null,
-  );
+  ).run(sessionId, repository, timestampMs, branch ?? null);
 
   // When a NEW repo is associated, bump sync_seq so the session re-syncs
   // with updated repository info (avoids backend repo-filter rejections)

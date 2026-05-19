@@ -156,6 +156,18 @@ describe("runMigrations — pre-migration-system DB", () => {
         skills JSON NOT NULL DEFAULT '[]'
       )
     `);
+    // Pre-migration shape (with git_user_* columns dropped by migration 2)
+    db.exec(`
+      CREATE TABLE session_repositories (
+        session_id TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        first_seen_ms INTEGER NOT NULL,
+        git_user_name TEXT,
+        git_user_email TEXT,
+        branch TEXT,
+        UNIQUE(session_id, repository)
+      )
+    `);
 
     runMigrations(db);
 
@@ -202,6 +214,17 @@ describe("runMigrations — existing DB", () => {
         commands JSON NOT NULL DEFAULT '[]',
         rules JSON NOT NULL DEFAULT '[]',
         skills JSON NOT NULL DEFAULT '[]'
+      )
+    `);
+    db.exec(`
+      CREATE TABLE session_repositories (
+        session_id TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        first_seen_ms INTEGER NOT NULL,
+        git_user_name TEXT,
+        git_user_email TEXT,
+        branch TEXT,
+        UNIQUE(session_id, repository)
       )
     `);
 

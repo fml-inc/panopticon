@@ -325,7 +325,7 @@ export function rebuildSessionSummaryProjections(opts?: {
         | undefined;
       const repoMeta = db
         .prepare(
-          `SELECT repository, git_user_name, branch
+          `SELECT repository, branch
            FROM session_repositories
            WHERE session_id = ?
            ORDER BY first_seen_ms ASC
@@ -334,7 +334,6 @@ export function rebuildSessionSummaryProjections(opts?: {
         .get(session.session_id) as
         | {
             repository: string | null;
-            git_user_name: string | null;
             branch: string | null;
           }
         | undefined;
@@ -439,7 +438,7 @@ export function rebuildSessionSummaryProjections(opts?: {
         cwd,
         branch: repoMeta?.branch ?? null,
         worktree: null,
-        actor: repoMeta?.git_user_name ?? null,
+        actor: null,
         machine: sessionMeta?.machine ?? "local",
         origin_scope: ORIGIN_SCOPE,
         title,
@@ -508,7 +507,7 @@ export function rebuildSessionSummaryProjections(opts?: {
           edits,
           repository,
           cwd,
-          actor: repoMeta?.git_user_name ?? null,
+          actor: null,
           machine: sessionMeta?.machine ?? "local",
           firstIntentTs,
           fileCache: new Map<string, FileSnapshot | null>(),
@@ -637,7 +636,7 @@ export function rebuildSessionSummaryProjections(opts?: {
         edits,
         repository,
         cwd,
-        actor: repoMeta?.git_user_name ?? null,
+        actor: null,
         machine: sessionMeta?.machine ?? "local",
         firstIntentTs,
         fileCache: new Map<string, FileSnapshot | null>(),

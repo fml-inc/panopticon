@@ -135,13 +135,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "session-summary.ts");
     fs.writeFileSync(file, "latest implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -227,13 +221,7 @@ describe("session_summaries", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -267,13 +255,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "unlanded-summary.ts");
     fs.writeFileSync(file, "baseline");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -322,13 +304,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "unresolved-open-summary.ts");
     fs.writeFileSync(file, "open implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -385,13 +361,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "llm-summary.ts");
     fs.writeFileSync(file, "latest implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -579,13 +549,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "llm-summary-rebuild.ts");
     fs.writeFileSync(file, "latest implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -705,13 +669,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "dedupe.ts");
     fs.writeFileSync(file, "final state");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -777,13 +735,7 @@ describe("session_summaries", () => {
     const repo = scratchDir;
     const cwd = scratchDir;
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -957,13 +909,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "stale-summary.ts");
     fs.writeFileSync(file, "latest implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -1150,13 +1096,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "session-summary.ts");
     fs.writeFileSync(file, "final implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -1234,13 +1174,7 @@ describe("session_summaries", () => {
     const file = path.join(scratchDir, "material-change.ts");
     fs.writeFileSync(file, "final implementation");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -1619,13 +1553,7 @@ describe("file_overview", () => {
     fs.writeFileSync(helperFile, "export const helper = true;\n");
     fs.writeFileSync(configFile, "export const config = true;\n");
 
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({

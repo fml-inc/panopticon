@@ -24,11 +24,7 @@ import { rebuildIntentProjection } from "../intent/project.js";
 import { log } from "../log.js";
 import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
 import { getProvider } from "../providers/index.js";
-import {
-  type RepoInfo,
-  resolveGitIdentity,
-  resolveRepoFromCwd,
-} from "../repo.js";
+import { type RepoInfo, resolveRepoFromCwd } from "../repo.js";
 import { isGitignored, readConfig, resolveGitRoot } from "../scanner.js";
 import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
@@ -569,8 +565,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   // by this event (primary cwd + any paths in tool_input).
   const allRepos = resolveAllEventRepos(data);
   for (const { repo: r, dir, branch } of allRepos) {
-    const gitId = resolveGitIdentity(dir);
-    upsertSessionRepository(sessionId, r, timestampMs, gitId, branch);
+    upsertSessionRepository(sessionId, r, timestampMs, branch);
 
     // Capture repo config on first encounter per session
     const repoKey = `${sessionId}:${r}`;

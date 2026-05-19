@@ -1388,6 +1388,35 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: 23,
+    name: "drop_git_identity_from_session_repositories",
+    up: (db) => {
+      // Authoritative user identity comes from fml auth (SSO), not local
+      // git config. Rebuild the table without git_user_name/git_user_email.
+      const exists = db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_repositories'",
+        )
+        .get();
+      if (!exists) return;
+      db.exec(`
+        CREATE TABLE session_repositories_new (
+          session_id TEXT NOT NULL,
+          repository TEXT NOT NULL,
+          first_seen_ms INTEGER NOT NULL,
+          branch TEXT,
+          UNIQUE(session_id, repository)
+        );
+        INSERT INTO session_repositories_new (session_id, repository, first_seen_ms, branch)
+          SELECT session_id, repository, first_seen_ms, branch FROM session_repositories;
+        DROP TABLE session_repositories;
+        ALTER TABLE session_repositories_new RENAME TO session_repositories;
+        CREATE INDEX IF NOT EXISTS idx_session_repos_session ON session_repositories(session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_repos_repo ON session_repositories(repository);
+      `);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

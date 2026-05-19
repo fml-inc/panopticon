@@ -146,13 +146,7 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -246,13 +240,7 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -345,13 +333,7 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -413,13 +395,7 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({
@@ -476,13 +452,7 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    upsertSessionRepository(
-      summarySession,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(summarySession, repo, 900, "main");
     upsertSessionCwd(summarySession, cwd, 900);
     ingest({
       session_id: summarySession,
@@ -543,13 +513,7 @@ describe("listSessions session summaries", () => {
       total_input_tokens: 100,
       total_output_tokens: 200,
     });
-    upsertSessionRepository(
-      SESSION,
-      repo,
-      900,
-      { name: "gus", email: null },
-      "main",
-    );
+    upsertSessionRepository(SESSION, repo, 900, "main");
     upsertSessionCwd(SESSION, cwd, 900);
 
     ingest({

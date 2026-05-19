@@ -101,8 +101,7 @@ console.log("\n=== Replaying session_repositories ===");
 
 const repos = sourceDb
   .prepare(
-    `SELECT session_id, repository, first_seen_ms,
-            git_user_name, git_user_email, branch
+    `SELECT session_id, repository, first_seen_ms, branch
      FROM session_repositories`,
   )
   .all() as Array<Record<string, unknown>>;
@@ -114,10 +113,6 @@ for (const r of repos) {
     r.session_id as string,
     r.repository as string,
     (r.first_seen_ms as number) ?? Date.now(),
-    {
-      name: (r.git_user_name as string) ?? null,
-      email: (r.git_user_email as string) ?? null,
-    },
     (r.branch as string) ?? undefined,
   );
 }

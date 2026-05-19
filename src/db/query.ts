@@ -129,8 +129,6 @@ function otelLogExprs() {
 interface RawRepoRow {
   session_id: string;
   repository: string;
-  git_user_name: string | null;
-  git_user_email: string | null;
 }
 
 /** Cost SQL fragment for a session row with model + token columns. */
@@ -201,7 +199,7 @@ export function listSessions(
     sessionIds.length > 0
       ? (db
           .prepare(
-            `SELECT session_id, repository, git_user_name, git_user_email
+            `SELECT session_id, repository
              FROM session_repositories
              WHERE session_id IN (${sessionIds.map(() => "?").join(",")})`,
           )
@@ -426,8 +424,6 @@ export function listSessions(
       totalCost: row.total_cost,
       repositories: (reposBySession.get(row.session_id) ?? []).map((r) => ({
         name: r.repository,
-        gitUserName: r.git_user_name,
-        gitUserEmail: r.git_user_email,
       })),
       parentSessionId: row.parent_session_id,
       relationshipType: row.relationship_type,
@@ -503,9 +499,7 @@ export function sessionTimeline(opts: {
   }
 
   const repoRows = db
-    .prepare(
-      "SELECT repository, git_user_name, git_user_email FROM session_repositories WHERE session_id = ?",
-    )
+    .prepare("SELECT repository FROM session_repositories WHERE session_id = ?")
     .all(opts.sessionId) as RawRepoRow[];
 
   // Child sessions (forks + subagents)
@@ -690,8 +684,6 @@ export function sessionTimeline(opts: {
       relationshipType: sessionRow.relationship_type,
       repositories: repoRows.map((r) => ({
         name: r.repository,
-        gitUserName: r.git_user_name,
-        gitUserEmail: r.git_user_email,
       })),
       childSessions,
     },
@@ -1125,7 +1117,7 @@ export function activitySummary(
 
     const repos = db
       .prepare(
-        "SELECT repository, git_user_name, git_user_email FROM session_repositories WHERE session_id = ?",
+        "SELECT repository FROM session_repositories WHERE session_id = ?",
       )
       .all(s.session_id) as RawRepoRow[];
 
@@ -1140,8 +1132,6 @@ export function activitySummary(
       project: s.project,
       repositories: repos.map((r) => ({
         name: r.repository,
-        gitUserName: r.git_user_name,
-        gitUserEmail: r.git_user_email,
       })),
       userPrompts: prompts.map((p) => p.prompt),
       toolsUsed: tools.map((t) => ({ tool: t.tool_name, count: t.count })),

@@ -771,7 +771,7 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
 
   const repoRows = db
     .prepare(
-      `SELECT session_id, repository, first_seen_ms, git_user_name, git_user_email, branch
+      `SELECT session_id, repository, first_seen_ms, branch
        FROM session_repositories
        WHERE session_id IN (${placeholders})`,
     )
@@ -779,8 +779,6 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     session_id: string;
     repository: string;
     first_seen_ms: number;
-    git_user_name: string | null;
-    git_user_email: string | null;
     branch: string | null;
   }>;
 
@@ -802,8 +800,6 @@ export function readSessionsByIds(sessionIds: string[]): SessionSyncRecord[] {
     list.push({
       repository: r.repository,
       firstSeenMs: r.first_seen_ms,
-      gitUserName: r.git_user_name,
-      gitUserEmail: r.git_user_email,
       branch: r.branch,
     });
     reposBySession.set(r.session_id, list);

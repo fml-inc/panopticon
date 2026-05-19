@@ -245,8 +245,6 @@ export interface SessionSyncRecord {
   repositories: Array<{
     repository: string;
     firstSeenMs: number;
-    gitUserName: string | null;
-    gitUserEmail: string | null;
     branch: string | null;
   }>;
   cwds: Array<{

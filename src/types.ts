@@ -15,8 +15,6 @@
 
 export interface Repository {
   name: string;
-  gitUserName: string | null;
-  gitUserEmail: string | null;
 }
 
 export type SessionSummaryStaleReason =
