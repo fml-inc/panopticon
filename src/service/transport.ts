@@ -2,6 +2,7 @@ import type {
   ActivitySummaryInput,
   CostBreakdownInput,
   FileOverviewInput,
+  HookTimelineInput,
   IntentForCodeInput,
   ListPlansInput,
   ListSessionSummariesInput,
@@ -33,6 +34,8 @@ const BASE_TOOL_HANDLERS = {
     service.listSessions(asType<ListSessionsInput>(params)),
   timeline: (service, params) =>
     service.sessionTimeline(asType<SessionTimelineInput>(params)),
+  hook_timeline: (service, params) =>
+    service.hookTimeline(asType<HookTimelineInput>(params)),
   costs: (service, params) =>
     service.costBreakdown(asType<CostBreakdownInput>(params)),
   summary: (service, params) =>

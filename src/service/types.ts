@@ -1,6 +1,7 @@
 import type { SyncPendingResult } from "../sync/pending.js";
 import type {
   ActivitySummaryResult,
+  HookTimelineResult,
   SearchResult,
   SessionListResult,
   SessionTimelineResult,
@@ -19,6 +20,18 @@ export interface SessionTimelineInput {
   limit?: number;
   offset?: number;
   fullPayloads?: boolean;
+  /** Populate hookEvents[] on the response with the session's hook events. */
+  includeHooks?: boolean;
+}
+
+export interface HookTimelineInput {
+  /** When omitted, returns events across all sessions (audit mode). */
+  sessionId?: string;
+  since?: string;
+  /** Restrict to specific hook event types (e.g. ["UserPromptSubmit", "ExitPlanMode"]). */
+  eventTypes?: string[];
+  limit?: number;
+  offset?: number;
 }
 
 export interface CostBreakdownInput {
@@ -152,6 +165,7 @@ export interface ReconcileLandedStatusInput {
 export interface PanopticonService {
   listSessions(opts?: ListSessionsInput): Promise<SessionListResult>;
   sessionTimeline(opts: SessionTimelineInput): Promise<SessionTimelineResult>;
+  hookTimeline(opts?: HookTimelineInput): Promise<HookTimelineResult>;
   costBreakdown(opts?: CostBreakdownInput): Promise<SpendingResult>;
   activitySummary(opts?: ActivitySummaryInput): Promise<ActivitySummaryResult>;
   listPlans(opts?: ListPlansInput): Promise<unknown>;

@@ -11,6 +11,8 @@ import type {
   ActivitySessionDetail,
   ActivitySummaryResult,
   ChildSession,
+  HookEvent,
+  HookTimelineResult,
   SearchMatch,
   SearchResult,
   Session,
@@ -465,11 +467,106 @@ function parseEnrichmentSource(
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
+// ── Hook events ──────────────────────────────────────────────────────────────
+
+const HOOK_EVENT_COLUMNS_SQL = `
+  session_id, event_type, timestamp_ms, cwd, repository, tool_name, target,
+  user_prompt, plan, file_path, command, tool_result, allowed_prompts
+`;
+
+interface RawHookEventRow {
+  session_id: string;
+  event_type: string;
+  timestamp_ms: number;
+  cwd: string | null;
+  repository: string | null;
+  tool_name: string | null;
+  target: string | null;
+  user_prompt: string | null;
+  plan: string | null;
+  file_path: string | null;
+  command: string | null;
+  tool_result: string | null;
+  allowed_prompts: string | null;
+}
+
+function projectHookEvent(row: RawHookEventRow): HookEvent {
+  return {
+    sessionId: row.session_id,
+    timestampMs: row.timestamp_ms,
+    eventType: row.event_type,
+    toolName: row.tool_name,
+    cwd: row.cwd,
+    repository: row.repository,
+    target: row.target,
+    userPrompt: row.user_prompt,
+    plan: row.plan,
+    filePath: row.file_path,
+    command: row.command,
+    toolResult: row.tool_result,
+    allowedPrompts: row.allowed_prompts,
+  };
+}
+
+export function hookTimeline(
+  opts: {
+    sessionId?: string;
+    since?: string;
+    eventTypes?: string[];
+    limit?: number;
+    offset?: number;
+  } = {},
+): HookTimelineResult {
+  const db = getDb();
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+  const sinceMs = parseSince(opts.since);
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.sessionId) {
+    conditions.push("session_id = ?");
+    params.push(opts.sessionId);
+  }
+  if (sinceMs !== null) {
+    conditions.push("timestamp_ms >= ?");
+    params.push(sinceMs);
+  }
+  if (opts.eventTypes && opts.eventTypes.length > 0) {
+    const placeholders = opts.eventTypes.map(() => "?").join(",");
+    conditions.push(`event_type IN (${placeholders})`);
+    params.push(...opts.eventTypes);
+  }
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const totalEvents = db
+    .prepare(`SELECT COUNT(*) as c FROM hook_events ${where}`)
+    .get(...params) as { c: number };
+
+  const rows = db
+    .prepare(
+      `SELECT ${HOOK_EVENT_COLUMNS_SQL}
+       FROM hook_events ${where}
+       ORDER BY timestamp_ms DESC, id DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limit, offset) as RawHookEventRow[];
+
+  return {
+    events: rows.map(projectHookEvent),
+    totalEvents: totalEvents.c,
+    hasMore: offset + limit < totalEvents.c,
+    source: "local",
+  };
+}
+
 export function sessionTimeline(opts: {
   sessionId: string;
   limit?: number;
   offset?: number;
   fullPayloads?: boolean;
+  includeHooks?: boolean;
 }): SessionTimelineResult {
   const db = getDb();
   const limit = opts.limit ?? 50;
@@ -496,6 +593,7 @@ export function sessionTimeline(opts: {
     return {
       session: null,
       messages: [],
+      hookEvents: [],
       totalMessages: 0,
       hasMore: false,
       source: "local",
@@ -680,6 +778,19 @@ export function sessionTimeline(opts: {
     };
   });
 
+  let hookEvents: HookEvent[] = [];
+  if (opts.includeHooks) {
+    const hookRows = db
+      .prepare(
+        `SELECT ${HOOK_EVENT_COLUMNS_SQL}
+         FROM hook_events
+         WHERE session_id = ?
+         ORDER BY timestamp_ms ASC, id ASC`,
+      )
+      .all(opts.sessionId) as RawHookEventRow[];
+    hookEvents = hookRows.map(projectHookEvent);
+  }
+
   return {
     session: {
       sessionId: opts.sessionId,
@@ -696,6 +807,7 @@ export function sessionTimeline(opts: {
       childSessions,
     },
     messages,
+    hookEvents,
     totalMessages,
     hasMore: offset + limit < totalMessages,
     source: "local",

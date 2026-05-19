@@ -3,6 +3,7 @@ import { readAuthToken } from "../auth.js";
 import { config } from "../config.js";
 import type {
   ActivitySummaryResult,
+  HookTimelineResult,
   SearchResult,
   SessionListResult,
   SessionTimelineResult,
@@ -114,6 +115,8 @@ export const httpPanopticonService: PanopticonService = {
     callTool("sessions", toParams(opts)) as Promise<SessionListResult>,
   sessionTimeline: (opts) =>
     callTool("timeline", toParams(opts)) as Promise<SessionTimelineResult>,
+  hookTimeline: (opts) =>
+    callTool("hook_timeline", toParams(opts)) as Promise<HookTimelineResult>,
   costBreakdown: (opts) =>
     callTool("costs", toParams(opts)) as Promise<SpendingResult>,
   activitySummary: (opts) =>
@@ -162,6 +165,7 @@ export const httpPanopticonService: PanopticonService = {
 
 export const listSessions = httpPanopticonService.listSessions;
 export const sessionTimeline = httpPanopticonService.sessionTimeline;
+export const hookTimeline = httpPanopticonService.hookTimeline;
 export const costBreakdown = httpPanopticonService.costBreakdown;
 export const activitySummary = httpPanopticonService.activitySummary;
 export const listPlans = httpPanopticonService.listPlans;
