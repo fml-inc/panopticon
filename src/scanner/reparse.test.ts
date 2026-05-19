@@ -1086,6 +1086,133 @@ describe("reparseAll", () => {
         .get(hooksOnlySessionId),
     ).toEqual({ count: 1 });
   });
+
+  it("preserves sync_id values for forked sessions across atomic reparse", () => {
+    const parentSessionId = "fork-sync-parent";
+    const forkSessionId = "fork-sync-parent-child-abcd";
+    const scratchDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pano-reparse-fork-sync-"),
+    );
+
+    try {
+      const prompt = "fork sync preservation test";
+      const patch = [
+        "*** Begin Patch",
+        `*** Add File: ${path.join(scratchDir, "fork.ts")}`,
+        "+export const fork = true;",
+        "*** End Patch",
+      ].join("\n");
+
+      const scannerFilePath = writeCodexSessionFile({
+        sessionId: parentSessionId,
+        cwd: scratchDir,
+        prompt,
+        patch,
+      });
+      fakeDiscoverMock.mockReturnValue([{ filePath: scannerFilePath }]);
+      fakeParseFileMock.mockImplementation((filePath: string) => {
+        const parent = buildFakeCodexParseResult({
+          filePath,
+          sessionId: parentSessionId,
+          cwd: scratchDir,
+          prompt,
+          patch,
+        });
+        const fork = buildFakeCodexParseResult({
+          filePath,
+          sessionId: forkSessionId,
+          cwd: scratchDir,
+          prompt,
+          patch,
+        });
+        fork.meta = {
+          ...fork.meta!,
+          parentSessionId,
+          relationshipType: "fork",
+        };
+        return { ...parent, forks: [fork] };
+      });
+
+      const first = reparseAll();
+      expect(first.success).toBe(true);
+
+      const snapshotSyncIds = () => {
+        const db = getDb();
+        const ids = [parentSessionId, forkSessionId];
+        const placeholders = ids.map(() => "?").join(",");
+        return {
+          messages: db
+            .prepare(
+              `SELECT session_id, ordinal, sync_id FROM messages
+               WHERE session_id IN (${placeholders})
+               ORDER BY session_id, ordinal`,
+            )
+            .all(...ids) as Array<{
+            session_id: string;
+            ordinal: number;
+            sync_id: string;
+          }>,
+          turns: db
+            .prepare(
+              `SELECT session_id, turn_index, sync_id FROM scanner_turns
+               WHERE session_id IN (${placeholders})
+               ORDER BY session_id, turn_index`,
+            )
+            .all(...ids) as Array<{
+            session_id: string;
+            turn_index: number;
+            sync_id: string;
+          }>,
+          toolCalls: db
+            .prepare(
+              `SELECT session_id, call_index, sync_id FROM tool_calls
+               WHERE session_id IN (${placeholders})
+               ORDER BY session_id, call_index`,
+            )
+            .all(...ids) as Array<{
+            session_id: string;
+            call_index: number;
+            sync_id: string;
+          }>,
+        };
+      };
+
+      const before = snapshotSyncIds();
+
+      // Sanity: both parent and fork actually produced rows, all with sync_ids.
+      const sessionIdsSeen = new Set([
+        ...before.messages.map((r) => r.session_id),
+        ...before.turns.map((r) => r.session_id),
+        ...before.toolCalls.map((r) => r.session_id),
+      ]);
+      expect(sessionIdsSeen.has(parentSessionId)).toBe(true);
+      expect(sessionIdsSeen.has(forkSessionId)).toBe(true);
+      for (const row of [
+        ...before.messages,
+        ...before.turns,
+        ...before.toolCalls,
+      ]) {
+        expect(row.sync_id).toBeTruthy();
+      }
+
+      // Confirm fork sync_ids match the deterministic builder output, so a
+      // regression in fork ingestion can't silently re-key rows.
+      const forkMessageSyncId = buildMessageSyncId(forkSessionId, 0);
+      expect(
+        before.messages.find(
+          (r) => r.session_id === forkSessionId && r.ordinal === 0,
+        )?.sync_id,
+      ).toBe(forkMessageSyncId);
+
+      // Second reparse rebuilds from scratch; deterministic sync_ids must match.
+      const second = reparseAll();
+      expect(second.success).toBe(true);
+      const after = snapshotSyncIds();
+      expect(after).toEqual(before);
+    } finally {
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("startup reparse after migration 12", () => {
