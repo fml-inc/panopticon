@@ -26,6 +26,7 @@ import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
 import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
+  resolveGitHeadSha,
   resolveGitIdentity,
   resolveRepoFromCwd,
 } from "../repo.js";
@@ -570,7 +571,13 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   const allRepos = resolveAllEventRepos(data);
   for (const { repo: r, dir, branch } of allRepos) {
     const gitId = resolveGitIdentity(dir);
-    upsertSessionRepository(sessionId, r, timestampMs, gitId, branch);
+    // Capture HEAD only at SessionStart: it is the replay anchor (the code
+    // state the session began from). Resolving it per-event would add a
+    // git call to the hot path; first-write-wins in the upsert preserves
+    // the start value as the working tree moves during the session.
+    const headSha =
+      eventType === "SessionStart" ? resolveGitHeadSha(dir) : null;
+    upsertSessionRepository(sessionId, r, timestampMs, gitId, branch, headSha);
 
     // Capture repo config on first encounter per session
     const repoKey = `${sessionId}:${r}`;

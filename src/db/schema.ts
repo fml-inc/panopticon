@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS session_repositories (
   git_user_name TEXT,
   git_user_email TEXT,
   branch TEXT,
+  head_sha TEXT,
   UNIQUE(session_id, repository)
 );
 

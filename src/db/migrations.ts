@@ -1388,6 +1388,20 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: 23,
+    name: "add_session_repositories_head_sha",
+    up: (db) => {
+      if (tableExists(db, "session_repositories")) {
+        addColumnIfMissing(
+          db,
+          "session_repositories",
+          "head_sha",
+          "head_sha TEXT",
+        );
+      }
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
