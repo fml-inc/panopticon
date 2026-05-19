@@ -49,6 +49,7 @@ interface Args {
   fixtureDir: string;
   execute: boolean;
   judgeModel: string | null;
+  agentTimeoutMs: number;
 }
 
 interface Scenario {
@@ -214,7 +215,7 @@ async function executeArm(
       stdout = execFileSync(plan.command, plan.args, {
         cwd: worktree,
         env: { ...process.env, ...env },
-        timeout: AGENT_TIMEOUT_MS,
+        timeout: args.agentTimeoutMs,
         encoding: "utf-8",
         maxBuffer: 64 * 1024 * 1024,
       });
@@ -467,6 +468,7 @@ function parseArgs(argv: string[]): Args {
     fixtureDir: DEFAULT_FIXTURE_DIR,
     execute: false,
     judgeModel: null,
+    agentTimeoutMs: AGENT_TIMEOUT_MS,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -480,6 +482,8 @@ function parseArgs(argv: string[]): Args {
       parsed.fixtureDir = argv[++i];
     } else if (arg === "--judge-model") {
       parsed.judgeModel = argv[++i];
+    } else if (arg === "--timeout-ms") {
+      parsed.agentTimeoutMs = Number(argv[++i]);
     } else if (arg === "--execute") {
       parsed.execute = true;
     } else if (arg === "--help" || arg === "-h") {
