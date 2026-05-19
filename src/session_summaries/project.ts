@@ -32,6 +32,13 @@ const STATUS_MIXED = "mixed";
 const STATUS_READ_ONLY = "read-only";
 const STATUS_UNLANDED = "unlanded";
 const MIN_SPAN_SNIPPET_LEN = 8;
+export const SESSION_SUMMARY_ACTIVE_FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
+type SessionSummaryStatus =
+  | typeof STATUS_ACTIVE
+  | typeof STATUS_LANDED
+  | typeof STATUS_MIXED
+  | typeof STATUS_READ_ONLY
+  | typeof STATUS_UNLANDED;
 
 interface FileSnapshot {
   text: string;
@@ -351,16 +358,6 @@ export function rebuildSessionSummaryProjections(opts?: {
       );
       const landedEditCount = edits.filter((edit) => edit.landed === 1).length;
       const openEditCount = edits.filter((edit) => edit.landed === null).length;
-      const status =
-        openEditCount > 0
-          ? STATUS_ACTIVE
-          : edits.length === 0
-            ? STATUS_READ_ONLY
-            : landedEditCount === 0
-              ? STATUS_UNLANDED
-              : landedEditCount === edits.length
-                ? STATUS_LANDED
-                : STATUS_MIXED;
       const repository =
         repoMeta?.repository ??
         intents.map((intent) => intent.repository).find(Boolean) ??
@@ -392,6 +389,13 @@ export function rebuildSessionSummaryProjections(opts?: {
         lastIntentTs,
         ...edits.map((edit) => edit.timestamp_ms),
       ]);
+      const status = deriveSessionSummaryStatus({
+        editCount: edits.length,
+        landedEditCount,
+        openEditCount,
+        lastActivityMs,
+        nowMs,
+      });
       const docs = buildDeterministicSessionSummaryDocs({
         sessionSummaryKey: summaryKey,
         sessionId: session.session_id,
@@ -707,6 +711,33 @@ function maxTs(values: Array<number | null | undefined>): number | null {
     (value): value is number => typeof value === "number",
   );
   return present.length > 0 ? Math.max(...present) : null;
+}
+
+function deriveSessionSummaryStatus(input: {
+  editCount: number;
+  landedEditCount: number;
+  openEditCount: number;
+  lastActivityMs: number | null;
+  nowMs: number;
+}): SessionSummaryStatus {
+  if (
+    input.openEditCount > 0 &&
+    isFreshSessionActivity(input.lastActivityMs, input.nowMs)
+  ) {
+    return STATUS_ACTIVE;
+  }
+  if (input.editCount === 0) return STATUS_READ_ONLY;
+  if (input.landedEditCount === 0) return STATUS_UNLANDED;
+  if (input.landedEditCount === input.editCount) return STATUS_LANDED;
+  return STATUS_MIXED;
+}
+
+function isFreshSessionActivity(
+  lastActivityMs: number | null,
+  nowMs: number,
+): boolean {
+  if (lastActivityMs === null) return false;
+  return nowMs - lastActivityMs <= SESSION_SUMMARY_ACTIVE_FRESH_WINDOW_MS;
 }
 
 function buildTitle(promptText: string): string {

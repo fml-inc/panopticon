@@ -2,6 +2,7 @@
  * Query helpers backing the intent_for_code / search_intent /
  * outcomes_for_intent MCP tools. Read-only.
  */
+import { buildSafeFtsQuery, tokenizeSearchTerms } from "../db/fts.js";
 import { getDb } from "../db/schema.js";
 import {
   canonicalizeRepoFilePath,
@@ -310,6 +311,14 @@ export interface SearchIntentRow {
   }>;
 }
 
+function escapeLikePattern(query: string): string {
+  return query.replace(/[\\%_]/g, "\\$&");
+}
+
+function buildLikePattern(query: string): string {
+  return `%${escapeLikePattern(query)}%`;
+}
+
 /**
  * FTS5 search over prompt_text. Defaults to `only_landed=true` (excludes units
  * with zero landed edits). When embeddings ship later, this same signature can
@@ -326,14 +335,43 @@ export function searchIntent(opts: {
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
   const onlyLanded = opts.only_landed !== false; // default true
+  const ftsQuery = buildSafeFtsQuery(opts.query);
+  const likeTerms = tokenizeSearchTerms(opts.query, 2);
+
+  if (!ftsQuery && likeTerms.length === 0 && opts.query.trim().length === 0) {
+    return [];
+  }
 
   const params: Record<string, unknown> = {
-    q: opts.query,
     limit,
     offset,
   };
 
+  let from = `intent_units_fts
+       JOIN intent_units u ON u.id = intent_units_fts.rowid`;
   let where = `intent_units_fts MATCH @q`;
+  let orderBy = "rank";
+  if (ftsQuery) {
+    params.q = ftsQuery;
+  } else {
+    params.exactLikePattern = buildLikePattern(opts.query);
+    const likeClauses = [`u.prompt_text LIKE @exactLikePattern ESCAPE '\\'`];
+    if (likeTerms.length > 0) {
+      const termClauses: string[] = [];
+      for (const [index, term] of likeTerms.entries()) {
+        const paramName = `likeTerm${index}`;
+        termClauses.push(`LOWER(u.prompt_text) LIKE @${paramName} ESCAPE '\\'`);
+        params[paramName] = buildLikePattern(term);
+      }
+      likeClauses.push(`(${termClauses.join(" AND ")})`);
+    }
+    from = "intent_units u";
+    where =
+      likeClauses.length === 1
+        ? likeClauses[0]
+        : `(${likeClauses.join(" OR ")})`;
+    orderBy = "COALESCE(u.prompt_ts_ms, 0) DESC, u.id DESC";
+  }
   if (opts.repository) {
     where += ` AND u.repository = @repository`;
     params.repository = opts.repository;
@@ -354,10 +392,9 @@ export function searchIntent(opts: {
               u.cwd,
               u.edit_count,
               u.landed_count
-       FROM intent_units_fts
-       JOIN intent_units u ON u.id = intent_units_fts.rowid
+       FROM ${from}
        WHERE ${where}
-       ORDER BY rank
+       ORDER BY ${orderBy}
        LIMIT @limit OFFSET @offset`,
     )
     .all(params) as Array<{

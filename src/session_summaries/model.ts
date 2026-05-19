@@ -406,12 +406,13 @@ function pluralize(noun: string, count: number): string {
 function summarizeEditOutcome(
   input: Pick<
     SessionSummaryDeterministicInput,
-    "editCount" | "landedEditCount" | "openEditCount"
+    "status" | "editCount" | "landedEditCount" | "openEditCount"
   >,
 ): string {
   if (input.editCount === 0) return "no edits recorded";
   if (input.openEditCount > 0) {
-    return `${input.landedEditCount}/${input.editCount} edits landed, ${input.openEditCount} open`;
+    const label = input.status === "active" ? "open" : "unresolved";
+    return `${input.landedEditCount}/${input.editCount} edits landed, ${input.openEditCount} ${label}`;
   }
   if (input.landedEditCount === input.editCount) {
     return `all ${input.editCount} ${pluralize("edit", input.editCount)} landed`;
