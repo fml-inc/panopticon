@@ -56,6 +56,9 @@ export const ALL_EVENTS = [
   "PermissionDenied",
 
   // ── Model turn lifecycle ─────────────────────────────────────────────────
+  // TurnStart: Fired when the harness begins a model turn. Not all targets
+  //   expose this boundary; Stop is the more broadly available turn-end event.
+  "TurnStart",
   // Stop: Fired when the model finishes a turn and stops generating (no more
   //   tool calls to make). Natural end of each assistant response cycle.
   //   A session has many Stop events but only one SessionEnd.
