@@ -36,6 +36,7 @@ import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
 import {
   buildPreToolUseFileContext,
+  buildPreToolUseReadFileContext,
   buildSessionStartRecentHistoryContext,
   buildUserPromptSubmitLocalContext,
 } from "./session-context.js";
@@ -51,10 +52,12 @@ const userConfigCaptured = new Set<string>();
 // iterative edits to one file don't re-inject. Long-lived in the server
 // process (mirrors userConfigCaptured); resets on restart, which is fine.
 const preToolUseFileContextSeen = new Set<string>();
+const preToolUseReadContextSeen = new Set<string>();
 
 // Test seam: clear the once-per-session+path dedupe set.
 export function _resetPreToolUseFileContextSeen(): void {
   preToolUseFileContextSeen.clear();
+  preToolUseReadContextSeen.clear();
 }
 
 /**
@@ -75,12 +78,26 @@ export function emitOncePerSessionPath(
   return result;
 }
 
+function emitReadOncePerSessionPath(
+  sessionId: string,
+  filePath: string,
+  build: () => string | null,
+): string | null {
+  const key = `${sessionId}:${filePath}`;
+  if (preToolUseReadContextSeen.has(key)) return null;
+  const result = build();
+  if (!result) return null;
+  preToolUseReadContextSeen.add(key);
+  return result;
+}
+
 const FILE_CONTEXT_TOOLS = new Set([
   "Write",
   "Edit",
   "MultiEdit",
   "NotebookEdit",
 ]);
+const READ_CONTEXT_TOOLS = new Set(["Read"]);
 
 // Track session:repo pairs where we've already captured repo config
 const seenSessionRepos = new Set<string>();
@@ -671,6 +688,28 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         return mergePreToolUseContext(permission, additionalContext);
       }
     }
+    // Read-time provenance context is intentionally separate from edit-time
+    // context: reads are frequent, so keep this behind its own flag and
+    // dedupe independently. Claude's PreToolUse response shape supports
+    // additionalContext, so allow it despite target adapter resolution.
+    if (
+      eventType === "PreToolUse" &&
+      canInjectPreToolUseAdditionalContext(target) &&
+      config.enablePreToolUseReadContextInjection &&
+      READ_CONTEXT_TOOLS.has(toolName)
+    ) {
+      const additionalContext = buildPreToolUseReadFileContextOnce(sessionId, {
+        ...data,
+        repository: repo ?? data.repository,
+        now_ms:
+          typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
+            ? data.now_ms
+            : timestampMs,
+      });
+      if (additionalContext) {
+        return mergePreToolUseContext(permission, additionalContext);
+      }
+    }
     return permission;
   }
 
@@ -747,6 +786,12 @@ function buildUserPromptSubmitContextResponse(
   }
 }
 
+function canInjectPreToolUseAdditionalContext(
+  target: TargetAdapter | undefined,
+): boolean {
+  return !target || target.id === "claude";
+}
+
 function buildPreToolUseFileContextOnce(
   sessionId: string,
   data: HookInput,
@@ -763,6 +808,37 @@ function buildPreToolUseFileContextOnce(
     log.hooks.error("pre tool use file context build failed:", err);
     return null;
   }
+}
+
+function buildPreToolUseReadFileContextOnce(
+  sessionId: string,
+  data: HookInput,
+): string | null {
+  try {
+    const filePath = extractReadFilePath(
+      data.tool_input as Record<string, unknown> | undefined,
+    );
+    if (!filePath) return null;
+    return emitReadOncePerSessionPath(sessionId, filePath, () =>
+      buildPreToolUseReadFileContext(data),
+    );
+  } catch (err) {
+    log.hooks.error("pre tool use read context build failed:", err);
+    return null;
+  }
+}
+
+function extractReadFilePath(
+  toolInput: Record<string, unknown> | undefined,
+): string | null {
+  if (!toolInput) return null;
+  for (const key of ["file_path", "path"]) {
+    const value = toolInput[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 function mergePreToolUseContext(

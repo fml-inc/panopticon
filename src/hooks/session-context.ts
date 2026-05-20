@@ -32,6 +32,10 @@ const PRE_TOOL_FILE_CONTEXT_MAX_CHARS = 1_400;
 const PRE_TOOL_FILE_CONTEXT_PROMPT_MAX_CHARS = 240;
 const PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT = 4;
 const PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT = 4;
+const PRE_TOOL_READ_CONTEXT_MAX_CHARS = 700;
+const PRE_TOOL_READ_CONTEXT_PROMPT_MAX_CHARS = 160;
+const PRE_TOOL_READ_CONTEXT_RECENT_LIMIT = 2;
+const PRE_TOOL_READ_CONTEXT_RELATED_LIMIT = 3;
 
 interface SessionContextInput {
   session_id?: unknown;
@@ -140,6 +144,33 @@ export function buildPreToolUseFileContext(
   return formatPreToolUseFileContext(overview);
 }
 
+export function buildPreToolUseReadFileContext(
+  data: PreToolUseFileContextInput,
+): string | null {
+  const filePath = extractToolFilePath(data);
+  if (!filePath) return null;
+
+  const repository = extractRepository(data);
+  let overview: FileOverviewResult;
+  try {
+    overview = fileOverview({
+      path: filePath,
+      repository: repository ?? undefined,
+      recent_limit: PRE_TOOL_READ_CONTEXT_RECENT_LIMIT,
+      related_limit: PRE_TOOL_READ_CONTEXT_RELATED_LIMIT,
+    });
+  } catch {
+    return null;
+  }
+
+  const hasBoundIntent = overview.current.intent_unit_id !== null;
+  const hasHistory =
+    overview.recent.length > 0 || overview.summary.edit_count > 0;
+  if (!hasBoundIntent && !hasHistory) return null;
+
+  return formatPreToolUseReadFileContext(overview);
+}
+
 function extractToolFilePath(data: PreToolUseFileContextInput): string | null {
   const toolInput = data.tool_input;
   if (!toolInput || typeof toolInput !== "object") return null;
@@ -221,6 +252,57 @@ export function formatPreToolUseFileContext(
   return trimToMaxChars(
     lines.join("\n").trim(),
     PRE_TOOL_FILE_CONTEXT_MAX_CHARS,
+  );
+}
+
+export function formatPreToolUseReadFileContext(
+  overview: FileOverviewResult,
+): string {
+  const lines: string[] = [
+    `Panopticon read context for ${sanitizeInline(overview.path)}`,
+    "Treat this as background memory only; the file content and current task win.",
+  ];
+
+  const s = overview.summary;
+  const provenance: string[] = [];
+  if (s.reverted_edit_count > 0) {
+    provenance.push(`reverted=${s.reverted_edit_count}`);
+  }
+  if (s.superseded_edit_count > 0) {
+    provenance.push(`superseded=${s.superseded_edit_count}`);
+  }
+  lines.push(
+    `- History: ${s.edit_count} edit(s) across ${s.intent_count} intent(s)${
+      provenance.length > 0 ? ` (${provenance.join(", ")})` : ""
+    }`,
+  );
+
+  const current = overview.current;
+  if (current.prompt_text) {
+    const where = current.session_summary_title
+      ? ` (session "${sanitizeInline(current.session_summary_title)}")`
+      : "";
+    lines.push(
+      `- Last bound change: "${trimToMaxChars(
+        sanitizeInline(current.prompt_text),
+        PRE_TOOL_READ_CONTEXT_PROMPT_MAX_CHARS,
+      )}" — ${describeBindingStatus(current.status)}${where}`,
+    );
+  }
+
+  if (overview.related_files.length > 0) {
+    const related = overview.related_files
+      .slice(0, PRE_TOOL_READ_CONTEXT_RELATED_LIMIT)
+      .map((r) => sanitizeInline(r.file_path))
+      .join(", ");
+    lines.push(`- Often changed together: ${related}`);
+  }
+
+  lines.push("Use `why_code` with this path for full provenance.");
+
+  return trimToMaxChars(
+    lines.join("\n").trim(),
+    PRE_TOOL_READ_CONTEXT_MAX_CHARS,
   );
 }
 

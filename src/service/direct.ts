@@ -45,7 +45,10 @@ import {
   reparseAll,
   scanOnce,
 } from "../scanner/index.js";
-import { readScannerStatus } from "../scanner/status.js";
+import {
+  readScannerStatus,
+  type ScannerRuntimeStatus,
+} from "../scanner/status.js";
 import { runSessionSummaryPass } from "../session_summaries/pass.js";
 import {
   fileOverview,
@@ -94,8 +97,27 @@ const ACTIVE_DERIVED_REBUILD_PHASES = new Set([
   "reparse_finalize",
 ]);
 
-function isDerivedRebuildInProgress(): boolean {
-  const phase = readScannerStatus()?.phase;
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function activeScannerStatus(): ScannerRuntimeStatus | null {
+  const status = readScannerStatus();
+  if (!status) return null;
+  const staleForMs = Date.now() - status.updatedAtMs;
+  if (staleForMs > 120_000 && !isProcessAlive(status.pid)) return null;
+  return status;
+}
+
+function isDerivedRebuildInProgress(
+  status: ScannerRuntimeStatus | null,
+): boolean {
+  const phase = status?.phase;
   return phase ? ACTIVE_DERIVED_REBUILD_PHASES.has(phase) : false;
 }
 
@@ -203,8 +225,10 @@ export function createDirectPanopticonService(): PanopticonService {
       return refreshPricingDirect();
     },
     async scan(opts?: ScanInput): Promise<ScanResult> {
-      if (needsResync()) {
-        if (isDerivedRebuildInProgress()) {
+      const scannerStatus = activeScannerStatus();
+      const resyncNeeded = needsResync();
+      if (resyncNeeded) {
+        if (isDerivedRebuildInProgress(scannerStatus)) {
           throw new Error("Derived-state rebuild already in progress");
         }
         if (needsRawDataResync()) {
@@ -234,6 +258,11 @@ export function createDirectPanopticonService(): PanopticonService {
           summariesUpdated:
             opts?.summaries === false ? 0 : await runSummaryGeneration(),
         };
+      }
+      if (scannerStatus) {
+        throw new Error(
+          `Scanner already in progress (${scannerStatus.phase}): ${scannerStatus.message}`,
+        );
       }
 
       const result = scanOnce({

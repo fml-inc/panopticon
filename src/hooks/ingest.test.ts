@@ -21,6 +21,8 @@ vi.mock("../config.js", () => {
       port: 4318,
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
+      enablePreToolUseFileContextInjection: true,
+      enablePreToolUseReadContextInjection: false,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -42,6 +44,12 @@ import {
   resolveEventRepo,
 } from "./ingest.js";
 
+type Mutable<T> = {
+  -readonly [K in keyof T]: T[K];
+};
+
+const testConfig = config as Mutable<typeof config>;
+
 function makeInput(overrides: Partial<HookInput> = {}): HookInput {
   return {
     session_id: "test-session",
@@ -62,6 +70,8 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  testConfig.enablePreToolUseFileContextInjection = true;
+  testConfig.enablePreToolUseReadContextInjection = false;
   _resetSessionRepoCache();
   _resetSessionTargetCache();
   _resetPreToolUseFileContextSeen();
@@ -447,6 +457,122 @@ describe("isPanopticonMcpTool", () => {
 });
 
 describe("processHookEvent", () => {
+  function insertIntentEdit(filePath: string): void {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO intent_units
+       (id, intent_key, session_id, prompt_text, prompt_ts_ms, cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "intent:read-context",
+      "history-session",
+      "build read context target",
+      1_000,
+      "/workspace/panopticon",
+      "fml-inc/panopticon",
+    );
+    db.prepare(
+      `INSERT INTO intent_edits
+       (id, edit_key, intent_unit_id, session_id, timestamp_ms, file_path, landed)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(1, "edit:read-context", 1, "history-session", 1_100, filePath, 1);
+  }
+
+  it("keeps read-time file context behind its own flag", () => {
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const disabled = processHookEvent({
+      session_id: "reader",
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: filePath },
+    });
+    expect(disabled).toEqual({});
+
+    testConfig.enablePreToolUseReadContextInjection = true;
+    const enabled = processHookEvent({
+      session_id: "reader-enabled",
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: filePath },
+    });
+
+    expect(
+      (enabled.hookSpecificOutput as Record<string, unknown>).additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("allows read-time file context for Claude target hooks", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const response = processHookEvent({
+      session_id: "claude-reader",
+      source: "claude",
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: filePath },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("dedupes read-time file context independently of edit-time context", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const firstRead = processHookEvent({
+      session_id: "same-session",
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: filePath },
+    });
+    const secondRead = processHookEvent({
+      session_id: "same-session",
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: filePath },
+    });
+    const edit = processHookEvent({
+      session_id: "same-session",
+      hook_event_name: "PreToolUse",
+      tool_name: "Edit",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        file_path: filePath,
+        old_string: "before",
+        new_string: "after",
+      },
+    });
+
+    expect(
+      (firstRead.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+    expect(secondRead).toEqual({});
+    expect(
+      (edit.hookSpecificOutput as Record<string, unknown>).additionalContext,
+    ).toContain("Panopticon file context");
+  });
+
   it("keeps Pi hook events out of transcript messages and tool calls", () => {
     const sessionId = "pi-hook-no-transcript";
 

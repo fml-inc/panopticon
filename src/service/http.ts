@@ -81,6 +81,15 @@ function post(
         );
         return;
       }
+      if (err.code === "EPERM") {
+        reject(
+          new Error(
+            "Panopticon server connection was blocked by the current sandbox. " +
+              `The MCP server proxies to ${config.host}:${config.port}; allow localhost access or run the MCP client outside a network-restricted sandbox.`,
+          ),
+        );
+        return;
+      }
       reject(err);
     });
     req.on("timeout", () => {

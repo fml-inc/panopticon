@@ -520,6 +520,7 @@ function isAutomatedProject(value: string | null): boolean {
 
 function isAutomatedCwd(value: string | null): boolean {
   const normalized = value?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+  if (/(^|\/)pano-replay-[^/]+/.test(normalized)) return true;
   for (const project of HEADLESS_PROJECTS) {
     if (normalized.endsWith(`/panopticon/${project}`)) return true;
   }

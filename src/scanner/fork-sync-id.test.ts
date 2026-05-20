@@ -27,7 +27,7 @@ vi.mock("../config.js", () => {
 import { config } from "../config.js";
 import { closeDb, getDb } from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
-import { buildScannerEventSyncId } from "../db/sync-ids.js";
+import { buildMessageSyncId, buildScannerEventSyncId } from "../db/sync-ids.js";
 import { getTarget } from "../targets/index.js";
 import "../targets/claude.js";
 import {
@@ -127,11 +127,27 @@ function getSyncIds(sessionId: string): {
   turns: Map<string, string>;
   toolCalls: Map<string, string>;
   events: Map<string, string>;
+  messages: Map<string, string>;
 } {
   const db = getDb();
   const turns = new Map<string, string>();
   const toolCalls = new Map<string, string>();
   const events = new Map<string, string>();
+  const messages = new Map<string, string>();
+
+  const msgRows = db
+    .prepare(
+      "SELECT session_id, ordinal, uuid, sync_id FROM messages WHERE session_id = ?",
+    )
+    .all(sessionId) as Array<{
+    session_id: string;
+    ordinal: number;
+    uuid: string | null;
+    sync_id: string;
+  }>;
+  for (const r of msgRows) {
+    messages.set(`${r.session_id}:${r.uuid || `ord:${r.ordinal}`}`, r.sync_id);
+  }
 
   const turnRows = db
     .prepare(
@@ -188,13 +204,14 @@ function getSyncIds(sessionId: string): {
     );
   }
 
-  return { turns, toolCalls, events };
+  return { turns, toolCalls, events, messages };
 }
 
 function getAllSyncIds(parentSessionId: string): {
   turns: Map<string, string>;
   toolCalls: Map<string, string>;
   events: Map<string, string>;
+  messages: Map<string, string>;
 } {
   const db = getDb();
   const forkRows = db
@@ -207,15 +224,17 @@ function getAllSyncIds(parentSessionId: string): {
   const turns = new Map<string, string>();
   const toolCalls = new Map<string, string>();
   const events = new Map<string, string>();
+  const messages = new Map<string, string>();
 
   for (const sid of allIds) {
     const s = getSyncIds(sid);
     for (const [k, v] of s.turns) turns.set(k, v);
     for (const [k, v] of s.toolCalls) toolCalls.set(k, v);
     for (const [k, v] of s.events) events.set(k, v);
+    for (const [k, v] of s.messages) messages.set(k, v);
   }
 
-  return { turns, toolCalls, events };
+  return { turns, toolCalls, events, messages };
 }
 
 /** Parse a JSONL file and insert its results (main + forks) into the DB. */
@@ -391,6 +410,13 @@ describe("fork sync_id stability", () => {
       expect(newSyncId).toBeDefined();
       expect(newSyncId).toBe(oldSyncId);
     }
+
+    // Messages
+    for (const [key, oldSyncId] of before.messages) {
+      const newSyncId = after.messages.get(key);
+      expect(newSyncId).toBeDefined();
+      expect(newSyncId).toBe(oldSyncId);
+    }
   });
 
   it("fork-only sync_ids stay stable (not just parent)", () => {
@@ -423,6 +449,49 @@ describe("fork sync_id stability", () => {
     }
     for (const [key, oldSyncId] of forkBefore.toolCalls) {
       expect(forkAfter.toolCalls.get(key)).toBe(oldSyncId);
+    }
+    for (const [key, oldSyncId] of forkBefore.messages) {
+      expect(forkAfter.messages.get(key)).toBe(oldSyncId);
+    }
+  });
+
+  it("fork messages get sync_ids derived from the synthetic fork session id and message uuid", () => {
+    const file = path.join(tmpDir, `${SESSION_ID}.jsonl`);
+    fs.writeFileSync(file, `${buildForkedSessionLines().join("\n")}\n`);
+
+    parseAndInsert(file);
+
+    const db = getDb();
+    const forkRow = db
+      .prepare(
+        "SELECT session_id FROM sessions WHERE parent_session_id = ? AND relationship_type = 'fork'",
+      )
+      .get(SESSION_ID) as { session_id: string };
+    const forkSessionId = forkRow.session_id;
+
+    const forkMsgRows = db
+      .prepare(
+        "SELECT uuid, sync_id FROM messages WHERE session_id = ? ORDER BY ordinal",
+      )
+      .all(forkSessionId) as Array<{ uuid: string | null; sync_id: string }>;
+
+    // Sanity: the fork branch (u5..a8) must persist messages, not be dropped.
+    expect(forkMsgRows.length).toBeGreaterThan(0);
+
+    // Every fork message must have a sync_id and it must equal the
+    // deterministic builder applied with the synthetic fork session id.
+    for (const row of forkMsgRows) {
+      expect(row.sync_id).toBeTruthy();
+      expect(row.sync_id).toBe(buildMessageSyncId(forkSessionId, 0, row.uuid));
+    }
+
+    // Cross-check: a parent message with the same uuid would hash differently,
+    // proving sync_id reflects the fork branch and not the parent stream.
+    const sampleUuid = forkMsgRows[0].uuid;
+    if (sampleUuid) {
+      expect(forkMsgRows[0].sync_id).not.toBe(
+        buildMessageSyncId(SESSION_ID, 0, sampleUuid),
+      );
     }
   });
 

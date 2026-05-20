@@ -177,6 +177,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
     // Start session file scanner first — sync is deferred until scanner
     // finishes any initial resync so we don't sync stale/partial data.
     scannerHandle = createScannerLoop({
+      runInWorker: true,
       onReady: () => {
         if (cfg.sync.enabled !== false && cfg.sync.targets.length > 0) {
           log.sync.debug(

@@ -18,6 +18,8 @@ import { runMigrations } from "./migrations.js";
 
 export { runMigrations } from "./migrations.js";
 
+export const DB_BUSY_TIMEOUT_MS = 30_000;
+
 export const SCHEMA_SQL = `
 
 -- ── OTLP tables ─────────────────────────────────────────────────────────────
@@ -773,7 +775,7 @@ export function getDb(): Database {
   _db = new Database(config.dbPath);
   _db.pragma("auto_vacuum = INCREMENTAL");
   _db.pragma("journal_mode = WAL");
-  _db.pragma("busy_timeout = 5000");
+  _db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);

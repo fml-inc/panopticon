@@ -213,6 +213,18 @@ export const config = {
     "PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION",
     true,
   ),
+  // Shadow-only read-time file context on PreToolUse for Read. Default off
+  // while we measure whether it reduces discovery churn without token spam.
+  enablePreToolUseReadContextInjection: envBool(
+    "PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION",
+    false,
+  ),
+  // Shadow-only code intelligence enrichment for file_overview. Default off
+  // while the code-review-graph integration is being evaluated.
+  enableCodeIntelFileOverview: envBool(
+    "PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW",
+    false,
+  ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,

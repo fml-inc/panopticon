@@ -226,14 +226,24 @@ describe("scanner only", () => {
       session_id: "headless-cwd",
       target: "claude",
     });
+    upsertSession({
+      session_id: "replay-cwd",
+      target: "claude",
+    });
     upsertSessionCwd(
       "headless-cwd",
       "/Users/gus/Library/Application Support/panopticon/claude-headless",
       1_700_000_000_000,
     );
+    upsertSessionCwd(
+      "replay-cwd",
+      "/private/var/folders/x/T/pano-replay-25735fa6-panop",
+      1_700_000_000_000,
+    );
 
     expect(getSession("headless-project")!.is_automated).toBe(1);
     expect(getSession("headless-cwd")!.is_automated).toBe(1);
+    expect(getSession("replay-cwd")!.is_automated).toBe(1);
   });
 
   it("marks subagent sessions automated", () => {

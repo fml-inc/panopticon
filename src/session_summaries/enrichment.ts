@@ -188,6 +188,8 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
   if (opts?.sessionId) {
     where.push("e.session_id = ?");
     params.push(opts.sessionId);
+  } else {
+    where.push("COALESCE(sess.is_automated, 0) != 1");
   }
 
   const rows = db

@@ -16,6 +16,7 @@ import { config } from "../config.js";
 import { Database } from "../db/driver.js";
 import {
   closeDb,
+  DB_BUSY_TIMEOUT_MS,
   getDb,
   markAllDataRebuildsComplete,
   runMigrations,
@@ -153,7 +154,7 @@ function removeWAL(dbPath: string): void {
 function initTempDb(tempPath: string): Database {
   const db = new Database(tempPath);
   db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
+  db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   db.function("decompress", (blob: unknown) =>
     blob ? gunzipSync(blob as Uint8Array).toString() : null,
   );
@@ -455,6 +456,7 @@ export function reparseAll(
     const copyStartedAt = performance.now();
     tempDb = new Database(tempPath);
     tempDb.pragma("journal_mode = WAL");
+    tempDb.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
     tempDb.function("decompress", (blob: unknown) =>
       blob ? gunzipSync(blob as Uint8Array).toString() : null,
     );
