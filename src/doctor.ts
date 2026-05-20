@@ -8,6 +8,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
+import {
+  codeIntelHealth,
+  contextActivityHealth,
+  contextFlagsHealth,
+  formatCodeIntelStatus,
+  formatContextActivity,
+  formatContextFlags,
+  formatHookTargets,
+  getCodeIntelStatus,
+  getContextFlagStatuses,
+  getHookTargetStatuses,
+  hookTargetsHealth,
+  readContextActivity,
+} from "./context-diagnostics.js";
 import { dbStats } from "./db/query.js";
 import { closeDb, getDb } from "./db/schema.js";
 import { logPaths } from "./log.js";
@@ -397,7 +411,36 @@ export async function doctor(): Promise<DoctorResult> {
     });
   }
 
-  // 7. Sentry
+  // 7. Context intelligence
+  const contextFlags = getContextFlagStatuses();
+  checks.push({
+    label: "Context Flags",
+    status: contextFlagsHealth(contextFlags),
+    detail: formatContextFlags(contextFlags),
+  });
+
+  const hookTargets = getHookTargetStatuses();
+  checks.push({
+    label: "Hook Targets",
+    status: hookTargetsHealth(hookTargets),
+    detail: formatHookTargets(hookTargets),
+  });
+
+  const contextActivity = readContextActivity();
+  checks.push({
+    label: "Context Activity",
+    status: contextActivityHealth(contextActivity),
+    detail: formatContextActivity(contextActivity),
+  });
+
+  const codeIntelStatus = getCodeIntelStatus();
+  checks.push({
+    label: "Code Intel",
+    status: codeIntelHealth(codeIntelStatus),
+    detail: formatCodeIntelStatus(codeIntelStatus),
+  });
+
+  // 8. Sentry
   try {
     const cfg = loadUnifiedConfig();
     const dsn = process.env.PANOPTICON_SENTRY_DSN ?? cfg.sentryDsn;
@@ -410,7 +453,7 @@ export async function doctor(): Promise<DoctorResult> {
     // Non-critical
   }
 
-  // 8. Recent events and errors (informational, not checks)
+  // 9. Recent events and errors (informational, not checks)
   let recentEvents: RecentEvent[] = [];
   let recentErrors: RecentError[] = [];
 

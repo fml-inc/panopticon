@@ -70,6 +70,41 @@ If hooks auto-start the server, the hook process inherits the environment from
 the agent process. In that case, update the shell profile, start a new terminal
 or agent session, and let `SessionStart` start Panopticon with the new flags.
 
+## Employee Rollout Checklist
+
+Use this checklist for canary users who should exercise all context
+intelligence surfaces:
+
+```bash
+panopticon install
+
+export PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION=1
+export PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION=1
+export PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION=1
+export PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1
+export PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1
+
+cd /path/to/repo
+code-review-graph build
+code-review-graph status
+
+panopticon stop
+panopticon start --force
+panopticon doctor
+panopticon status
+```
+
+`doctor` and `status` report:
+
+- current context-injection flags
+- configured hook targets and source identity (`explicit` or `native`)
+- recent context-eligible hook volume for `SessionStart`, `UserPromptSubmit`,
+  `PreToolUse Read`, and `PreToolUse` edit tools
+- Code Review Graph readiness for the current repository
+
+For field feedback, ask users to report missing context, noisy read context,
+hook latency, hook timeouts, and `code_intel` states other than `ready`.
+
 ## Injection Behavior
 
 ### SessionStart
@@ -138,16 +173,21 @@ needs the local `.code-review-graph/graph.db` file.
 
 ## Verification
 
-Check that Panopticon sees CRG data:
+After enabling the flags, check that Panopticon sees the flags, hooks,
+activity, and CRG data:
 
 ```bash
 PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1 panopticon start --force
+panopticon doctor
+panopticon status
 panopticon file overview src/config.ts
 ```
 
-The result should include a `code_intel` object with `status: "ready"` when the
-repo graph exists. Without a graph, `file_overview` still returns Panopticon's
-own provenance and reports Code Review Graph as unavailable.
+`doctor` and `status` should include context intelligence diagnostics. The
+`file_overview` result should include a `code_intel` object with
+`status: "ready"` when the repo graph exists. Without a graph, `file_overview`
+still returns Panopticon's own provenance and reports Code Review Graph as
+unavailable.
 
 To verify read-time injection, enable the flag, restart Panopticon, then read a
 file with existing Panopticon provenance from a new agent session. The first

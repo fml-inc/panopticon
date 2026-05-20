@@ -126,6 +126,10 @@ describe("doctor lifecycle checks", () => {
         "Start Backoff",
         "PID File",
         "Server Log",
+        "Context Flags",
+        "Hook Targets",
+        "Context Activity",
+        "Code Intel",
       ]),
     );
   });
