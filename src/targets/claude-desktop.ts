@@ -32,7 +32,9 @@ const claudeDesktop: TargetAdapter = {
       const serverBin = path.join(opts.pluginRoot, "bin", "mcp-server");
       cfg.mcpServers = (cfg.mcpServers as Record<string, unknown>) ?? {};
       (cfg.mcpServers as Record<string, unknown>).panopticon = {
-        command: "node",
+        // Claude Desktop can be launched by Finder/Dock on macOS with a
+        // restricted PATH, so keep an absolute Node path for this GUI target.
+        command: process.execPath,
         args: [serverBin],
       };
       return cfg;

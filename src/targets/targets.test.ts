@@ -153,7 +153,7 @@ describe("gemini event normalization", () => {
 });
 
 describe("claude desktop install config", () => {
-  it("writes MCP server with a portable node command", () => {
+  it("writes MCP server with the current node executable", () => {
     const claudeDesktop = getTarget("claude-desktop")!;
     const pluginRoot = path.join("/tmp", "panopticon app");
     const result = claudeDesktop.hooks.applyInstallConfig(
@@ -163,7 +163,7 @@ describe("claude desktop install config", () => {
 
     expect(result.mcpServers).toMatchObject({
       panopticon: {
-        command: "node",
+        command: process.execPath,
         args: [path.join(pluginRoot, "bin", "mcp-server")],
       },
     });

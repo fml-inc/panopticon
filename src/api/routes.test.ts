@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   needsResyncMock,
+  readDatabaseRebuildStatusMock,
   readScannerStatusMock,
   dispatchToolMock,
   dispatchExecMock,
 } = vi.hoisted(() => ({
   needsResyncMock: vi.fn(),
+  readDatabaseRebuildStatusMock: vi.fn(),
   readScannerStatusMock: vi.fn(),
   dispatchToolMock: vi.fn(),
   dispatchExecMock: vi.fn(),
@@ -19,6 +21,7 @@ vi.mock("../db/schema.js", () => ({
 }));
 
 vi.mock("../scanner/status.js", () => ({
+  readDatabaseRebuildStatus: readDatabaseRebuildStatusMock,
   readScannerStatus: readScannerStatusMock,
 }));
 
@@ -27,9 +30,10 @@ vi.mock("../service/index.js", () => ({
   dispatchExec: dispatchExecMock,
   dispatchTool: dispatchToolMock,
   EXEC_NAMES: ["scan"],
-  TOOL_NAMES: ["intent_for_code", "query"],
+  TOOL_NAMES: ["intent_for_code", "query", "status"],
   isExecName: (name: string) => name === "scan",
-  isToolName: (name: string) => name === "intent_for_code" || name === "query",
+  isToolName: (name: string) =>
+    name === "intent_for_code" || name === "query" || name === "status",
 }));
 
 import { handleApiRequest } from "./routes.js";
@@ -80,6 +84,7 @@ describe("api route resync gating", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     needsResyncMock.mockReturnValue(false);
+    readDatabaseRebuildStatusMock.mockReturnValue(null);
     readScannerStatusMock.mockReturnValue(null);
     dispatchToolMock.mockResolvedValue({ ok: true });
     dispatchExecMock.mockResolvedValue({ ok: true });
@@ -126,5 +131,53 @@ describe("api route resync gating", () => {
       sql: "SELECT 1",
     });
     expect(JSON.parse(res.body)).toEqual({ rows: [] });
+  });
+
+  it("blocks raw tools while the database file is being rebuilt", async () => {
+    readDatabaseRebuildStatusMock.mockReturnValue({
+      phase: "reparse_finalize",
+      message: "Swapping rebuilt database into place...",
+      updatedAtMs: Date.now(),
+      startedAtMs: Date.now() - 1000,
+    });
+
+    const req = makeReq("/api/tool", {
+      name: "query",
+      params: { sql: "SELECT 1" },
+    });
+    const res = makeRes();
+
+    await handleApiRequest(req, res);
+
+    expect(res.statusCode).toBe(503);
+    expect(dispatchToolMock).not.toHaveBeenCalled();
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: expect.stringMatching(/rebuilding derived state/i),
+      phase: "reparse_finalize",
+    });
+  });
+
+  it("returns scanner status instead of opening db stats during rebuild", async () => {
+    readDatabaseRebuildStatusMock.mockReturnValue({
+      phase: "reparse_scan",
+      message: "Scanning raw session files into temp DB...",
+      updatedAtMs: 123,
+      startedAtMs: 100,
+    });
+
+    const req = makeReq("/api/tool", { name: "status", params: {} });
+    const res = makeRes();
+
+    await handleApiRequest(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(dispatchToolMock).not.toHaveBeenCalled();
+    expect(JSON.parse(res.body)).toMatchObject({
+      database_stats_unavailable: true,
+      scanner: {
+        phase: "reparse_scan",
+        message: "Scanning raw session files into temp DB...",
+      },
+    });
   });
 });

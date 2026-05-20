@@ -9,6 +9,7 @@ import { log } from "./log.js";
 import { handleOtlpRequest } from "./otlp/server.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
 import { createScannerLoop } from "./scanner/index.js";
+import { readDatabaseRebuildStatus } from "./scanner/status.js";
 import type { ScannerHandle } from "./scanner/types.js";
 import {
   addBreadcrumb,
@@ -36,6 +37,19 @@ function collectBody(req: http.IncomingMessage): Promise<Buffer> {
   });
 }
 
+function writeDatabaseRebuildResponse(res: http.ServerResponse): void {
+  const status = readDatabaseRebuildStatus();
+  res.writeHead(503, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      error:
+        "Panopticon is rebuilding its database. Retry when the rebuild completes.",
+      phase: status?.phase ?? null,
+      message: status?.message ?? "Database rebuild in progress",
+    }),
+  );
+}
+
 export function createUnifiedServer(): http.Server {
   // Generate/load the bearer token at server boot so every request handler
   // checks against the same value without re-reading the file each time.
@@ -58,6 +72,10 @@ export function createUnifiedServer(): http.Server {
     // Hook event ingest — auth required (DB write surface).
     if (url === "/hooks" && method === "POST") {
       if (!requireBearerToken(req, res, authToken)) return;
+      if (readDatabaseRebuildStatus()) {
+        writeDatabaseRebuildResponse(res);
+        return;
+      }
       try {
         const body = await collectBody(req);
         const data: HookInput = JSON.parse(body.toString("utf-8"));
@@ -91,6 +109,10 @@ export function createUnifiedServer(): http.Server {
       (url.startsWith("/v1/") || url === "/" || url === "")
     ) {
       if (!requireBearerToken(req, res, authToken)) return;
+      if (readDatabaseRebuildStatus()) {
+        writeDatabaseRebuildResponse(res);
+        return;
+      }
       await handleOtlpRequest(req, res);
       return;
     }
@@ -112,6 +134,10 @@ export function createUnifiedServer(): http.Server {
     // API routes — /api/tool, /api/exec — auth required (read-everything surface).
     if (url.startsWith("/api/") && method === "POST") {
       if (!requireBearerToken(req, res, authToken)) return;
+      if (url === "/api/exec" && readDatabaseRebuildStatus()) {
+        writeDatabaseRebuildResponse(res);
+        return;
+      }
       await handleApiRequest(req, res);
       return;
     }
@@ -168,54 +194,64 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   let scannerHandle: ScannerHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
   let backgroundStartTimer: ReturnType<typeof setTimeout> | null = null;
+  let postScannerBackgroundStarted = false;
+
+  function startPostScannerBackgroundWork(): void {
+    if (postScannerBackgroundStarted) return;
+    postScannerBackgroundStarted = true;
+
+    const cfg = loadUnifiedConfig();
+
+    if (cfg.sync.enabled !== false && cfg.sync.targets.length > 0) {
+      log.sync.debug(
+        `Targets: ${cfg.sync.targets.map((t) => t.name).join(", ")}`,
+      );
+      setTag("sync_targets", cfg.sync.targets.length);
+      syncHandle = createSyncLoop({
+        targets: cfg.sync.targets,
+        filter: cfg.sync.filter,
+        sessionTables: [...CORE_SESSION_TABLES],
+        nonSessionTables: [...DEFAULT_NON_SESSION_TABLES],
+      });
+      syncHandle.start();
+
+      otelSyncHandle = createSyncLoop({
+        targets: cfg.sync.targets,
+        filter: cfg.sync.filter,
+        loopName: "otel",
+        syncSessions: false,
+        sessionTables: [...OTEL_SESSION_TABLES],
+        nonSessionTables: [],
+        sessionPendingMode: "watermark-gap",
+        batchSize: 1000,
+        sessionRowBudget: 1000,
+        maxSessionsPerTick: 2,
+        idleIntervalMs: 60_000,
+        catchUpIntervalMs: 2_000,
+      });
+      otelSyncHandle.start();
+    }
+
+    // Run prune after the startup scan/rebuild, then hourly. This keeps the
+    // main thread from opening a DB handle while a worker reparse is swapping
+    // the database file.
+    runPrune();
+    pruneTimer = setInterval(runPrune, PRUNE_INTERVAL_MS);
+    pruneTimer.unref();
+  }
 
   function startBackgroundWork(): void {
     backgroundStartTimer = null;
-
-    const cfg = loadUnifiedConfig();
 
     // Start session file scanner first — sync is deferred until scanner
     // finishes any initial resync so we don't sync stale/partial data.
     scannerHandle = createScannerLoop({
       runInWorker: true,
       onReady: () => {
-        if (cfg.sync.enabled !== false && cfg.sync.targets.length > 0) {
-          log.sync.debug(
-            `Targets: ${cfg.sync.targets.map((t) => t.name).join(", ")}`,
-          );
-          setTag("sync_targets", cfg.sync.targets.length);
-          syncHandle = createSyncLoop({
-            targets: cfg.sync.targets,
-            filter: cfg.sync.filter,
-            sessionTables: [...CORE_SESSION_TABLES],
-            nonSessionTables: [...DEFAULT_NON_SESSION_TABLES],
-          });
-          syncHandle.start();
-
-          otelSyncHandle = createSyncLoop({
-            targets: cfg.sync.targets,
-            filter: cfg.sync.filter,
-            loopName: "otel",
-            syncSessions: false,
-            sessionTables: [...OTEL_SESSION_TABLES],
-            nonSessionTables: [],
-            sessionPendingMode: "watermark-gap",
-            batchSize: 1000,
-            sessionRowBudget: 1000,
-            maxSessionsPerTick: 2,
-            idleIntervalMs: 60_000,
-            catchUpIntervalMs: 2_000,
-          });
-          otelSyncHandle.start();
-        }
+        startPostScannerBackgroundWork();
       },
     });
     scannerHandle.start();
-
-    // Run prune on startup, then hourly
-    runPrune();
-    pruneTimer = setInterval(runPrune, PRUNE_INTERVAL_MS);
-    pruneTimer.unref();
   }
 
   server.on("error", (err: NodeJS.ErrnoException) => {

@@ -336,6 +336,8 @@ function extractPrompt(data: UserPromptSubmitContextInput): string | null {
 }
 
 function extractExcludeSessionIds(data: SessionContextInput): string[] {
+  // Replay clamps are an intentional request-body contract: the hook handler
+  // injects env-derived values here, and local test clients may do the same.
   const raw = data.exclude_session_ids;
   if (!Array.isArray(raw)) return [];
   return raw.filter(
@@ -344,6 +346,8 @@ function extractExcludeSessionIds(data: SessionContextInput): string[] {
 }
 
 function extractNowMs(data: SessionContextInput): number {
+  // See extractExcludeSessionIds: replay callers can set the effective clock
+  // per request so historical injections do not see future session data.
   return typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
     ? data.now_ms
     : Date.now();

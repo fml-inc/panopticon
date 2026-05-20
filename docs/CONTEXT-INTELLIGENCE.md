@@ -12,6 +12,11 @@ silent when Panopticon does not have matching local history. Treat any injected
 text as background memory only; the current user request and current file
 contents always win.
 
+MCP pull tools also keep default output bounded. Long-history tools return
+compact rows unless the request includes `fullPayloads: true`; use that escape
+hatch for audits where exact prompt text, tool JSON, or full summary detail is
+more important than token budget.
+
 Targets that do not consume hook `additionalContext` still record hook events,
 but may not show injected text to the model. The current point-of-use read path
 is verified against Claude-style `PreToolUse` responses.

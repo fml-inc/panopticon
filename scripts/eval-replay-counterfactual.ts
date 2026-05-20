@@ -29,8 +29,8 @@ import { closeDb, getDb } from "../src/db/schema.js";
 import { invokeLlmAsync } from "../src/summary/llm.js";
 
 const DEFAULT_LIMIT = 4;
-const DEFAULT_REPOSITORY = "fml-inc/panopticon";
-const DEFAULT_REPO_ROOT = "/Users/gus/workspace/panopticon";
+const DEFAULT_REPO_ROOT = resolveDefaultRepoRoot();
+const DEFAULT_REPOSITORY = resolveDefaultRepository(DEFAULT_REPO_ROOT);
 const DEFAULT_FIXTURE_DIR = path.join(".tmp", "evals", "replay-counterfactual");
 const AGENT_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -87,6 +87,36 @@ interface ScenarioResult {
   controlAccomplished: boolean | null;
   treatmentAccomplished: boolean | null;
   judgeNotes: string;
+}
+
+function gitOutput(args: string[], cwd = process.cwd()): string | null {
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function resolveDefaultRepoRoot(): string {
+  return gitOutput(["rev-parse", "--show-toplevel"]) ?? process.cwd();
+}
+
+function resolveDefaultRepository(repoRoot: string): string {
+  const remote = gitOutput(["remote", "get-url", "origin"], repoRoot);
+  const slug = remote ? repositorySlugFromRemote(remote) : null;
+  return slug ?? path.basename(repoRoot);
+}
+
+function repositorySlugFromRemote(remote: string): string | null {
+  const normalized = remote.trim().replace(/\.git$/, "");
+  const githubMatch = normalized.match(
+    /(?:github\.com[:/])([^/\s]+\/[^/\s]+)$/,
+  );
+  return githubMatch?.[1] ?? null;
 }
 
 main()

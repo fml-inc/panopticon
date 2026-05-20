@@ -4,7 +4,12 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { config } from "../config.js";
-import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
+import {
+  closeDb,
+  getDb,
+  needsClaimsRebuild,
+  needsRawDataResync,
+} from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
@@ -1004,7 +1009,16 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     try {
       const shouldRunInWorker = opts.runInWorker === true && !state.ready;
       const result = shouldRunInWorker
-        ? await runScannerTickInWorker(state)
+        ? await (async () => {
+            try {
+              return await runScannerTickInWorker(state);
+            } finally {
+              // The worker owns its own module-level SQLite singleton. If the
+              // main thread opened a DB handle during a worker reparse, close
+              // it now so later requests reopen the post-swap database file.
+              closeDb();
+            }
+          })()
         : await runScannerTickInProcess(state);
       state = {
         reparseChecked: result.reparseChecked,

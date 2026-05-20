@@ -14,6 +14,7 @@ vi.mock("../archive/index.js", () => ({
 }));
 
 vi.mock("../db/schema.js", () => ({
+  closeDb: vi.fn(),
   getDb: vi.fn(() => ({ transaction: (fn: () => void) => fn })),
   needsClaimsRebuild: vi.fn(() => false),
   needsRawDataResync: vi.fn(() => false),
@@ -118,6 +119,7 @@ vi.mock("./claims-rebuild.js", () => ({
   rebuildClaimsDerivedState: vi.fn(),
 }));
 
+import { closeDb } from "../db/schema.js";
 import { captureException } from "../sentry.js";
 import { createScannerLoop, scanOnce } from "./loop.js";
 import {
@@ -431,5 +433,51 @@ describe("scanOnce progress", () => {
     releaseTick({ updated: 0 });
     await Promise.resolve();
     handle.stop();
+  });
+
+  it("closes the main-thread db handle after a startup worker tick", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-worker-test-"));
+    const workerPath = path.join(tempDir, "worker.mjs");
+    fs.writeFileSync(
+      workerPath,
+      `import { parentPort, workerData } from "node:worker_threads";
+parentPort.postMessage({
+  ok: true,
+  result: {
+    ...workerData.state,
+    reparseChecked: true,
+    ready: true,
+    hadWork: false,
+    becameReady: true,
+  },
+});
+`,
+    );
+    const previousWorkerPath = process.env.PANOPTICON_SCANNER_WORKER_PATH;
+    process.env.PANOPTICON_SCANNER_WORKER_PATH = workerPath;
+    const onReady = vi.fn();
+    const handle = createScannerLoop({
+      runInWorker: true,
+      idleIntervalMs: 10_000,
+      catchUpIntervalMs: 10_000,
+      onReady,
+    });
+
+    try {
+      handle.start();
+      await vi.waitFor(() => {
+        expect(closeDb).toHaveBeenCalled();
+      });
+
+      expect(onReady).toHaveBeenCalledTimes(1);
+    } finally {
+      handle.stop();
+      if (previousWorkerPath === undefined) {
+        delete process.env.PANOPTICON_SCANNER_WORKER_PATH;
+      } else {
+        process.env.PANOPTICON_SCANNER_WORKER_PATH = previousWorkerPath;
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

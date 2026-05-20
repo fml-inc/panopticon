@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { log, openLogFd } from "../log.js";
-import { readScannerStatus } from "../scanner/status.js";
+import { readFreshScannerStatus } from "../scanner/status.js";
 import { httpPanopticonService } from "../service/http.js";
 import {
   categorySchema,
@@ -498,9 +498,8 @@ function compactSessionSummaryDetail(value: unknown) {
 }
 
 function compactScannerStatusForMcp() {
-  const status = readScannerStatus();
+  const status = readFreshScannerStatus();
   if (!status) return null;
-  if (Date.now() - status.updatedAtMs > 120_000) return null;
   return {
     phase: status.phase,
     message: status.message,
@@ -519,7 +518,7 @@ function compactScannerStatusForMcp() {
 
 server.tool(
   "sessions",
-  "List recent sessions with stats (tokens, cost, model, project)",
+  "List recent sessions with stats (tokens, cost, model, project). Returns compact output by default; pass fullPayloads for the raw result.",
   {
     limit: z
       .number()
@@ -529,10 +528,16 @@ server.tool(
       .string()
       .optional()
       .describe('Time filter: ISO date or relative like "24h", "7d", "30m"'),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ limit, since }) => {
+  async ({ limit, since, fullPayloads }) => {
     const results = await service.listSessions({ limit, since });
-    return jsonContent(compactSessionListResult(results));
+    return jsonContent(
+      fullPayloads ? results : compactSessionListResult(results),
+    );
   },
 );
 
@@ -590,7 +595,7 @@ server.tool(
 
 server.tool(
   "summary",
-  "Activity summary — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates and daily reports.",
+  "Activity summary — sessions, prompts, tools used, files changed, and costs. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     since: z
       .string()
@@ -598,10 +603,16 @@ server.tool(
       .describe(
         'Time window (default "24h"). ISO date or relative like "24h", "7d"',
       ),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ since }) => {
+  async ({ since, fullPayloads }) => {
     const summary = await service.activitySummary({ since });
-    return jsonContent(compactActivitySummary(summary));
+    return jsonContent(
+      fullPayloads ? summary : compactActivitySummary(summary),
+    );
   },
 );
 
@@ -751,18 +762,22 @@ server.tool(
   {},
   async () => {
     const scanner = compactScannerStatusForMcp();
-    if (scanner) {
-      return jsonContent({
-        database_stats_unavailable: true,
-        scanner,
-      });
+    try {
+      const stats = await service.dbStats();
+      if (scanner) {
+        return jsonContent({ ...(asRecord(stats) ?? {}), scanner });
+      }
+      return jsonContent(stats);
+    } catch (err) {
+      if (scanner) {
+        return jsonContent({
+          database_stats_unavailable: true,
+          scanner,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      throw err;
     }
-    const stats = await service.dbStats();
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(stats, null, 2) },
-      ],
-    };
   },
 );
 
@@ -772,23 +787,29 @@ server.tool(
 
 server.tool(
   "intent_for_code",
-  "Given a file path, return the chronological intent history at that location: every prompt that produced an edit to this file, most recent first, annotated with whether the inserted content survived (status: 'current' | 'superseded' | 'reverted' | 'unknown'). Use this for 'why does this code exist?' questions.",
+  "Given a file path, return the chronological intent history at that location. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     file_path: z.string().describe("Absolute path to the file"),
     limit: z
       .number()
       .optional()
       .describe("Max intent edits to return (default 50)"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ file_path, limit }) => {
+  async ({ file_path, limit, fullPayloads }) => {
     const result = await service.intentForCode({ file_path, limit });
-    return jsonContent(asArray(result).map(compactIntentForCodeRow));
+    return jsonContent(
+      fullPayloads ? result : asArray(result).map(compactIntentForCodeRow),
+    );
   },
 );
 
 server.tool(
   "search_intent",
-  "Search the intent index for prompts whose edits matched the query. Defaults to only_landed=true (excludes intents that produced no surviving edits). Each result includes the prompt, the files touched, and the landed_ratio.",
+  "Search the intent index for prompts whose edits matched the query. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     query: z.string().describe("Text to search for in prompt text (FTS5)"),
     only_landed: z
@@ -803,8 +824,12 @@ server.tool(
       .describe("Filter to intents recorded in this repository"),
     limit: z.number().optional().describe("Max results (default 20)"),
     offset: z.number().optional().describe("Skip N results for pagination"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ query, only_landed, repository, limit, offset }) => {
+  async ({ query, only_landed, repository, limit, offset, fullPayloads }) => {
     const result = await service.searchIntent({
       query,
       only_landed,
@@ -812,17 +837,23 @@ server.tool(
       limit,
       offset,
     });
-    return jsonContent(asArray(result).map(compactSearchIntentRow));
+    return jsonContent(
+      fullPayloads ? result : asArray(result).map(compactSearchIntentRow),
+    );
   },
 );
 
 server.tool(
   "outcomes_for_intent",
-  "Get the t0 (session-end) outcome view for an intent: which edits survived to session end, which were churned in-session, and which haven't been reconciled yet. Use intent_unit_id from search_intent or intent_for_code results.",
+  "Get the t0 (session-end) outcome view for an intent. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     intent_unit_id: z.number().describe("ID of the intent unit"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ intent_unit_id }) => {
+  async ({ intent_unit_id, fullPayloads }) => {
     const result = await service.outcomesForIntent({ intent_unit_id });
     if (!result) {
       return {
@@ -835,13 +866,15 @@ server.tool(
         isError: true,
       };
     }
-    return jsonContent(compactOutcomesForIntent(result));
+    return jsonContent(
+      fullPayloads ? result : compactOutcomesForIntent(result),
+    );
   },
 );
 
 server.tool(
   "session_summaries",
-  "List session-derived summaries with provenance metadata and the compact preview shape used for SessionStart context injection. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
+  "List session-derived summaries with provenance metadata. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     repository: z
       .string()
@@ -862,8 +895,21 @@ server.tool(
       .describe('Time filter: ISO date or relative like "24h", "7d"'),
     limit: z.number().optional().describe("Max results (default 20)"),
     offset: z.number().optional().describe("Skip N results for pagination"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ repository, cwd, status, path, since, limit, offset }) => {
+  async ({
+    repository,
+    cwd,
+    status,
+    path,
+    since,
+    limit,
+    offset,
+    fullPayloads,
+  }) => {
     const result = await service.listSessionSummaries({
       repository,
       cwd,
@@ -873,7 +919,9 @@ server.tool(
       limit,
       offset,
     });
-    return jsonContent(asArray(result).map(compactSessionSummary));
+    return jsonContent(
+      fullPayloads ? result : asArray(result).map(compactSessionSummary),
+    );
   },
 );
 

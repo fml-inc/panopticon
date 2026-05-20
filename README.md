@@ -31,6 +31,10 @@ panopticon install --target claude-desktop
 panopticon install --target pi
 ```
 
+Claude Desktop stores the absolute Node executable path in its MCP config
+because macOS GUI launches often do not inherit the shell `PATH`. CLI targets
+use a portable `node` command so installs can move between Node versions.
+
 Options:
 
 | Flag | Description |
@@ -163,6 +167,14 @@ but they become much richer once projections are enabled.
 | `why_code` | Best current local provenance explanation for a file path and optional line |
 | `recent_work_on_path` | Recent local intents, edits, and summaries that touched a file |
 | `file_overview` | File-centric overview with aggregate counts, best explanation, recent work, and related files |
+
+MCP tools that can return long histories are compact by default to keep agent
+context bounded. `sessions`, `timeline`, `summary`, `search`,
+`intent_for_code`, `search_intent`, `outcomes_for_intent`,
+`session_summaries`, and `session_summary_detail` accept `fullPayloads: true`
+when a caller needs the raw untruncated result. `get`, `query`, `costs`,
+`plans`, `why_code`, `recent_work_on_path`, and `file_overview` already return
+their direct result shapes.
 
 ## Context injection and code intelligence
 

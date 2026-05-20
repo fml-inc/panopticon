@@ -37,6 +37,21 @@ export interface ScannerRuntimeStatus {
   currentSessionId?: string;
 }
 
+const FRESH_STATUS_MAX_AGE_MS = 120_000;
+
+const DATABASE_REBUILD_PHASES = new Set<ScannerRuntimePhase>([
+  "claims_rebuild_init",
+  "claims_rebuild_claims",
+  "claims_rebuild_projection",
+  "claims_rebuild_finalize",
+  "reparse_init",
+  "reparse_scan",
+  "reparse_process",
+  "reparse_copy",
+  "reparse_derive",
+  "reparse_finalize",
+]);
+
 export function writeScannerStatus(
   status: Omit<ScannerRuntimeStatus, "updatedAtMs"> & { updatedAtMs?: number },
 ): void {
@@ -65,6 +80,40 @@ export function readScannerStatus(): ScannerRuntimeStatus | null {
   } catch {
     return null;
   }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+export function readFreshScannerStatus(
+  maxAgeMs = FRESH_STATUS_MAX_AGE_MS,
+): ScannerRuntimeStatus | null {
+  const status = readScannerStatus();
+  if (!status) return null;
+  if (
+    Date.now() - status.updatedAtMs > maxAgeMs &&
+    !isProcessAlive(status.pid)
+  ) {
+    return null;
+  }
+  return status;
+}
+
+export function isDatabaseRebuildPhase(
+  phase: string | null | undefined,
+): boolean {
+  return DATABASE_REBUILD_PHASES.has(phase as ScannerRuntimePhase);
+}
+
+export function readDatabaseRebuildStatus(): ScannerRuntimeStatus | null {
+  const status = readFreshScannerStatus();
+  return isDatabaseRebuildPhase(status?.phase) ? status : null;
 }
 
 export function clearScannerStatus(): void {

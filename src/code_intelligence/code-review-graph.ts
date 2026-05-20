@@ -63,20 +63,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
     try {
       const db = openGraphDb(graphDb);
       try {
-        const nodeCount = (
-          db.prepare("SELECT COUNT(*) AS c FROM nodes").get() as RawCrgCount
-        ).c;
-        const edgeCount = (
-          db.prepare("SELECT COUNT(*) AS c FROM edges").get() as RawCrgCount
-        ).c;
-        return {
-          provider: this.kind,
-          status: "ready",
-          repo_root: resolved,
-          graph_db: graphDb,
-          node_count: nodeCount,
-          edge_count: edgeCount,
-        };
+        return graphStatusFromDb(db, this.kind, resolved, graphDb);
       } finally {
         db.close();
       }
@@ -98,33 +85,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
   }): CodeIntelFileSummary {
     const db = openGraphDb(graphDbPath(input.repoRoot));
     try {
-      const filePath = selectGraphFilePath(
-        db,
-        resolveGraphFilePathCandidates(input.repoRoot, input.filePath),
-      );
-      const rows = db
-        .prepare(
-          `SELECT name, qualified_name, kind, file_path, line_start, line_end, is_test
-           FROM nodes
-           WHERE file_path = ?
-           ORDER BY CASE kind
-                      WHEN 'File' THEN 0
-                      WHEN 'Class' THEN 1
-                      WHEN 'Function' THEN 2
-                      WHEN 'Test' THEN 3
-                      ELSE 4
-                    END,
-                    COALESCE(line_start, 0),
-                    name
-           LIMIT ?`,
-        )
-        .all(filePath, input.limit ?? 20) as RawCrgNode[];
-
-      return {
-        file_path: filePath,
-        node_count: countFileNodes(db, filePath),
-        symbols: rows.map(toCodeIntelNode),
-      };
+      return fileSummaryFromDb(db, input);
     } finally {
       db.close();
     }
@@ -137,64 +98,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
   }): CodeIntelImpact {
     const db = openGraphDb(graphDbPath(input.repoRoot));
     try {
-      const changedFiles = input.changedFiles.flatMap((filePath) =>
-        resolveGraphFilePathCandidates(input.repoRoot, filePath),
-      );
-      const changedNodes = nodesForFiles(db, changedFiles);
-      const changedQualifiedNames = changedNodes.map(
-        (node) => node.qualified_name,
-      );
-      if (changedQualifiedNames.length === 0) {
-        return {
-          risk: "low",
-          directly_changed_nodes: 0,
-          impacted_nodes: 0,
-          additional_file_count: 0,
-          impacted_files: [],
-          key_entities: [],
-        };
-      }
-
-      const placeholders = changedQualifiedNames.map(() => "?").join(", ");
-      const impactedRows = db
-        .prepare(
-          `SELECT DISTINCT n.name, n.qualified_name, n.kind, n.file_path,
-                          n.line_start, n.line_end, n.is_test
-           FROM edges e
-           JOIN nodes n
-             ON n.qualified_name = CASE
-               WHEN e.source_qualified IN (${placeholders})
-               THEN e.target_qualified
-               ELSE e.source_qualified
-             END
-           WHERE e.source_qualified IN (${placeholders})
-              OR e.target_qualified IN (${placeholders})
-           LIMIT ?`,
-        )
-        .all(
-          ...changedQualifiedNames,
-          ...changedQualifiedNames,
-          ...changedQualifiedNames,
-          input.maxEntities ?? 200,
-        ) as RawCrgNode[];
-
-      const changedFileSet = new Set(changedFiles);
-      const additionalFiles = new Set(
-        impactedRows
-          .map((row) => row.file_path)
-          .filter((filePath) => !changedFileSet.has(filePath)),
-      );
-      const impacted = impactedRows.map(toCodeIntelNode);
-      const impactedCount = impacted.length;
-      return {
-        risk:
-          impactedCount > 20 ? "high" : impactedCount > 5 ? "medium" : "low",
-        directly_changed_nodes: changedNodes.length,
-        impacted_nodes: impactedCount,
-        additional_file_count: additionalFiles.size,
-        impacted_files: [...additionalFiles],
-        key_entities: impacted.slice(0, 5).map((node) => node.name),
-      };
+      return impactFromDb(db, input);
     } finally {
       db.close();
     }
@@ -207,10 +111,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
   }): CodeIntelCallerSummary {
     const db = openGraphDb(graphDbPath(input.repoRoot));
     try {
-      const target =
-        resolveTargetQualifiedName(db, input.target) ?? input.target;
-      const callers = loadCallers(db, target, input.limit ?? 20);
-      return { target, callers };
+      return callersFromDb(db, input);
     } finally {
       db.close();
     }
@@ -233,21 +134,32 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
     repoRoot: string | null;
     filePath: string;
   }): CodeIntelFileOverview {
-    const status = this.status(input.repoRoot);
-    if (status.status !== "ready" || !status.repo_root) {
+    const resolved = resolveRepoRoot(input.repoRoot);
+    if (!resolved) {
       return {
         provider: this.kind,
-        status: status.status,
-        repo_root: status.repo_root,
-        graph_db: status.graph_db,
-        message: status.message,
-        warnings: status.warnings,
+        status: "unavailable",
+        repo_root: null,
+        graph_db: null,
+        message: "No local repository root is available for code intelligence.",
       };
     }
 
+    const graphDb = graphDbPath(resolved);
+    if (!fs.existsSync(graphDb)) {
+      return {
+        provider: this.kind,
+        status: "unavailable",
+        repo_root: resolved,
+        graph_db: graphDb,
+        message: "No code-review-graph graph.db was found for this repository.",
+      };
+    }
+
+    const db = openGraphDb(graphDb);
     try {
-      const file = this.fileSummary({
-        repoRoot: status.repo_root,
+      const file = fileSummaryFromDb(db, {
+        repoRoot: resolved,
         filePath: input.filePath,
         limit: 32,
       });
@@ -257,16 +169,16 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
         .map((symbol) => symbol.qualified_name);
       const callers = targets
         .map((target) =>
-          this.callers({ repoRoot: status.repo_root!, target, limit: 10 }),
+          callersFromDb(db, { repoRoot: resolved, target, limit: 10 }),
         )
         .filter((summary) => summary.callers.length > 0);
-      const suggestedTests = this.suggestedTests({
-        repoRoot: status.repo_root,
+      const suggestedTests = suggestedTestsForTargets(
+        db,
         targets,
-        limit: COMPACT_RELATED_FILE_LIMIT,
-      });
-      const impact = this.impact({
-        repoRoot: status.repo_root,
+        COMPACT_RELATED_FILE_LIMIT,
+      );
+      const impact = impactFromDb(db, {
+        repoRoot: resolved,
         changedFiles: [input.filePath],
         maxEntities: 200,
       });
@@ -275,7 +187,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
         provider: this.kind,
         status: "ready",
         related_files: rankRelatedFiles({
-          repoRoot: status.repo_root,
+          repoRoot: resolved,
           seedFilePath: file.file_path,
           callers,
           impact,
@@ -288,10 +200,12 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
       return {
         provider: this.kind,
         status: "error",
-        repo_root: status.repo_root,
-        graph_db: status.graph_db,
+        repo_root: resolved,
+        graph_db: graphDb,
         message: errorMessage(err),
       };
+    } finally {
+      db.close();
     }
   }
 }
@@ -311,6 +225,143 @@ function graphDbPath(repoRoot: string): string {
 
 function openGraphDb(graphDb: string): Database {
   return new Database(graphDb, { readonly: true, fileMustExist: true });
+}
+
+function graphStatusFromDb(
+  db: Database,
+  provider: "code-review-graph",
+  repoRoot: string,
+  graphDb: string,
+): CodeIntelStatus {
+  const nodeCount = (
+    db.prepare("SELECT COUNT(*) AS c FROM nodes").get() as RawCrgCount
+  ).c;
+  const edgeCount = (
+    db.prepare("SELECT COUNT(*) AS c FROM edges").get() as RawCrgCount
+  ).c;
+  return {
+    provider,
+    status: "ready",
+    repo_root: repoRoot,
+    graph_db: graphDb,
+    node_count: nodeCount,
+    edge_count: edgeCount,
+  };
+}
+
+function fileSummaryFromDb(
+  db: Database,
+  input: {
+    repoRoot: string;
+    filePath: string;
+    limit?: number;
+  },
+): CodeIntelFileSummary {
+  const filePath = selectGraphFilePath(
+    db,
+    resolveGraphFilePathCandidates(input.repoRoot, input.filePath),
+  );
+  const rows = db
+    .prepare(
+      `SELECT name, qualified_name, kind, file_path, line_start, line_end, is_test
+       FROM nodes
+       WHERE file_path = ?
+       ORDER BY CASE kind
+                  WHEN 'File' THEN 0
+                  WHEN 'Class' THEN 1
+                  WHEN 'Function' THEN 2
+                  WHEN 'Test' THEN 3
+                  ELSE 4
+                END,
+                COALESCE(line_start, 0),
+                name
+       LIMIT ?`,
+    )
+    .all(filePath, input.limit ?? 20) as RawCrgNode[];
+
+  return {
+    file_path: filePath,
+    node_count: countFileNodes(db, filePath),
+    symbols: rows.map(toCodeIntelNode),
+  };
+}
+
+function impactFromDb(
+  db: Database,
+  input: {
+    repoRoot: string;
+    changedFiles: string[];
+    maxEntities?: number;
+  },
+): CodeIntelImpact {
+  const changedFiles = input.changedFiles.flatMap((filePath) =>
+    resolveGraphFilePathCandidates(input.repoRoot, filePath),
+  );
+  const changedNodes = nodesForFiles(db, changedFiles);
+  const changedQualifiedNames = changedNodes.map((node) => node.qualified_name);
+  if (changedQualifiedNames.length === 0) {
+    return {
+      risk: "low",
+      directly_changed_nodes: 0,
+      impacted_nodes: 0,
+      additional_file_count: 0,
+      impacted_files: [],
+      key_entities: [],
+    };
+  }
+
+  const placeholders = changedQualifiedNames.map(() => "?").join(", ");
+  const impactedRows = db
+    .prepare(
+      `SELECT DISTINCT n.name, n.qualified_name, n.kind, n.file_path,
+                      n.line_start, n.line_end, n.is_test
+       FROM edges e
+       JOIN nodes n
+         ON n.qualified_name = CASE
+           WHEN e.source_qualified IN (${placeholders})
+           THEN e.target_qualified
+           ELSE e.source_qualified
+         END
+       WHERE e.source_qualified IN (${placeholders})
+          OR e.target_qualified IN (${placeholders})
+       LIMIT ?`,
+    )
+    .all(
+      ...changedQualifiedNames,
+      ...changedQualifiedNames,
+      ...changedQualifiedNames,
+      input.maxEntities ?? 200,
+    ) as RawCrgNode[];
+
+  const changedFileSet = new Set(changedFiles);
+  const additionalFiles = new Set(
+    impactedRows
+      .map((row) => row.file_path)
+      .filter((filePath) => !changedFileSet.has(filePath)),
+  );
+  const impacted = impactedRows.map(toCodeIntelNode);
+  const impactedCount = impacted.length;
+  return {
+    risk: impactedCount > 20 ? "high" : impactedCount > 5 ? "medium" : "low",
+    directly_changed_nodes: changedNodes.length,
+    impacted_nodes: impactedCount,
+    additional_file_count: additionalFiles.size,
+    impacted_files: [...additionalFiles],
+    key_entities: impacted.slice(0, 5).map((node) => node.name),
+  };
+}
+
+function callersFromDb(
+  db: Database,
+  input: {
+    repoRoot: string;
+    target: string;
+    limit?: number;
+  },
+): CodeIntelCallerSummary {
+  const target = resolveTargetQualifiedName(db, input.target) ?? input.target;
+  const callers = loadCallers(db, target, input.limit ?? 20);
+  return { target, callers };
 }
 
 function resolveGraphFilePathCandidates(
