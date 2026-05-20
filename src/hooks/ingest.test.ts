@@ -529,6 +529,51 @@ describe("processHookEvent", () => {
     ).toContain("Panopticon read context");
   });
 
+  it("allows read-time file context for Codex target hooks", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const response = processHookEvent({
+      session_id: "codex-reader",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: filePath },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("allows edit-time file context for Codex target hooks", () => {
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const response = processHookEvent({
+      session_id: "codex-editor",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Edit",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        file_path: filePath,
+        old_string: "before",
+        new_string: "after",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon file context");
+  });
+
   it("dedupes read-time file context independently of edit-time context", () => {
     testConfig.enablePreToolUseReadContextInjection = true;
     const filePath = "/workspace/panopticon/src/read-context.ts";
