@@ -164,9 +164,56 @@ but they become much richer once projections are enabled.
 | `recent_work_on_path` | Recent local intents, edits, and summaries that touched a file |
 | `file_overview` | File-centric overview with aggregate counts, best explanation, recent work, and related files |
 
+## Context injection and code intelligence
+
+Panopticon can proactively return bounded `additionalContext` from hooks instead
+of waiting for the agent to call an MCP tool. These injections are deterministic
+and provenance-backed; they stay silent when Panopticon has no relevant local
+history.
+
+| Surface | Flag | Default | Behavior |
+|---------|------|---------|----------|
+| Session start history | `PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION` | `1` | Adds recent local session history for the current cwd on `SessionStart` |
+| Prompt-relevant history | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | Adds prompt-matched local history on mid-session `UserPromptSubmit`; the first prompt is intentionally silent |
+| Edit-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Adds file provenance before edit tools when the file has prior history; deduped once per session/path |
+| Read-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `0` | Adds short provenance before `Read` for files with prior history; currently opt-in while measuring noise |
+| Code Review Graph enrichment | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Adds `code_intel` to `file_overview` when the repo has `.code-review-graph/graph.db` |
+
+Flags are read by the Panopticon server at startup. For a one-off test:
+
+```bash
+panopticon stop
+PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1 \
+PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1 \
+panopticon start --force
+```
+
+For persistent use, add the desired `export PANOPTICON_...=1` lines to the
+same shell profile that launches your AI coding tool, then restart Panopticon
+and start a new agent session. `panopticon install` does not add experimental
+feature flags automatically.
+
+To use Code Review Graph enrichment, install/build Code Review Graph in each
+repo you want enriched:
+
+```bash
+pipx install code-review-graph   # or: pip install code-review-graph
+cd /path/to/repo
+code-review-graph build
+code-review-graph status
+```
+
+Panopticon reads the repo-local `.code-review-graph/graph.db` directly. If the
+graph is missing or stale, `file_overview` still works and reports
+`code_intel.status: unavailable` or returns older graph-derived relationships.
+Use `code-review-graph update` or `code-review-graph watch` to keep the graph
+fresh. To expose Code Review Graph as its own MCP server, also run
+`code-review-graph install`.
+
 ## Docs
 
 - [Daemon execution model](docs/DAEMON-EXECUTION-MODEL.md) explains the current scanner/sync/summary/prune loop topology and the planned concurrency/workpooling follow-up.
+- [Context injection and Code Review Graph](docs/CONTEXT-INTELLIGENCE.md) explains the proactive context flags, runtime semantics, and CRG setup.
 - [Session summaries and code provenance](docs/LOCAL-WORKSTREAMS-V1.md) explains the local read model behind `why_code`, `recent_work_on_path`, `file_overview`, and the projection-backed session summary views.
 - [Durable IDs and provenance foundation plan](docs/DURABLE-IDS-PLAN.md) captures the remaining repo/file provenance and evidence-ref follow-up work.
 - [Inference interfaces](docs/INFERENCE-INTERFACES.md) defines the deterministic-fallback and optional-LLM contract for future enrichments.
@@ -300,6 +347,11 @@ Target-specific env vars are declared by each target adapter in `src/targets/`.
 | `PANOPTICON_LOG_ROTATE_BYTES` | `10485760` | Rotate a daemon log before startup when it reaches this size; `0` disables rotation |
 | `PANOPTICON_LOG_ROTATE_FILES` | `5` | Number of rotated daemon log files to keep; `0` disables rotation |
 | `PANOPTICON_SERVER_START_BACKOFF_SCHEDULE_MS` | `5000,15000,30000,60000,120000,300000` | Consecutive native daemon start-failure delays before another spawn attempt |
+| `PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION` | `1` | Enable recent-history `SessionStart` context injection |
+| `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | Enable prompt-relevant mid-session `UserPromptSubmit` context injection |
+| `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Enable edit-time file provenance injection for supported `PreToolUse` edit tools |
+| `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `0` | Enable opt-in read-time provenance injection for `PreToolUse` `Read` |
+| `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Enable Code Review Graph enrichment inside `file_overview` |
 
 `hook-handler.log` now keeps server startup, warnings, and errors at the default `info` level. Per-event success-path lines are only written when `PANOPTICON_LOG_LEVEL=debug` (or lower).
 
