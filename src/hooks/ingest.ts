@@ -665,12 +665,13 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       data,
       target,
     );
-    // Point-of-use provenanced file context: when Claude is about to edit a
-    // file with prior history, surface it alongside the permission decision.
-    // Native shape only (target adapters format their own responses).
+    // Point-of-use provenanced file context: when an additionalContext-capable
+    // target is about to edit a file with prior history, surface it alongside
+    // the permission decision. Codex PreToolUse allow responses stay a no-op;
+    // this only adds context and does not approve the tool.
     if (
       eventType === "PreToolUse" &&
-      !target &&
+      canInjectPreToolUseAdditionalContext(target) &&
       config.enablePreToolUseFileContextInjection &&
       FILE_CONTEXT_TOOLS.has(toolName)
     ) {
@@ -690,8 +691,8 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
     // Read-time provenance context is intentionally separate from edit-time
     // context: reads are frequent, so keep this behind its own flag and
-    // dedupe independently. Claude's PreToolUse response shape supports
-    // additionalContext, so allow it despite target adapter resolution.
+    // dedupe independently. Only targets known to consume hookSpecificOutput
+    // additionalContext receive this payload.
     if (
       eventType === "PreToolUse" &&
       canInjectPreToolUseAdditionalContext(target) &&
@@ -789,7 +790,12 @@ function buildUserPromptSubmitContextResponse(
 function canInjectPreToolUseAdditionalContext(
   target: TargetAdapter | undefined,
 ): boolean {
-  return !target || target.id === "claude";
+  return (
+    !target ||
+    target.id === "claude" ||
+    target.id === "claude-desktop" ||
+    target.id === "codex"
+  );
 }
 
 function buildPreToolUseFileContextOnce(

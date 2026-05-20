@@ -19,7 +19,7 @@ more important than token budget.
 
 Targets that do not consume hook `additionalContext` still record hook events,
 but may not show injected text to the model. The current point-of-use read path
-is verified against Claude-style `PreToolUse` responses.
+is verified against Claude/Codex-style `PreToolUse` responses.
 
 ## Runtime Flags
 
