@@ -1172,7 +1172,8 @@ program
       console.log("Database: not initialized (run 'panopticon install')");
     }
 
-    // Sync targets
+    // Sync state is always reported so an enabled-but-idle configuration is
+    // visible from `panopticon status`.
     try {
       const cfg = loadUnifiedConfig();
       const targets = cfg.sync.targets;
@@ -1185,7 +1186,13 @@ program
             console.log(`  ${t.name} → ${t.url}`);
           }
         }
-      } else if (targets.length > 0) {
+      } else if (targets.length === 0) {
+        console.log();
+        console.log(
+          "Sync: enabled but no targets configured; nothing is syncing",
+        );
+        console.log("  Add one with: panopticon sync add <name> <url>");
+      } else {
         console.log();
         console.log("Sync targets:");
         for (const t of targets) {
@@ -1211,7 +1218,8 @@ program
         }
       }
     } catch {
-      // Sync not configured
+      console.log();
+      console.log("Sync: (could not read sync config)");
     }
   });
 
