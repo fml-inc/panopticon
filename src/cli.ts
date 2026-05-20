@@ -958,12 +958,14 @@ program
       console.log("Database: not initialized (run 'panopticon install')");
     }
 
-    // Sync targets
+    // Sync
+    console.log();
     try {
       const cfg = loadUnifiedConfig();
       const targets = cfg.sync.targets;
-      if (targets.length > 0) {
-        console.log();
+      if (targets.length === 0) {
+        console.log("Sync: no targets configured — nothing is being synced");
+      } else {
         console.log("Sync targets:");
         for (const t of targets) {
           console.log(`  ${t.name} → ${t.url}`);
@@ -986,7 +988,7 @@ program
         }
       }
     } catch {
-      // Sync not configured
+      console.log("Sync: (could not read sync config)");
     }
   });
 
