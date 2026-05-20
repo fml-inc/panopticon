@@ -54,6 +54,7 @@ import path from "node:path";
 import { LocalArchiveBackend } from "./archive/local.js";
 import { config } from "./config.js";
 import { costBreakdown, search, sessionTimeline } from "./db/query.js";
+import { beginDatabaseRebuildGate } from "./db/rebuild-gate.js";
 import { closeDb, getDb } from "./db/schema.js";
 import {
   insertOtelMetrics,
@@ -618,6 +619,67 @@ describe("server integration", () => {
   });
 
   describe("edge cases", () => {
+    it("blocks database-backed HTTP routes while a parent rebuild gate is active", async () => {
+      const gate = beginDatabaseRebuildGate({
+        phase: "reparse_init",
+        message: "Startup scanner worker is running atomic reparse...",
+      });
+
+      try {
+        const hook = await post("/hooks", {
+          session_id: "blocked-during-rebuild",
+          hook_event_name: "Stop",
+        });
+        expect(hook.status).toBe(503);
+        expect(hook.body).toMatchObject({
+          phase: "reparse_init",
+          message: "Startup scanner worker is running atomic reparse...",
+        });
+
+        const logs = await post("/v1/logs", otelLogsPayload);
+        expect(logs.status).toBe(503);
+        expect(logs.body).toMatchObject({ phase: "reparse_init" });
+
+        const exec = await post("/api/exec", {
+          command: "scan",
+          params: {},
+        });
+        expect(exec.status).toBe(503);
+        expect(exec.body).toMatchObject({ phase: "reparse_init" });
+
+        const query = await post("/api/tool", {
+          name: "query",
+          params: { sql: "SELECT 1" },
+        });
+        expect(query.status).toBe(503);
+        expect(query.body).toMatchObject({ phase: "reparse_init" });
+
+        const status = await post("/api/tool", {
+          name: "status",
+          params: {},
+        });
+        expect(status.status).toBe(200);
+        expect(status.body).toMatchObject({
+          database_stats_unavailable: true,
+          scanner: {
+            phase: "reparse_init",
+            message: "Startup scanner worker is running atomic reparse...",
+          },
+        });
+      } finally {
+        gate.release();
+      }
+
+      const afterRelease = await post("/api/tool", {
+        name: "status",
+        params: {},
+      });
+      expect(afterRelease.status).toBe(200);
+      expect(afterRelease.body).not.toHaveProperty(
+        "database_stats_unavailable",
+      );
+    });
+
     it("returns 404 for unknown routes", async () => {
       const res = await fetch(`${baseUrl}/nonexistent`);
       expect(res.status).toBe(404);
