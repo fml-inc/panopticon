@@ -32,7 +32,15 @@ vi.mock("./startup-task.js", () => ({
 }));
 
 import { closeDb, getDb } from "./db/schema.js";
-import { doctor, readSyncTargetLabel } from "./doctor.js";
+import { doctor, readSyncTargetLabel, syncStatusCheck } from "./doctor.js";
+import type { UnifiedConfig } from "./unified-config.js";
+
+function cfg(sync: UnifiedConfig["sync"]): UnifiedConfig {
+  return {
+    sync,
+    retention: { maxAgeDays: 90, maxSizeMb: 1000 },
+  };
+}
 
 function insertSyncedSession(): void {
   const db = getDb();
@@ -120,5 +128,54 @@ describe("doctor lifecycle checks", () => {
         "Server Log",
       ]),
     );
+  });
+});
+
+describe("syncStatusCheck", () => {
+  it("reports explicit disabled sync as ok", () => {
+    expect(syncStatusCheck(cfg({ enabled: false, targets: [] }))).toEqual({
+      label: "Sync",
+      status: "ok",
+      detail: "Disabled",
+    });
+  });
+
+  it("reports disabled sync with configured targets as inactive", () => {
+    expect(
+      syncStatusCheck(
+        cfg({
+          enabled: false,
+          targets: [{ name: "prod", url: "http://prod" }],
+        }),
+      ),
+    ).toEqual({
+      label: "Sync",
+      status: "ok",
+      detail: "Disabled (1 target configured)",
+    });
+  });
+
+  it("warns when sync is enabled without targets", () => {
+    const check = syncStatusCheck(cfg({ enabled: true, targets: [] }));
+
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("no targets configured");
+    expect(check.detail).toContain("panopticon sync add");
+  });
+
+  it("reports configured targets with sync state", () => {
+    expect(
+      syncStatusCheck(
+        cfg({
+          enabled: true,
+          targets: [{ name: "prod", url: "http://prod" }],
+        }),
+        () => "not synced yet",
+      ),
+    ).toEqual({
+      label: "Sync",
+      status: "ok",
+      detail: "1 target: prod → http://prod (not synced yet)",
+    });
   });
 });

@@ -29,6 +29,7 @@ describe("unified config", () => {
 
   it("returns defaults when no files exist", () => {
     const cfg = loadUnifiedConfig();
+    expect(cfg.sync.enabled).toBe(true);
     expect(cfg.sync.targets).toEqual([]);
     expect(cfg.retention.maxAgeDays).toBe(90);
     expect(cfg.retention.maxSizeMb).toBe(1000);
@@ -44,6 +45,7 @@ describe("unified config", () => {
       }),
     );
     const cfg = loadUnifiedConfig();
+    expect(cfg.sync.enabled).toBe(true);
     expect(cfg.sync.targets).toHaveLength(1);
     expect(cfg.sync.targets[0].name).toBe("prod");
     expect(cfg.retention.maxAgeDays).toBe(30);
@@ -72,6 +74,26 @@ describe("unified config", () => {
     const cfg = loadUnifiedConfig();
     expect(cfg.retention.maxAgeDays).toBe(90);
     expect(cfg.retention.maxSizeMb).toBe(1000);
+  });
+
+  it("preserves explicit disabled sync while filling missing targets", () => {
+    fs.writeFileSync(
+      path.join(config.dataDir, "config.json"),
+      JSON.stringify({ sync: { enabled: false } }),
+    );
+    const cfg = loadUnifiedConfig();
+    expect(cfg.sync.enabled).toBe(false);
+    expect(cfg.sync.targets).toEqual([]);
+  });
+
+  it("preserves explicit enabled sync while filling missing targets", () => {
+    fs.writeFileSync(
+      path.join(config.dataDir, "config.json"),
+      JSON.stringify({ sync: { enabled: true } }),
+    );
+    const cfg = loadUnifiedConfig();
+    expect(cfg.sync.enabled).toBe(true);
+    expect(cfg.sync.targets).toEqual([]);
   });
 
   it("save and load round-trips", () => {

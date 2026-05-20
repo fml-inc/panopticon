@@ -21,7 +21,7 @@ import {
 import { readWindowsStartupTaskStatus } from "./startup-task.js";
 import { readSyncPending } from "./sync/pending.js";
 import { allTargets } from "./targets/index.js";
-import { loadUnifiedConfig } from "./unified-config.js";
+import { loadUnifiedConfig, type UnifiedConfig } from "./unified-config.js";
 
 export interface CheckResult {
   label: string;
@@ -109,6 +109,48 @@ export function readSyncTargetLabel(targetName: string): string {
   return maxSyncedSeq > 0
     ? `${formatCount(confirmed, "session")} synced to #${maxSyncedSeq}`
     : `${formatCount(confirmed, "session")} synced`;
+}
+
+/**
+ * Build the "Sync" health check from config.
+ *
+ * Disabled sync is explicit, configured targets report their sync labels, and
+ * the enabled/default state with no targets warns because no data can sync.
+ */
+export function syncStatusCheck(
+  cfg: UnifiedConfig,
+  readTargetLabel: (targetName: string) => string = readSyncTargetLabel,
+): CheckResult {
+  const targets = cfg.sync.targets;
+  if (cfg.sync.enabled === false) {
+    return {
+      label: "Sync",
+      status: "ok",
+      detail:
+        targets.length === 0
+          ? "Disabled"
+          : `Disabled (${formatCount(targets.length, "target")} configured)`,
+    };
+  }
+
+  if (targets.length === 0) {
+    return {
+      label: "Sync",
+      status: "warn",
+      detail:
+        "Enabled but no targets configured; nothing will sync. Add one with `panopticon sync add <name> <url>`.",
+    };
+  }
+
+  const targetDetails = targets.map(
+    (target) =>
+      `${target.name} → ${target.url} (${readTargetLabel(target.name)})`,
+  );
+  return {
+    label: "Sync",
+    status: "ok",
+    detail: `${targets.length} target${targets.length > 1 ? "s" : ""}: ${targetDetails.join("; ")}`,
+  };
 }
 
 /**
@@ -346,35 +388,7 @@ export async function doctor(): Promise<DoctorResult> {
 
   // 6. Sync targets
   try {
-    const cfg = loadUnifiedConfig();
-    const targets = cfg.sync.targets;
-    if (cfg.sync.enabled === false) {
-      checks.push({
-        label: "Sync",
-        status: "ok",
-        detail:
-          targets.length === 0
-            ? "Disabled"
-            : `Disabled (${formatCount(targets.length, "target")} configured)`,
-      });
-    } else if (targets.length === 0) {
-      checks.push({
-        label: "Sync",
-        status: "ok",
-        detail: "No targets configured",
-      });
-    } else {
-      const targetDetails: string[] = [];
-      for (const t of targets) {
-        const wmLabel = readSyncTargetLabel(t.name);
-        targetDetails.push(`${t.name} → ${t.url} (${wmLabel})`);
-      }
-      checks.push({
-        label: "Sync",
-        status: "ok",
-        detail: `${targets.length} target${targets.length > 1 ? "s" : ""}: ${targetDetails.join("; ")}`,
-      });
-    }
+    checks.push(syncStatusCheck(loadUnifiedConfig()));
   } catch {
     checks.push({
       label: "Sync",
