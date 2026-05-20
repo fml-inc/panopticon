@@ -31,11 +31,15 @@ const sqlite = process.getBuiltinModule(
 const { DatabaseSync } = sqlite;
 type DatabaseSync = DatabaseSyncType;
 
+const DEFAULT_BUSY_TIMEOUT_MS = 30_000;
+
 export interface OpenOptions {
   /** Open the file read-only. Maps to node:sqlite's `readOnly`. */
   readonly?: boolean;
   /** Throw if the file does not already exist. node:sqlite has no equivalent — emulated via fs.existsSync. */
   fileMustExist?: boolean;
+  /** Milliseconds to wait when another connection holds a SQLite lock. */
+  timeout?: number;
 }
 
 /** Bind value accepted by node:sqlite's prepared statements. */
@@ -129,6 +133,7 @@ export class Database {
     }
     this.db = new DatabaseSync(filename, {
       readOnly: options.readonly === true,
+      timeout: options.timeout ?? DEFAULT_BUSY_TIMEOUT_MS,
     });
   }
 

@@ -22,6 +22,7 @@ vi.mock("../config.js", () => {
 
 import { config } from "../config.js";
 import { Database } from "../db/driver.js";
+import { beginDatabaseRebuildGate } from "../db/rebuild-gate.js";
 import {
   closeDb,
   getDb,
@@ -50,6 +51,21 @@ afterEach(() => {
 });
 
 describe("data version registry", () => {
+  it("refuses to open the parent DB while a rebuild gate is active", () => {
+    const gate = beginDatabaseRebuildGate({
+      phase: "reparse_init",
+      message: "Startup scanner worker is running atomic reparse...",
+    });
+
+    try {
+      expect(() => getDb()).toThrow(/database rebuild in progress/);
+    } finally {
+      gate.release();
+    }
+
+    expect(() => getDb()).not.toThrow();
+  });
+
   it("fresh empty DB boots with current component versions", () => {
     getDb();
 

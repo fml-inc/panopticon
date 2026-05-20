@@ -8,7 +8,11 @@
 import type http from "node:http";
 import { needsResync } from "../db/schema.js";
 import { log } from "../log.js";
-import { readScannerStatus } from "../scanner/status.js";
+import {
+  type DatabaseRebuildStatus,
+  readDatabaseRebuildStatus,
+  readScannerStatus,
+} from "../scanner/status.js";
 import {
   directPanopticonService,
   dispatchExec,
@@ -48,8 +52,10 @@ function jsonResponse(
   res.end(JSON.stringify(data));
 }
 
-function writeResyncPendingResponse(res: http.ServerResponse): void {
-  const status = readScannerStatus();
+function writeResyncPendingResponse(
+  res: http.ServerResponse,
+  status: DatabaseRebuildStatus | null = readScannerStatus(),
+): void {
   jsonResponse(res, 503, {
     error:
       "Panopticon is rebuilding derived state. Retry when the rebuild completes.",
@@ -80,6 +86,23 @@ export async function handleApiRequest(
         error: `Unknown tool: ${name}`,
         available: TOOL_NAMES,
       });
+      return;
+    }
+    const databaseRebuildStatus = readDatabaseRebuildStatus();
+    if (databaseRebuildStatus) {
+      if (name === "status") {
+        jsonResponse(res, 200, {
+          database_stats_unavailable: true,
+          scanner: {
+            phase: databaseRebuildStatus.phase,
+            message: databaseRebuildStatus.message,
+            updated_at_ms: databaseRebuildStatus.updatedAtMs,
+            started_at_ms: databaseRebuildStatus.startedAtMs,
+          },
+        });
+        return;
+      }
+      writeResyncPendingResponse(res, databaseRebuildStatus);
       return;
     }
     if (TOOLS_REQUIRING_DERIVED_STATE.has(name) && needsResync()) {

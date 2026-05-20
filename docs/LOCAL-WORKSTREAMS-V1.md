@@ -625,9 +625,23 @@ Response:
       "shared_session_summary_count": 1,
       "last_status": "current"
     }
-  ]
+  ],
+  "code_intel": {
+    "provider": "code-review-graph",
+    "status": "ready",
+    "related_files": [
+      "src/service/direct.ts",
+      "src/mcp/server.ts"
+    ]
+  }
 }
 ```
+
+`code_intel` is optional and only appears when
+`PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1`. The current provider reads a
+repo-local `.code-review-graph/graph.db`; if the graph is missing,
+`file_overview` still returns Panopticon provenance and reports the provider as
+unavailable. See `docs/CONTEXT-INTELLIGENCE.md` for setup and runtime flags.
 
 ## Query Implementation Sketch
 

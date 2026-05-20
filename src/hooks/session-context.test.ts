@@ -23,9 +23,11 @@ import type { FileOverviewResult } from "../session_summaries/query.js";
 import { isFirstUserPromptSubmit } from "./ingest.js";
 import {
   buildPreToolUseFileContext,
+  buildPreToolUseReadFileContext,
   buildSessionStartRecentHistoryContext,
   buildUserPromptSubmitLocalContext,
   formatPreToolUseFileContext,
+  formatPreToolUseReadFileContext,
 } from "./session-context.js";
 
 const cwd = path.join(os.tmpdir(), "panopticon-session-context-cwd");
@@ -617,6 +619,91 @@ describe("PreToolUse file context", () => {
     expect(out).toContain("superseded=1");
     expect(out).toContain("src/config.ts");
     expect(out).toContain("why_code");
+  });
+
+  it("renders a shorter read-time provenance context", () => {
+    const overview: FileOverviewResult = {
+      path: "src/auth.ts",
+      repository: "fml-inc/panopticon",
+      summary: {
+        intent_count: 3,
+        edit_count: 7,
+        session_summary_count: 2,
+        current_edit_count: 4,
+        superseded_edit_count: 1,
+        reverted_edit_count: 2,
+        unknown_edit_count: 0,
+        first_edit_ts_ms: 1,
+        last_edit_ts_ms: 2,
+      },
+      current: {
+        status: "current",
+        confidence: 0.8,
+        binding_level: "file",
+        session_summary_id: 9,
+        session_summary_title: "switch auth source",
+        intent_unit_id: 42,
+        intent_edit_id: 7,
+        prompt_text: "read cfg.talk not cfg.tts",
+        snippet_preview: null,
+      },
+      recent: [],
+      related_files: [
+        {
+          file_path: "src/config.ts",
+          shared_intent_count: 2,
+          shared_session_summary_count: 1,
+          last_touched_ts_ms: 2,
+          last_status: "current",
+        },
+      ],
+    };
+    const out = formatPreToolUseReadFileContext(overview);
+    expect(out).toContain("Panopticon read context");
+    expect(out).toContain("src/auth.ts");
+    expect(out).toContain("7 edit(s) across 3 intent(s)");
+    expect(out).toContain('"read cfg.talk not cfg.tts"');
+    expect(out).toContain("src/config.ts");
+    expect(out.length).toBeLessThanOrEqual(700);
+  });
+
+  it("builds read-time context only for files with provenance", () => {
+    const file = path.join(cwd, "src/read-target.ts");
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO intent_units
+       (id, intent_key, session_id, prompt_text, prompt_ts_ms, cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "intent:read-target",
+      "session-read",
+      "implement read target behavior",
+      1_000,
+      cwd,
+      "fml-inc/panopticon",
+    );
+    db.prepare(
+      `INSERT INTO intent_edits
+       (id, edit_key, intent_unit_id, session_id, timestamp_ms, file_path, landed)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(1, "edit:read-target", 1, "session-read", 1_100, file, 1);
+
+    const context = buildPreToolUseReadFileContext({
+      cwd,
+      repository: "fml-inc/panopticon",
+      tool_input: { file_path: file },
+    });
+    expect(context).toContain("Panopticon read context");
+    expect(context).toContain("read-target.ts");
+
+    expect(
+      buildPreToolUseReadFileContext({
+        cwd,
+        repository: "fml-inc/panopticon",
+        tool_input: { file_path: path.join(cwd, "src/unknown.ts") },
+      }),
+    ).toBeNull();
   });
 });
 

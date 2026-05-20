@@ -30,6 +30,7 @@ export default defineConfig({
     pricing: "src/db/pricing.ts",
     permissions: "src/mcp/permissions.ts",
     scanner: "src/scanner.ts",
+    "scanner/worker": "src/scanner/worker.ts",
     index: "src/index.ts",
     "hooks/handler": "src/hooks/handler.ts",
     "mcp/server": "src/mcp/server.ts",

@@ -2,6 +2,7 @@ import type { OtelLogRow, OtelMetricRow } from "../db/store.js";
 import { insertOtelLogs, insertOtelMetrics } from "../db/store.js";
 import { processHookEvent } from "../hooks/ingest.js";
 import { log } from "../log.js";
+import { readDatabaseRebuildStatus } from "../scanner/status.js";
 
 export interface HookInput {
   session_id: string;
@@ -17,12 +18,23 @@ export interface HookInput {
 
 /** Process a hook event in-process (no subprocess spawn). */
 export function emitHookEvent(event: HookInput): Record<string, unknown> {
+  const rebuild = readDatabaseRebuildStatus();
+  if (rebuild) {
+    return { skipped: "database_rebuild", phase: rebuild.phase };
+  }
   return processHookEvent(event);
 }
 
 /** Fire and forget — log errors but don't block. */
 export function emitHookEventAsync(event: HookInput): void {
   try {
+    const rebuild = readDatabaseRebuildStatus();
+    if (rebuild) {
+      if (process.env.PANOPTICON_DEBUG) {
+        log.proxy.debug(`Skipping proxy hook capture during ${rebuild.phase}`);
+      }
+      return;
+    }
     processHookEvent(event);
   } catch (err) {
     if (process.env.PANOPTICON_DEBUG) {
@@ -42,6 +54,13 @@ export interface OtelMetricPayload {
 /** Write OTel metrics directly to DB (no HTTP round-trip). */
 export function emitOtelMetrics(metrics: OtelMetricPayload[]): void {
   if (metrics.length === 0) return;
+  const rebuild = readDatabaseRebuildStatus();
+  if (rebuild) {
+    if (process.env.PANOPTICON_DEBUG) {
+      log.proxy.debug(`Skipping proxy metric capture during ${rebuild.phase}`);
+    }
+    return;
+  }
 
   const now = Date.now() * 1_000_000; // ms → ns
 
@@ -76,6 +95,13 @@ export function emitOtelLogs(
   }[],
 ): void {
   if (logs.length === 0) return;
+  const rebuild = readDatabaseRebuildStatus();
+  if (rebuild) {
+    if (process.env.PANOPTICON_DEBUG) {
+      log.proxy.debug(`Skipping proxy log capture during ${rebuild.phase}`);
+    }
+    return;
+  }
 
   const now = Date.now() * 1_000_000;
 

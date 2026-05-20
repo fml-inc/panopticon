@@ -123,9 +123,9 @@ const gemini: TargetAdapter = {
           hooks: [
             {
               type: "command",
-              command: `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
-                hookBin,
-              )} gemini ${opts.port}${opts.proxy ? " --proxy" : ""}`,
+              command: `node ${quoteCommandArg(hookBin)} gemini ${opts.port}${
+                opts.proxy ? " --proxy" : ""
+              }`,
             },
           ],
         });
@@ -136,7 +136,7 @@ const gemini: TargetAdapter = {
       settings.mcpServers =
         (settings.mcpServers as Record<string, unknown>) || {};
       (settings.mcpServers as Record<string, unknown>).panopticon = {
-        command: process.execPath,
+        command: "node",
         args: [mcpBin],
       };
 

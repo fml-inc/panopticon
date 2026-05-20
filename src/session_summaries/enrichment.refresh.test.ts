@@ -144,6 +144,7 @@ describe("session summary enrichment refresh", () => {
         started_at_ms INTEGER,
         ended_at_ms INTEGER,
         message_count INTEGER,
+        is_automated INTEGER DEFAULT 0,
         derived_sync_seq INTEGER DEFAULT 0
       );
       CREATE TABLE messages (
@@ -232,6 +233,20 @@ describe("session summary enrichment refresh", () => {
       failure_count: 0,
       last_error: null,
     });
+  });
+
+  it("skips automated sessions during background enrichment refresh", async () => {
+    const db = state.db!;
+    db.prepare("UPDATE sessions SET is_automated = 1 WHERE session_id = ?").run(
+      "session-1",
+    );
+
+    const result = await refreshSessionSummaryEnrichmentsOnce({
+      force: true,
+    });
+
+    expect(result).toEqual({ attempted: 0, updated: 0 });
+    expect(state.invokeLlmMock).not.toHaveBeenCalled();
   });
 
   it("persists plain summary enrichment output in the LLM search corpora", async () => {

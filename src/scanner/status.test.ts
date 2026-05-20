@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../config.js", () => {
   const _os = require("node:os");
@@ -17,11 +17,23 @@ vi.mock("../config.js", () => {
 });
 
 import { config } from "../config.js";
+import { beginDatabaseRebuildGate } from "../db/rebuild-gate.js";
 import {
   clearScannerStatus,
+  isDatabaseRebuildPhase,
+  readDatabaseRebuildStatus,
+  readFreshScannerStatus,
   readScannerStatus,
   writeScannerStatus,
 } from "./status.js";
+
+beforeEach(() => {
+  clearScannerStatus();
+});
+
+afterEach(() => {
+  clearScannerStatus();
+});
 
 describe("scanner runtime status", () => {
   it("writes and reads scanner progress", () => {
@@ -67,5 +79,79 @@ describe("scanner runtime status", () => {
 
     expect(readScannerStatus()).toBeNull();
     expect(config.scannerStatusFile).toBeTruthy();
+  });
+
+  it("recognizes fresh database rebuild status", () => {
+    const now = Date.now();
+    writeScannerStatus({
+      pid: process.pid,
+      phase: "reparse_finalize",
+      message: "Swapping rebuilt database into place...",
+      startedAtMs: now - 1000,
+      updatedAtMs: now,
+      elapsedMs: 1000,
+    });
+
+    expect(readFreshScannerStatus()).toMatchObject({
+      phase: "reparse_finalize",
+    });
+    expect(readDatabaseRebuildStatus()).toMatchObject({
+      phase: "reparse_finalize",
+    });
+    expect(isDatabaseRebuildPhase("startup_scan")).toBe(false);
+    expect(isDatabaseRebuildPhase("claims_rebuild_projection")).toBe(true);
+  });
+
+  it("prefers the parent rebuild gate over scanner status", () => {
+    const gate = beginDatabaseRebuildGate({
+      phase: "reparse_init",
+      message: "Startup scanner worker is running atomic reparse...",
+    });
+
+    try {
+      expect(readDatabaseRebuildStatus()).toMatchObject({
+        source: "parent_gate",
+        phase: "reparse_init",
+        message: "Startup scanner worker is running atomic reparse...",
+      });
+    } finally {
+      gate.release();
+    }
+
+    expect(readDatabaseRebuildStatus()).toBeNull();
+  });
+
+  it("keeps stale rebuild status while the owner process is alive", () => {
+    const now = Date.now();
+    writeScannerStatus({
+      pid: process.pid,
+      phase: "reparse_scan",
+      message: "Scanning raw session files into temp DB...",
+      startedAtMs: now - 200_000,
+      updatedAtMs: now - 200_000,
+      elapsedMs: 200_000,
+    });
+
+    expect(readFreshScannerStatus()).toMatchObject({
+      phase: "reparse_scan",
+    });
+    expect(readDatabaseRebuildStatus()).toMatchObject({
+      phase: "reparse_scan",
+    });
+  });
+
+  it("ignores stale rebuild status from a dead process", () => {
+    const now = Date.now();
+    writeScannerStatus({
+      pid: 999999,
+      phase: "reparse_scan",
+      message: "Scanning raw session files into temp DB...",
+      startedAtMs: now - 200_000,
+      updatedAtMs: now - 200_000,
+      elapsedMs: 200_000,
+    });
+
+    expect(readFreshScannerStatus()).toBeNull();
+    expect(readDatabaseRebuildStatus()).toBeNull();
   });
 });

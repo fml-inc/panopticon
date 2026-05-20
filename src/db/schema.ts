@@ -15,8 +15,11 @@ import {
 } from "./data-versions.js";
 import { Database } from "./driver.js";
 import { runMigrations } from "./migrations.js";
+import { readDatabaseRebuildGateStatus } from "./rebuild-gate.js";
 
 export { runMigrations } from "./migrations.js";
+
+export const DB_BUSY_TIMEOUT_MS = 30_000;
 
 export const SCHEMA_SQL = `
 
@@ -149,6 +152,7 @@ CREATE TABLE IF NOT EXISTS session_repositories (
   git_user_name TEXT,
   git_user_email TEXT,
   branch TEXT,
+  head_sha TEXT,
   UNIQUE(session_id, repository)
 );
 
@@ -751,6 +755,13 @@ function registerCompressionFunctions(db: Database): void {
 }
 
 export function getDb(): Database {
+  const rebuildGate = readDatabaseRebuildGateStatus();
+  if (rebuildGate) {
+    throw new Error(
+      `Panopticon database rebuild in progress (${rebuildGate.phase}): ${rebuildGate.message}`,
+    );
+  }
+
   // If the db file was deleted (e.g. uninstall --purge) while this process
   // still holds a stale connection, drop it so we don't serve old data.
   if (_db && !fs.existsSync(config.dbPath)) {
@@ -772,7 +783,7 @@ export function getDb(): Database {
   _db = new Database(config.dbPath);
   _db.pragma("auto_vacuum = INCREMENTAL");
   _db.pragma("journal_mode = WAL");
-  _db.pragma("busy_timeout = 5000");
+  _db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
 
   registerCompressionFunctions(_db);
   _db.exec(SCHEMA_SQL);

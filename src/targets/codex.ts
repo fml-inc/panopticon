@@ -102,14 +102,13 @@ function writeWindowsHookLauncher(pluginRoot: string): string {
     "bin",
     "panopticon-codex-hook.cmd",
   );
-  const nodePath = process.execPath.replaceAll("%", "%%");
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
   fs.writeFileSync(
     launcherPath,
     [
       "@echo off",
       "setlocal",
-      `"${nodePath}" "%~dp0hook-handler" %*`,
+      'node "%~dp0hook-handler" %*',
       "exit /b %ERRORLEVEL%",
       "",
     ].join("\r\n"),
@@ -124,9 +123,9 @@ function codexHookCommand(
 ): string {
   const hookBin = path.join(pluginRoot, "bin", "hook-handler");
   if (process.platform !== "win32") {
-    return `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
-      hookBin,
-    )} codex ${port}${proxy ? " --proxy" : ""}`;
+    return `node ${quoteCommandArg(hookBin)} codex ${port}${
+      proxy ? " --proxy" : ""
+    }`;
   }
 
   const launcherPath = writeWindowsHookLauncher(pluginRoot);
@@ -504,7 +503,7 @@ const codex: TargetAdapter = {
       const existingPanopticonServer = asRecord(mcpServers.panopticon) ?? {};
       mcpServers.panopticon = {
         ...existingPanopticonServer,
-        command: process.execPath,
+        command: "node",
         args: [mcpBin],
       };
       codexConfig.mcp_servers = mcpServers;

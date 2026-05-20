@@ -1,7 +1,19 @@
 import fs from "node:fs";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { config } from "../config.js";
-import { getDb, needsClaimsRebuild, needsRawDataResync } from "../db/schema.js";
+import {
+  beginDatabaseRebuildGate,
+  type DatabaseRebuildGateHandle,
+} from "../db/rebuild-gate.js";
+import {
+  closeDb,
+  getDb,
+  needsClaimsRebuild,
+  needsRawDataResync,
+} from "../db/schema.js";
 import { updateSessionMessageCounts } from "../db/store.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
@@ -140,6 +152,17 @@ interface ScanProgress {
   processedSessions?: number;
   totalSessions?: number;
   currentSessionId?: string;
+}
+
+export interface ScannerLoopState {
+  reparseChecked: boolean;
+  ready: boolean;
+  startedAtMs: number;
+}
+
+export interface ScannerTickResult extends ScannerLoopState {
+  hadWork: boolean;
+  becameReady: boolean;
 }
 
 function formatMs(ms: number): string {
@@ -775,6 +798,221 @@ function rehydrateIncrementalSession(
   }
 }
 
+export async function runScannerTickInProcess(
+  state: ScannerLoopState,
+): Promise<ScannerTickResult> {
+  let { reparseChecked, ready } = state;
+  let hadWork = false;
+  let becameReady = false;
+
+  try {
+    // On first tick, check if data version requires a full reparse.
+    if (!reparseChecked) {
+      reparseChecked = true;
+      if (needsRawDataResync()) {
+        log.scanner.info("Data version outdated — running atomic reparse...");
+        try {
+          const { reparseAll } = await import("./reparse.js");
+          const result = reparseAll((msg) => log.scanner.debug(msg));
+          clearScannerStatus();
+          if (!result.success) {
+            log.scanner.error(`Reparse failed: ${result.error ?? "unknown"}`);
+          }
+        } catch (err) {
+          clearScannerStatus();
+          log.scanner.error(
+            `Reparse error: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        return {
+          ...state,
+          reparseChecked,
+          ready,
+          hadWork: true,
+          becameReady,
+        };
+      }
+      if (needsClaimsRebuild()) {
+        log.scanner.info(
+          "Claims data outdated — rebuilding from local raw data...",
+        );
+        try {
+          rebuildClaimsDerivedState((msg) => log.scanner.info(msg));
+          clearScannerStatus();
+        } catch (err) {
+          log.scanner.error(
+            `Claims rebuild error: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        return {
+          ...state,
+          reparseChecked,
+          ready,
+          hadWork: true,
+          becameReady,
+        };
+      }
+    }
+
+    try {
+      const isStartupScan = !ready;
+      const scanStatusStartedAtMs = Date.now();
+      writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan);
+      const { newTurns } = scanOnce({
+        profileLabel: isStartupScan ? "startup scan" : "scan",
+        logDetails: isStartupScan,
+        progressEveryMs: SCAN_STATUS_EVERY_MS,
+        onProgress: (progress) => {
+          writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan, progress);
+        },
+      });
+      hadWork = newTurns > 0;
+      clearScannerStatus();
+
+      if (!ready) {
+        ready = true;
+        becameReady = true;
+        clearScannerStatus();
+        log.scanner.info(
+          `Scanner ready in ${formatMs(Date.now() - state.startedAtMs)}`,
+        );
+      }
+
+      // Only generate summaries when idle and scanner is ready.
+      if (!hadWork && ready) {
+        try {
+          const summaryStartedAt = performance.now();
+          const result = await runSessionSummaryPass((msg) =>
+            log.scanner.debug(msg),
+          );
+          const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
+          if (result.updated > 0) {
+            log.scanner.info(summaryMessage);
+          } else {
+            log.scanner.debug(summaryMessage);
+          }
+        } catch (err) {
+          log.scanner.error(
+            `Session summary error: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+    } catch (err) {
+      clearScannerStatus();
+      log.scanner.error(
+        `Scan error: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  } catch (err) {
+    clearScannerStatus();
+    log.scanner.error(
+      `Scanner tick error: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  return {
+    ...state,
+    reparseChecked,
+    ready,
+    hadWork,
+    becameReady,
+  };
+}
+
+interface ScannerWorkerMessage {
+  ok: boolean;
+  result?: ScannerTickResult;
+  error?: string;
+}
+
+interface StartupRebuildGateReason {
+  phase: "reparse_init" | "claims_rebuild_init";
+  message: string;
+}
+
+function getScannerWorkerUrl(): URL {
+  const override = process.env.PANOPTICON_SCANNER_WORKER_PATH;
+  if (override) return pathToFileURL(override);
+
+  const currentPath = fileURLToPath(import.meta.url);
+  const currentDir = path.dirname(currentPath);
+  const entryDir = path.dirname(process.argv[1] ?? currentPath);
+  const candidates = [
+    path.join(currentDir, "worker.js"),
+    path.join(currentDir, "worker.ts"),
+    path.join(currentDir, "scanner-worker.js"),
+    path.join(entryDir, "scanner-worker.js"),
+    path.join(entryDir, "scanner", "worker.js"),
+  ];
+  const workerPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!workerPath) {
+    throw new Error(
+      `Scanner worker script not found; checked ${candidates.join(", ")}`,
+    );
+  }
+  return pathToFileURL(workerPath);
+}
+
+function runScannerTickInWorker(
+  state: ScannerLoopState,
+): Promise<ScannerTickResult> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(getScannerWorkerUrl(), {
+      workerData: { state },
+    });
+    let settled = false;
+
+    worker.once("message", (message: ScannerWorkerMessage) => {
+      settled = true;
+      if (message?.ok && message.result) {
+        resolve(message.result);
+        return;
+      }
+      reject(new Error(message?.error ?? "Scanner worker failed"));
+    });
+    worker.once("error", (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
+    worker.once("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      if (code === 0) {
+        reject(new Error("Scanner worker exited without a result"));
+      } else {
+        reject(new Error(`Scanner worker exited with code ${code}`));
+      }
+    });
+  });
+}
+
+function detectStartupRebuildGateReason(): StartupRebuildGateReason | null {
+  try {
+    if (needsRawDataResync()) {
+      return {
+        phase: "reparse_init",
+        message: "Startup scanner worker is running atomic reparse...",
+      };
+    }
+    if (needsClaimsRebuild()) {
+      return {
+        phase: "claims_rebuild_init",
+        message: "Startup scanner worker is rebuilding derived state...",
+      };
+    }
+  } catch (err) {
+    log.scanner.error(
+      `Startup rebuild preflight error: ${err instanceof Error ? err.message : err}`,
+    );
+  } finally {
+    // The preflight opens the parent process DB handle to inspect data
+    // versions. Close it before a worker can swap or rebuild the database.
+    closeDb();
+  }
+  return null;
+}
+
 export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
@@ -782,9 +1020,11 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
   let ticking = false;
-  let reparseChecked = false;
-  let ready = false;
-  let startedAt = 0;
+  let state: ScannerLoopState = {
+    reparseChecked: false,
+    ready: false,
+    startedAtMs: 0,
+  };
 
   function scheduleNext(hadWork: boolean): void {
     if (stopping) return;
@@ -802,101 +1042,42 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     ticking = true;
 
     try {
-      // On first tick, check if data version requires a full reparse
-      if (!reparseChecked) {
-        reparseChecked = true;
-        if (needsRawDataResync()) {
-          log.scanner.info("Data version outdated — running atomic reparse...");
-          try {
-            const { reparseAll } = await import("./reparse.js");
-            const result = reparseAll((msg) => log.scanner.debug(msg));
-            clearScannerStatus();
-            if (!result.success) {
-              log.scanner.error(`Reparse failed: ${result.error ?? "unknown"}`);
+      const shouldRunInWorker = opts.runInWorker === true && !state.ready;
+      const result = shouldRunInWorker
+        ? await (async () => {
+            const gateReason = detectStartupRebuildGateReason();
+            const rebuildGate: DatabaseRebuildGateHandle | null = gateReason
+              ? beginDatabaseRebuildGate(gateReason)
+              : null;
+            try {
+              return await runScannerTickInWorker(state);
+            } finally {
+              // The worker owns its own module-level SQLite singleton. If the
+              // main thread opened a DB handle during a worker reparse, close
+              // it before releasing the parent gate so later requests reopen
+              // the post-swap database file.
+              closeDb();
+              rebuildGate?.release();
             }
-          } catch (err) {
-            clearScannerStatus();
-            log.scanner.error(
-              `Reparse error: ${err instanceof Error ? err.message : err}`,
-            );
-          }
-          scheduleNext(true);
-          return;
-        }
-        if (needsClaimsRebuild()) {
-          log.scanner.info(
-            "Claims data outdated — rebuilding from local raw data...",
-          );
-          try {
-            rebuildClaimsDerivedState((msg) => log.scanner.info(msg));
-            clearScannerStatus();
-          } catch (err) {
-            log.scanner.error(
-              `Claims rebuild error: ${err instanceof Error ? err.message : err}`,
-            );
-          }
-          scheduleNext(true);
-          return;
-        }
-      }
-
-      let hadWork = false;
-      try {
-        const isStartupScan = !ready;
-        const scanStatusStartedAtMs = Date.now();
-        writeActiveScanStatus(scanStatusStartedAtMs, isStartupScan);
-        const { newTurns } = scanOnce({
-          profileLabel: isStartupScan ? "startup scan" : "scan",
-          logDetails: isStartupScan,
-          progressEveryMs: SCAN_STATUS_EVERY_MS,
-          onProgress: (progress) => {
-            writeActiveScanStatus(
-              scanStatusStartedAtMs,
-              isStartupScan,
-              progress,
-            );
-          },
-        });
-        hadWork = newTurns > 0;
-        clearScannerStatus();
-
-        if (!ready) {
-          ready = true;
-          clearScannerStatus();
-          log.scanner.info(
-            `Scanner ready in ${formatMs(performance.now() - startedAt)}`,
-          );
-          opts.onReady?.();
-        }
-
-        // Only generate summaries when idle and scanner is ready.
-        if (!hadWork && ready) {
-          try {
-            const summaryStartedAt = performance.now();
-            const result = await runSessionSummaryPass((msg) =>
-              log.scanner.debug(msg),
-            );
-            const summaryMessage = `Session summary pass: updated=${result.updated} total=${formatMs(performance.now() - summaryStartedAt)}`;
-            if (result.updated > 0) {
-              log.scanner.info(summaryMessage);
-            } else {
-              log.scanner.debug(summaryMessage);
-            }
-          } catch (err) {
-            log.scanner.error(
-              `Session summary error: ${err instanceof Error ? err.message : err}`,
-            );
-          }
-        }
-      } catch (err) {
-        clearScannerStatus();
-        log.scanner.error(
-          `Scan error: ${err instanceof Error ? err.message : err}`,
-        );
+          })()
+        : await runScannerTickInProcess(state);
+      state = {
+        reparseChecked: result.reparseChecked,
+        ready: result.ready,
+        startedAtMs: result.startedAtMs,
+      };
+      if (result.becameReady) {
+        opts.onReady?.();
       }
       if (!stopping) {
-        scheduleNext(hadWork);
+        scheduleNext(result.hadWork);
       }
+    } catch (err) {
+      clearScannerStatus();
+      log.scanner.error(
+        `Scanner tick error: ${err instanceof Error ? err.message : err}`,
+      );
+      if (!stopping) scheduleNext(true);
     } finally {
       ticking = false;
     }
@@ -906,7 +1087,11 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
     start() {
       if (timer) return;
       stopping = false;
-      startedAt = performance.now();
+      state = {
+        reparseChecked: false,
+        ready: false,
+        startedAtMs: Date.now(),
+      };
       clearScannerStatus();
       log.scanner.info("Starting scanner");
       void tick();

@@ -49,7 +49,7 @@ describe("codex install config", () => {
     expect(result.openai_base_url).toBe("http://localhost:4318/proxy/codex");
     expect(result.mcp_servers).toMatchObject({
       panopticon: {
-        command: process.execPath,
+        command: "node",
         args: [path.join(pluginRoot, "bin", "mcp-server")],
         tools: {
           search_intent: { approval_mode: "approve" },
@@ -74,7 +74,7 @@ describe("codex install config", () => {
             "bin",
             "panopticon-codex-hook.cmd",
           )}" codex 4318 --proxy"`
-        : `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+        : `node ${quoteCommandArg(
             path.join(pluginRoot, "bin", "hook-handler"),
           )} codex 4318 --proxy`;
     expect(permissionRequest.at(-1)?.hooks[0].command).toBe(
@@ -87,7 +87,7 @@ describe("codex install config", () => {
           path.join(pluginRoot, "bin", "panopticon-codex-hook.cmd"),
           "utf-8",
         ),
-      ).toContain(quoteCommandArg(process.execPath));
+      ).toContain('node "%~dp0hook-handler" %*');
     }
   });
 

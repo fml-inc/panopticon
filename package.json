@@ -95,9 +95,9 @@
   "scripts": {
     "build": "node scripts/generate-plugin-manifest.js && tsup && node scripts/bundle-pi-extension.js",
     "dev": "tsup --watch",
-    "check": "biome check src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts",
-    "check:fix": "biome check --write src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts",
-    "format": "biome format --write src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts",
+    "check": "biome check src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts scripts/eval-reduction-proxy.ts scripts/eval-reduction-proxy.test.ts scripts/eval-replay-counterfactual.ts",
+    "check:fix": "biome check --write src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts scripts/eval-reduction-proxy.ts scripts/eval-reduction-proxy.test.ts scripts/eval-replay-counterfactual.ts",
+    "format": "biome format --write src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts scripts/eval-reduction-proxy.ts scripts/eval-reduction-proxy.test.ts scripts/eval-replay-counterfactual.ts",
     "test": "vitest run --exclude '.claude/**'",
     "test:watch": "vitest --exclude '.claude/**'",
     "typecheck": "tsc --noEmit",
@@ -105,6 +105,8 @@
     "eval:pretooluse": "tsup scripts/eval-pretooluse-file-context.ts --format esm --platform node --target node24 --out-dir .tmp/eval-build --silent --no-dts && node .tmp/eval-build/eval-pretooluse-file-context.js",
     "eval:userprompt:first": "pnpm eval:userprompt -- --set first",
     "eval:userprompt:later": "pnpm eval:userprompt -- --set later",
+    "eval:reduction": "tsup scripts/eval-reduction-proxy.ts --format esm --platform node --target node24 --out-dir .tmp/eval-build --silent --no-dts && node .tmp/eval-build/eval-reduction-proxy.js",
+    "eval:replay": "tsup scripts/eval-replay-counterfactual.ts --format esm --platform node --target node24 --out-dir .tmp/eval-build --silent --no-dts && node .tmp/eval-build/eval-replay-counterfactual.js",
     "prepack": "node scripts/generate-plugin-manifest.js",
     "pack:local": "pnpm build && pnpm pack",
     "postinstall": "node scripts/postinstall.js"

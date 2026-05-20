@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { log, openLogFd } from "../log.js";
+import { readFreshScannerStatus } from "../scanner/status.js";
 import { httpPanopticonService } from "../service/http.js";
 import {
   categorySchema,
@@ -20,9 +22,503 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+const MCP_TEXT_FIELD_MAX_CHARS = 360;
+const MCP_PROMPT_MAX_CHARS = 240;
+const MCP_ACTIVITY_SESSION_LIMIT = 20;
+const MCP_ACTIVITY_PROMPT_LIMIT = 5;
+const MCP_ACTIVITY_TOOL_LIMIT = 10;
+const MCP_ACTIVITY_FILE_LIMIT = 12;
+const MCP_INTENT_PROMPT_MAX_CHARS = 600;
+const MCP_INTENT_FILE_LIMIT = 12;
+const MCP_OUTCOME_FILE_LIMIT = 25;
+const MCP_TIMELINE_CONTENT_MAX_CHARS = 360;
+const MCP_TIMELINE_JSON_MAX_CHARS = 260;
+const MCP_DETAIL_INTENT_LIMIT = 20;
+const MCP_DETAIL_FILE_LIMIT = 20;
+
+type JsonRecord = Record<string, unknown>;
+
+function jsonContent(value: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+function asRecord(value: unknown): JsonRecord | null {
+  return typeof value === "object" && value !== null
+    ? (value as JsonRecord)
+    : null;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function field(record: JsonRecord | null, ...names: string[]): unknown {
+  if (!record) return null;
+  for (const name of names) {
+    if (Object.hasOwn(record, name)) return record[name];
+  }
+  return null;
+}
+
+function compactText(value: unknown, maxChars = MCP_TEXT_FIELD_MAX_CHARS) {
+  if (typeof value !== "string") return value ?? null;
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars - 24).trimEnd()}... [truncated]`;
+}
+
+function compactTextArray(
+  value: unknown,
+  limit: number,
+  maxChars: number,
+): unknown[] {
+  return asArray(value)
+    .slice(0, limit)
+    .map((item) => compactText(item, maxChars));
+}
+
+function compactTopFiles(value: unknown): unknown[] {
+  return asArray(value)
+    .slice(0, 3)
+    .map((item) => {
+      const file = asRecord(item);
+      if (!file) return item;
+      return {
+        file_path: field(file, "file_path"),
+        edit_count: field(file, "edit_count"),
+        landed_count: field(file, "landed_count"),
+        current_edit_count: field(file, "current_edit_count"),
+      };
+    });
+}
+
+function compactSessionSummary(value: unknown) {
+  const row = asRecord(value);
+  const preview = asRecord(field(row, "preview"));
+  const counts = asRecord(field(preview, "counts"));
+  const enrichment = asRecord(field(row, "enrichment"));
+  const summary =
+    field(preview, "summary") ??
+    field(enrichment, "summaryText") ??
+    field(row, "enriched_summary_text", "summaryText", "summary_text");
+
+  return {
+    session_id:
+      field(row, "session_id", "sessionId") ?? field(preview, "session_id"),
+    target: field(row, "target") ?? field(preview, "target"),
+    title: field(row, "title") ?? field(preview, "title"),
+    status: field(row, "status") ?? field(preview, "status"),
+    repository: field(row, "repository") ?? field(preview, "repository"),
+    cwd: field(row, "cwd") ?? field(preview, "cwd"),
+    branch: field(row, "branch") ?? field(preview, "branch"),
+    last_activity_ms:
+      field(preview, "last_activity_ms") ??
+      field(row, "last_intent_ts_ms", "lastIntentAt", "sourceLastSeenAt"),
+    counts: counts
+      ? {
+          intents: field(counts, "intents"),
+          edits: field(counts, "edits"),
+          landed_edits: field(counts, "landed_edits"),
+          open_edits: field(counts, "open_edits"),
+        }
+      : {
+          intents: field(row, "intent_count", "intentCount"),
+          edits: field(row, "edit_count", "editCount"),
+          landed_edits: field(row, "landed_edit_count", "landedEditCount"),
+          open_edits: field(row, "open_edit_count", "openEditCount"),
+        },
+    summary: compactText(summary),
+    summary_source:
+      field(preview, "summary_source") ??
+      field(enrichment, "source") ??
+      field(row, "summary_source", "summarySource"),
+    summary_stale:
+      field(preview, "summary_stale") ??
+      field(enrichment, "stale") ??
+      field(row, "enrichment_stale"),
+    top_files: compactTopFiles(
+      field(preview, "top_files") ?? field(row, "topFiles"),
+    ),
+  };
+}
+
+function compactSession(value: unknown) {
+  const row = asRecord(value);
+  return {
+    sessionId: field(row, "sessionId"),
+    target: field(row, "target"),
+    model: field(row, "model"),
+    project: field(row, "project"),
+    startedAt: field(row, "startedAt"),
+    endedAt: field(row, "endedAt"),
+    firstPrompt: compactText(field(row, "firstPrompt"), MCP_PROMPT_MAX_CHARS),
+    turnCount: field(row, "turnCount"),
+    messageCount: field(row, "messageCount"),
+    totalInputTokens: field(row, "totalInputTokens"),
+    totalOutputTokens: field(row, "totalOutputTokens"),
+    totalCost: field(row, "totalCost"),
+    repositories: field(row, "repositories"),
+    parentSessionId: field(row, "parentSessionId"),
+    relationshipType: field(row, "relationshipType"),
+    summary: compactText(field(row, "summary")),
+    sessionSummary: field(row, "sessionSummary")
+      ? compactSessionSummary(field(row, "sessionSummary"))
+      : null,
+  };
+}
+
+function compactSessionListResult(value: unknown) {
+  const result = asRecord(value);
+  return {
+    sessions: asArray(field(result, "sessions")).map(compactSession),
+    totalCount: field(result, "totalCount"),
+    source: field(result, "source"),
+  };
+}
+
+function compactActivitySummary(value: unknown) {
+  const result = asRecord(value);
+  const sessions = asArray(field(result, "sessions"));
+  return {
+    period: field(result, "period"),
+    totalSessions: field(result, "totalSessions"),
+    totalTokens: field(result, "totalTokens"),
+    totalCost: field(result, "totalCost"),
+    topTools: field(result, "topTools"),
+    sessionsReturned: Math.min(sessions.length, MCP_ACTIVITY_SESSION_LIMIT),
+    sessions: sessions.slice(0, MCP_ACTIVITY_SESSION_LIMIT).map((item) => {
+      const row = asRecord(item);
+      return {
+        sessionId: field(row, "sessionId"),
+        startedAt: field(row, "startedAt"),
+        durationMinutes: field(row, "durationMinutes"),
+        model: field(row, "model"),
+        project: field(row, "project"),
+        repositories: field(row, "repositories"),
+        userPrompts: compactTextArray(
+          field(row, "userPrompts"),
+          MCP_ACTIVITY_PROMPT_LIMIT,
+          MCP_PROMPT_MAX_CHARS,
+        ),
+        toolsUsed: asArray(field(row, "toolsUsed")).slice(
+          0,
+          MCP_ACTIVITY_TOOL_LIMIT,
+        ),
+        filesModified: compactTextArray(
+          field(row, "filesModified"),
+          MCP_ACTIVITY_FILE_LIMIT,
+          MCP_PROMPT_MAX_CHARS,
+        ),
+        totalCost: field(row, "totalCost"),
+      };
+    }),
+    source: field(result, "source"),
+  };
+}
+
+function compactTimelineToolCall(value: unknown) {
+  const call = asRecord(value);
+  if (!call) return value;
+  return {
+    toolName: field(call, "toolName", "tool_name"),
+    category: field(call, "category"),
+    toolUseId: field(call, "toolUseId", "tool_use_id"),
+    durationMs: field(call, "durationMs", "duration_ms"),
+    resultContentLength: field(
+      call,
+      "resultContentLength",
+      "result_content_length",
+    ),
+    inputJson: compactText(
+      field(call, "inputJson", "input_json"),
+      MCP_TIMELINE_JSON_MAX_CHARS,
+    ),
+    resultContent: compactText(
+      field(call, "resultContent", "result_content"),
+      MCP_TIMELINE_JSON_MAX_CHARS,
+    ),
+    subagentSessionId: field(call, "subagentSessionId", "subagent_session_id"),
+  };
+}
+
+function compactTimelineMessage(value: unknown) {
+  const message = asRecord(value);
+  if (!message) return value;
+  return {
+    id: field(message, "id"),
+    ordinal: field(message, "ordinal"),
+    role: field(message, "role"),
+    timestampMs: field(message, "timestampMs", "timestamp_ms"),
+    model: field(message, "model"),
+    content: compactText(
+      field(message, "content"),
+      MCP_TIMELINE_CONTENT_MAX_CHARS,
+    ),
+    contentLength: field(message, "contentLength", "content_length"),
+    isSystem: field(message, "isSystem", "is_system"),
+    hasThinking: field(message, "hasThinking", "has_thinking"),
+    hasToolUse: field(message, "hasToolUse", "has_tool_use"),
+    contextTokens: field(message, "contextTokens", "context_tokens"),
+    outputTokens: field(message, "outputTokens", "output_tokens"),
+    uuid: field(message, "uuid"),
+    parentUuid: field(message, "parentUuid", "parent_uuid"),
+    toolCalls: asArray(field(message, "toolCalls", "tool_calls")).map(
+      compactTimelineToolCall,
+    ),
+  };
+}
+
+function compactTimelineSession(value: unknown) {
+  const session = asRecord(value);
+  if (!session) return value;
+  return {
+    sessionId: field(session, "sessionId", "session_id"),
+    target: field(session, "target"),
+    model: field(session, "model"),
+    project: field(session, "project"),
+    parentSessionId: field(session, "parentSessionId", "parent_session_id"),
+    relationshipType: field(session, "relationshipType", "relationship_type"),
+    repositories: asArray(field(session, "repositories")).map((repo) => {
+      const row = asRecord(repo);
+      if (!row) return repo;
+      return {
+        name: field(row, "name", "repository"),
+        branch: field(row, "branch"),
+      };
+    }),
+    childSessions: asArray(field(session, "childSessions")).map((child) => {
+      const row = asRecord(child);
+      if (!row) return child;
+      return {
+        sessionId: field(row, "sessionId", "session_id"),
+        relationshipType: field(row, "relationshipType", "relationship_type"),
+        model: field(row, "model"),
+        turnCount: field(row, "turnCount", "turn_count"),
+        firstPrompt: compactText(
+          field(row, "firstPrompt", "first_prompt"),
+          MCP_PROMPT_MAX_CHARS,
+        ),
+        startedAtMs: field(row, "startedAtMs", "started_at_ms"),
+      };
+    }),
+  };
+}
+
+function compactTimelineResult(value: unknown) {
+  const result = asRecord(value);
+  return {
+    session: compactTimelineSession(field(result, "session")),
+    messages: asArray(field(result, "messages")).map(compactTimelineMessage),
+    totalMessages: field(result, "totalMessages", "total_messages"),
+    hasMore: field(result, "hasMore", "has_more"),
+    source: field(result, "source"),
+  };
+}
+
+function compactIntentFile(value: unknown) {
+  const file = asRecord(value);
+  if (!file) return value;
+  return {
+    file_path: field(file, "file_path", "filePath"),
+    landed: field(file, "landed"),
+    landed_reason: compactText(field(file, "landed_reason", "reason"), 160),
+    tool_name: field(file, "tool_name", "toolName"),
+    intent_edit_id: field(file, "intent_edit_id", "intentEditId"),
+  };
+}
+
+function compactIntentFiles(value: unknown, limit: number) {
+  const files = asArray(value);
+  return {
+    total: files.length,
+    returned: Math.min(files.length, limit),
+    omitted: Math.max(0, files.length - limit),
+    items: files.slice(0, limit).map(compactIntentFile),
+  };
+}
+
+function compactSearchIntentRow(value: unknown) {
+  const row = asRecord(value);
+  return {
+    intent_unit_id: field(row, "intent_unit_id", "intentUnitId"),
+    prompt_text: compactText(
+      field(row, "prompt_text", "promptText"),
+      MCP_INTENT_PROMPT_MAX_CHARS,
+    ),
+    prompt_ts_ms: field(row, "prompt_ts_ms", "promptTsMs"),
+    session_id: field(row, "session_id", "sessionId"),
+    repository: field(row, "repository"),
+    edit_count: field(row, "edit_count", "editCount"),
+    landed_count: field(row, "landed_count", "landedCount"),
+    landed_ratio: field(row, "landed_ratio", "landedRatio"),
+    files: compactIntentFiles(field(row, "files"), MCP_INTENT_FILE_LIMIT),
+  };
+}
+
+function compactIntentForCodeRow(value: unknown) {
+  const row = asRecord(value);
+  const edit = asRecord(field(row, "edit"));
+  return {
+    intent_unit_id: field(row, "intent_unit_id", "intentUnitId"),
+    prompt_text: compactText(
+      field(row, "prompt_text", "promptText"),
+      MCP_INTENT_PROMPT_MAX_CHARS,
+    ),
+    prompt_ts_ms: field(row, "prompt_ts_ms", "promptTsMs"),
+    session_id: field(row, "session_id", "sessionId"),
+    repository: field(row, "repository"),
+    status: field(row, "status"),
+    edit: edit
+      ? {
+          intent_edit_id: field(edit, "intent_edit_id", "intentEditId"),
+          edit_count: field(edit, "edit_count", "editCount"),
+          current_edit_count: field(
+            edit,
+            "current_edit_count",
+            "currentEditCount",
+          ),
+          superseded_edit_count: field(
+            edit,
+            "superseded_edit_count",
+            "supersededEditCount",
+          ),
+          reverted_edit_count: field(
+            edit,
+            "reverted_edit_count",
+            "revertedEditCount",
+          ),
+          unknown_edit_count: field(
+            edit,
+            "unknown_edit_count",
+            "unknownEditCount",
+          ),
+          tool_name: field(edit, "tool_name", "toolName"),
+          timestamp_ms: field(edit, "timestamp_ms", "timestampMs"),
+          landed: field(edit, "landed"),
+          landed_reason: compactText(field(edit, "landed_reason"), 160),
+          new_string_snippet: compactText(
+            field(edit, "new_string_snippet", "newStringSnippet"),
+          ),
+        }
+      : null,
+  };
+}
+
+function compactOutcomesForIntent(value: unknown) {
+  const row = asRecord(value);
+  if (!row) return value;
+  const t0 = asRecord(field(row, "t0_session_end", "t0SessionEnd"));
+  const survived = asArray(field(t0, "edits_survived", "editsSurvived"));
+  const churned = asArray(field(t0, "edits_churned", "editsChurned"));
+  const unknown = asArray(field(t0, "edits_unknown", "editsUnknown"));
+  return {
+    intent_unit_id: field(row, "intent_unit_id", "intentUnitId"),
+    prompt_text: compactText(
+      field(row, "prompt_text", "promptText"),
+      MCP_INTENT_PROMPT_MAX_CHARS,
+    ),
+    session_id: field(row, "session_id", "sessionId"),
+    prompt_ts_ms: field(row, "prompt_ts_ms", "promptTsMs"),
+    next_prompt_ts_ms: field(row, "next_prompt_ts_ms", "nextPromptTsMs"),
+    reconciled_at_ms: field(row, "reconciled_at_ms", "reconciledAtMs"),
+    edit_count: field(row, "edit_count", "editCount"),
+    landed_count: field(row, "landed_count", "landedCount"),
+    t0_session_end: {
+      edits_survived: compactIntentFiles(survived, MCP_OUTCOME_FILE_LIMIT),
+      edits_churned: compactIntentFiles(churned, MCP_OUTCOME_FILE_LIMIT),
+      edits_unknown: compactIntentFiles(unknown, MCP_OUTCOME_FILE_LIMIT),
+    },
+  };
+}
+
+function compactSessionSummaryIntent(value: unknown) {
+  const row = asRecord(value);
+  if (!row) return value;
+  return {
+    intent_unit_id: field(row, "intent_unit_id", "intentUnitId"),
+    prompt_text: compactText(
+      field(row, "prompt_text", "promptText"),
+      MCP_INTENT_PROMPT_MAX_CHARS,
+    ),
+    prompt_ts_ms: field(row, "prompt_ts_ms", "promptTsMs"),
+    session_id: field(row, "session_id", "sessionId"),
+    membership_kind: field(row, "membership_kind", "membershipKind"),
+    score: field(row, "score"),
+  };
+}
+
+function compactSessionSummaryFile(value: unknown) {
+  const row = asRecord(value);
+  if (!row) return value;
+  return {
+    file_path: field(row, "file_path", "filePath"),
+    edit_count: field(row, "edit_count", "editCount"),
+    landed_count: field(row, "landed_count", "landedCount"),
+    current_edit_count: field(row, "current_edit_count", "currentEditCount"),
+    superseded_edit_count: field(
+      row,
+      "superseded_edit_count",
+      "supersededEditCount",
+    ),
+    reverted_edit_count: field(row, "reverted_edit_count", "revertedEditCount"),
+    unknown_edit_count: field(row, "unknown_edit_count", "unknownEditCount"),
+    intent_count: field(row, "intent_count", "intentCount"),
+    last_touched_ms: field(row, "last_touched_ms", "lastTouchedMs"),
+  };
+}
+
+function compactSessionSummaryDetail(value: unknown) {
+  const row = asRecord(value);
+  if (!row) return value;
+  const intents = asArray(field(row, "intents"));
+  const files = asArray(field(row, "files"));
+  return {
+    session_summary: compactSessionSummary(field(row, "session_summary")),
+    preview: field(row, "preview")
+      ? compactSessionSummary({ preview: field(row, "preview") })
+      : null,
+    intents: {
+      total: intents.length,
+      returned: Math.min(intents.length, MCP_DETAIL_INTENT_LIMIT),
+      omitted: Math.max(0, intents.length - MCP_DETAIL_INTENT_LIMIT),
+      items: intents
+        .slice(0, MCP_DETAIL_INTENT_LIMIT)
+        .map(compactSessionSummaryIntent),
+    },
+    files: {
+      total: files.length,
+      returned: Math.min(files.length, MCP_DETAIL_FILE_LIMIT),
+      omitted: Math.max(0, files.length - MCP_DETAIL_FILE_LIMIT),
+      items: files
+        .slice(0, MCP_DETAIL_FILE_LIMIT)
+        .map(compactSessionSummaryFile),
+    },
+  };
+}
+
+function compactScannerStatusForMcp() {
+  const status = readFreshScannerStatus();
+  if (!status) return null;
+  return {
+    phase: status.phase,
+    message: status.message,
+    updated_at_ms: status.updatedAtMs,
+    started_at_ms: status.startedAtMs,
+    processed_files: status.processedFiles,
+    discovered_files: status.discoveredFiles,
+    files_scanned: status.filesScanned,
+    new_turns: status.newTurns,
+    touched_sessions: status.touchedSessions,
+    processed_sessions: status.processedSessions,
+    total_sessions: status.totalSessions,
+    current_session_id: status.currentSessionId,
+  };
+}
+
 server.tool(
   "sessions",
-  "List recent sessions with stats (tokens, cost, model, project)",
+  "List recent sessions with stats (tokens, cost, model, project). Returns compact output by default; pass fullPayloads for the raw result.",
   {
     limit: z
       .number()
@@ -32,14 +528,16 @@ server.tool(
       .string()
       .optional()
       .describe('Time filter: ISO date or relative like "24h", "7d", "30m"'),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ limit, since }) => {
+  async ({ limit, since, fullPayloads }) => {
     const results = await service.listSessions({ limit, since });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(results, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? results : compactSessionListResult(results),
+    );
   },
 );
 
@@ -68,11 +566,7 @@ server.tool(
       offset,
       fullPayloads,
     });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
+    return jsonContent(fullPayloads ? result : compactTimelineResult(result));
   },
 );
 
@@ -141,7 +635,7 @@ server.tool(
 
 server.tool(
   "summary",
-  "Activity summary — sessions, prompts, tools used, files changed, and costs. Ideal for standup updates and daily reports.",
+  "Activity summary — sessions, prompts, tools used, files changed, and costs. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     since: z
       .string()
@@ -149,14 +643,16 @@ server.tool(
       .describe(
         'Time window (default "24h"). ISO date or relative like "24h", "7d"',
       ),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ since }) => {
+  async ({ since, fullPayloads }) => {
     const summary = await service.activitySummary({ since });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(summary, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? summary : compactActivitySummary(summary),
+    );
   },
 );
 
@@ -305,12 +801,23 @@ server.tool(
   "Show panopticon database stats: row counts for each table",
   {},
   async () => {
-    const stats = await service.dbStats();
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(stats, null, 2) },
-      ],
-    };
+    const scanner = compactScannerStatusForMcp();
+    try {
+      const stats = await service.dbStats();
+      if (scanner) {
+        return jsonContent({ ...(asRecord(stats) ?? {}), scanner });
+      }
+      return jsonContent(stats);
+    } catch (err) {
+      if (scanner) {
+        return jsonContent({
+          database_stats_unavailable: true,
+          scanner,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      throw err;
+    }
   },
 );
 
@@ -320,27 +827,29 @@ server.tool(
 
 server.tool(
   "intent_for_code",
-  "Given a file path, return the chronological intent history at that location: every prompt that produced an edit to this file, most recent first, annotated with whether the inserted content survived (status: 'current' | 'superseded' | 'reverted' | 'unknown'). Use this for 'why does this code exist?' questions.",
+  "Given a file path, return the chronological intent history at that location. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     file_path: z.string().describe("Absolute path to the file"),
     limit: z
       .number()
       .optional()
       .describe("Max intent edits to return (default 50)"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ file_path, limit }) => {
+  async ({ file_path, limit, fullPayloads }) => {
     const result = await service.intentForCode({ file_path, limit });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? result : asArray(result).map(compactIntentForCodeRow),
+    );
   },
 );
 
 server.tool(
   "search_intent",
-  "Search the intent index for prompts whose edits matched the query. Defaults to only_landed=true (excludes intents that produced no surviving edits). Each result includes the prompt, the files touched, and the landed_ratio.",
+  "Search the intent index for prompts whose edits matched the query. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     query: z.string().describe("Text to search for in prompt text (FTS5)"),
     only_landed: z
@@ -355,8 +864,12 @@ server.tool(
       .describe("Filter to intents recorded in this repository"),
     limit: z.number().optional().describe("Max results (default 20)"),
     offset: z.number().optional().describe("Skip N results for pagination"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ query, only_landed, repository, limit, offset }) => {
+  async ({ query, only_landed, repository, limit, offset, fullPayloads }) => {
     const result = await service.searchIntent({
       query,
       only_landed,
@@ -364,21 +877,23 @@ server.tool(
       limit,
       offset,
     });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? result : asArray(result).map(compactSearchIntentRow),
+    );
   },
 );
 
 server.tool(
   "outcomes_for_intent",
-  "Get the t0 (session-end) outcome view for an intent: which edits survived to session end, which were churned in-session, and which haven't been reconciled yet. Use intent_unit_id from search_intent or intent_for_code results.",
+  "Get the t0 (session-end) outcome view for an intent. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     intent_unit_id: z.number().describe("ID of the intent unit"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ intent_unit_id }) => {
+  async ({ intent_unit_id, fullPayloads }) => {
     const result = await service.outcomesForIntent({ intent_unit_id });
     if (!result) {
       return {
@@ -391,17 +906,15 @@ server.tool(
         isError: true,
       };
     }
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? result : compactOutcomesForIntent(result),
+    );
   },
 );
 
 server.tool(
   "session_summaries",
-  "List session-derived summaries with provenance metadata and the compact preview shape used for SessionStart context injection. This is the explicit replacement for the old weak session summary text and is intentionally one row per session.",
+  "List session-derived summaries with provenance metadata. Returns compact output by default; pass fullPayloads for the raw result.",
   {
     repository: z
       .string()
@@ -422,8 +935,21 @@ server.tool(
       .describe('Time filter: ISO date or relative like "24h", "7d"'),
     limit: z.number().optional().describe("Max results (default 20)"),
     offset: z.number().optional().describe("Skip N results for pagination"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full output instead of compacted output"),
   },
-  async ({ repository, cwd, status, path, since, limit, offset }) => {
+  async ({
+    repository,
+    cwd,
+    status,
+    path,
+    since,
+    limit,
+    offset,
+    fullPayloads,
+  }) => {
     const result = await service.listSessionSummaries({
       repository,
       cwd,
@@ -433,11 +959,9 @@ server.tool(
       limit,
       offset,
     });
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? result : asArray(result).map(compactSessionSummary),
+    );
   },
 );
 
@@ -446,8 +970,12 @@ server.tool(
   "Get the compact preview and explicit session-derived summary for a single session, including member intents and touched files.",
   {
     session_id: z.string().describe("ID of the session"),
+    fullPayloads: z
+      .boolean()
+      .optional()
+      .describe("Return full detail instead of compacted output"),
   },
-  async ({ session_id }) => {
+  async ({ session_id, fullPayloads }) => {
     const result = await service.sessionSummaryDetail({ session_id });
     if (!result) {
       return {
@@ -460,11 +988,9 @@ server.tool(
         isError: true,
       };
     }
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(result, null, 2) },
-      ],
-    };
+    return jsonContent(
+      fullPayloads ? result : compactSessionSummaryDetail(result),
+    );
   },
 );
 
@@ -636,11 +1162,24 @@ server.tool(
 
 async function main() {
   // Redirect stderr to log file (stdout is reserved for MCP JSON-RPC protocol)
-  const logFd = openLogFd("mcp");
-  const logStream = fs.createWriteStream("", { fd: logFd });
-  process.stderr.write = logStream.write.bind(
-    logStream,
-  ) as typeof process.stderr.write;
+  let logStream: fs.WriteStream | null = null;
+  try {
+    const logFd = openLogFd("mcp");
+    logStream = fs.createWriteStream("", { fd: logFd });
+  } catch {
+    // MCP servers may run inside read-only sandboxes. Logging must not prevent
+    // the JSON-RPC server from starting; stdout remains reserved for protocol.
+    try {
+      logStream = fs.createWriteStream(os.devNull);
+    } catch {
+      logStream = null;
+    }
+  }
+  if (logStream) {
+    process.stderr.write = logStream.write.bind(
+      logStream,
+    ) as typeof process.stderr.write;
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

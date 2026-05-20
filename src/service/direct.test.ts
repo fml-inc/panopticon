@@ -253,6 +253,23 @@ describe("direct service scan", () => {
     expect(scanOnceMock).not.toHaveBeenCalled();
   });
 
+  it("refuses a manual scan while the background scanner is active", async () => {
+    readScannerStatusMock.mockReturnValue({
+      pid: process.pid,
+      phase: "startup_scan",
+      message: "Running startup scan...",
+      startedAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      elapsedMs: 100,
+    });
+    const service = createDirectPanopticonService();
+
+    await expect(service.scan()).rejects.toThrow(
+      "Scanner already in progress (startup_scan): Running startup scan...",
+    );
+    expect(scanOnceMock).not.toHaveBeenCalled();
+  });
+
   it("falls back to a normal scan once resync is complete", async () => {
     const service = createDirectPanopticonService();
 

@@ -32,6 +32,10 @@ const PRE_TOOL_FILE_CONTEXT_MAX_CHARS = 1_400;
 const PRE_TOOL_FILE_CONTEXT_PROMPT_MAX_CHARS = 240;
 const PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT = 4;
 const PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT = 4;
+const PRE_TOOL_READ_CONTEXT_MAX_CHARS = 700;
+const PRE_TOOL_READ_CONTEXT_PROMPT_MAX_CHARS = 160;
+const PRE_TOOL_READ_CONTEXT_RECENT_LIMIT = 2;
+const PRE_TOOL_READ_CONTEXT_RELATED_LIMIT = 3;
 
 interface SessionContextInput {
   session_id?: unknown;
@@ -39,6 +43,10 @@ interface SessionContextInput {
   shell_pwd?: unknown;
   repository?: unknown;
   now_ms?: unknown;
+  // Replay-time only: extra session ids to exclude from injection
+  // (the historical session being replayed + the replay agent's own id,
+  // so treatment cannot leak the answer or its own emerging work).
+  exclude_session_ids?: unknown;
 }
 
 interface UserPromptSubmitContextInput extends SessionContextInput {
@@ -60,6 +68,7 @@ export function buildSessionStartRecentHistoryContext(
   const previews = listRecentSessionSummaryPreviewsForCwd({
     cwdCandidates,
     currentSessionId: extractSessionId(data),
+    excludeSessionIds: extractExcludeSessionIds(data),
     sinceMs: nowMs - RECENT_HISTORY_MAX_AGE_MS,
     untilMs: nowMs,
     limit: RECENT_HISTORY_LIMIT,
@@ -88,6 +97,7 @@ export function buildUserPromptSubmitLocalContext(
     cwdCandidates,
     repository,
     currentSessionId: extractSessionId(data),
+    excludeSessionIds: extractExcludeSessionIds(data),
     sinceMs: nowMs - USER_PROMPT_CONTEXT_MAX_AGE_MS,
     untilMs: nowMs,
     limit: USER_PROMPT_CONTEXT_LIMIT,
@@ -132,6 +142,33 @@ export function buildPreToolUseFileContext(
   if (!hasBoundIntent && !hasHistory) return null;
 
   return formatPreToolUseFileContext(overview);
+}
+
+export function buildPreToolUseReadFileContext(
+  data: PreToolUseFileContextInput,
+): string | null {
+  const filePath = extractToolFilePath(data);
+  if (!filePath) return null;
+
+  const repository = extractRepository(data);
+  let overview: FileOverviewResult;
+  try {
+    overview = fileOverview({
+      path: filePath,
+      repository: repository ?? undefined,
+      recent_limit: PRE_TOOL_READ_CONTEXT_RECENT_LIMIT,
+      related_limit: PRE_TOOL_READ_CONTEXT_RELATED_LIMIT,
+    });
+  } catch {
+    return null;
+  }
+
+  const hasBoundIntent = overview.current.intent_unit_id !== null;
+  const hasHistory =
+    overview.recent.length > 0 || overview.summary.edit_count > 0;
+  if (!hasBoundIntent && !hasHistory) return null;
+
+  return formatPreToolUseReadFileContext(overview);
 }
 
 function extractToolFilePath(data: PreToolUseFileContextInput): string | null {
@@ -218,6 +255,57 @@ export function formatPreToolUseFileContext(
   );
 }
 
+export function formatPreToolUseReadFileContext(
+  overview: FileOverviewResult,
+): string {
+  const lines: string[] = [
+    `Panopticon read context for ${sanitizeInline(overview.path)}`,
+    "Treat this as background memory only; the file content and current task win.",
+  ];
+
+  const s = overview.summary;
+  const provenance: string[] = [];
+  if (s.reverted_edit_count > 0) {
+    provenance.push(`reverted=${s.reverted_edit_count}`);
+  }
+  if (s.superseded_edit_count > 0) {
+    provenance.push(`superseded=${s.superseded_edit_count}`);
+  }
+  lines.push(
+    `- History: ${s.edit_count} edit(s) across ${s.intent_count} intent(s)${
+      provenance.length > 0 ? ` (${provenance.join(", ")})` : ""
+    }`,
+  );
+
+  const current = overview.current;
+  if (current.prompt_text) {
+    const where = current.session_summary_title
+      ? ` (session "${sanitizeInline(current.session_summary_title)}")`
+      : "";
+    lines.push(
+      `- Last bound change: "${trimToMaxChars(
+        sanitizeInline(current.prompt_text),
+        PRE_TOOL_READ_CONTEXT_PROMPT_MAX_CHARS,
+      )}" — ${describeBindingStatus(current.status)}${where}`,
+    );
+  }
+
+  if (overview.related_files.length > 0) {
+    const related = overview.related_files
+      .slice(0, PRE_TOOL_READ_CONTEXT_RELATED_LIMIT)
+      .map((r) => sanitizeInline(r.file_path))
+      .join(", ");
+    lines.push(`- Often changed together: ${related}`);
+  }
+
+  lines.push("Use `why_code` with this path for full provenance.");
+
+  return trimToMaxChars(
+    lines.join("\n").trim(),
+    PRE_TOOL_READ_CONTEXT_MAX_CHARS,
+  );
+}
+
 function extractCwdCandidates(data: SessionContextInput): string[] {
   const primary = typeof data.cwd === "string" && data.cwd.length > 0;
   const candidates = [data.cwd, primary ? null : data.shell_pwd].filter(
@@ -247,7 +335,19 @@ function extractPrompt(data: UserPromptSubmitContextInput): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function extractExcludeSessionIds(data: SessionContextInput): string[] {
+  // Replay clamps are an intentional request-body contract: the hook handler
+  // injects env-derived values here, and local test clients may do the same.
+  const raw = data.exclude_session_ids;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
+}
+
 function extractNowMs(data: SessionContextInput): number {
+  // See extractExcludeSessionIds: replay callers can set the effective clock
+  // per request so historical injections do not see future session data.
   return typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
     ? data.now_ms
     : Date.now();

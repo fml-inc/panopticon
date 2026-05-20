@@ -167,6 +167,7 @@ export function upsertSessionRepository(
   timestampMs: number,
   gitIdentity?: { name: string | null; email: string | null },
   branch?: string | null,
+  headSha?: string | null,
 ): void {
   const db = getDb();
   const existing = db
@@ -176,12 +177,15 @@ export function upsertSessionRepository(
     .get(sessionId, repository);
 
   db.prepare(
-    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch, head_sha)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(session_id, repository) DO UPDATE SET
        git_user_name = COALESCE(session_repositories.git_user_name, excluded.git_user_name),
        git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email),
-       branch = COALESCE(excluded.branch, session_repositories.branch)`,
+       branch = COALESCE(excluded.branch, session_repositories.branch),
+       -- First write wins: the SHA at session start is the replay anchor;
+       -- later events must not overwrite it as the working tree moves.
+       head_sha = COALESCE(session_repositories.head_sha, excluded.head_sha)`,
   ).run(
     sessionId,
     repository,
@@ -189,6 +193,7 @@ export function upsertSessionRepository(
     gitIdentity?.name ?? null,
     gitIdentity?.email ?? null,
     branch ?? null,
+    headSha ?? null,
   );
 
   // When a NEW repo is associated, bump sync_seq so the session re-syncs
@@ -515,6 +520,7 @@ function isAutomatedProject(value: string | null): boolean {
 
 function isAutomatedCwd(value: string | null): boolean {
   const normalized = value?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+  if (/(^|\/)pano-replay-[^/]+/.test(normalized)) return true;
   for (const project of HEADLESS_PROJECTS) {
     if (normalized.endsWith(`/panopticon/${project}`)) return true;
   }

@@ -59,6 +59,23 @@ function resolveGitBranch(dir: string): string | null {
   }
 }
 
+/** Resolve the current git HEAD commit SHA for a directory. */
+export function resolveGitHeadSha(dir: string): string | null {
+  if (!canUseLocalPathApis(dir)) return null;
+  try {
+    return (
+      execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], {
+        encoding: "utf-8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      }).trim() || null
+    );
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve the GitHub "org/repo" and branch for a working directory.
  * Results are cached for the lifetime of the process.
