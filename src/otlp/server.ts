@@ -14,6 +14,12 @@ import { decodeLogs } from "./decode-logs.js";
 import { decodeMetrics } from "./decode-metrics.js";
 import { decodeTraces } from "./decode-traces.js";
 import {
+  isQueryableLogRecord,
+  normalizeLogBody,
+  normalizeLogSessionId,
+  normalizeLogTimestampNs,
+} from "./log-normalize.js";
+import {
   ExportLogsServiceResponse,
   ExportMetricsServiceResponse,
   ExportTracesServiceResponse,
@@ -352,29 +358,30 @@ function jsonLogsToRows(data: any): import("../db/store.js").OtelLogRow[] {
       for (const lr of sl.logRecords ?? []) {
         const attrs = kvListToMap(lr.attributes);
 
-        // Codex sends event name in attrs["event.name"] with an empty body
+        // Codex sends event name in attrs["event.name"] with an empty body.
         const rawBody = extractJsonAnyValue(lr.body);
-        const body = rawBody ?? (attrs["event.name"] as string) ?? undefined;
+        const body = normalizeLogBody(rawBody, attrs["event.name"]);
 
-        // Codex sends timeUnixNano=0 with real time in attrs["event.timestamp"]
-        let timestamp_ns = parseInt(lr.timeUnixNano ?? "0", 10);
-        if (!timestamp_ns && typeof attrs["event.timestamp"] === "string") {
-          timestamp_ns =
-            new Date(attrs["event.timestamp"] as string).getTime() * 1_000_000;
-        }
+        const observedTimestampNs = lr.observedTimeUnixNano
+          ? parseInt(lr.observedTimeUnixNano, 10)
+          : undefined;
 
-        const sessionId = (attrs["session.id"] ??
-          attrs["conversation.id"] ??
-          resourceSessionId) as string | undefined;
+        const sessionId = normalizeLogSessionId(
+          attrs["session.id"],
+          attrs["conversation.id"],
+          resourceSessionId,
+        );
 
-        // Drop empty records — see decode-logs.ts for rationale.
-        if (!body && !sessionId && !timestamp_ns) continue;
+        // Drop malformed probe/partial-flush records — see decode-logs.ts.
+        if (!isQueryableLogRecord(body, sessionId)) continue;
 
         rows.push({
-          timestamp_ns,
-          observed_timestamp_ns: lr.observedTimeUnixNano
-            ? parseInt(lr.observedTimeUnixNano, 10)
-            : undefined,
+          timestamp_ns: normalizeLogTimestampNs(
+            parseInt(lr.timeUnixNano ?? "0", 10),
+            attrs["event.timestamp"],
+            observedTimestampNs,
+          ),
+          observed_timestamp_ns: observedTimestampNs,
           severity_number: lr.severityNumber,
           severity_text: lr.severityText,
           body,
