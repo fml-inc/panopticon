@@ -937,6 +937,47 @@ describe("server integration", () => {
       expect(row.timestamp_ns).toBeGreaterThan(0);
     });
 
+    it("drops malformed JSON logs without a body or session id", async () => {
+      const payload = {
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    timeUnixNano: "1",
+                    attributes: [
+                      {
+                        key: "probe",
+                        value: { stringValue: "partial-flush" },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const { status } = await post("/v1/logs", payload);
+      expect(status).toBe(200);
+
+      const db = getDb();
+      const invalidRows = db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM otel_logs
+           WHERE session_id IS NULL
+              OR session_id = ''
+              OR body IS NULL
+              OR body = ''
+              OR timestamp_ns < 1700000000000000000`,
+        )
+        .get() as { count: number };
+      expect(invalidRows.count).toBe(0);
+    });
+
     it("accepts Codex metrics with conversation.id fallback", async () => {
       const payload = {
         resourceMetrics: [

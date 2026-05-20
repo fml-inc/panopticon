@@ -1,5 +1,11 @@
 import type { OtelLogRow } from "../db/store.js";
 import {
+  isQueryableLogRecord,
+  normalizeLogBody,
+  normalizeLogSessionId,
+  normalizeLogTimestampNs,
+} from "./log-normalize.js";
+import {
   attrsToMap,
   bytesToHex,
   ExportLogsServiceRequest,
@@ -25,36 +31,31 @@ export function decodeLogs(buf: Uint8Array): OtelLogRow[] {
         const attrs = attrsToMap(record.attributes);
         const rawBody = extractAnyValue(record.body);
 
-        // Codex sends event name in attrs["event.name"] with an empty body
-        const body =
-          typeof rawBody === "string"
-            ? rawBody
-            : rawBody != null
-              ? JSON.stringify(rawBody)
-              : ((attrs["event.name"] as string) ?? undefined);
+        // Codex sends event name in attrs["event.name"] with an empty body.
+        const body = normalizeLogBody(rawBody, attrs["event.name"]);
 
-        // Codex sends timestamp_ns=0 with real time in attrs["event.timestamp"]
-        let timestamp_ns = longToNumber(record.timeUnixNano);
-        if (!timestamp_ns && typeof attrs["event.timestamp"] === "string") {
-          timestamp_ns =
-            new Date(attrs["event.timestamp"] as string).getTime() * 1_000_000;
-        }
+        const observedTimestampNs =
+          longToNumber(record.observedTimeUnixNano) || undefined;
 
-        const sessionId =
-          (attrs["session.id"] as string) ??
-          (attrs["conversation.id"] as string) ??
-          resourceSessionId;
+        const sessionId = normalizeLogSessionId(
+          attrs["session.id"],
+          attrs["conversation.id"],
+          resourceSessionId,
+        );
 
-        // Drop empty records. A record with no body, no session_id, AND no
-        // timestamp carries no queryable signal — it only pollutes data-
-        // hygiene assertions (session_id/body NOT NULL, timestamp_ns reasonable).
-        // Clients occasionally emit these from probe requests or partial flushes.
-        if (!body && !sessionId && !timestamp_ns) continue;
+        // Drop records that cannot be queried or correlated. Clients sometimes
+        // emit probe/partial-flush records with only attributes or a tiny
+        // placeholder timestamp; storing those only pollutes session-centric
+        // views and data-hygiene checks.
+        if (!isQueryableLogRecord(body, sessionId)) continue;
 
         rows.push({
-          timestamp_ns,
-          observed_timestamp_ns:
-            longToNumber(record.observedTimeUnixNano) || undefined,
+          timestamp_ns: normalizeLogTimestampNs(
+            longToNumber(record.timeUnixNano),
+            attrs["event.timestamp"],
+            observedTimestampNs,
+          ),
+          observed_timestamp_ns: observedTimestampNs,
           severity_number: record.severityNumber ?? undefined,
           severity_text: record.severityText || undefined,
           body,
