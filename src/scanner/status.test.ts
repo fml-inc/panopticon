@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../config.js", () => {
   const _os = require("node:os");
@@ -17,6 +17,7 @@ vi.mock("../config.js", () => {
 });
 
 import { config } from "../config.js";
+import { beginDatabaseRebuildGate } from "../db/rebuild-gate.js";
 import {
   clearScannerStatus,
   isDatabaseRebuildPhase,
@@ -25,6 +26,14 @@ import {
   readScannerStatus,
   writeScannerStatus,
 } from "./status.js";
+
+beforeEach(() => {
+  clearScannerStatus();
+});
+
+afterEach(() => {
+  clearScannerStatus();
+});
 
 describe("scanner runtime status", () => {
   it("writes and reads scanner progress", () => {
@@ -91,6 +100,25 @@ describe("scanner runtime status", () => {
     });
     expect(isDatabaseRebuildPhase("startup_scan")).toBe(false);
     expect(isDatabaseRebuildPhase("claims_rebuild_projection")).toBe(true);
+  });
+
+  it("prefers the parent rebuild gate over scanner status", () => {
+    const gate = beginDatabaseRebuildGate({
+      phase: "reparse_init",
+      message: "Startup scanner worker is running atomic reparse...",
+    });
+
+    try {
+      expect(readDatabaseRebuildStatus()).toMatchObject({
+        source: "parent_gate",
+        phase: "reparse_init",
+        message: "Startup scanner worker is running atomic reparse...",
+      });
+    } finally {
+      gate.release();
+    }
+
+    expect(readDatabaseRebuildStatus()).toBeNull();
   });
 
   it("keeps stale rebuild status while the owner process is alive", () => {

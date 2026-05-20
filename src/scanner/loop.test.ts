@@ -119,7 +119,12 @@ vi.mock("./claims-rebuild.js", () => ({
   rebuildClaimsDerivedState: vi.fn(),
 }));
 
-import { closeDb } from "../db/schema.js";
+import { readDatabaseRebuildGateStatus } from "../db/rebuild-gate.js";
+import {
+  closeDb,
+  needsClaimsRebuild,
+  needsRawDataResync,
+} from "../db/schema.js";
 import { captureException } from "../sentry.js";
 import { createScannerLoop, scanOnce } from "./loop.js";
 import {
@@ -139,6 +144,8 @@ describe("scanOnce progress", () => {
     parseFileMock.mockReset();
     runSessionSummaryPassMock.mockReset();
     runSessionSummaryPassMock.mockResolvedValue({ updated: 0 });
+    vi.mocked(needsRawDataResync).mockReturnValue(false);
+    vi.mocked(needsClaimsRebuild).mockReturnValue(false);
     vi.mocked(readFileWatermark).mockReturnValue({ byteOffset: 0 });
     vi.mocked(readKnownScannerFiles).mockReturnValue([]);
     vi.mocked(readSessionIdByScannerFile).mockReturnValue(undefined);
@@ -469,7 +476,61 @@ parentPort.postMessage({
         expect(closeDb).toHaveBeenCalled();
       });
 
-      expect(onReady).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => {
+        expect(onReady).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      handle.stop();
+      if (previousWorkerPath === undefined) {
+        delete process.env.PANOPTICON_SCANNER_WORKER_PATH;
+      } else {
+        process.env.PANOPTICON_SCANNER_WORKER_PATH = previousWorkerPath;
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("holds a parent rebuild gate while a startup worker reparse runs", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-worker-test-"));
+    const workerPath = path.join(tempDir, "worker.mjs");
+    fs.writeFileSync(
+      workerPath,
+      `import { parentPort, workerData } from "node:worker_threads";
+setTimeout(() => {
+  parentPort.postMessage({
+    ok: true,
+    result: {
+      ...workerData.state,
+      reparseChecked: true,
+      ready: true,
+      hadWork: false,
+      becameReady: true,
+    },
+  });
+}, 100);
+`,
+    );
+    vi.mocked(needsRawDataResync).mockReturnValue(true);
+    const previousWorkerPath = process.env.PANOPTICON_SCANNER_WORKER_PATH;
+    process.env.PANOPTICON_SCANNER_WORKER_PATH = workerPath;
+    const handle = createScannerLoop({
+      runInWorker: true,
+      idleIntervalMs: 10_000,
+      catchUpIntervalMs: 10_000,
+    });
+
+    try {
+      handle.start();
+      await vi.waitFor(() => {
+        expect(readDatabaseRebuildGateStatus()).toMatchObject({
+          source: "parent_gate",
+          phase: "reparse_init",
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(readDatabaseRebuildGateStatus()).toBeNull();
+      });
     } finally {
       handle.stop();
       if (previousWorkerPath === undefined) {

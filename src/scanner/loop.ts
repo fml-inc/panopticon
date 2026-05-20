@@ -5,6 +5,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { config } from "../config.js";
 import {
+  beginDatabaseRebuildGate,
+  type DatabaseRebuildGateHandle,
+} from "../db/rebuild-gate.js";
+import {
   closeDb,
   getDb,
   needsClaimsRebuild,
@@ -921,6 +925,11 @@ interface ScannerWorkerMessage {
   error?: string;
 }
 
+interface StartupRebuildGateReason {
+  phase: "reparse_init" | "claims_rebuild_init";
+  message: string;
+}
+
 function getScannerWorkerUrl(): URL {
   const override = process.env.PANOPTICON_SCANNER_WORKER_PATH;
   if (override) return pathToFileURL(override);
@@ -978,6 +987,32 @@ function runScannerTickInWorker(
   });
 }
 
+function detectStartupRebuildGateReason(): StartupRebuildGateReason | null {
+  try {
+    if (needsRawDataResync()) {
+      return {
+        phase: "reparse_init",
+        message: "Startup scanner worker is running atomic reparse...",
+      };
+    }
+    if (needsClaimsRebuild()) {
+      return {
+        phase: "claims_rebuild_init",
+        message: "Startup scanner worker is rebuilding derived state...",
+      };
+    }
+  } catch (err) {
+    log.scanner.error(
+      `Startup rebuild preflight error: ${err instanceof Error ? err.message : err}`,
+    );
+  } finally {
+    // The preflight opens the parent process DB handle to inspect data
+    // versions. Close it before a worker can swap or rebuild the database.
+    closeDb();
+  }
+  return null;
+}
+
 export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
@@ -1010,13 +1045,19 @@ export function createScannerLoop(opts: ScannerOptions): ScannerHandle {
       const shouldRunInWorker = opts.runInWorker === true && !state.ready;
       const result = shouldRunInWorker
         ? await (async () => {
+            const gateReason = detectStartupRebuildGateReason();
+            const rebuildGate: DatabaseRebuildGateHandle | null = gateReason
+              ? beginDatabaseRebuildGate(gateReason)
+              : null;
             try {
               return await runScannerTickInWorker(state);
             } finally {
               // The worker owns its own module-level SQLite singleton. If the
               // main thread opened a DB handle during a worker reparse, close
-              // it now so later requests reopen the post-swap database file.
+              // it before releasing the parent gate so later requests reopen
+              // the post-swap database file.
               closeDb();
+              rebuildGate?.release();
             }
           })()
         : await runScannerTickInProcess(state);

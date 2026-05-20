@@ -15,6 +15,7 @@ import {
 } from "./data-versions.js";
 import { Database } from "./driver.js";
 import { runMigrations } from "./migrations.js";
+import { readDatabaseRebuildGateStatus } from "./rebuild-gate.js";
 
 export { runMigrations } from "./migrations.js";
 
@@ -754,6 +755,13 @@ function registerCompressionFunctions(db: Database): void {
 }
 
 export function getDb(): Database {
+  const rebuildGate = readDatabaseRebuildGateStatus();
+  if (rebuildGate) {
+    throw new Error(
+      `Panopticon database rebuild in progress (${rebuildGate.phase}): ${rebuildGate.message}`,
+    );
+  }
+
   // If the db file was deleted (e.g. uninstall --purge) while this process
   // still holds a stale connection, drop it so we don't serve old data.
   if (_db && !fs.existsSync(config.dbPath)) {

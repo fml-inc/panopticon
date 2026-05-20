@@ -1,5 +1,9 @@
 import fs from "node:fs";
 import { config, ensureDataDir } from "../config.js";
+import {
+  type DatabaseRebuildGateStatus,
+  readDatabaseRebuildGateStatus,
+} from "../db/rebuild-gate.js";
 
 export type ScannerRuntimePhase =
   | "startup_scan"
@@ -36,6 +40,10 @@ export interface ScannerRuntimeStatus {
   totalSessions?: number;
   currentSessionId?: string;
 }
+
+export type DatabaseRebuildStatus =
+  | ScannerRuntimeStatus
+  | DatabaseRebuildGateStatus;
 
 const FRESH_STATUS_MAX_AGE_MS = 120_000;
 
@@ -111,7 +119,9 @@ export function isDatabaseRebuildPhase(
   return DATABASE_REBUILD_PHASES.has(phase as ScannerRuntimePhase);
 }
 
-export function readDatabaseRebuildStatus(): ScannerRuntimeStatus | null {
+export function readDatabaseRebuildStatus(): DatabaseRebuildStatus | null {
+  const gate = readDatabaseRebuildGateStatus();
+  if (gate) return gate;
   const status = readFreshScannerStatus();
   return isDatabaseRebuildPhase(status?.phase) ? status : null;
 }

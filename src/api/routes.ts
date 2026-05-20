@@ -9,6 +9,7 @@ import type http from "node:http";
 import { needsResync } from "../db/schema.js";
 import { log } from "../log.js";
 import {
+  type DatabaseRebuildStatus,
   readDatabaseRebuildStatus,
   readScannerStatus,
 } from "../scanner/status.js";
@@ -53,7 +54,7 @@ function jsonResponse(
 
 function writeResyncPendingResponse(
   res: http.ServerResponse,
-  status = readScannerStatus(),
+  status: DatabaseRebuildStatus | null = readScannerStatus(),
 ): void {
   jsonResponse(res, 503, {
     error:
