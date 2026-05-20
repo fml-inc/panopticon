@@ -205,6 +205,35 @@ same shell profile that launches your AI coding tool, then restart Panopticon
 and start a new agent session. `panopticon install` does not add experimental
 feature flags automatically.
 
+### Employee rollout checklist
+
+Use this checklist for canary users who should run all context intelligence
+surfaces:
+
+```bash
+panopticon install
+
+export PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION=1
+export PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION=1
+export PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION=1
+export PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1
+export PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1
+
+cd /path/to/repo
+code-review-graph build
+code-review-graph status
+
+panopticon stop
+panopticon start --force
+panopticon doctor
+panopticon status
+```
+
+`doctor` and `status` should show the context flags, hook targets with source
+identity, recent context-eligible hook activity, and Code Review Graph
+readiness. Ask canary users to report missing context, noisy context, hook
+latency, hook timeouts, and `code_intel` states other than `ready`.
+
 To use Code Review Graph enrichment, install/build Code Review Graph in each
 repo you want enriched:
 

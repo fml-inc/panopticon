@@ -14,6 +14,16 @@ type Opts = OptionValues;
 
 import { getOrCreateAuthToken } from "./auth.js";
 import { config, ensureDataDir } from "./config.js";
+import {
+  formatCodeIntelStatus,
+  formatContextActivity,
+  formatContextFlags,
+  formatHookTargets,
+  getCodeIntelStatus,
+  getContextFlagStatuses,
+  getHookTargetStatuses,
+  readContextActivity,
+} from "./context-diagnostics.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
 import { DAEMON_NAMES, type DaemonName, LOG_DIR, logPaths } from "./log.js";
@@ -1221,6 +1231,17 @@ program
       console.log();
       console.log("Sync: (could not read sync config)");
     }
+
+    console.log();
+    console.log("Context intelligence:");
+    console.log(`  flags: ${formatContextFlags(getContextFlagStatuses())}`);
+    console.log(
+      `  hook targets: ${formatHookTargets(getHookTargetStatuses())}`,
+    );
+    console.log(
+      `  recent activity: ${formatContextActivity(readContextActivity())}`,
+    );
+    console.log(`  code intel: ${formatCodeIntelStatus(getCodeIntelStatus())}`);
   });
 
 program
