@@ -45,7 +45,7 @@ server.tool(
 
 server.tool(
   "timeline",
-  "Get messages and tool calls for a session. Includes child sessions (forks, subagents) and DAG metadata (uuid/parentUuid). Content truncated to 500 chars by default.",
+  "Get messages and tool calls for a session. Includes child sessions (forks, subagents) and DAG metadata (uuid/parentUuid). Content truncated to 500 chars by default. For this session's hook events (UserPromptSubmit, ExitPlanMode, etc.), call hook_timeline with the same sessionId and merge client-side.",
   {
     sessionId: z.string().describe("The session ID to query"),
     limit: z
@@ -67,6 +67,46 @@ server.tool(
       limit,
       offset,
       fullPayloads,
+    });
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(result, null, 2) },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "hook_timeline",
+  "Cross-session hook event query for audit-style lookups: every UserPromptSubmit body (not just sessions.first_prompt), every ExitPlanMode plan, per-event cwd, tool-input file_path/command extracts. Returns hook events ordered by timestamp DESC. Filter by sessionId, time window, or event types.",
+  {
+    sessionId: z
+      .string()
+      .optional()
+      .describe("Filter to one session. Omit for cross-session audit queries."),
+    since: z
+      .string()
+      .optional()
+      .describe('Time filter: ISO date or relative like "24h", "7d"'),
+    eventTypes: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Restrict to specific hook event types (e.g. ["UserPromptSubmit", "ExitPlanMode", "PreToolUse"])',
+      ),
+    limit: z.number().optional().describe("Max events to return (default 100)"),
+    offset: z
+      .number()
+      .optional()
+      .describe("Number of events to skip (for pagination)"),
+  },
+  async ({ sessionId, since, eventTypes, limit, offset }) => {
+    const result = await service.hookTimeline({
+      sessionId,
+      since,
+      eventTypes,
+      limit,
+      offset,
     });
     return {
       content: [

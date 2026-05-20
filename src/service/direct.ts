@@ -15,6 +15,7 @@ import {
   activitySummary,
   costBreakdown,
   dbStats,
+  hookTimeline,
   listPlans,
   listSessions,
   print,
@@ -141,6 +142,9 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async sessionTimeline(opts) {
       return sessionTimeline(opts);
+    },
+    async hookTimeline(opts) {
+      return hookTimeline(opts);
     },
     async costBreakdown(opts) {
       return costBreakdown(opts);

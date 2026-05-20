@@ -156,6 +156,42 @@ export interface SessionTimelineResult {
   source: "local" | "remote";
 }
 
+// ── Hook events ───────────────────────────────────────────────────────────────
+
+/**
+ * Projection of a hook_events row, surfacing only the fields that aren't
+ * already covered by messages/tool_calls. Powers the cross-session
+ * hookTimeline query.
+ */
+export interface HookEvent {
+  sessionId: string;
+  timestampMs: number;
+  eventType: string;
+  toolName: string | null;
+  cwd: string | null;
+  repository: string | null;
+  target: string | null;
+  /** UserPromptSubmit body — every prompt, not just sessions.first_prompt. */
+  userPrompt: string | null;
+  /** ExitPlanMode plan markdown. */
+  plan: string | null;
+  /** Absolute file path extracted from tool_input on file-touching events. */
+  filePath: string | null;
+  /** Command string extracted from Bash tool_input. */
+  command: string | null;
+  /** PostToolUse tool_result or tool_response text. */
+  toolResult: string | null;
+  /** Permission-request allowed_prompts payload. */
+  allowedPrompts: string | null;
+}
+
+export interface HookTimelineResult {
+  events: HookEvent[];
+  totalEvents: number;
+  hasMore: boolean;
+  source: "local" | "remote";
+}
+
 // ── Spending ──────────────────────────────────────────────────────────────────
 
 export interface SpendingGroup {
