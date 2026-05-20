@@ -130,13 +130,13 @@ describe("gemini event normalization", () => {
       Array<{ hooks: Array<{ command: string }> }>
     >;
     expect(hooks.SessionStart.at(-1)?.hooks[0].command).toBe(
-      `${quoteCommandArg(process.execPath)} ${quoteCommandArg(
+      `node ${quoteCommandArg(
         path.join(pluginRoot, "bin", "hook-handler"),
       )} gemini 4318 --proxy`,
     );
   });
 
-  it("install config writes MCP server with the current Node executable", () => {
+  it("install config writes MCP server with a portable node command", () => {
     const pluginRoot = path.join("/tmp", "panopticon app");
     const result = gemini.hooks.applyInstallConfig(
       {},
@@ -145,7 +145,7 @@ describe("gemini event normalization", () => {
 
     expect(result.mcpServers).toMatchObject({
       panopticon: {
-        command: process.execPath,
+        command: "node",
         args: [path.join(pluginRoot, "bin", "mcp-server")],
       },
     });
@@ -153,7 +153,7 @@ describe("gemini event normalization", () => {
 });
 
 describe("claude desktop install config", () => {
-  it("writes MCP server with the current Node executable", () => {
+  it("writes MCP server with a portable node command", () => {
     const claudeDesktop = getTarget("claude-desktop")!;
     const pluginRoot = path.join("/tmp", "panopticon app");
     const result = claudeDesktop.hooks.applyInstallConfig(
@@ -163,7 +163,7 @@ describe("claude desktop install config", () => {
 
     expect(result.mcpServers).toMatchObject({
       panopticon: {
-        command: process.execPath,
+        command: "node",
         args: [path.join(pluginRoot, "bin", "mcp-server")],
       },
     });

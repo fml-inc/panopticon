@@ -720,7 +720,7 @@ async function install(
     description: pkgJson?.description ?? "Observability for Claude Code",
     mcpServers: {
       panopticon: {
-        command: process.execPath,
+        command: "node",
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
         args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
       },
@@ -730,10 +730,9 @@ async function install(
   const hooksJsonPath = path.join(pluginRoot, "hooks", "hooks.json");
   const hooksJson = readJsonFile(hooksJsonPath);
   if (hooksJson && typeof hooksJson === "object") {
-    const quotedNode = JSON.stringify(process.execPath);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
     const quotedHook = JSON.stringify("${CLAUDE_PLUGIN_ROOT}/bin/hook-handler");
-    const command = `${quotedNode} ${quotedHook} claude`;
+    const command = `node ${quotedHook} claude`;
     const hooks = (hooksJson as Record<string, unknown>).hooks as
       | Record<string, unknown>
       | undefined;
