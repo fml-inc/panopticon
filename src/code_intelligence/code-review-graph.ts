@@ -150,6 +150,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
           directly_changed_nodes: 0,
           impacted_nodes: 0,
           additional_file_count: 0,
+          impacted_files: [],
           key_entities: [],
         };
       }
@@ -191,6 +192,7 @@ class CodeReviewGraphProvider implements CodeIntelligenceProvider {
         directly_changed_nodes: changedNodes.length,
         impacted_nodes: impactedCount,
         additional_file_count: additionalFiles.size,
+        impacted_files: [...additionalFiles],
         key_entities: impacted.slice(0, 5).map((node) => node.name),
       };
     } finally {
@@ -471,8 +473,8 @@ function rankRelatedFiles(input: {
     bumpRelatedFile(scored, filePath, "test");
   }
 
-  for (const entity of input.impact.key_entities) {
-    const filePath = toRepoRelativePath(input.repoRoot, entity);
+  for (const impactedFile of input.impact.impacted_files) {
+    const filePath = toRepoRelativePath(input.repoRoot, impactedFile);
     if (filePath === seed) continue;
     bumpRelatedFile(scored, filePath, "impact");
   }

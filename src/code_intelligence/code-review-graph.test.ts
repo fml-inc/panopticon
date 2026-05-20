@@ -129,6 +129,9 @@ describe("code-review-graph provider", () => {
     expect(overview.related_files).toEqual(
       expect.arrayContaining(["src/caller.ts", "src/feature.test.ts"]),
     );
+    expect(overview.related_files).not.toEqual(
+      expect.arrayContaining(["callTarget", "it:uses target@L1"]),
+    );
     expect(overview.impact).toBeUndefined();
     expect(overview.suggested_tests).toBeUndefined();
     expect(overview.warnings).toBeUndefined();

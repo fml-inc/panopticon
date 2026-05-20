@@ -28,6 +28,7 @@ export interface CodeIntelImpact {
   directly_changed_nodes: number;
   impacted_nodes: number;
   additional_file_count: number;
+  impacted_files: string[];
   key_entities: string[];
 }
 
