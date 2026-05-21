@@ -51,10 +51,11 @@ CREATE TABLE IF NOT EXISTS otel_spans (
 
 CREATE TABLE IF NOT EXISTS user_config_snapshots (
   deviceName TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT 'claude',
   contentHash TEXT NOT NULL,
   data JSON NOT NULL,
   received_at INTEGER DEFAULT (unixepoch('now','subsec')*1000),
-  UNIQUE(deviceName, contentHash)
+  UNIQUE(deviceName, target, contentHash)
 );
 
 CREATE TABLE IF NOT EXISTS repo_config_snapshots (
@@ -223,6 +224,7 @@ function createServer(name: string, port: number, db: Database): http.Server {
     otel_spans: makeNaturalKeyHandler(db, "otel_spans", ["traceId", "spanId"]),
     user_config_snapshots: makeNaturalKeyHandler(db, "user_config_snapshots", [
       "deviceName",
+      "target",
       "contentHash",
     ]),
     repo_config_snapshots: makeNaturalKeyHandler(db, "repo_config_snapshots", [

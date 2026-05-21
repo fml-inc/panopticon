@@ -476,7 +476,7 @@ function parseMemoryMap(
 // ── User config snapshots ──────────────────────────────────────────────────
 
 const USER_CONFIG_SQL = `
-  SELECT id, device_name, snapshot_at_ms, content_hash,
+  SELECT id, device_name, target, snapshot_at_ms, content_hash,
          permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
          panopticon_allowed, panopticon_approvals, memory_files
   FROM user_config_snapshots
@@ -493,6 +493,7 @@ export function readUserConfigSnapshots(
   const rawRows = db.prepare(USER_CONFIG_SQL).all(afterId, limit) as Array<{
     id: number;
     device_name: string;
+    target: string;
     snapshot_at_ms: number;
     content_hash: string;
     permissions: string | null;
@@ -510,6 +511,7 @@ export function readUserConfigSnapshots(
   const rows: UserConfigSnapshotRecord[] = rawRows.map((r) => ({
     id: r.id,
     deviceName: r.device_name,
+    target: r.target,
     snapshotAtMs: r.snapshot_at_ms,
     contentHash: r.content_hash,
     permissions: parseJsonObject(r.permissions),

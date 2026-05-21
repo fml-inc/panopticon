@@ -174,6 +174,7 @@ export interface OtelSpanRecord {
 export interface UserConfigSnapshotRecord {
   id: number;
   deviceName: string;
+  target: string;
   snapshotAtMs: number;
   contentHash: string;
   permissions: Record<string, unknown>;

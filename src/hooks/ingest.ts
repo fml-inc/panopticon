@@ -639,7 +639,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   // Capture user config on SessionStart (once per session) — baseline
   if (eventType === "SessionStart" && !userConfigCaptured.has(sessionId)) {
     userConfigCaptured.add(sessionId);
-    captureUserConfigSnapshot(data.cwd as string | undefined);
+    captureUserConfigSnapshot(data.cwd as string | undefined, targetId);
   }
 
   // Capture user config on PostToolUse when a tool wrote to a tracked file
@@ -649,8 +649,8 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     const writtenPath = extractWrittenFilePath(
       data.tool_input as Record<string, unknown> | undefined,
     );
-    if (writtenPath && isTrackedUserConfigPath(writtenPath)) {
-      captureUserConfigSnapshot(data.cwd as string | undefined);
+    if (writtenPath && isTrackedUserConfigPath(writtenPath, targetId)) {
+      captureUserConfigSnapshot(data.cwd as string | undefined, targetId);
     }
   }
 

@@ -275,6 +275,7 @@ CREATE TABLE IF NOT EXISTS model_pricing (
 CREATE TABLE IF NOT EXISTS user_config_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_name TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT 'claude',
   snapshot_at_ms INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
   permissions JSON NOT NULL DEFAULT '{}',
