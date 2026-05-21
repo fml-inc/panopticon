@@ -1402,6 +1402,22 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: 24,
+    name: "add_target_to_user_config_snapshots",
+    up: (db) => {
+      if (!tableExists(db, "user_config_snapshots")) return;
+      addColumnIfMissing(
+        db,
+        "user_config_snapshots",
+        "target",
+        "target TEXT NOT NULL DEFAULT 'claude'",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_user_config_device_target_hash ON user_config_snapshots(device_name, target, content_hash)",
+      );
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

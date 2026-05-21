@@ -251,6 +251,7 @@ function contentHash(obj: Record<string, unknown>): string {
 
 export interface UserConfigSnapshot {
   deviceName: string;
+  target: string;
   permissions: unknown;
   enabledPlugins: unknown;
   hooks: unknown;
@@ -273,6 +274,7 @@ export interface UserConfigSnapshot {
 export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
   const db = getDb();
   const hash = contentHash({
+    target: snap.target,
     permissions: snap.permissions,
     enabledPlugins: snap.enabledPlugins,
     hooks: snap.hooks,
@@ -285,22 +287,23 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
     memoryFiles: snap.memoryFiles,
   });
 
-  // Check if latest snapshot for this device has the same hash
+  // Check if latest snapshot for this device+target has the same hash
   const existing = db
     .prepare(
-      "SELECT content_hash FROM user_config_snapshots WHERE device_name = ? ORDER BY snapshot_at_ms DESC LIMIT 1",
+      "SELECT content_hash FROM user_config_snapshots WHERE device_name = ? AND target = ? ORDER BY snapshot_at_ms DESC LIMIT 1",
     )
-    .get(snap.deviceName) as { content_hash: string } | undefined;
+    .get(snap.deviceName, snap.target) as { content_hash: string } | undefined;
 
   if (existing?.content_hash === hash) return false;
 
   db.prepare(
     `INSERT INTO user_config_snapshots
-       (device_name, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
+       (device_name, target, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
         panopticon_allowed, panopticon_approvals, memory_files)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     snap.deviceName,
+    snap.target,
     Date.now(),
     hash,
     JSON.stringify(snap.permissions),

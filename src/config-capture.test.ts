@@ -5,40 +5,6 @@ import {
 } from "./config-capture.js";
 
 describe("isTrackedUserConfigPath", () => {
-  it("matches memory files under any project slug", () => {
-    expect(
-      isTrackedUserConfigPath(
-        "/Users/gus/.claude/projects/-Users-gus-workspace-panopticon/memory/MEMORY.md",
-      ),
-    ).toBe(true);
-    expect(
-      isTrackedUserConfigPath(
-        "/Users/gus/.claude/projects/-Users-gus-workspace-fml-inc-fml/memory/feedback_pnpm_add.md",
-      ),
-    ).toBe(true);
-  });
-
-  it("matches memory files nested in subdirectories", () => {
-    expect(
-      isTrackedUserConfigPath(
-        "/home/ubuntu/.claude/projects/foo/memory/notes/topic.md",
-      ),
-    ).toBe(true);
-  });
-
-  it("does not match non-.md files in memory/", () => {
-    expect(
-      isTrackedUserConfigPath(
-        "/Users/gus/.claude/projects/foo/memory/MEMORY.md.bak",
-      ),
-    ).toBe(false);
-    expect(
-      isTrackedUserConfigPath(
-        "/Users/gus/.claude/projects/foo/memory/state.json",
-      ),
-    ).toBe(false);
-  });
-
   it("matches panopticon permissions files across platforms", () => {
     expect(
       isTrackedUserConfigPath(
@@ -55,6 +21,25 @@ describe("isTrackedUserConfigPath", () => {
         "C:\\Users\\x\\AppData\\Roaming\\panopticon\\permissions\\allowed.json",
       ),
     ).toBe(true);
+  });
+
+  it("delegates target-specific paths to the matching target", () => {
+    expect(
+      isTrackedUserConfigPath(
+        "/Users/gus/.claude/projects/-Users-gus-workspace-panopticon/memory/MEMORY.md",
+        "claude",
+      ),
+    ).toBe(true);
+    expect(
+      isTrackedUserConfigPath(
+        "/home/ubuntu/.claude/projects/foo/memory/notes/topic.md",
+      ),
+    ).toBe(true);
+    expect(
+      isTrackedUserConfigPath(
+        "/Users/gus/.claude/projects/foo/memory/MEMORY.md.bak",
+      ),
+    ).toBe(false);
   });
 
   it("does not match unrelated paths", () => {

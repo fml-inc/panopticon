@@ -1,6 +1,9 @@
 import os from "node:os";
 import { insertUserConfigSnapshot } from "./db/store.js";
-import { readConfig } from "./scanner.js";
+import {
+  isTargetUserConfigPath,
+  readTargetConfigSnapshot,
+} from "./targets/config-snapshot.js";
 
 /**
  * Capture the current user-global config (settings, permissions allowlist,
@@ -9,17 +12,21 @@ import { readConfig } from "./scanner.js";
  * this device.
  *
  * Callers:
- *   - hooks/ingest.ts on SessionStart (baseline)
+ *   - hooks/ingest.ts on SessionStart (baseline, target-aware)
  *   - hooks/ingest.ts on PostToolUse when a tracked path was written
  *   - mcp/permissions.ts after permissions_apply writes allowed/approvals
  *
  * Returns true when a new row was inserted, false when dedup'd or on error.
  */
-export function captureUserConfigSnapshot(cwd?: string): boolean {
+export function captureUserConfigSnapshot(
+  cwd?: string,
+  target?: string,
+): boolean {
   try {
-    const config = readConfig(cwd);
+    const config = readTargetConfigSnapshot(target, cwd);
     return insertUserConfigSnapshot({
       deviceName: os.hostname(),
+      target: target ?? "claude",
       permissions: config.user.permissions,
       enabledPlugins: config.enabledPlugins,
       hooks: config.user.hooks,
@@ -40,19 +47,22 @@ export function captureUserConfigSnapshot(cwd?: string): boolean {
 /**
  * True when the given file path corresponds to user-global config that
  * should trigger a re-capture on write. Matches:
- *   - memory files:       `~/.claude/projects/<slug>/memory/**\/*.md`
+ *   - target-owned user config files (for example Claude memory files or Pi
+ *     settings/extensions/skills)
  *   - panopticon perms:   `<dataDir>/panopticon/permissions/{allowed,approvals}.json`
  *
  * Matching is suffix-based so it works across platforms (macOS `Library/
  * Application Support/panopticon`, Linux `.local/share/panopticon`, Windows
  * `AppData/Roaming/panopticon`).
  */
-export function isTrackedUserConfigPath(filePath: string): boolean {
+export function isTrackedUserConfigPath(
+  filePath: string,
+  target?: string,
+): boolean {
+  if (isTargetUserConfigPath(filePath, target)) return true;
+
   // Normalize backslashes on Windows paths
   const p = filePath.replace(/\\/g, "/");
-  if (/\/\.claude\/projects\/[^/]+\/memory\//.test(p) && p.endsWith(".md")) {
-    return true;
-  }
   if (
     p.endsWith("/panopticon/permissions/allowed.json") ||
     p.endsWith("/panopticon/permissions/approvals.json")
