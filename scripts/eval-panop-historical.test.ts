@@ -5,7 +5,10 @@ import {
   buildReliablePanopHistoricalContext,
   extractFixturePrompts,
   extractFixtureRows,
+  netDiscoveryTokenSavingsRate,
+  parseArgs,
   parseDiffstatFiles,
+  pathMatches,
   rankOptimizedCrgCandidatesForPanop,
   selectHookCoverageCandidates,
 } from "./eval-panop-historical.js";
@@ -62,7 +65,22 @@ describe("historical proxy metrics", () => {
     ).toEqual(["src/api/routes.ts", "src/cli.ts"]);
   });
 
-  it("excludes non-point-in-time PreToolUse context from headline Panop metrics", () => {
+  it("normalizes rename paths from fixture diffstat file lines", () => {
+    expect(
+      parseDiffstatFiles(`src/{old-name.ts => new-name.ts} | 8 ++++----
+ old/path.ts => src/new/path.ts          | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)`),
+    ).toEqual(["src/new-name.ts", "src/new/path.ts"]);
+  });
+
+  it("matches path suffixes only at path segment boundaries", () => {
+    expect(pathMatches("src/barclient.ts", "client.ts")).toBe(false);
+    expect(pathMatches("x/schema.ts", "schema.ts")).toBe(true);
+    expect(pathMatches("schema.ts", "x/schema.ts")).toBe(true);
+    expect(pathMatches("src/foo/client.ts", "client.ts")).toBe(true);
+  });
+
+  it("builds reliable Panop context without non-point-in-time PreToolUse context", () => {
     const reliable = buildReliablePanopHistoricalContext({
       sessionstart: treatment({
         files: ["src/session.ts"],
@@ -94,6 +112,19 @@ describe("historical proxy metrics", () => {
     expect(reliable.sessionIds).toEqual(["session-a", "session-b"]);
     expect(reliable.contextTokens).toBe(30);
     expect(reliable.preToolUseEvents).toBe(0);
+  });
+
+  it("defaults headline injection features to the replay-safe set", () => {
+    expect(parseArgs([]).injectionFeatures).toEqual([
+      "sessionstart",
+      "userpromptsubmit",
+    ]);
+    expect(
+      parseArgs(["--injection-features", "all"]).injectionFeatures,
+    ).toEqual(["sessionstart", "userpromptsubmit", "pretooluse"]);
+    expect(() => parseArgs(["--fixture-file"])).toThrow(
+      "--fixture-file expects a value",
+    );
   });
 
   it("accepts raw scenario arrays and wrapped result files as fixture sources", () => {
@@ -299,7 +330,7 @@ describe("historical proxy metrics", () => {
         fileCandidateHits: 1,
         sessionHits: 1,
         matchedDiscoveryTokens: 50,
-        netDiscoveryTokenDelta: -30,
+        netDiscoveryTokenDelta: 30,
         fileRecall: 0.5,
         filePrecision: 0.25,
         sessionRecall: 1,
@@ -308,9 +339,33 @@ describe("historical proxy metrics", () => {
 
     expect(aggregate.discoveryReadTokens).toBe(100);
     expect(aggregate.matchedDiscoveryTokens).toBe(50);
-    expect(aggregate.netDiscoveryTokenDelta).toBe(-30);
+    expect(aggregate.netDiscoveryTokenDelta).toBe(30);
     expect(aggregate.matchedDiscoveryTokenRate).toBe(0.5);
     expect(aggregate.contextRoi).toBe(2.5);
-    expect(aggregate.meanNetDiscoveryTokenDelta).toBe(-30);
+    expect(aggregate.meanNetDiscoveryTokenDelta).toBe(30);
+  });
+
+  it("charges net discovery savings only for discovery-oracle context cost", () => {
+    const aggregate = aggregateMeasurements([
+      measurement({
+        oracleSource: "pre_edit_discovery",
+        discoveryReadTokens: 100,
+        treatmentContextTokens: 20,
+        matchedDiscoveryTokens: 50,
+        netDiscoveryTokenDelta: 30,
+      }),
+      measurement({
+        oracleSource: "expected_diffstat",
+        oracleFiles: 1,
+        treatmentContextTokens: 1000,
+        fileHits: 1,
+        fileCandidateHits: 1,
+      }),
+    ] as never);
+
+    expect(aggregate.treatmentContextTokens).toBe(1020);
+    expect(aggregate.discoveryTreatmentContextTokens).toBe(20);
+    expect(aggregate.contextRoi).toBe(2.5);
+    expect(netDiscoveryTokenSavingsRate(aggregate)).toBe(0.3);
   });
 });

@@ -19,6 +19,7 @@ import {
   hasRequiredInjectionSurface,
   isSqliteBusyError,
   parseArgs,
+  parseDiffstatFiles,
   priorOutcomeKeyForScenario,
   selectPreWindowContext,
   selectPromptWindow,
@@ -637,6 +638,20 @@ describe("replay aggregate reliability gates", () => {
       skipPriorAttempted: true,
       skipPriorStrictReady: true,
     });
+    expect(parseArgs(["--timeout-ms", "1000"])).toMatchObject({
+      agentTimeoutMs: 1000,
+    });
+    expect(() => parseArgs(["--timeout-ms", "abc"])).toThrow(
+      "--timeout-ms expects a positive integer",
+    );
+  });
+
+  it("normalizes rename paths from expected PR diffstat", () => {
+    expect(
+      parseDiffstatFiles(`src/{old-name.ts => new-name.ts} | 8 ++++----
+ old/path.ts => src/new/path.ts          | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)`),
+    ).toEqual(["src/new-name.ts", "src/new/path.ts"]);
   });
 
   it("filters candidates before spending on expensive replay arms", () => {

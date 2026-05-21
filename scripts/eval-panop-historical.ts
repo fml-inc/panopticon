@@ -69,7 +69,7 @@ const RELIABLE_INJECTION_FEATURES = [
   "userpromptsubmit",
 ] as const satisfies readonly PanopFeatureName[];
 const DEFAULT_INJECTION_FEATURES =
-  PANOP_FEATURE_NAMES satisfies readonly PanopFeatureName[];
+  RELIABLE_INJECTION_FEATURES satisfies readonly PanopFeatureName[];
 const SELECTED_FEATURE_NAME = "selected";
 const DEFAULT_HOOK_COVERAGE_CANDIDATE_LIMIT = 1000;
 
@@ -348,6 +348,7 @@ interface Aggregate {
   discoveryReads: number;
   discoveryReadTokens: number;
   treatmentContextTokens: number;
+  discoveryTreatmentContextTokens: number;
   treatmentInjectionEvents: number;
   treatmentSessionStartEvents: number;
   treatmentUserPromptEvents: number;
@@ -952,10 +953,9 @@ function measureScenario(
     scenario,
     args.injectionFeatures,
   );
-  const panop = mergePanopFeatureContexts(
-    panopFeatures,
-    args.injectionFeatures,
-  );
+  const panop = isReliablePanopFeatureSet(args.injectionFeatures)
+    ? buildReliablePanopHistoricalContext(panopFeatures)
+    : mergePanopFeatureContexts(panopFeatures, args.injectionFeatures);
   let originalCrg: TreatmentContext | null = null;
   let optimizedCrg: TreatmentContext | null = null;
 
@@ -997,7 +997,7 @@ function measureScenarioArm(
   );
   const netDiscoveryTokenDelta =
     oracle.source === "pre_edit_discovery"
-      ? treatment.contextTokens - matchedDiscoveryTokens
+      ? matchedDiscoveryTokens - treatment.contextTokens
       : null;
   return {
     feature,
@@ -1216,6 +1216,16 @@ function mergePanopFeatureContexts(
   return selectedFeatures.reduce(
     (acc, feature) => mergeContexts(acc, features[feature]),
     emptyContext(),
+  );
+}
+
+function isReliablePanopFeatureSet(
+  features: readonly PanopFeatureName[],
+): boolean {
+  const selected = new Set(features);
+  return (
+    selected.size === RELIABLE_INJECTION_FEATURES.length &&
+    RELIABLE_INJECTION_FEATURES.every((feature) => selected.has(feature))
   );
 }
 
@@ -1589,10 +1599,23 @@ function preToolUseReadRowsBeforeFirstEdit(
 }
 
 export function parseDiffstatFiles(diffstat: string): string[] {
-  return diffstat
-    .split("\n")
-    .map((line) => line.match(/^\s*(.+?)\s+\|/)?.[1]?.trim() ?? null)
-    .filter((filePath): filePath is string => filePath != null);
+  return unique(
+    diffstat
+      .split("\n")
+      .map((line) => line.match(/^\s*(.+?)\s+\|/)?.[1]?.trim() ?? null)
+      .filter((filePath): filePath is string => filePath != null)
+      .filter((filePath) => !/^\d+ files? changed/.test(filePath))
+      .map(normalizeDiffstatFilePath),
+  ).sort();
+}
+
+function normalizeDiffstatFilePath(filePath: string): string {
+  const braceExpanded = filePath.replace(
+    /\{([^{}]*?)\s*=>\s*([^{}]*?)\}/g,
+    "$2",
+  );
+  if (!braceExpanded.includes("=>")) return braceExpanded;
+  return braceExpanded.split("=>").at(-1)?.trim() ?? braceExpanded;
 }
 
 function extractReadPaths(
@@ -1911,7 +1934,8 @@ function loadOptimizedCrgSearchNodes(repoRoot: string): RawCrgNode[] | null {
         `SELECT id, name, qualified_name, kind, file_path, line_start, line_end,
                 language, params, return_type, signature
          FROM nodes
-         WHERE kind IN ('File', 'Class', 'Function', 'Test')`,
+         WHERE kind IN ('File', 'Class', 'Function', 'Test')
+         ORDER BY id`,
       )
       .all() as RawCrgNode[];
     optimizedCrgNodeCache.set(graphDb, rows);
@@ -2274,6 +2298,7 @@ export function aggregateMeasurements(
     discoveryReads: sum(discoveryMeasurements, (m) => m.discoveryReads),
     discoveryReadTokens,
     treatmentContextTokens,
+    discoveryTreatmentContextTokens,
     treatmentInjectionEvents: sum(
       measurements,
       (m) => m.treatmentInjectionEvents,
@@ -2461,18 +2486,24 @@ function countMatches(
   };
 }
 
-function pathMatches(candidate: string, value: string): boolean {
+export function pathMatches(candidate: string, value: string): boolean {
+  const left = normalizePathForMatch(candidate);
+  const right = normalizePathForMatch(value);
+  if (!left || !right) return false;
   return (
-    candidate === value ||
-    candidate.endsWith(value) ||
-    value.endsWith(candidate)
+    left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`)
   );
 }
 
-function netDiscoveryTokenSavingsRate(aggregate: Aggregate): number {
+function normalizePathForMatch(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+}
+
+export function netDiscoveryTokenSavingsRate(aggregate: Aggregate): number {
   if (aggregate.discoveryReadTokens <= 0) return 0;
   return (
-    (aggregate.matchedDiscoveryTokens - aggregate.treatmentContextTokens) /
+    (aggregate.matchedDiscoveryTokens -
+      aggregate.discoveryTreatmentContextTokens) /
     aggregate.discoveryReadTokens
   );
 }
@@ -2495,7 +2526,7 @@ function printComparison(
   );
   console.log("");
   console.log(
-    `  ${"arm".padEnd(armWidth)} recall precision session_recall context matched cover net_save time_proxy net_delta roi hits/1k`,
+    `  ${"arm".padEnd(armWidth)} recall precision session_recall context matched cover net_save mean_delta roi hits/1k`,
   );
   for (const arm of arms) {
     const aggregate = aggregateByArm[arm];
@@ -2510,16 +2541,12 @@ function printComparison(
     const netDelta =
       aggregate.meanNetDiscoveryTokenDelta == null
         ? "n/a"
-        : `${Math.round(aggregate.netDiscoveryTokenDelta)}tok`;
+        : `${Math.round(aggregate.meanNetDiscoveryTokenDelta)}tok`;
     const roi =
       aggregate.contextRoi == null
         ? "n/a"
         : `${aggregate.contextRoi.toFixed(2)}x`;
     const netSave = pct(netDiscoveryTokenSavingsRate(aggregate));
-    const timeProxy =
-      aggregate.matchedDiscoveryTokenRate == null
-        ? "n/a"
-        : pct(aggregate.matchedDiscoveryTokenRate);
     console.log(
       `  ${arm.padEnd(armWidth)} ` +
         `${pct(aggregate.weightedFileRecall).padEnd(6)} ` +
@@ -2529,7 +2556,6 @@ function printComparison(
         `${`${Math.round(aggregate.matchedDiscoveryTokens)}tok`.padEnd(8)} ` +
         `${matchedRate.padEnd(4)} ` +
         `${netSave.padEnd(8)} ` +
-        `${timeProxy.padEnd(10)} ` +
         `${netDelta.padEnd(9)} ` +
         `${roi.padEnd(5)} ` +
         `${aggregate.fileHitsPer1kContextTokens.toFixed(2)}`,
@@ -2773,7 +2799,7 @@ function discoveryProxyMarkdownTable(
   arms: readonly ArmName[],
 ): string {
   return [
-    "| Arm | Matched Read Tokens | Coverage | Net Savings | Net Delta | ROI |",
+    "| Arm | Matched Read Tokens | Coverage | Net Savings | Mean Net Delta | ROI |",
     "| --- | ---: | ---: | ---: | ---: | ---: |",
     ...arms.map((arm) => {
       const aggregate = aggregateByArm[arm];
@@ -2781,7 +2807,7 @@ function discoveryProxyMarkdownTable(
         `| ${arm} | ${Math.round(aggregate.matchedDiscoveryTokens)} tok | ` +
         `${aggregate.matchedDiscoveryTokenRate == null ? "n/a" : pct(aggregate.matchedDiscoveryTokenRate)} | ` +
         `${pct(netDiscoveryTokenSavingsRate(aggregate))} | ` +
-        `${aggregate.meanNetDiscoveryTokenDelta == null ? "n/a" : `${Math.round(aggregate.netDiscoveryTokenDelta)} tok`} | ` +
+        `${aggregate.meanNetDiscoveryTokenDelta == null ? "n/a" : `${Math.round(aggregate.meanNetDiscoveryTokenDelta)} tok`} | ` +
         `${aggregate.contextRoi == null ? "n/a" : `${aggregate.contextRoi.toFixed(2)}x`} |`
       );
     }),
@@ -2955,7 +2981,7 @@ function compact(value: string, max: number): string {
     : normalized;
 }
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
   const parsed: Args = {
     repository: DEFAULT_REPOSITORY,
     repoRoot: DEFAULT_REPO_ROOT,
@@ -2977,42 +3003,44 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--repository") {
-      parsed.repository = parseRepositoryFilter(argv[++i]);
+      parsed.repository = parseRepositoryFilter(readArgValue(argv, ++i, arg));
     } else if (arg === "--all-repositories") {
       parsed.repository = null;
     } else if (arg === "--repo-root") {
-      parsed.repoRoot = argv[++i];
+      parsed.repoRoot = readArgValue(argv, ++i, arg);
     } else if (arg === "--target" || arg === "--targets") {
-      parsed.targets = parseTargetList(argv[++i]);
+      parsed.targets = parseTargetList(readArgValue(argv, ++i, arg));
     } else if (arg === "--limit") {
-      parsed.limit = Number(argv[++i]);
+      parsed.limit = Number(readArgValue(argv, ++i, arg));
     } else if (arg === "--min-oracle-files") {
-      parsed.minOracleFiles = Number(argv[++i]);
+      parsed.minOracleFiles = Number(readArgValue(argv, ++i, arg));
     } else if (arg === "--arms") {
-      parsed.arms = parseArmList(argv[++i]);
+      parsed.arms = parseArmList(readArgValue(argv, ++i, arg));
     } else if (arg === "--include-original-crg") {
       parsed.arms = unique([...parsed.arms, "original-crg"]);
     } else if (arg === "--injection-features") {
-      parsed.injectionFeatures = parseInjectionFeatureList(argv[++i]);
+      parsed.injectionFeatures = parseInjectionFeatureList(
+        readArgValue(argv, ++i, arg),
+      );
     } else if (arg === "--sample-mode") {
-      parsed.sampleMode = parseSampleMode(argv[++i]);
+      parsed.sampleMode = parseSampleMode(readArgValue(argv, ++i, arg));
     } else if (arg === "--hook-coverage") {
       parsed.sampleMode = "hook-coverage";
     } else if (arg === "--hook-coverage-candidate-limit") {
-      parsed.hookCoverageCandidateLimit = Number(argv[++i]);
+      parsed.hookCoverageCandidateLimit = Number(readArgValue(argv, ++i, arg));
     } else if (arg === "--require-hook-coverage") {
       parsed.requireHookCoverage = true;
       parsed.sampleMode = "hook-coverage";
     } else if (arg === "--output-json") {
-      parsed.outputJson = argv[++i];
+      parsed.outputJson = readArgValue(argv, ++i, arg);
     } else if (arg === "--report-markdown") {
-      parsed.reportMarkdown = argv[++i];
+      parsed.reportMarkdown = readArgValue(argv, ++i, arg);
     } else if (arg === "--since-days") {
-      parsed.sinceDays = Number(argv[++i]);
+      parsed.sinceDays = Number(readArgValue(argv, ++i, arg));
     } else if (arg === "--fixture-file") {
-      parsed.fixtureFile = argv[++i];
+      parsed.fixtureFile = readArgValue(argv, ++i, arg);
     } else if (arg === "--session-id") {
-      parsed.sessionId = argv[++i];
+      parsed.sessionId = readArgValue(argv, ++i, arg);
     } else if (arg === "--include-automated") {
       parsed.includeAutomated = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -3049,6 +3077,12 @@ function parseArgs(argv: string[]): Args {
     throw new Error("--since-days expects a positive integer");
   }
   return parsed;
+}
+
+function readArgValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index];
+  if (value === undefined) throw new Error(`${flag} expects a value`);
+  return value;
 }
 
 function parseArmList(value: string): ArmName[] {
@@ -3150,7 +3184,7 @@ Compares selected deterministic context arms over the same historical scenarios:
 
 By default this runs one focused matrix:
   --arms none,panop,panop+optimized-crg
-  --injection-features all
+  --injection-features reliable
 
 Options:
   --repository SLUG      Repository filter, or "all" for every repository

@@ -25,7 +25,7 @@
 // commands + judge plan WITHOUT spawning agents, so the mechanics are
 // verifiable for free. Pass --execute to actually run.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -339,6 +339,16 @@ interface ScenarioResult {
   arms: Partial<Record<ArmName, ArmResult>>;
   verdicts: Partial<Record<ArmName, Verdict>>;
   judgeNotes: string;
+}
+
+interface ProcessGroupResult {
+  stdout: string;
+  stderr: string;
+  exitOk: boolean;
+  timedOut: boolean;
+  errorMessage: string | null;
+  code: number | null;
+  signal: NodeJS.Signals | null;
 }
 
 function gitOutput(args: string[], cwd = process.cwd()): string | null {
@@ -777,38 +787,42 @@ async function executeArm(
       const turnStart = Date.now();
       let turnOut = "";
       let turnExitOk = true;
-      try {
-        turnOut = execFileSync(
-          "claude",
-          turnArgs(
-            s.prompts[i],
-            worktree,
-            resumeId,
-            i === 0
-              ? buildReplayAppendSystemPrompt(
-                  worktree,
-                  args.repoRoot,
-                  appendSystemPrompt,
-                  s.pre_window_prompts ?? [],
-                  s.pre_window_prompt_offset ?? 0,
-                )
-              : null,
-          ),
-          {
-            cwd: worktree,
-            env: { ...process.env, ...turnEnv },
-            timeout: args.agentTimeoutMs,
-            encoding: "utf-8",
-            maxBuffer: 64 * 1024 * 1024,
-          },
-        );
+      const agentRun = await execFileInProcessGroup(
+        "claude",
+        turnArgs(
+          s.prompts[i],
+          worktree,
+          resumeId,
+          i === 0
+            ? buildReplayAppendSystemPrompt(
+                worktree,
+                args.repoRoot,
+                appendSystemPrompt,
+                s.pre_window_prompts ?? [],
+                s.pre_window_prompt_offset ?? 0,
+              )
+            : null,
+        ),
+        {
+          cwd: worktree,
+          env: { ...process.env, ...turnEnv },
+          timeoutMs: args.agentTimeoutMs,
+          maxBuffer: 64 * 1024 * 1024,
+        },
+      );
+      if (agentRun.exitOk) {
         turnsOk++;
-      } catch (err) {
+        turnOut = agentRun.stdout;
+      } else {
         turnExitOk = false;
         exitOk = false;
         turnOut =
-          (err as { stdout?: string }).stdout ??
-          (err instanceof Error ? err.message : String(err));
+          agentRun.stdout ||
+          agentRun.stderr ||
+          agentRun.errorMessage ||
+          (agentRun.timedOut
+            ? `agent timed out after ${args.agentTimeoutMs}ms`
+            : `agent exited with code=${agentRun.code} signal=${agentRun.signal}`);
       }
       totalDuration += Date.now() - turnStart;
       const t = extractTokens(turnOut);
@@ -921,6 +935,83 @@ async function executeArm(
   } finally {
     removeWorktree(args.repoRoot, worktree);
   }
+}
+
+async function execFileInProcessGroup(
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    maxBuffer: number;
+  },
+): Promise<ProcessGroupResult> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let outputBytes = 0;
+    let timedOut = false;
+    let errorMessage: string | null = null;
+    let settled = false;
+    let sigkillTimer: NodeJS.Timeout | null = null;
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
+      resolve({
+        stdout,
+        stderr,
+        exitOk: code === 0 && signal == null && !timedOut && !errorMessage,
+        timedOut,
+        errorMessage,
+        code,
+        signal,
+      });
+    };
+    const terminateGroup = (signal: NodeJS.Signals) => {
+      if (child.pid == null) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        try {
+          process.kill(child.pid, signal);
+        } catch {
+          // Process may already have exited.
+        }
+      }
+    };
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      terminateGroup("SIGTERM");
+      sigkillTimer = setTimeout(() => terminateGroup("SIGKILL"), 2_000);
+    }, options.timeoutMs);
+    const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
+      outputBytes += chunk.length;
+      const text = chunk.toString("utf-8");
+      if (stream === "stdout") stdout += text;
+      else stderr += text;
+      if (outputBytes > options.maxBuffer && !errorMessage) {
+        errorMessage = `agent output exceeded ${options.maxBuffer} bytes`;
+        terminateGroup("SIGTERM");
+        sigkillTimer = setTimeout(() => terminateGroup("SIGKILL"), 2_000);
+      }
+    };
+    child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
+    child.on("error", (err) => {
+      errorMessage = err.message;
+      finish(null, null);
+    });
+    child.on("close", (code, signal) => finish(code, signal));
+  });
 }
 
 export function withSqliteBusyRetry<T>(label: string, fn: () => T): T {
@@ -1159,14 +1250,24 @@ function buildOutcomeDiagnostics(
   };
 }
 
-function parseDiffstatFiles(diffstat: string): string[] {
+export function parseDiffstatFiles(diffstat: string): string[] {
   return unique(
     diffstat
       .split("\n")
       .map((line) => line.match(/^\s*(.+?)\s+\|/)?.[1]?.trim() ?? null)
       .filter((filePath): filePath is string => filePath != null)
-      .filter((filePath) => !/^\d+ files? changed/.test(filePath)),
+      .filter((filePath) => !/^\d+ files? changed/.test(filePath))
+      .map(normalizeDiffstatFilePath),
   ).sort();
+}
+
+function normalizeDiffstatFilePath(filePath: string): string {
+  const braceExpanded = filePath.replace(
+    /\{([^{}]*?)\s*=>\s*([^{}]*?)\}/g,
+    "$2",
+  );
+  if (!braceExpanded.includes("=>")) return braceExpanded;
+  return braceExpanded.split("=>").at(-1)?.trim() ?? braceExpanded;
 }
 
 function worktreePathAliases(worktree: string): string[] {
@@ -3469,18 +3570,29 @@ function loadPriorReplayOutcomes(args: Args): Map<string, PriorReplayOutcome> {
   if (args.priorResultJson.length === 0) return new Map();
   const inputs: PriorResultInput[] = [];
   for (const filePath of args.priorResultJson) {
-    const input = JSON.parse(fs.readFileSync(filePath, "utf-8")) as {
-      args?: Record<string, unknown>;
-      results?: unknown;
-    };
-    if (!Array.isArray(input.results)) {
-      throw new Error(`Prior result JSON has no results array: ${filePath}`);
+    try {
+      const input = JSON.parse(fs.readFileSync(filePath, "utf-8")) as {
+        args?: Record<string, unknown>;
+        results?: unknown;
+      };
+      if (!Array.isArray(input.results)) {
+        process.stderr.write(
+          `Skipping prior result JSON without results array: ${filePath}\n`,
+        );
+        continue;
+      }
+      inputs.push({
+        source: filePath,
+        args: argsFromSerializedResultArgs(input.args, args),
+        results: input.results as ScenarioResult[],
+      });
+    } catch (err) {
+      process.stderr.write(
+        `Skipping unreadable prior result JSON ${filePath}: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
     }
-    inputs.push({
-      source: filePath,
-      args: argsFromSerializedResultArgs(input.args, args),
-      results: input.results as ScenarioResult[],
-    });
   }
   return summarizePriorReplayOutcomes(inputs, args);
 }
@@ -4226,6 +4338,7 @@ function formatCorpusSelectionLines(input: MarkdownReportInput): string[] {
       `- Limit: ${selection.limit}`,
       `- Limited out: ${selection.limitedOutCount}`,
       `- Selected scenarios: ${selection.selectedCount}`,
+      "- Selection caveat: replay candidates are score-ranked toward small, PR-relevant action windows before `--limit` is applied, so exact-scope rates are not corpus-representative.",
     );
   }
   return lines;
@@ -4824,7 +4937,7 @@ export function parseArgs(argv: string[]): Args {
     } else if (arg === "--judge-runner") {
       parsed.judgeRunner = parseJudgeRunner(argv[++i]);
     } else if (arg === "--timeout-ms") {
-      parsed.agentTimeoutMs = Number(argv[++i]);
+      parsed.agentTimeoutMs = parsePositiveInt(argv[++i], "--timeout-ms");
     } else if (arg === "--arms") {
       parsed.arms = parseArms(argv[++i]);
     } else if (arg === "--execute") {

@@ -50,8 +50,10 @@ interface SessionMeasurement {
   injected_paths: number;
   discovery_reads: number;
   addressable_reads: number;
+  injection_only_addressable_reads: number;
   discovery_tokens: number;
   addressable_tokens: number;
+  injection_only_addressable_tokens: number;
   context_tokens: number;
   duplicate_addressable_reads: number;
   blocked_by_target_guard: number;
@@ -66,14 +68,17 @@ interface Measurement {
     injected_paths: number;
     discovery_reads: number;
     addressable_reads: number;
+    injection_only_addressable_reads: number;
     discovery_tokens: number;
     addressable_tokens: number;
+    injection_only_addressable_tokens: number;
     context_tokens: number;
     duplicate_addressable_reads: number;
     blocked_by_target_guard: number;
     addressable_read_rate: number;
     addressable_token_rate: number;
     context_roi: number | null;
+    injection_only_context_roi: number | null;
     targets: Record<string, number>;
   };
   latency_ms: {
@@ -220,8 +225,16 @@ function measure(rows: ReadEventRow[], args: Args): Measurement {
     injected_paths: sum(sessions, (m) => m.injected_paths),
     discovery_reads: sum(sessions, (m) => m.discovery_reads),
     addressable_reads: sum(sessions, (m) => m.addressable_reads),
+    injection_only_addressable_reads: sum(
+      sessions,
+      (m) => m.injection_only_addressable_reads,
+    ),
     discovery_tokens: sum(sessions, (m) => m.discovery_tokens),
     addressable_tokens: sum(sessions, (m) => m.addressable_tokens),
+    injection_only_addressable_tokens: sum(
+      sessions,
+      (m) => m.injection_only_addressable_tokens,
+    ),
     context_tokens: sum(sessions, (m) => m.context_tokens),
     duplicate_addressable_reads: sum(
       sessions,
@@ -231,6 +244,7 @@ function measure(rows: ReadEventRow[], args: Args): Measurement {
     addressable_read_rate: 0,
     addressable_token_rate: 0,
     context_roi: null as number | null,
+    injection_only_context_roi: null as number | null,
     targets,
   };
   summary.addressable_read_rate = safeRatio(
@@ -244,6 +258,10 @@ function measure(rows: ReadEventRow[], args: Args): Measurement {
   summary.context_roi =
     summary.context_tokens > 0
       ? summary.addressable_tokens / summary.context_tokens
+      : null;
+  summary.injection_only_context_roi =
+    summary.context_tokens > 0
+      ? summary.injection_only_addressable_tokens / summary.context_tokens
       : null;
 
   return {
@@ -268,8 +286,10 @@ function measureSession(
   const seenReadPaths = new Set<string>();
   let discoveryReads = 0;
   let addressableReads = 0;
+  let injectionOnlyAddressableReads = 0;
   let discoveryTokens = 0;
   let addressableTokens = 0;
+  let injectionOnlyAddressableTokens = 0;
   let contextTokens = 0;
   let duplicateAddressableReads = 0;
   let blockedByTargetGuard = 0;
@@ -315,11 +335,16 @@ function measureSession(
     }
 
     const coveredByInjection = canInject && context !== null;
+    const injectionOnlyAddressable = coveredByInjection && !duplicateRead;
     const addressable = coveredByInjection || duplicateRead;
     if (addressable) {
       addressableReads += 1;
       addressableTokens += tokens;
       if (duplicateRead && !coveredByInjection) duplicateAddressableReads += 1;
+    }
+    if (injectionOnlyAddressable) {
+      injectionOnlyAddressableReads += 1;
+      injectionOnlyAddressableTokens += tokens;
     }
   }
 
@@ -328,8 +353,10 @@ function measureSession(
     injected_paths: injectedPaths.size,
     discovery_reads: discoveryReads,
     addressable_reads: addressableReads,
+    injection_only_addressable_reads: injectionOnlyAddressableReads,
     discovery_tokens: discoveryTokens,
     addressable_tokens: addressableTokens,
+    injection_only_addressable_tokens: injectionOnlyAddressableTokens,
     context_tokens: contextTokens,
     duplicate_addressable_reads: duplicateAddressableReads,
     blocked_by_target_guard: blockedByTargetGuard,
@@ -409,6 +436,12 @@ function printMeasurement(m: Measurement): void {
       (m.summary.context_roi == null
         ? ""
         : `, roi=${m.summary.context_roi.toFixed(2)}x`),
+  );
+  console.log(
+    `  injection-only tokens: ${m.summary.injection_only_addressable_tokens}/${m.summary.discovery_tokens}` +
+      (m.summary.injection_only_context_roi == null
+        ? ""
+        : `, roi=${m.summary.injection_only_context_roi.toFixed(2)}x`),
   );
   console.log(
     `  target guard blocked: ${m.summary.blocked_by_target_guard}; targets=${formatTargets(

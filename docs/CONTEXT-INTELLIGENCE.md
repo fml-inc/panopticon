@@ -201,8 +201,8 @@ sessions. It does not replay agent output. Instead, it asks whether a selected
 injection feature set would have surfaced files or sessions the historical
 agent later discovered before its first edit.
 
-The default matrix compares `none`, `panop`, and `panop+optimized-crg` for all
-injection features together:
+The default matrix compares `none`, `panop`, and `panop+optimized-crg` for the
+replay-safe injection features: `SessionStart` and `UserPromptSubmit`.
 
 ```bash
 pnpm eval:panop-historical -- \
@@ -240,10 +240,11 @@ then fills the remaining sample in normal recency order.
 
 Useful options:
 
-- `--injection-features all` measures all three surfaces together and is the
-  default.
 - `--injection-features reliable` measures only the replay-safe SessionStart
-  plus UserPromptSubmit set.
+  plus UserPromptSubmit set and is the default.
+- `--injection-features all` measures all three surfaces together. This includes
+  PreToolUse read context, which is useful diagnostically but not point-in-time
+  faithful until file overview has a historical view.
 - `--injection-features sessionstart`, `userpromptsubmit`, or `pretooluse`
   measures one surface.
 - `--include-original-crg` adds the original Code Review Graph-only arm for
