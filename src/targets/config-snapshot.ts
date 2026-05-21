@@ -1,9 +1,10 @@
 import type { ClaudeCodeConfig } from "../scanner.js";
 import { isClaudeUserConfigPath, readClaudeConfig } from "./claude/config.js";
+import { isPiUserConfigPath, readPiConfig } from "./pi/config.js";
 
 export type HarnessConfigSnapshot = ClaudeCodeConfig;
 
-export const SUPPORTED_CONFIG_SNAPSHOT_TARGETS = ["claude"] as const;
+export const SUPPORTED_CONFIG_SNAPSHOT_TARGETS = ["claude", "pi"] as const;
 export type ConfigSnapshotTarget =
   (typeof SUPPORTED_CONFIG_SNAPSHOT_TARGETS)[number];
 
@@ -39,6 +40,8 @@ export function readTargetConfigSnapshot(
   switch (target) {
     case "claude":
       return readClaudeConfig(cwd);
+    case "pi":
+      return readPiConfig();
   }
 }
 
@@ -49,5 +52,7 @@ export function isTargetUserConfigPath(
   switch (target) {
     case "claude":
       return isClaudeUserConfigPath(filePath);
+    case "pi":
+      return isPiUserConfigPath(filePath);
   }
 }

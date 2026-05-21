@@ -23,7 +23,7 @@ describe("isTrackedUserConfigPath", () => {
     ).toBe(true);
   });
 
-  it("tracks only Claude target-specific paths", () => {
+  it("tracks target-specific paths only for the matching target", () => {
     expect(
       isTrackedUserConfigPath(
         "/Users/gus/.claude/projects/-Users-gus-workspace-panopticon/memory/MEMORY.md",
@@ -46,13 +46,19 @@ describe("isTrackedUserConfigPath", () => {
         "pi",
       ),
     ).toBe(false);
+    expect(
+      isTrackedUserConfigPath("/Users/gus/.pi/agent/settings.json", "pi"),
+    ).toBe(true);
+    expect(isTrackedUserConfigPath("/Users/gus/.pi/agent/settings.json")).toBe(
+      false,
+    );
   });
 
   it("does not capture panopticon permission writes for unsupported targets", () => {
     expect(
       isTrackedUserConfigPath(
         "/Users/gus/Library/Application Support/panopticon/permissions/allowed.json",
-        "pi",
+        "gemini",
       ),
     ).toBe(false);
   });
