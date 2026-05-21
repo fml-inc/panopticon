@@ -23,7 +23,7 @@ describe("isTrackedUserConfigPath", () => {
     ).toBe(true);
   });
 
-  it("delegates target-specific paths to the matching target", () => {
+  it("tracks only Claude target-specific paths", () => {
     expect(
       isTrackedUserConfigPath(
         "/Users/gus/.claude/projects/-Users-gus-workspace-panopticon/memory/MEMORY.md",
@@ -38,6 +38,21 @@ describe("isTrackedUserConfigPath", () => {
     expect(
       isTrackedUserConfigPath(
         "/Users/gus/.claude/projects/foo/memory/MEMORY.md.bak",
+      ),
+    ).toBe(false);
+    expect(
+      isTrackedUserConfigPath(
+        "/Users/gus/.claude/projects/foo/memory/MEMORY.md",
+        "pi",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not capture panopticon permission writes for unsupported targets", () => {
+    expect(
+      isTrackedUserConfigPath(
+        "/Users/gus/Library/Application Support/panopticon/permissions/allowed.json",
+        "pi",
       ),
     ).toBe(false);
   });

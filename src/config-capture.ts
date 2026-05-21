@@ -3,6 +3,7 @@ import { insertUserConfigSnapshot } from "./db/store.js";
 import {
   isTargetUserConfigPath,
   readTargetConfigSnapshot,
+  toConfigSnapshotTarget,
 } from "./targets/config-snapshot.js";
 
 /**
@@ -23,10 +24,12 @@ export function captureUserConfigSnapshot(
   target?: string,
 ): boolean {
   try {
-    const config = readTargetConfigSnapshot(target, cwd);
+    const snapshotTarget = toConfigSnapshotTarget(target);
+    if (!snapshotTarget) return false;
+    const config = readTargetConfigSnapshot(snapshotTarget, cwd);
     return insertUserConfigSnapshot({
       deviceName: os.hostname(),
-      target: target ?? "claude",
+      target: snapshotTarget,
       permissions: config.user.permissions,
       enabledPlugins: config.enabledPlugins,
       hooks: config.user.hooks,
@@ -46,9 +49,10 @@ export function captureUserConfigSnapshot(
 
 /**
  * True when the given file path corresponds to user-global config that
- * should trigger a re-capture on write. Matches:
- *   - target-owned user config files (for example Claude memory files or Pi
- *     settings/extensions/skills)
+ * should trigger a re-capture on write. Only Claude config snapshots are
+ * supported today; other target config snapshots are intentionally out of
+ * scope for this PR. Matches:
+ *   - Claude-owned user config files
  *   - panopticon perms:   `<dataDir>/panopticon/permissions/{allowed,approvals}.json`
  *
  * Matching is suffix-based so it works across platforms (macOS `Library/
@@ -59,7 +63,9 @@ export function isTrackedUserConfigPath(
   filePath: string,
   target?: string,
 ): boolean {
-  if (isTargetUserConfigPath(filePath, target)) return true;
+  const snapshotTarget = toConfigSnapshotTarget(target);
+  if (!snapshotTarget) return false;
+  if (isTargetUserConfigPath(filePath, snapshotTarget)) return true;
 
   // Normalize backslashes on Windows paths
   const p = filePath.replace(/\\/g, "/");

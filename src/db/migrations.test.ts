@@ -85,6 +85,19 @@ describe("runMigrations — fresh DB", () => {
     }
   });
 
+  it("creates the target-aware user config snapshot index on fresh DBs", () => {
+    const db = createDb();
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const indexes = db
+      .prepare("PRAGMA index_list(user_config_snapshots)")
+      .all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain(
+      "idx_user_config_device_target_hash",
+    );
+  });
+
   it("does not execute sql on fresh DB", () => {
     const db = createDb();
     // Create the table with the column already (as SCHEMA_SQL would)
@@ -1831,6 +1844,13 @@ describe("runMigrations — existing DB", () => {
       "panopticon_approvals",
     );
     expect(userConfigCols.map((col) => col.name)).toContain("memory_files");
+    expect(userConfigCols.map((col) => col.name)).toContain("target");
+    const userConfigIndexes = db
+      .prepare("PRAGMA index_list(user_config_snapshots)")
+      .all() as Array<{ name: string }>;
+    expect(userConfigIndexes.map((index) => index.name)).toContain(
+      "idx_user_config_device_target_hash",
+    );
 
     const claimEvidenceCols = db
       .prepare("PRAGMA table_info(claim_evidence)")

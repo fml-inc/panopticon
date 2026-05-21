@@ -230,6 +230,15 @@ function createIndexIfColumnsExist(
   db.exec(sql);
 }
 
+function ensureUserConfigSnapshotTargetIndex(db: Database): void {
+  createIndexIfColumnsExist(
+    db,
+    "user_config_snapshots",
+    ["device_name", "target", "content_hash"],
+    "CREATE INDEX IF NOT EXISTS idx_user_config_device_target_hash ON user_config_snapshots(device_name, target, content_hash)",
+  );
+}
+
 function ensureEvidenceRefSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS evidence_refs (
@@ -1413,9 +1422,7 @@ export const MIGRATIONS: Migration[] = [
         "target",
         "target TEXT NOT NULL DEFAULT 'claude'",
       );
-      db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_user_config_device_target_hash ON user_config_snapshots(device_name, target, content_hash)",
-      );
+      ensureUserConfigSnapshotTargetIndex(db);
     },
   },
 ];
@@ -1468,7 +1475,10 @@ export function runMigrations(
     }
 
     if (!hasData) {
-      // Fresh database: SCHEMA_SQL already created everything.
+      // Fresh database: SCHEMA_SQL already created everything. Add indexes
+      // that depend on newly-added columns here so boot can still run
+      // SCHEMA_SQL safely before migrations on older databases.
+      ensureUserConfigSnapshotTargetIndex(db);
       // Stamp all migrations as applied without executing them.
       const stampFreshDb = db.transaction(() => {
         const stamp = db.prepare(
