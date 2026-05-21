@@ -219,11 +219,11 @@ function resolveRepoRoot(repoRoot: string | null): string | null {
   }
 }
 
-function graphDbPath(repoRoot: string): string {
+export function graphDbPath(repoRoot: string): string {
   return path.join(repoRoot, ".code-review-graph", "graph.db");
 }
 
-function openGraphDb(graphDb: string): Database {
+export function openGraphDb(graphDb: string): Database {
   return new Database(graphDb, { readonly: true, fileMustExist: true });
 }
 

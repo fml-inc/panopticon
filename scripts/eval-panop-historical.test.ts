@@ -3,6 +3,7 @@ import {
   aggregateMeasurements,
   buildHistoricalMarkdownReport,
   buildReliablePanopHistoricalContext,
+  estimateReadResultTokens,
   extractFixturePrompts,
   extractFixtureRows,
   netDiscoveryTokenSavingsRate,
@@ -78,6 +79,13 @@ describe("historical proxy metrics", () => {
     expect(pathMatches("x/schema.ts", "schema.ts")).toBe(true);
     expect(pathMatches("schema.ts", "x/schema.ts")).toBe(true);
     expect(pathMatches("src/foo/client.ts", "client.ts")).toBe(true);
+  });
+
+  it("does not assign token weight to empty read results", () => {
+    expect(estimateReadResultTokens(null)).toBe(0);
+    expect(estimateReadResultTokens(0)).toBe(0);
+    expect(estimateReadResultTokens(1)).toBe(10);
+    expect(estimateReadResultTokens(80)).toBe(20);
   });
 
   it("builds reliable Panop context without non-point-in-time PreToolUse context", () => {

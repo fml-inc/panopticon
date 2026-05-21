@@ -1280,6 +1280,7 @@ describe("replay aggregate reliability gates", () => {
     expect(markdown).toContain("Paired scope metric pairs: 3/5");
     expect(markdown).toContain("Scope metric sample size: ok");
     expect(markdown).toContain("Strict token/time sample size: low");
+    expect(markdown).toContain("Recall Δ Median");
     expect(markdown).toContain("Not reported as reliable. Only 1 strict pair");
     expect(markdown).toContain(
       "This remains valid even when strict token/time reduction is blocked.",
@@ -1289,6 +1290,9 @@ describe("replay aggregate reliability gates", () => {
     );
     expect(markdown).toContain(
       "| Arm | Eligible | Covered | Exact | Exact Rate | 95% CI | Unexpected Mean |",
+    );
+    expect(markdown).toContain(
+      "| Arm | n | Covered Rate | Covered Baseline | Covered Δ | Covered W/T/L | Exact Rate | Exact Baseline | Exact Δ | Exact W/T/L | Exact Win 95% CI | Recall Δ Mean | Recall Δ Median | Unexpected Δ Mean | Unexpected Δ Median |",
     );
     expect(markdown).toContain(
       "| Arm | n | Covered Rate | Covered Baseline | Covered Δ | Covered W/T/L | Exact Rate |",

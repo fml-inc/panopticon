@@ -15,7 +15,7 @@ import { buildPreToolUseReadFileContext } from "../src/hooks/session-context.js"
 const DEFAULT_LIMIT = 500;
 const DEFAULT_REPOSITORY = "fml-inc/panopticon";
 const CHARS_PER_TOKEN = 4;
-const MIN_TOKENS_PER_READ = 10;
+const MIN_TOKENS_PER_NON_EMPTY_READ = 10;
 const EDIT_TOOLS = new Set([
   "Edit",
   "Write",
@@ -299,10 +299,7 @@ function measureSession(
     const duplicateRead = seenReadPaths.has(readKey);
     seenReadPaths.add(readKey);
 
-    const tokens = Math.max(
-      MIN_TOKENS_PER_READ,
-      Math.ceil((row.result_len ?? 0) / CHARS_PER_TOKEN),
-    );
+    const tokens = estimateReadResultTokens(row.result_len);
     discoveryReads += 1;
     discoveryTokens += tokens;
 
@@ -369,6 +366,15 @@ function targetAllowsLiveInjection(target: string | null): boolean {
 
 function estimateTokens(value: string): number {
   return Math.ceil(value.length / CHARS_PER_TOKEN);
+}
+
+function estimateReadResultTokens(resultLength: number | null): number {
+  const length = resultLength ?? 0;
+  if (length <= 0) return 0;
+  return Math.max(
+    MIN_TOKENS_PER_NON_EMPTY_READ,
+    Math.ceil(length / CHARS_PER_TOKEN),
+  );
 }
 
 function pathKey(filePath: string): string {

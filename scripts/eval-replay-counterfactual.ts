@@ -30,8 +30,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  graphDbPath,
+  openGraphDb,
+} from "../src/code_intelligence/code-review-graph.js";
 import { createCodeReviewGraphProvider } from "../src/code_intelligence/index.js";
-import { Database } from "../src/db/driver.js";
 import { closeDb, getDb } from "../src/db/schema.js";
 import { invokeLlmAsync } from "../src/summary/llm.js";
 
@@ -1454,11 +1457,11 @@ function addCrgCandidate(
 function searchCrgSeedFiles(prompt: string, repoRoot: string): string[] {
   const terms = tokenize(prompt);
   if (terms.length === 0) return [];
-  const graphDb = path.join(repoRoot, ".code-review-graph", "graph.db");
+  const graphDb = graphDbPath(repoRoot);
   if (!fs.existsSync(graphDb)) return [];
-  let db: Database;
+  let db: ReturnType<typeof openGraphDb>;
   try {
-    db = new Database(graphDb, { readonly: true, fileMustExist: true });
+    db = openGraphDb(graphDb);
   } catch {
     return [];
   }
@@ -1741,7 +1744,8 @@ function report(results: ScenarioResult[], args: Args): void {
         `${delta.exactFileSetTies}/${delta.exactFileSetLosses} ` +
         `unexpected Δ mean=${formatNumber(delta.meanUnexpectedFilesDelta)} ` +
         `median=${formatNumber(delta.medianUnexpectedFilesDelta)} ` +
-        `recall Δ mean=${formatNumber(delta.meanFileRecallDelta)}`,
+        `recall Δ mean=${formatNumber(delta.meanFileRecallDelta)} ` +
+        `median=${formatNumber(delta.medianFileRecallDelta)}`,
     );
   }
   const blockedScenarios = aggregate.metricReadiness.scenarios.filter(
@@ -3864,6 +3868,9 @@ function tokenizeRelevanceText(text: string): string[] {
 }
 
 const GENERIC_RELEVANCE_TERMS = new Set([
+  // Candidate ranking only: downweight high-frequency terms so prompt windows
+  // are not selected merely for repo-wide vocabulary. For repositories where
+  // these are domain terms, inspect the dry-run selection before executing.
   "code",
   "data",
   "file",
@@ -4272,8 +4279,8 @@ export function buildMarkdownReport(input: MarkdownReportInput): string {
     "",
     "## Paired Scope Delta",
     "",
-    "| Arm | n | Covered Rate | Covered Baseline | Covered Δ | Covered W/T/L | Exact Rate | Exact Baseline | Exact Δ | Exact W/T/L | Exact Win 95% CI | Unexpected Δ Mean |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Arm | n | Covered Rate | Covered Baseline | Covered Δ | Covered W/T/L | Exact Rate | Exact Baseline | Exact Δ | Exact W/T/L | Exact Win 95% CI | Recall Δ Mean | Recall Δ Median | Unexpected Δ Mean | Unexpected Δ Median |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const delta of aggregate.scopeDeltas) {
     lines.push(
@@ -4285,7 +4292,10 @@ export function buildMarkdownReport(input: MarkdownReportInput): string {
         `${formatRateDeltaPp(delta.exactFileSetRateDelta)} | ` +
         `${delta.exactFileSetWins}/${delta.exactFileSetTies}/${delta.exactFileSetLosses} | ` +
         `${formatRateInterval(delta.exactFileSetWinRateWilson95)} | ` +
-        `${formatNumber(delta.meanUnexpectedFilesDelta)} |`,
+        `${formatNumber(delta.meanFileRecallDelta)} | ` +
+        `${formatNumber(delta.medianFileRecallDelta)} | ` +
+        `${formatNumber(delta.meanUnexpectedFilesDelta)} | ` +
+        `${formatNumber(delta.medianUnexpectedFilesDelta)} |`,
     );
   }
   lines.push(
@@ -4339,6 +4349,7 @@ function formatCorpusSelectionLines(input: MarkdownReportInput): string[] {
       `- Limited out: ${selection.limitedOutCount}`,
       `- Selected scenarios: ${selection.selectedCount}`,
       "- Selection caveat: replay candidates are score-ranked toward small, PR-relevant action windows before `--limit` is applied, so exact-scope rates are not corpus-representative.",
+      "- Relevance caveat: prompt-window scoring downweights short/common terms; in domain-specific repositories those terms may still be meaningful, so inspect selected windows before execution.",
     );
   }
   return lines;
@@ -4375,7 +4386,8 @@ function formatMetricConclusionLines(
         `${formatRate(delta.baselineExactFileSetRate)} ` +
         `(${formatRateDeltaPp(delta.exactFileSetRateDelta)}), ` +
         `exact W/T/L ${delta.exactFileSetWins}/${delta.exactFileSetTies}/${delta.exactFileSetLosses}, ` +
-        `unexpected-file mean delta ${formatNumber(delta.meanUnexpectedFilesDelta)}.`,
+        `recall mean/median delta ${formatNumber(delta.meanFileRecallDelta)}/${formatNumber(delta.medianFileRecallDelta)}, ` +
+        `unexpected-file mean/median delta ${formatNumber(delta.meanUnexpectedFilesDelta)}/${formatNumber(delta.medianUnexpectedFilesDelta)}.`,
     );
   }
   return lines;
@@ -4790,7 +4802,10 @@ function printAggregateSummary(
         `n=${delta.pairedCount} exact wins/ties/losses=` +
         `${delta.exactFileSetWins}/${delta.exactFileSetTies}/` +
         `${delta.exactFileSetLosses} unexpected Δ mean=` +
-        `${formatNumber(delta.meanUnexpectedFilesDelta)}`,
+        `${formatNumber(delta.meanUnexpectedFilesDelta)} median=` +
+        `${formatNumber(delta.medianUnexpectedFilesDelta)} recall Δ mean=` +
+        `${formatNumber(delta.meanFileRecallDelta)} median=` +
+        `${formatNumber(delta.medianFileRecallDelta)}`,
     );
   }
 }

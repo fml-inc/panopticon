@@ -72,6 +72,7 @@ const DEFAULT_INJECTION_FEATURES =
   RELIABLE_INJECTION_FEATURES satisfies readonly PanopFeatureName[];
 const SELECTED_FEATURE_NAME = "selected";
 const DEFAULT_HOOK_COVERAGE_CANDIDATE_LIMIT = 1000;
+const MIN_TOKENS_PER_NON_EMPTY_READ = 10;
 
 const SAMPLE_MODES = ["recent", "hook-coverage"] as const;
 type SampleMode = (typeof SAMPLE_MODES)[number];
@@ -1083,10 +1084,7 @@ function buildOracle(scenario: Scenario): Oracle {
         .filter((value): value is string => value !== null),
     );
     if (paths.length === 0) continue;
-    const tokens = Math.max(
-      10,
-      Math.ceil((row.result_content_length ?? 0) / CHARS_PER_TOKEN),
-    );
+    const tokens = estimateReadResultTokens(row.result_content_length);
     discoveryReads += 1;
     discoveryReadTokens += tokens;
     const perPathTokens = tokens / paths.length;
@@ -1146,10 +1144,7 @@ function buildHookDiscoveryOracle(scenario: Scenario): Oracle {
     );
     if (paths.length === 0) continue;
 
-    const tokens = Math.max(
-      10,
-      Math.ceil((row.result_len ?? 0) / CHARS_PER_TOKEN),
-    );
+    const tokens = estimateReadResultTokens(row.result_len);
     discoveryReads += 1;
     discoveryReadTokens += tokens;
     const perPathTokens = tokens / paths.length;
@@ -1170,6 +1165,17 @@ function buildHookDiscoveryOracle(scenario: Scenario): Oracle {
     discoveryReads,
     discoveryReadTokens,
   };
+}
+
+export function estimateReadResultTokens(
+  resultLength: number | null | undefined,
+): number {
+  const length = resultLength ?? 0;
+  if (length <= 0) return 0;
+  return Math.max(
+    MIN_TOKENS_PER_NON_EMPTY_READ,
+    Math.ceil(length / CHARS_PER_TOKEN),
+  );
 }
 
 function emptyOracle(source: Oracle["source"]): Oracle {
