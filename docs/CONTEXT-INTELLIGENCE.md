@@ -193,3 +193,74 @@ To verify read-time injection, enable the flag, restart Panopticon, then read a
 file with existing Panopticon provenance from a new agent session. The first
 read for that session/path should include `Panopticon read context`; later
 reads of the same path in the same session should be silent.
+
+## Historical ROI Eval
+
+Use the historical context eval for a broad, deterministic ROI proxy over local
+sessions. It does not replay agent output. Instead, it asks whether a selected
+injection feature set would have surfaced files or sessions the historical
+agent later discovered before its first edit.
+
+The default matrix compares `none`, `panop`, and `panop+optimized-crg` for the
+replay-safe injection features: `SessionStart` and `UserPromptSubmit`.
+
+```bash
+pnpm eval:panop-historical -- \
+  --limit 30 \
+  --output-json .tmp/evals/historical/default-30.json \
+  --report-markdown .tmp/evals/historical/default-30.md
+```
+
+Run one injection feature set at a time when measuring a specific surface:
+
+```bash
+pnpm eval:panop-historical -- \
+  --limit 30 \
+  --injection-features pretooluse \
+  --output-json .tmp/evals/historical/pretooluse-30.json \
+  --report-markdown .tmp/evals/historical/pretooluse-30.md
+```
+
+To build a deterministic real-session sample that exercises every selected hook
+surface, use hook coverage mode:
+
+```bash
+pnpm eval:panop-historical -- \
+  --limit 30 \
+  --hook-coverage \
+  --require-hook-coverage \
+  --include-automated \
+  --output-json .tmp/evals/historical/hook-coverage-30.json \
+  --report-markdown .tmp/evals/historical/hook-coverage-30.md
+```
+
+`--hook-coverage` scans a larger deterministic candidate pool, picks real
+sessions whose actual reconstructed Panop contexts emit each selected surface,
+then fills the remaining sample in normal recency order.
+
+Useful options:
+
+- `--injection-features reliable` measures only the replay-safe SessionStart
+  plus UserPromptSubmit set and is the default.
+- `--injection-features all` measures all three surfaces together. This includes
+  PreToolUse read context, which is useful diagnostically but not point-in-time
+  faithful until file overview has a historical view.
+- `--injection-features sessionstart`, `userpromptsubmit`, or `pretooluse`
+  measures one surface.
+- `--include-original-crg` adds the original Code Review Graph-only arm for
+  comparison.
+- `--hook-coverage` chooses a sample that tries to cover every selected hook
+  surface.
+- `--require-hook-coverage` fails the run if any selected surface has zero
+  injected events.
+- `--hook-coverage-candidate-limit N` controls how many real session candidates
+  are scanned in hook coverage mode.
+- `--fixture-file PATH` restricts the sample to session IDs from a replay
+  fixture.
+
+The report's token savings are a discovery-token proxy: matched historical read
+tokens minus injected context tokens. Treat wall-clock time as directional until
+strict replay produces enough comparable pairs.
+
+For the stricter token/time measurement path that actually replays historical
+sessions through treatment arms, see [REPLAY-EVAL-PLAN.md](REPLAY-EVAL-PLAN.md).
