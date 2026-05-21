@@ -260,3 +260,6 @@ Useful options:
 The report's token savings are a discovery-token proxy: matched historical read
 tokens minus injected context tokens. Treat wall-clock time as directional until
 strict replay produces enough comparable pairs.
+
+For the stricter token/time measurement path that actually replays historical
+sessions through treatment arms, see [REPLAY-EVAL-PLAN.md](REPLAY-EVAL-PLAN.md).
