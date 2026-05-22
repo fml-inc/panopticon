@@ -7,7 +7,7 @@ import {
 } from "./targets/config-snapshot.js";
 
 /**
- * Capture the current user-global config (settings, permissions allowlist,
+ * Capture the current normalized user-global config (permissions allowlist,
  * approvals, memory files, etc.) into `user_config_snapshots`. Deduplicated
  * by content hash — no-op when nothing changed since the last snapshot for
  * this device.
@@ -48,11 +48,9 @@ export function captureUserConfigSnapshot(
 }
 
 /**
- * True when the given file path corresponds to user-global config that
- * should trigger a re-capture on write. Only Claude config snapshots are
- * supported today; other target config snapshots are intentionally out of
- * scope for this PR. Matches:
- *   - Claude-owned user config files
+ * True when the given file path corresponds to target user-global config that
+ * should trigger a re-capture on write. Matches:
+ *   - target-owned user config files (for example Claude or Pi)
  *   - panopticon perms:   `<dataDir>/panopticon/permissions/{allowed,approvals}.json`
  *
  * Matching is suffix-based so it works across platforms (macOS `Library/

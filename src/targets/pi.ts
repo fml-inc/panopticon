@@ -10,16 +10,12 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { defaultToolCategory } from "../scanner/categories.js";
 import { readNewLines } from "../scanner/reader.js";
+import { piDir } from "./pi/paths.js";
 import { registerTarget } from "./registry.js";
 import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
-
-function piDir(): string {
-  return path.join(process.env.HOME ?? os.homedir(), ".pi");
-}
 
 function extensionDest(): string {
   return path.join(piDir(), "agent", "extensions", "panopticon.js");

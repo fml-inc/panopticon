@@ -243,9 +243,23 @@ export function getPrimarySessionCwd(sessionId: string): string | null {
 // Config snapshots
 // ---------------------------------------------------------------------------
 
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => stableJsonValue(item));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      out[key] = stableJsonValue((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
 function contentHash(obj: Record<string, unknown>): string {
   return createHash("sha256")
-    .update(JSON.stringify(obj, Object.keys(obj).sort()))
+    .update(JSON.stringify(stableJsonValue(obj)))
     .digest("hex");
 }
 

@@ -3,44 +3,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../../config.js";
+import type {
+  ConfigLayer,
+  HarnessConfigSnapshot,
+  PluginHooksSummary,
+} from "../config-types.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ConfigLayer {
-  settings: Record<string, unknown> | null;
-  hooks: Array<{ event: string; matcher: string | null; type: string }>;
-  mcpServers: Array<{ name: string; command: string }>;
-  commands: Array<{ name: string; content: string }>;
-  agents: Array<{ name: string; content: string }>;
-  rules: Array<{ name: string; content: string }>;
-  skills: Array<{ name: string; content: string }>;
-  permissions: { allow: string[]; ask: string[]; deny: string[] };
-}
-
-export interface PluginHooksSummary {
-  pluginName: string;
-  marketplace: string;
-  hooks: ConfigLayer["hooks"];
-}
-
-export interface ClaudeCodeConfig {
-  managed: ConfigLayer | null;
-  user: ConfigLayer;
-  project: ConfigLayer | null;
-  projectLocal: ConfigLayer | null;
-  instructions: Array<{ path: string; content: string; lineCount: number }>;
-  enabledPlugins: Array<{ pluginName: string; marketplace: string }>;
-  pluginHooks: PluginHooksSummary[];
-  /** Panopticon's own permission state (user-global). Null fields when files absent. */
-  panopticonPermissions: {
-    allowed: Record<string, unknown> | null;
-    approvals: Record<string, unknown> | null;
-  };
-  /** Claude Code memory files keyed by project-dir name, then by relative path within memory/. */
-  memoryFiles: Record<string, Record<string, string>>;
-}
+export type {
+  ClaudeCodeConfig,
+  ConfigLayer,
+  HarnessConfigSnapshot,
+  PluginHooksSummary,
+} from "../config-types.js";
 
 // ---------------------------------------------------------------------------
 // File-system helpers
@@ -143,7 +117,7 @@ function readMemoryFiles(): Record<string, Record<string, string>> {
   return out;
 }
 
-function readPanopticonPermissions(): ClaudeCodeConfig["panopticonPermissions"] {
+function readPanopticonPermissions(): HarnessConfigSnapshot["panopticonPermissions"] {
   const base = path.join(config.dataDir, "permissions");
   return {
     allowed: readJsonOrNull(path.join(base, "allowed.json")),
@@ -517,7 +491,7 @@ export function isClaudeUserConfigPath(filePath: string): boolean {
   return /\/\.claude\/projects\/[^/]+\/memory\//.test(p) && p.endsWith(".md");
 }
 
-export function readClaudeConfig(cwd?: string): ClaudeCodeConfig {
+export function readClaudeConfig(cwd?: string): HarnessConfigSnapshot {
   const rawCwd = cwd ? path.resolve(cwd) : process.cwd();
   // Use git root if available so project config is found even from subdirs
   const root = resolveGitRoot(rawCwd) ?? rawCwd;
@@ -593,7 +567,7 @@ export function readClaudeConfig(cwd?: string): ClaudeCodeConfig {
   }
 
   // Instructions — fixed candidates + per-directory discovery
-  const instructions: ClaudeCodeConfig["instructions"] = [];
+  const instructions: HarnessConfigSnapshot["instructions"] = [];
   const knownPaths = new Set<string>();
 
   const instructionCandidates = [
@@ -620,7 +594,7 @@ export function readClaudeConfig(cwd?: string): ClaudeCodeConfig {
 
   // Enabled plugins — merge user + project, deduplicate
   const pluginSet = new Set<string>();
-  const enabledPlugins: ClaudeCodeConfig["enabledPlugins"] = [];
+  const enabledPlugins: HarnessConfigSnapshot["enabledPlugins"] = [];
   for (const layer of [project, user]) {
     for (const p of parseEnabledPlugins(layer?.settings ?? null)) {
       const key = `${p.pluginName}@${p.marketplace}`;
