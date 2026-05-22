@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS user_config_snapshots (
   target TEXT NOT NULL DEFAULT 'claude',
   snapshot_at_ms INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
+  settings JSON NOT NULL DEFAULT '{}',
   permissions JSON NOT NULL DEFAULT '{}',
   enabled_plugins JSON NOT NULL DEFAULT '[]',
   hooks JSON NOT NULL DEFAULT '[]',

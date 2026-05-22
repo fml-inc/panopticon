@@ -177,6 +177,7 @@ export interface UserConfigSnapshotRecord {
   target: string;
   snapshotAtMs: number;
   contentHash: string;
+  settings: Record<string, unknown>;
   permissions: Record<string, unknown>;
   enabledPlugins: unknown[];
   hooks: unknown[];

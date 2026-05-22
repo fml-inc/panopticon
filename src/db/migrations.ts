@@ -1425,6 +1425,19 @@ export const MIGRATIONS: Migration[] = [
       ensureUserConfigSnapshotTargetIndex(db);
     },
   },
+  {
+    id: 25,
+    name: "add_settings_to_user_config_snapshots",
+    up: (db) => {
+      if (!tableExists(db, "user_config_snapshots")) return;
+      addColumnIfMissing(
+        db,
+        "user_config_snapshots",
+        "settings",
+        "settings JSON NOT NULL DEFAULT '{}'",
+      );
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

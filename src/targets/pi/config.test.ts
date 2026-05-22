@@ -27,9 +27,6 @@ describe("readPiConfig", () => {
     const agentDir = path.join(tmpHome, ".pi", "agent");
     fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
     fs.mkdirSync(path.join(agentDir, "skills", "review"), { recursive: true });
-    fs.mkdirSync(path.join(tmpHome, ".agents", "skills", "optimize"), {
-      recursive: true,
-    });
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
       JSON.stringify({
@@ -37,26 +34,25 @@ describe("readPiConfig", () => {
         defaultProvider: "anthropic",
       }),
     );
+    fs.writeFileSync(
+      path.join(agentDir, "models.json"),
+      JSON.stringify({ custom: { provider: "openai" } }),
+    );
     fs.writeFileSync(path.join(agentDir, "extensions", "panopticon.js"), "");
     fs.writeFileSync(
       path.join(agentDir, "skills", "review", "SKILL.md"),
       "# Review\n",
     );
-    fs.writeFileSync(
-      path.join(tmpHome, ".agents", "skills", "optimize", "SKILL.md"),
-      "# Optimize\n",
-    );
-
     const result = readPiConfig();
 
     expect(result.managed).toBeNull();
     expect(result.project).toBeNull();
     expect(result.user.settings).toMatchObject({
       defaultProvider: "anthropic",
+      models: { custom: { provider: "openai" } },
     });
     expect(result.user.skills).toEqual([
       { name: "review", content: "# Review\n" },
-      { name: "optimize", content: "# Optimize\n" },
     ]);
     expect(result.enabledPlugins).toEqual([
       { pluginName: "pi-subagents", marketplace: "npm" },
@@ -70,19 +66,20 @@ describe("readPiConfig", () => {
 describe("isPiUserConfigPath", () => {
   it("matches Pi user config inventory files", () => {
     expect(isPiUserConfigPath("/Users/gus/.pi/agent/settings.json")).toBe(true);
+    expect(isPiUserConfigPath("/Users/gus/.pi/agent/models.json")).toBe(true);
     expect(
       isPiUserConfigPath("/Users/gus/.pi/agent/extensions/panopticon.js"),
     ).toBe(true);
     expect(
       isPiUserConfigPath("/Users/gus/.pi/agent/skills/review/SKILL.md"),
     ).toBe(true);
-    expect(
-      isPiUserConfigPath("/Users/gus/.agents/skills/optimize/SKILL.md"),
-    ).toBe(true);
   });
 
-  it("does not match unrelated files", () => {
+  it("does not match unrelated or non-Pi-global files", () => {
     expect(isPiUserConfigPath("/Users/gus/workspace/foo.ts")).toBe(false);
+    expect(
+      isPiUserConfigPath("/Users/gus/.agents/skills/optimize/SKILL.md"),
+    ).toBe(false);
     expect(isPiUserConfigPath("/Users/gus/.claude/settings.json")).toBe(false);
   });
 });

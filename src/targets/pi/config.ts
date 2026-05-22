@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "../../config.js";
 import type { ClaudeCodeConfig, ConfigLayer } from "../../scanner.js";
-import { agentsDir, piAgentDir } from "./paths.js";
+import { piAgentDir } from "./paths.js";
 
 export type HarnessConfig = ClaudeCodeConfig;
 
@@ -121,11 +121,11 @@ function dedupePlugins(
 export function readPiConfig(): HarnessConfig {
   const agentDir = piAgentDir();
   const settings = readJsonOrNull(path.join(agentDir, "settings.json"));
-  const user = emptyLayer(settings);
-  user.skills = [
-    ...readSkills(path.join(agentDir, "skills")),
-    ...readSkills(path.join(agentsDir(), "skills")),
-  ];
+  const models = readJsonOrNull(path.join(agentDir, "models.json"));
+  const user = emptyLayer(
+    models === null ? settings : { ...(settings ?? {}), models },
+  );
+  user.skills = readSkills(path.join(agentDir, "skills"));
 
   const enabledPlugins = dedupePlugins([
     ...parsePiPackages(settings),
@@ -148,11 +148,9 @@ export function readPiConfig(): HarnessConfig {
 export function isPiUserConfigPath(filePath: string): boolean {
   const p = filePath.replace(/\\/g, "/");
   if (p.endsWith("/.pi/agent/settings.json")) return true;
+  if (p.endsWith("/.pi/agent/models.json")) return true;
   if (p.includes("/.pi/agent/extensions/") && p.endsWith(".js")) return true;
   if (p.includes("/.pi/agent/skills/") && p.endsWith("/SKILL.md")) {
-    return true;
-  }
-  if (p.includes("/.agents/skills/") && p.endsWith("/SKILL.md")) {
     return true;
   }
   return false;
