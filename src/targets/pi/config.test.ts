@@ -27,6 +27,9 @@ describe("readPiConfig", () => {
     const agentDir = path.join(tmpHome, ".pi", "agent");
     fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
     fs.mkdirSync(path.join(agentDir, "skills", "review"), { recursive: true });
+    fs.mkdirSync(path.join(tmpHome, ".agents", "skills", "optimize"), {
+      recursive: true,
+    });
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
       JSON.stringify({
@@ -39,6 +42,10 @@ describe("readPiConfig", () => {
       path.join(agentDir, "skills", "review", "SKILL.md"),
       "# Review\n",
     );
+    fs.writeFileSync(
+      path.join(tmpHome, ".agents", "skills", "optimize", "SKILL.md"),
+      "# Optimize\n",
+    );
 
     const result = readPiConfig();
 
@@ -49,6 +56,7 @@ describe("readPiConfig", () => {
     });
     expect(result.user.skills).toEqual([
       { name: "review", content: "# Review\n" },
+      { name: "optimize", content: "# Optimize\n" },
     ]);
     expect(result.enabledPlugins).toEqual([
       { pluginName: "pi-subagents", marketplace: "npm" },
@@ -67,6 +75,9 @@ describe("isPiUserConfigPath", () => {
     ).toBe(true);
     expect(
       isPiUserConfigPath("/Users/gus/.pi/agent/skills/review/SKILL.md"),
+    ).toBe(true);
+    expect(
+      isPiUserConfigPath("/Users/gus/.agents/skills/optimize/SKILL.md"),
     ).toBe(true);
   });
 
