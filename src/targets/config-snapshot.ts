@@ -1,8 +1,13 @@
 import { isClaudeUserConfigPath, readClaudeConfig } from "./claude/config.js";
+import { isCodexUserConfigPath, readCodexConfig } from "./codex/config.js";
 import type { HarnessConfigSnapshot } from "./config-types.js";
 import { isPiUserConfigPath, readPiConfig } from "./pi/config.js";
 
-export const SUPPORTED_CONFIG_SNAPSHOT_TARGETS = ["claude", "pi"] as const;
+export const SUPPORTED_CONFIG_SNAPSHOT_TARGETS = [
+  "claude",
+  "codex",
+  "pi",
+] as const;
 export type ConfigSnapshotTarget =
   (typeof SUPPORTED_CONFIG_SNAPSHOT_TARGETS)[number];
 
@@ -38,6 +43,8 @@ export function readTargetConfigSnapshot(
   switch (target) {
     case "claude":
       return readClaudeConfig(cwd);
+    case "codex":
+      return readCodexConfig();
     case "pi":
       return readPiConfig();
   }
@@ -50,6 +57,8 @@ export function isTargetUserConfigPath(
   switch (target) {
     case "claude":
       return isClaudeUserConfigPath(filePath);
+    case "codex":
+      return isCodexUserConfigPath(filePath);
     case "pi":
       return isPiUserConfigPath(filePath);
   }

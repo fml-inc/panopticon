@@ -52,6 +52,18 @@ describe("isTrackedUserConfigPath", () => {
     expect(isTrackedUserConfigPath("/Users/gus/.pi/agent/settings.json")).toBe(
       false,
     );
+    expect(
+      isTrackedUserConfigPath("/Users/gus/.codex/config.toml", "codex"),
+    ).toBe(true);
+    expect(
+      isTrackedUserConfigPath(
+        "/Users/gus/.codex/skills/review/SKILL.md",
+        "codex",
+      ),
+    ).toBe(true);
+    expect(isTrackedUserConfigPath("/Users/gus/.codex/config.toml", "pi")).toBe(
+      false,
+    );
   });
 
   it("does not capture panopticon permission writes for unsupported targets", () => {
