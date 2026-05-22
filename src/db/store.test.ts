@@ -25,7 +25,6 @@ function baseUserConfigSnapshot(
   return {
     deviceName: "test-device",
     target: "pi",
-    settings: { provider: { default: "anthropic" } },
     permissions: { allow: ["Read"], nested: { ask: true } },
     enabledPlugins: [{ pluginName: "pi-subagents", marketplace: "npm" }],
     hooks: [],
@@ -65,25 +64,20 @@ describe("insertUserConfigSnapshot", () => {
     expect(userConfigSnapshotCount()).toBe(1);
   });
 
-  it("inserts a new row when nested settings change", () => {
+  it("inserts a new row when normalized snapshot content changes", () => {
     expect(insertUserConfigSnapshot(baseUserConfigSnapshot())).toBe(true);
 
     expect(
       insertUserConfigSnapshot(
         baseUserConfigSnapshot({
-          settings: { provider: { default: "openai" } },
+          enabledPlugins: [
+            { pluginName: "pi-subagents", marketplace: "npm" },
+            { pluginName: "pi-missions", marketplace: "local" },
+          ],
         }),
       ),
     ).toBe(true);
 
-    const rows = getDb()
-      .prepare("SELECT settings FROM user_config_snapshots ORDER BY id ASC")
-      .all() as Array<{ settings: string }>;
-
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => JSON.parse(row.settings))).toEqual([
-      { provider: { default: "anthropic" } },
-      { provider: { default: "openai" } },
-    ]);
+    expect(userConfigSnapshotCount()).toBe(2);
   });
 });

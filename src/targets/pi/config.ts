@@ -1,10 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../../config.js";
-import type { ClaudeCodeConfig, ConfigLayer } from "../../scanner.js";
+import type { ConfigLayer, HarnessConfigSnapshot } from "../config-types.js";
 import { piAgentDir } from "./paths.js";
-
-export type HarnessConfig = ClaudeCodeConfig;
 
 function readFileOrNull(filePath: string): string | null {
   try {
@@ -57,7 +55,7 @@ function readSkills(dir: string): Array<{ name: string; content: string }> {
   return results;
 }
 
-function readPanopticonPermissions(): ClaudeCodeConfig["panopticonPermissions"] {
+function readPanopticonPermissions(): HarnessConfigSnapshot["panopticonPermissions"] {
   const base = path.join(config.dataDir, "permissions");
   return {
     allowed: readJsonOrNull(path.join(base, "allowed.json")),
@@ -118,7 +116,7 @@ function dedupePlugins(
  * Pi does not use Claude's hooks.json plugin system, so extension/package
  * inventory is represented as enabledPlugins and hook lists remain empty.
  */
-export function readPiConfig(): HarnessConfig {
+export function readPiConfig(): HarnessConfigSnapshot {
   const agentDir = piAgentDir();
   const settings = readJsonOrNull(path.join(agentDir, "settings.json"));
   const models = readJsonOrNull(path.join(agentDir, "models.json"));

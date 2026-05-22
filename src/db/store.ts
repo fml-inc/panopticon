@@ -266,7 +266,6 @@ function contentHash(obj: Record<string, unknown>): string {
 export interface UserConfigSnapshot {
   deviceName: string;
   target: string;
-  settings: unknown;
   permissions: unknown;
   enabledPlugins: unknown;
   hooks: unknown;
@@ -290,7 +289,6 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
   const db = getDb();
   const hash = contentHash({
     target: snap.target,
-    settings: snap.settings,
     permissions: snap.permissions,
     enabledPlugins: snap.enabledPlugins,
     hooks: snap.hooks,
@@ -314,15 +312,14 @@ export function insertUserConfigSnapshot(snap: UserConfigSnapshot): boolean {
 
   db.prepare(
     `INSERT INTO user_config_snapshots
-       (device_name, target, snapshot_at_ms, content_hash, settings, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
+       (device_name, target, snapshot_at_ms, content_hash, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
         panopticon_allowed, panopticon_approvals, memory_files)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     snap.deviceName,
     snap.target,
     Date.now(),
     hash,
-    JSON.stringify(snap.settings),
     JSON.stringify(snap.permissions),
     JSON.stringify(snap.enabledPlugins),
     JSON.stringify(snap.hooks),

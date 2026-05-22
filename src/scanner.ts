@@ -1,8 +1,3 @@
-export type {
-  ClaudeCodeConfig,
-  ConfigLayer,
-  PluginHooksSummary,
-} from "./targets/claude/config.js";
 export {
   isGitignored,
   readClaudeConfig as readConfig,
@@ -10,3 +5,9 @@ export {
   writeFile,
   writeSettings,
 } from "./targets/claude/config.js";
+export type {
+  ClaudeCodeConfig,
+  ConfigLayer,
+  HarnessConfigSnapshot,
+  PluginHooksSummary,
+} from "./targets/config-types.js";

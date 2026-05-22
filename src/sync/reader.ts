@@ -477,7 +477,7 @@ function parseMemoryMap(
 
 const USER_CONFIG_SQL = `
   SELECT id, device_name, target, snapshot_at_ms, content_hash,
-         settings, permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
+         permissions, enabled_plugins, hooks, commands, rules, skills, plugin_hooks,
          panopticon_allowed, panopticon_approvals, memory_files
   FROM user_config_snapshots
   WHERE id > ?
@@ -496,7 +496,6 @@ export function readUserConfigSnapshots(
     target: string;
     snapshot_at_ms: number;
     content_hash: string;
-    settings: string | null;
     permissions: string | null;
     enabled_plugins: string | null;
     hooks: string | null;
@@ -515,7 +514,6 @@ export function readUserConfigSnapshots(
     target: r.target,
     snapshotAtMs: r.snapshot_at_ms,
     contentHash: r.content_hash,
-    settings: parseJsonObject(r.settings),
     permissions: parseJsonObject(r.permissions),
     enabledPlugins: parseJsonArray(r.enabled_plugins),
     hooks: parseJsonArray(r.hooks),

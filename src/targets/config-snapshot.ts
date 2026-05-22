@@ -1,8 +1,6 @@
-import type { ClaudeCodeConfig } from "../scanner.js";
 import { isClaudeUserConfigPath, readClaudeConfig } from "./claude/config.js";
+import type { HarnessConfigSnapshot } from "./config-types.js";
 import { isPiUserConfigPath, readPiConfig } from "./pi/config.js";
-
-export type HarnessConfigSnapshot = ClaudeCodeConfig;
 
 export const SUPPORTED_CONFIG_SNAPSHOT_TARGETS = ["claude", "pi"] as const;
 export type ConfigSnapshotTarget =

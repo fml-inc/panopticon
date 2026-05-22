@@ -7,7 +7,7 @@ import {
 } from "./targets/config-snapshot.js";
 
 /**
- * Capture the current user-global config (settings, permissions allowlist,
+ * Capture the current normalized user-global config (permissions allowlist,
  * approvals, memory files, etc.) into `user_config_snapshots`. Deduplicated
  * by content hash — no-op when nothing changed since the last snapshot for
  * this device.
@@ -30,7 +30,6 @@ export function captureUserConfigSnapshot(
     return insertUserConfigSnapshot({
       deviceName: os.hostname(),
       target: snapshotTarget,
-      settings: config.user.settings,
       permissions: config.user.permissions,
       enabledPlugins: config.enabledPlugins,
       hooks: config.user.hooks,
