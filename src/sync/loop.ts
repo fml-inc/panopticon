@@ -149,6 +149,9 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     (desc) => !desc.sessionLinked && nonSessionTableSet.has(desc.table),
   );
   const loopPrefix = opts.loopName ? `${opts.loopName}: ` : "";
+  const backoffScopeKind = opts.loopName
+    ? `${SYNC_TARGET_BACKOFF_SCOPE}:${opts.loopName}`
+    : SYNC_TARGET_BACKOFF_SCOPE;
   const watermarkGapPredicate = sessionTables
     .map(
       (table) =>
@@ -721,7 +724,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
       : null;
 
     for (const target of opts.targets) {
-      if (isAttemptBackoffActive(SYNC_TARGET_BACKOFF_SCOPE, target.name)) {
+      if (isAttemptBackoffActive(backoffScopeKind, target.name)) {
         log.sync.debug(
           formatLog(`Skipping ${target.name}: target backoff active`),
         );
@@ -739,10 +742,10 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
         // Phase 4: Sync non-session tables
         if (await syncNonSessionTables(target)) hasMore = true;
-        clearAttemptBackoff(SYNC_TARGET_BACKOFF_SCOPE, target.name);
+        clearAttemptBackoff(backoffScopeKind, target.name);
       } catch (err) {
         recordAttemptBackoffFailure(
-          SYNC_TARGET_BACKOFF_SCOPE,
+          backoffScopeKind,
           target.name,
           err instanceof Error ? err.message : String(err),
         );

@@ -149,6 +149,21 @@ function insertOtelLog(sessionId: string, index: number): number {
   return Number(result.lastInsertRowid);
 }
 
+function insertUserConfigSnapshot(
+  deviceName = "test-device",
+  contentHash = "config-hash",
+): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `INSERT INTO user_config_snapshots
+         (device_name, snapshot_at_ms, content_hash)
+       VALUES (?, 0, ?)`,
+    )
+    .run(deviceName, contentHash);
+  return Number(result.lastInsertRowid);
+}
+
 function getTss(sessionId: string, target: string) {
   const db = getDb();
   return db
@@ -275,6 +290,7 @@ beforeEach(() => {
   db.prepare("DELETE FROM otel_logs").run();
   db.prepare("DELETE FROM otel_metrics").run();
   db.prepare("DELETE FROM otel_spans").run();
+  db.prepare("DELETE FROM user_config_snapshots").run();
   db.prepare("DELETE FROM watermarks").run();
   db.prepare("DELETE FROM attempt_backoffs").run();
   mockedPostSync.mockReset();
@@ -508,6 +524,69 @@ describe("createSyncLoop integration", () => {
 
         vi.setSystemTime(new Date(60_000));
         await handle.runOnce();
+        expect(mockedPostSync).toHaveBeenCalledTimes(1);
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 2,
+          next_attempt_at_ms: 180_000,
+        });
+      } finally {
+        randomSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not let a successful otel loop clear core sync backoff", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+      try {
+        insertUserConfigSnapshot();
+
+        mockedPostSync.mockImplementation(async (_url, body) => {
+          if (body.table === "user_config_snapshots") {
+            throw new Error("HTTP 400: bad user config");
+          }
+          return {};
+        });
+
+        const coreHandle = createSyncLoop({
+          targets: [makeTarget()],
+          syncSessions: false,
+          sessionTables: [],
+          nonSessionTables: ["user_config_snapshots"],
+        });
+        await coreHandle.runOnce();
+
+        expect(mockedPostSync).toHaveBeenCalledTimes(1);
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 1,
+          last_error: "HTTP 400: bad user config",
+          next_attempt_at_ms: 60_000,
+        });
+
+        mockedPostSync.mockClear();
+        const otelHandle = createSyncLoop({
+          targets: [makeTarget()],
+          loopName: "otel",
+          syncSessions: false,
+          sessionTables: ["otel_logs"],
+          nonSessionTables: [],
+          sessionPendingMode: "watermark-gap",
+        });
+        await otelHandle.runOnce();
+
+        expect(mockedPostSync).not.toHaveBeenCalled();
+        expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
+          failure_count: 1,
+        });
+        expect(getAttemptBackoff("sync-target:otel", "fml")).toBeUndefined();
+
+        await coreHandle.runOnce();
+        expect(mockedPostSync).not.toHaveBeenCalled();
+
+        vi.setSystemTime(new Date(60_000));
+        await coreHandle.runOnce();
         expect(mockedPostSync).toHaveBeenCalledTimes(1);
         expect(getAttemptBackoff("sync-target", "fml")).toMatchObject({
           failure_count: 2,
