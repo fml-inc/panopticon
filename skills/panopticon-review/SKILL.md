@@ -1,6 +1,6 @@
 ---
 name: panopticon-review
-description: "Review the current branch as if reviewing a PR. Returns the review inline; queries panopticon for author-intent follow-ups only after the review is drafted."
+description: "Review the current branch as if reviewing a PR. Returns the review inline; queries panopticon/FML for author-intent follow-ups only after the review is drafted."
 ---
 
 # PR Review
@@ -14,17 +14,19 @@ Review the current branch as a thorough code reviewer would review a pull reques
 3. Run `git log main..HEAD --oneline` to understand the commit history
 4. Read any files that need fuller context to understand the changes
 
-After you produce the review, if you have lingering questions about the coding intent or the choices made, query panopticon's local session DB to try to answer them. Do not query panopticon while producing the review — the review should reflect what the diff tells you, not what you had to ask the DB about. Only reach for panopticon for the *"why"* questions that the code and commit messages didn't resolve. Append any answers under a **Follow-up: panopticon-sourced intent** section after the Verdict.
+After you produce the review, if you have lingering questions about the coding intent or the choices made, query panopticon's local session DB and, when available, FML's synced session source to try to answer them. Do not query panopticon/FML while producing the review — the review should reflect what the diff tells you, not what you had to ask session history about. Only reach for session history for the *"why"* questions that the code and commit messages didn't resolve. Append any answers under a **Follow-up: panopticon/FML-sourced intent** section after the Verdict.
 
-### Querying panopticon
+### Querying panopticon and synced FML sessions
 
-For common lookups, prefer purpose-built subcommands — they're faster than writing SQL:
+Always check the local panopticon DB first. Then, if the `fml` CLI is installed and usable in this environment, also check synced sessions with the same time window and keywords. FML may be absent, logged out, or unable to reach the service; if so, note that synced sources were unavailable and continue with the local DB rather than failing the review.
+
+For common local lookups, prefer purpose-built subcommands — they're faster than writing SQL:
 
 - `panopticon sessions` — list recent sessions with stats (event counts, tools, cost).
 - `panopticon timeline <session-id>` — pull messages + tool calls for a session.
 - `panopticon search <query>` — full-text search across events and messages.
 
-Fall back to raw SQL via `panopticon query "<SQL>"` (prints JSON to stdout) for ad-hoc joins the subcommands don't cover. Key tables:
+Fall back to raw SQL via `panopticon query "<SQL>"` (prints JSON to stdout) for ad-hoc joins the subcommands don't cover. Key local tables:
 
 - `sessions` — one row per agent session. Useful columns: `session_id`, `started_at_ms`, `first_prompt`, `model`, `machine`, `parent_session_id`, `relationship_type`. (`target` is almost always `'claude'` — not discriminative.) Note: `sessions.cwd` is always NULL; cwd is stored in the `session_cwds` junction table below.
 - `session_cwds(session_id, cwd, first_seen_ms)` — one row per (session, cwd). The canonical cwd lookup for any session that ever emitted one. Prefer this over `hook_events.cwd`.
@@ -48,8 +50,14 @@ Typical flow to find the session(s) behind a branch:
 2. For keyword search across all message content, join `messages_fts` to `messages` by rowid (or use `panopticon search <query>`).
 3. Pull the actual conversation with `panopticon timeline <session-id>` or `SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal`.
 4. Need cwd filtering? Join `session_cwds` — it covers every session with a known cwd. Only fall back to `hook_events.cwd` when you specifically need event-level cwd attribution (e.g. a session that changed cwds mid-run).
+5. Check synced FML sessions if available:
+   - Probe binary availability with `command -v fml`, then verify synced-session usability with a lightweight data command such as `fml sessions --since 24h --limit 1`. `fml status` is useful diagnostic context, but it can print auth/setup status without proving synced session data is queryable. Treat command-not-found, auth failures, or network failures as "synced FML unavailable".
+   - Convert the commit authorship window into a conservative `--since` duration that covers the oldest branch commit (for example `--since 14d`; round up rather than down).
+   - Use `fml search --since <duration> --limit <n> <query>` for the same keywords you used locally, and `fml sessions --since <duration> --limit <n>` when keyword search is insufficient.
+   - Pull relevant conversations with `fml timeline <session-id> --limit <n>`.
+   - Prefer corroborated local + synced evidence when both exist. If they disagree, state the discrepancy; don't silently prefer one source.
 
-If the local DB genuinely doesn't have coverage for the commit window (e.g. the work happened on a different machine), say so in the review rather than guessing. Sanity-check with `SELECT datetime(MAX(started_at_ms)/1000,'unixepoch') FROM sessions` before declaring "no coverage"; `sessions.machine` tells you which host a session ran on.
+If neither local panopticon nor synced FML genuinely covers the commit window (e.g. the work happened on a different machine and was not synced), say so in the review rather than guessing. Sanity-check local coverage with `SELECT datetime(MAX(started_at_ms)/1000,'unixepoch') FROM sessions` before declaring local "no coverage"; `sessions.machine` tells you which host a session ran on.
 
 ## Review Format
 
@@ -65,4 +73,4 @@ The review should include:
 
 Be direct and specific. Reference file paths and line numbers. Focus on things that matter — correctness, security, maintainability — not nitpicks.
 
-After the verdict, if panopticon queries answered any of your intent questions, add a **Follow-up: panopticon-sourced intent** section that summarizes what you found and which review items it confirmed, softened, or contradicted. If the local DB doesn't cover the branch's commit window, say so instead of guessing.
+After the verdict, if panopticon or FML queries answered any of your intent questions, add a **Follow-up: panopticon/FML-sourced intent** section that summarizes what you found and which review items it confirmed, softened, or contradicted. If the local DB and synced FML sources don't cover the branch's commit window, say so instead of guessing.
