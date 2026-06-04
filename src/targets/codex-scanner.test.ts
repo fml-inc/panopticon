@@ -85,4 +85,97 @@ describe("codex scanner", () => {
       skillName: "panopticon-review",
     });
   });
+
+  it("handles common Codex skill path edge cases without overmatching", () => {
+    const filePath = writeCodexSession([
+      {
+        timestamp: "2026-05-24T15:45:59.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-skill-edge-session",
+          cwd: "/workspace/panopticon",
+          timestamp: "2026-05-24T15:45:59.000Z",
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "call-home",
+          arguments: JSON.stringify({
+            cmd: "cat $HOME/.codex/skills/review/SKILL.md",
+          }),
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "call-braced-home",
+          arguments: JSON.stringify({
+            cmd: "cat $" + "{HOME}/.codex/skills/plan/SKILL.md",
+          }),
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "call-system",
+          arguments: JSON.stringify({
+            cmd: "cat ~/.codex/skills/.system/SKILL.md",
+          }),
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "read_file",
+          call_id: "call-read-file",
+          arguments: JSON.stringify({
+            path: "~/.codex/skills/not-a-command/SKILL.md",
+          }),
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "call-invalid-json",
+          arguments: "not json",
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 10,
+              output_tokens: 2,
+              cached_input_tokens: 0,
+              reasoning_output_tokens: 0,
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = codex.scanner!.parseFile(filePath, 0)!;
+
+    expect(
+      result.messages[0].toolCalls.map((toolCall) => toolCall.skillName),
+    ).toEqual(["review", "plan", undefined, undefined, undefined]);
+  });
 });

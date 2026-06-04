@@ -54,16 +54,18 @@ function extractCodexSkillName(
       : undefined;
   if (!commandText) return undefined;
 
-  const escapedSkillsDir = CODEX_SKILLS_DIR.replace(
+  const normalizedCommandText = commandText.replaceAll("\\", "/");
+  const normalizedSkillsDir = CODEX_SKILLS_DIR.replaceAll("\\", "/");
+  const escapedSkillsDir = normalizedSkillsDir.replace(
     /[.*+?^${}()|[\]\\]/g,
     "\\$&",
   );
   const patterns = [
     new RegExp(`${escapedSkillsDir}/([^/]+)/SKILL\\.md`),
-    /(?:^|\s|['"])(?:~\/)?\.codex\/skills\/([^/]+)\/SKILL\.md/,
+    /(?:^|\s|['"])(?:~|\$HOME|\$\{HOME\})\/\.codex\/skills\/([^/]+)\/SKILL\.md/,
   ];
   for (const pattern of patterns) {
-    const match = pattern.exec(commandText);
+    const match = pattern.exec(normalizedCommandText);
     if (match?.[1] && match[1] !== ".system") return match[1];
   }
   return undefined;
