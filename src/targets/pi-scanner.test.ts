@@ -24,6 +24,41 @@ function writePiSession(lines: unknown[]): string {
 }
 
 describe("pi scanner", () => {
+  it("captures injected Pi skill usage from skill prompt messages", () => {
+    const filePath = writePiSession([
+      {
+        type: "session",
+        version: 3,
+        id: "pi-skill-session",
+        timestamp: "2026-05-18T10:00:00.000Z",
+        cwd: "/workspace/example",
+      },
+      {
+        type: "message",
+        id: "u-skill",
+        parentId: null,
+        timestamp: "2026-05-18T10:00:01.000Z",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: '<skill name="panopticon-review" location="/home/node/.pi/agent/skills/panopticon-review/SKILL.md">\\n# PR Review\\n</skill>',
+            },
+          ],
+        },
+      },
+    ]);
+
+    const result = pi.scanner!.parseFile(filePath, 0)!;
+
+    expect(result.messages[0].toolCalls[0]).toMatchObject({
+      toolName: "Skill",
+      skillName: "panopticon-review",
+      inputJson: JSON.stringify({ skill: "panopticon-review" }),
+    });
+  });
+
   it("parses persisted Pi session messages, tool calls, tool results, and tokens", () => {
     const filePath = writePiSession([
       {
