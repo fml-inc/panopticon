@@ -66,6 +66,11 @@ function resultContentLength(content: unknown): number {
   return textFromContent(content).text.length;
 }
 
+function extractInjectedSkillName(text: string): string | undefined {
+  const match = /<skill\s+[^>]*name=(['"])([^'"]+)\1/i.exec(text);
+  return match?.[2];
+}
+
 function readNonNegativeNumber(
   record: Record<string, unknown> | undefined,
   keys: string[],
@@ -346,6 +351,19 @@ const pi: TargetAdapter = {
 
         if (role === "user") {
           const { text } = textFromContent(msg.content);
+          const skillName = extractInjectedSkillName(text);
+          const toolCalls: ParsedToolCall[] = skillName
+            ? [
+                {
+                  toolUseId: `${sid}:${ordinal}:skill:${skillName}`,
+                  toolName: "Skill",
+                  category: "Tool",
+                  inputJson: JSON.stringify({ skill: skillName }),
+                  skillName,
+                  timestampMs: tsMs,
+                },
+              ]
+            : [];
           if (!firstPrompt && text) firstPrompt = text.slice(0, 200);
           if (text.length > 0) {
             messages.push({
@@ -355,14 +373,14 @@ const pi: TargetAdapter = {
               content: text,
               timestampMs: tsMs,
               hasThinking: false,
-              hasToolUse: false,
+              hasToolUse: toolCalls.length > 0,
               isSystem: false,
               contentLength: text.length,
               hasContextTokens: false,
               hasOutputTokens: false,
               uuid,
               parentUuid,
-              toolCalls: [],
+              toolCalls,
               toolResults: new Map(),
             });
           }

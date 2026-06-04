@@ -29,6 +29,46 @@ function codexToolCategory(toolName: string): string {
   return CODEX_TOOL_CATEGORIES[toolName] ?? defaultToolCategory(toolName);
 }
 
+function extractCodexSkillName(
+  toolName: string,
+  inputJson: string | undefined,
+): string | undefined {
+  if (toolName !== "exec_command" || !inputJson) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(inputJson);
+  } catch {
+    return undefined;
+  }
+  const command =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? ((parsed as Record<string, unknown>).cmd ??
+        (parsed as Record<string, unknown>).command)
+      : undefined;
+  const commandText = Array.isArray(command)
+    ? command
+        .filter((part): part is string => typeof part === "string")
+        .join(" ")
+    : typeof command === "string"
+      ? command
+      : undefined;
+  if (!commandText) return undefined;
+
+  const escapedSkillsDir = CODEX_SKILLS_DIR.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  const patterns = [
+    new RegExp(`${escapedSkillsDir}/([^/]+)/SKILL\\.md`),
+    /(?:^|\s|['"])(?:~\/)?\.codex\/skills\/([^/]+)\/SKILL\.md/,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(commandText);
+    if (match?.[1] && match[1] !== ".system") return match[1];
+  }
+  return undefined;
+}
+
 const CODEX_SYSTEM_PREFIXES = [
   "# AGENTS.md",
   "<environment_context>",
@@ -1161,6 +1201,7 @@ const codex: TargetAdapter = {
               toolName,
               category: codexToolCategory(toolName),
               inputJson,
+              skillName: extractCodexSkillName(toolName, inputJson),
               timestampMs: tsMs,
             });
 
