@@ -401,6 +401,32 @@ export interface TargetSkillsSpec {
   installDirs(): string[];
 }
 
+// ── Capability Matrix ───────────────────────────────────────────────────────
+
+export type TargetCapabilitySupport = "full" | "partial" | "unsupported";
+
+export interface TargetCapabilityStatus {
+  /** Whether panopticon supports this capability for the target. */
+  support: TargetCapabilitySupport;
+  /** Human-readable implementation note or intentional limitation. */
+  notes: string;
+}
+
+export interface TargetCapabilities {
+  hooks: TargetCapabilityStatus;
+  scanner: TargetCapabilityStatus;
+  otel: TargetCapabilityStatus;
+  proxy: TargetCapabilityStatus;
+  permissions: TargetCapabilityStatus;
+  skills: TargetCapabilityStatus;
+  configSnapshot: TargetCapabilityStatus;
+  sessionLifecycle: TargetCapabilityStatus;
+  toolLifecycle: TargetCapabilityStatus;
+  tokenAccounting: TargetCapabilityStatus;
+  subagentsTasks: TargetCapabilityStatus;
+  forkContinuations: TargetCapabilityStatus;
+}
+
 // ── The Adapter ─────────────────────────────────────────────────────────────
 
 export interface TargetAdapter {
@@ -421,4 +447,6 @@ export interface TargetAdapter {
   scanner?: TargetScannerSpec;
   /** Harness-specific skill install locations, if supported. */
   skills?: TargetSkillsSpec;
+  /** Explicit parity contract for target-specific feature support. */
+  capabilities?: TargetCapabilities;
 }

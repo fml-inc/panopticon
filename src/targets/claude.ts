@@ -297,6 +297,64 @@ const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const claude: TargetAdapter = {
   id: "claude",
 
+  capabilities: {
+    hooks: {
+      support: "full",
+      notes:
+        "Claude Code hook coverage is installed through the local plugin marketplace; adapter settings only enable the plugin.",
+    },
+    scanner: {
+      support: "full",
+      notes:
+        "Scans ~/.claude/projects JSONL files, including messages, tool calls/results, errors, file snapshots, continuations, subagents, and DAG forks.",
+    },
+    otel: {
+      support: "full",
+      notes: "Uses native claude_code.token.usage OTel metrics.",
+    },
+    proxy: {
+      support: "full",
+      notes: "Supports Anthropic API proxying via ANTHROPIC_BASE_URL.",
+    },
+    permissions: {
+      support: "full",
+      notes: "Can allow or deny from PreToolUse hook responses.",
+    },
+    skills: {
+      support: "full",
+      notes: "Installs skills under ~/.claude/skills.",
+    },
+    configSnapshot: {
+      support: "full",
+      notes:
+        "Captures global/project settings, MCP servers, permissions, instructions, plugin hooks, memory, and skills.",
+    },
+    sessionLifecycle: {
+      support: "full",
+      notes:
+        "Plugin/scanner coverage includes start, stop/end, continuation, and fork relationships.",
+    },
+    toolLifecycle: {
+      support: "full",
+      notes:
+        "Captures tool calls, successful results, failures, and tool metadata.",
+    },
+    tokenAccounting: {
+      support: "full",
+      notes: "Combines OTel token metrics with scanner usage fields.",
+    },
+    subagentsTasks: {
+      support: "full",
+      notes:
+        "Scanner and hooks capture subagent/task relationships where Claude exposes them.",
+    },
+    forkContinuations: {
+      support: "full",
+      notes:
+        "Scanner detects continuations and DAG forks from Claude JSONL metadata.",
+    },
+  },
+
   config: {
     dir: CLAUDE_DIR,
     configPath: path.join(CLAUDE_DIR, "settings.json"),

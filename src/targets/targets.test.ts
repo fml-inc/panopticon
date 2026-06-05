@@ -36,6 +36,55 @@ describe("target registry", () => {
   });
 });
 
+describe("primary target capability matrix", () => {
+  const capabilityKeys = [
+    "hooks",
+    "scanner",
+    "otel",
+    "proxy",
+    "permissions",
+    "skills",
+    "configSnapshot",
+    "sessionLifecycle",
+    "toolLifecycle",
+    "tokenAccounting",
+    "subagentsTasks",
+    "forkContinuations",
+  ] as const;
+
+  it("declares a complete parity contract for claude, codex, and pi", () => {
+    for (const id of ["claude", "codex", "pi"] as const) {
+      const target = getTarget(id)!;
+      expect(target.capabilities).toBeDefined();
+      for (const key of capabilityKeys) {
+        expect(target.capabilities![key].support).toMatch(
+          /^(full|partial|unsupported)$/,
+        );
+        expect(target.capabilities![key].notes.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("records intentional OTel, proxy, permission, and lifecycle gaps", () => {
+    const claude = getTarget("claude")!;
+    const codex = getTarget("codex")!;
+    const pi = getTarget("pi")!;
+
+    expect(claude.capabilities?.otel.support).toBe("full");
+    expect(claude.capabilities?.proxy.support).toBe("full");
+    expect(claude.capabilities?.permissions.support).toBe("full");
+
+    expect(codex.capabilities?.permissions.support).toBe("partial");
+    expect(codex.capabilities?.sessionLifecycle.support).toBe("partial");
+    expect(codex.capabilities?.forkContinuations.support).toBe("unsupported");
+
+    expect(pi.capabilities?.otel.support).toBe("unsupported");
+    expect(pi.capabilities?.proxy.support).toBe("unsupported");
+    expect(pi.capabilities?.permissions.support).toBe("unsupported");
+    expect(pi.capabilities?.subagentsTasks.support).toBe("unsupported");
+  });
+});
+
 describe("target skills install dirs", () => {
   it("declares harness-specific skill locations for claude/codex/pi", () => {
     const claude = getTarget("claude")!;
