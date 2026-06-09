@@ -137,7 +137,9 @@ concurrency/workpooling follow-up, see
 | Claude Desktop | MCP server | — | — | — | MCP query tools only |
 | Pi | Extension (HTTP) | — | `~/.pi/agent/sessions/` JSONL | — | Extension and scanner capture hooks, normalized messages, assistant responses/tool calls/tokens when Pi exposes them; see [Pi coverage](docs/PI-COVERAGE.md) |
 
-Each tool is implemented as a **target adapter** in `src/targets/`. To add support for a new tool, create a single adapter file that declares config paths, hook events, shell env vars, event normalization, detection logic, and proxy routing — then register it in `src/targets/index.ts`.
+Each tool is implemented as a **target adapter** in `src/targets/`. Primary target adapters also declare a `capabilities` matrix so parity is explicit in code and tests instead of inferred from optional adapter fields. Capability support is recorded as `full`, `partial`, or `unsupported` with notes for intentional target limitations. See [Target parity plan](docs/TARGET-PARITY-PLAN.md) for the planned PR sequence.
+
+To add support for a new tool, create a single adapter file that declares config paths, hook events, shell env vars, event normalization, detection logic, proxy routing, and any capability metadata — then register it in `src/targets/index.ts`.
 
 ## MCP tools
 

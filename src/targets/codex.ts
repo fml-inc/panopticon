@@ -462,6 +462,68 @@ function takePendingWebSearch(
 const codex: TargetAdapter = {
   id: "codex",
 
+  capabilities: {
+    hooks: {
+      support: "partial",
+      notes:
+        "Installs Codex hooks for SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, and Stop; some lifecycle events are scanner-only or unavailable.",
+    },
+    scanner: {
+      support: "partial",
+      notes:
+        "Scans ~/.codex/sessions JSONL files for messages, tool calls/results, reasoning, token counts, agent messages, web search, patch, exec, and MCP events; fork/subagent structure is less rich than Claude.",
+    },
+    otel: {
+      support: "full",
+      notes: "Configures Codex native OTel logs/traces/metrics over OTLP HTTP.",
+    },
+    proxy: {
+      support: "full",
+      notes:
+        "Supports OpenAI API-key and ChatGPT OAuth proxy routing with path rewrites.",
+    },
+    permissions: {
+      support: "partial",
+      notes:
+        "Codex can deny at PreToolUse; approvals are represented through PermissionRequest responses.",
+    },
+    skills: {
+      support: "full",
+      notes:
+        "Installs skills under ~/.codex/skills and scanner detects SKILL.md usage in exec_command calls.",
+    },
+    configSnapshot: {
+      support: "full",
+      notes:
+        "Captures TOML settings, hooks.json, MCP servers, permission rules, AGENTS.md, and skills.",
+    },
+    sessionLifecycle: {
+      support: "partial",
+      notes:
+        "Live hooks cover session start and stop; SessionEnd and some lifecycle boundaries are not installed as Codex hooks.",
+    },
+    toolLifecycle: {
+      support: "partial",
+      notes:
+        "Captures PreToolUse/PostToolUse live hooks and scanner-derived tool results; PostToolUseFailure is not installed as a Codex hook.",
+    },
+    tokenAccounting: {
+      support: "full",
+      notes:
+        "Combines Codex OTel token metrics and scanner token_count events.",
+    },
+    subagentsTasks: {
+      support: "partial",
+      notes:
+        "Scanner captures task_started/task_complete events, but not Claude-style subagent relationships.",
+    },
+    forkContinuations: {
+      support: "unsupported",
+      notes:
+        "Codex scanner does not currently model DAG forks or continuation relationships.",
+    },
+  },
+
   config: {
     dir: CODEX_DIR,
     configPath: path.join(CODEX_DIR, "config.toml"),

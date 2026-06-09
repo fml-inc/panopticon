@@ -164,6 +164,68 @@ function getExtensionSource(pluginRoot: string): string | null {
 const pi: TargetAdapter = {
   id: "pi",
 
+  capabilities: {
+    hooks: {
+      support: "partial",
+      notes:
+        "Pi extension emits canonical hook events for exposed Pi extension APIs; Claude-style permission/subagent/task events are not fabricated.",
+    },
+    scanner: {
+      support: "partial",
+      notes:
+        "Scans ~/.pi/agent/sessions JSONL files for persisted messages, tool calls/results, and usage when Pi exposes them.",
+    },
+    otel: {
+      support: "unsupported",
+      notes: "Pi does not emit native OTel signals to Panopticon.",
+    },
+    proxy: {
+      support: "unsupported",
+      notes:
+        "Pi routes model traffic through its own provider configuration; Panopticon does not proxy Pi API calls.",
+    },
+    permissions: {
+      support: "unsupported",
+      notes:
+        "Pi extensions cannot block tool calls; permission responses are informational only.",
+    },
+    skills: {
+      support: "full",
+      notes:
+        "Installs skills under ~/.pi/agent/skills and scanner detects injected skill prompt messages.",
+    },
+    configSnapshot: {
+      support: "partial",
+      notes:
+        "Captures Pi settings, model configuration, installed extensions, local Panopticon permissions, and skills; MCP/instructions parity is unavailable or not yet implemented.",
+    },
+    sessionLifecycle: {
+      support: "partial",
+      notes:
+        "Extension emits SessionStart, TurnStart, Stop, compaction, config-change, notification, and SessionEnd when Pi exposes the source events.",
+    },
+    toolLifecycle: {
+      support: "full",
+      notes:
+        "Extension and scanner capture tool calls, successful results, and failed results when Pi exposes them.",
+    },
+    tokenAccounting: {
+      support: "partial",
+      notes:
+        "Scanner records token usage only when Pi/provider persists usage fields.",
+    },
+    subagentsTasks: {
+      support: "unsupported",
+      notes:
+        "Pi 0.75.x does not expose Claude-equivalent subagent or task lifecycle events.",
+    },
+    forkContinuations: {
+      support: "partial",
+      notes:
+        "Scanner records parentSession as a fork relationship but does not perform Claude-style DAG fork partitioning.",
+    },
+  },
+
   config: {
     get dir() {
       return piDir();
