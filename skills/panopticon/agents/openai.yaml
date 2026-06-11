@@ -1,0 +1,4 @@
+interface:
+  display_name: "Panopticon"
+  short_description: "Route Panopticon commands to MCP or CLI"
+  default_prompt: "Use $panopticon to inspect recent Panopticon activity."

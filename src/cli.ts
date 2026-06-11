@@ -140,6 +140,15 @@ function skillInstallDirs(
   return [...new Set(targets.flatMap((t) => t.skills?.installDirs() ?? []))];
 }
 
+function commandInstallDirs(
+  targets: import("./targets/types.js").TargetAdapter[],
+): string[] {
+  return [...new Set(targets.flatMap((t) => t.commands?.installDirs() ?? []))];
+}
+
+const LEGACY_SKILL_NAMES = ["panopticon-review", "pr-review"];
+const LEGACY_COMMAND_NAMES = ["panopticon-review", "pr-review"];
+
 function writeJsonFile(filePath: string, data: any): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
@@ -614,9 +623,35 @@ program
       console.log("[5/6] Skipping marketplace (target-specific uninstall)\n");
     }
 
-    // Remove skills (mirrors install: scope to selected targets)
-    console.log("[6/6] Removing skills...");
+    // Remove commands and skills (mirrors install: scope to selected targets)
+    console.log("[6/6] Removing commands and skills...");
     const pluginRoot = getPluginRoot();
+    const commandsSource = path.join(pluginRoot, "commands");
+    const commandTargets = commandInstallDirs(selectedTargets);
+    if (commandTargets.length === 0) {
+      console.log("      (no command-supporting targets selected)");
+    } else if (fs.existsSync(commandsSource)) {
+      for (const name of fs.readdirSync(commandsSource)) {
+        if (!name.endsWith(".md")) continue;
+        for (const commandTarget of commandTargets) {
+          const dest = path.join(commandTarget, name);
+          try {
+            fs.rmSync(dest, { force: true });
+            console.log(`      Removed ${dest}`);
+          } catch {}
+        }
+      }
+    }
+    for (const legacyName of LEGACY_COMMAND_NAMES) {
+      for (const commandTarget of commandTargets) {
+        const dest = path.join(commandTarget, `${legacyName}.md`);
+        try {
+          fs.rmSync(dest, { force: true });
+          console.log(`      Removed ${dest}`);
+        } catch {}
+      }
+    }
+
     const skillsSource = path.join(pluginRoot, "skills");
     const skillTargets = skillInstallDirs(selectedTargets);
     if (skillTargets.length === 0) {
@@ -630,6 +665,15 @@ program
             console.log(`      Removed ${dest}`);
           } catch {}
         }
+      }
+    }
+    for (const legacyName of LEGACY_SKILL_NAMES) {
+      for (const skillsTarget of skillTargets) {
+        const dest = path.join(skillsTarget, legacyName);
+        try {
+          fs.rmSync(dest, { recursive: true, force: true });
+          console.log(`      Removed ${dest}`);
+        } catch {}
       }
     }
     console.log();
@@ -881,7 +925,30 @@ async function install(
     console.log(`[3/5] Skipping ${t.detect.displayName} settings...\n`);
   }
 
-  console.log("[4/5] Installing skills...");
+  console.log("[4/5] Installing commands and skills...");
+  const commandsSource = path.join(pluginRoot, "commands");
+  const commandTargets = commandInstallDirs(selectedTargets);
+  if (commandTargets.length === 0) {
+    console.log("      (no command-supporting targets selected)");
+  } else if (fs.existsSync(commandsSource)) {
+    for (const commandFile of fs.readdirSync(commandsSource)) {
+      if (!commandFile.endsWith(".md")) continue;
+      const src = path.join(commandsSource, commandFile);
+      if (!fs.statSync(src).isFile()) continue;
+      for (const commandTarget of commandTargets) {
+        const dest = path.join(commandTarget, commandFile);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(src, dest);
+        console.log(`      ${commandFile} -> ${dest}`);
+      }
+    }
+  }
+  for (const legacyName of LEGACY_COMMAND_NAMES) {
+    for (const commandTarget of commandTargets) {
+      fs.rmSync(path.join(commandTarget, `${legacyName}.md`), { force: true });
+    }
+  }
+
   const skillsSource = path.join(pluginRoot, "skills");
   const skillTargets = skillInstallDirs(selectedTargets);
   if (skillTargets.length === 0) {
@@ -895,6 +962,14 @@ async function install(
         fs.cpSync(src, dest, { recursive: true });
         console.log(`      ${skillName} -> ${dest}`);
       }
+    }
+  }
+  for (const legacyName of LEGACY_SKILL_NAMES) {
+    for (const skillsTarget of skillTargets) {
+      fs.rmSync(path.join(skillsTarget, legacyName), {
+        recursive: true,
+        force: true,
+      });
     }
   }
   console.log();

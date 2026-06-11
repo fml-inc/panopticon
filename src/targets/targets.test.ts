@@ -56,6 +56,20 @@ describe("target skills install dirs", () => {
   });
 });
 
+describe("target command install dirs", () => {
+  it("declares Claude slash-command location", () => {
+    const claude = getTarget("claude")!;
+    const codex = getTarget("codex")!;
+    const pi = getTarget("pi")!;
+
+    expect(claude.commands?.installDirs()).toEqual([
+      path.join(os.homedir(), ".claude", "commands"),
+    ]);
+    expect(codex.commands).toBeUndefined();
+    expect(pi.commands).toBeUndefined();
+  });
+});
+
 describe("gemini event normalization", () => {
   const gemini = getTarget("gemini")!;
 

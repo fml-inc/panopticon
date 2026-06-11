@@ -20,6 +20,7 @@
     "bin/",
     "dist/",
     "hooks/",
+    "commands/",
     "scripts/postinstall.js",
     "skills/",
     ".claude-plugin/"

@@ -390,6 +390,12 @@ const claude: TargetAdapter = {
     },
   },
 
+  commands: {
+    installDirs() {
+      return [path.join(os.homedir(), ".claude", "commands")];
+    },
+  },
+
   events: {
     // Claude Code already sends canonical event names
     eventMap: {},
