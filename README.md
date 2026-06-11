@@ -203,22 +203,21 @@ history.
 | Session start history | `PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION` | `1` | Adds recent local session history for the current cwd on `SessionStart` |
 | Prompt-relevant history | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | Adds prompt-matched local history on mid-session `UserPromptSubmit`; the first prompt is intentionally silent |
 | Edit-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Adds file provenance before edit tools when the file has prior history; deduped once per session/path |
-| Read-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `0` | Adds short provenance before `Read` for files with prior history; currently opt-in while measuring noise |
+| Read-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | Adds short provenance before `Read` for files with prior history; deduped once per session/path |
 | Code Review Graph enrichment | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Adds `code_intel` to `file_overview` when the repo has `.code-review-graph/graph.db` |
 
-Flags are read by the Panopticon server at startup. For a one-off test:
+Flags are read by the Panopticon server at startup. For a one-off test with
+Code Review Graph enrichment:
 
 ```bash
 panopticon stop
-PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1 \
 PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1 \
 panopticon start --force
 ```
 
-For persistent use, add the desired `export PANOPTICON_...=1` lines to the
+For persistent overrides, add the desired `export PANOPTICON_...` lines to the
 same shell profile that launches your AI coding tool, then restart Panopticon
-and start a new agent session. `panopticon install` does not add experimental
-feature flags automatically.
+and start a new agent session.
 
 ### Employee rollout checklist
 
@@ -407,7 +406,7 @@ Target-specific env vars are declared by each target adapter in `src/targets/`.
 | `PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION` | `1` | Enable recent-history `SessionStart` context injection |
 | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | Enable prompt-relevant mid-session `UserPromptSubmit` context injection |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Enable edit-time file provenance injection for supported `PreToolUse` edit tools |
-| `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `0` | Enable opt-in read-time provenance injection for `PreToolUse` `Read` |
+| `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | Enable read-time provenance injection for `PreToolUse` `Read` |
 | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Enable Code Review Graph enrichment inside `file_overview` |
 
 `hook-handler.log` now keeps server startup, warnings, and errors at the default `info` level. Per-event success-path lines are only written when `PANOPTICON_LOG_LEVEL=debug` (or lower).

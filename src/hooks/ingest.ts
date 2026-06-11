@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
 import {
@@ -22,7 +23,11 @@ import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_d
 import { isEditToolName } from "../intent/editParsing.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 import { log } from "../log.js";
-import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
+import {
+  dirnameOfObservedPath,
+  isObservedAbsolutePath,
+  resolveFilePathFromCwd,
+} from "../paths.js";
 import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
@@ -65,11 +70,11 @@ export function _resetPreToolUseFileContextSeen(): void {
  * key has not been seen; the key is marked seen only when `build` yields
  * content, so a file that gains history mid-session still gets its one shot.
  */
-export function emitOncePerSessionPath(
+export function emitOncePerSessionPath<T>(
   sessionId: string,
   filePath: string,
-  build: () => string | null,
-): string | null {
+  build: () => T | null,
+): T | null {
   const key = `${sessionId}:${filePath}`;
   if (preToolUseFileContextSeen.has(key)) return null;
   const result = build();
@@ -78,11 +83,11 @@ export function emitOncePerSessionPath(
   return result;
 }
 
-function emitReadOncePerSessionPath(
+function emitReadOncePerSessionPath<T>(
   sessionId: string,
   filePath: string,
-  build: () => string | null,
-): string | null {
+  build: () => T | null,
+): T | null {
   const key = `${sessionId}:${filePath}`;
   if (preToolUseReadContextSeen.has(key)) return null;
   const result = build();
@@ -97,7 +102,7 @@ const FILE_CONTEXT_TOOLS = new Set([
   "MultiEdit",
   "NotebookEdit",
 ]);
-const READ_CONTEXT_TOOLS = new Set(["Read"]);
+const READ_CONTEXT_TOOLS = new Set(["Read", "Bash"]);
 
 // Track session:repo pairs where we've already captured repo config
 const seenSessionRepos = new Set<string>();
@@ -821,12 +826,17 @@ function buildPreToolUseReadFileContextOnce(
   data: HookInput,
 ): string | null {
   try {
-    const filePath = extractReadFilePath(
-      data.tool_input as Record<string, unknown> | undefined,
-    );
+    const filePath = extractReadFilePath(data);
     if (!filePath) return null;
+    const contextInput = {
+      ...data,
+      tool_input: {
+        ...(data.tool_input as Record<string, unknown> | undefined),
+        file_path: filePath,
+      },
+    };
     return emitReadOncePerSessionPath(sessionId, filePath, () =>
-      buildPreToolUseReadFileContext(data),
+      buildPreToolUseReadFileContext(contextInput),
     );
   } catch (err) {
     log.hooks.error("pre tool use read context build failed:", err);
@@ -834,17 +844,302 @@ function buildPreToolUseReadFileContextOnce(
   }
 }
 
-function extractReadFilePath(
-  toolInput: Record<string, unknown> | undefined,
-): string | null {
+function extractReadFilePath(data: HookInput): string | null {
+  const toolInput = data.tool_input as Record<string, unknown> | undefined;
   if (!toolInput) return null;
   for (const key of ["file_path", "path"]) {
     const value = toolInput[key];
     if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
+      return resolveReadFilePath(value.trim(), data);
     }
   }
+  const command = toolInput.command;
+  if (typeof command !== "string") return null;
+  const filePath = extractReadFilePathFromBashCommand(command);
+  return filePath ? resolveReadFilePath(filePath, data) : null;
+}
+
+function resolveReadFilePath(filePath: string, data: HookInput): string {
+  if (filePath === "~") return os.homedir();
+  if (filePath.startsWith("~/")) {
+    return path.join(os.homedir(), filePath.slice(2));
+  }
+  const cwd = extractShellPwd(data) ?? data.cwd ?? null;
+  return resolveFilePathFromCwd(filePath, cwd);
+}
+
+const BASH_COMMAND_SEPARATORS = new Set([
+  ";",
+  "&",
+  "&&",
+  "|",
+  "||",
+  "<",
+  "<<",
+  ">",
+  ">>",
+  ">&1",
+  ">&2",
+  "1>",
+  "1>>",
+  "1>&1",
+  "1>&2",
+  "2>",
+  "2>>",
+  "2>&1",
+  "2>&2",
+]);
+
+function extractReadFilePathFromBashCommand(command: string): string | null {
+  const tokens = tokenizeShellLikeCommand(command);
+  if (tokens.length === 0) return null;
+
+  const redirected = extractInputRedirectPath(tokens);
+  if (redirected) return redirected;
+
+  for (const segment of splitCommandSegments(tokens)) {
+    const filePath = extractReadFilePathFromCommandSegment(segment);
+    if (filePath) return filePath;
+  }
   return null;
+}
+
+function tokenizeShellLikeCommand(command: string): string[] {
+  if (command.length === 0) return [];
+
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (
+      current === "" &&
+      (ch === "1" || ch === "2") &&
+      command[i + 1] === ">"
+    ) {
+      if (command[i + 2] === ">") {
+        tokens.push(`${ch}>>`);
+        i += 2;
+      } else if (
+        command[i + 2] === "&" &&
+        (command[i + 3] === "1" || command[i + 3] === "2")
+      ) {
+        tokens.push(`${ch}>&${command[i + 3]}`);
+        i += 3;
+      } else {
+        tokens.push(`${ch}>`);
+        i++;
+      }
+      continue;
+    }
+    if (/[;&|<>]/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      const next = command[i + 1];
+      if (
+        ch === ">" &&
+        next === "&" &&
+        (command[i + 2] === "1" || command[i + 2] === "2")
+      ) {
+        tokens.push(`>&${command[i + 2]}`);
+        i += 2;
+        continue;
+      }
+      if (
+        (ch === "&" && next === "&") ||
+        (ch === "|" && next === "|") ||
+        (ch === "<" && next === "<") ||
+        (ch === ">" && next === ">")
+      ) {
+        tokens.push(`${ch}${next}`);
+        i++;
+        continue;
+      }
+      tokens.push(ch);
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+
+  if (quote || escaping) return [];
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function splitCommandSegments(tokens: string[]): string[][] {
+  const segments: string[][] = [];
+  let current: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (BASH_COMMAND_SEPARATORS.has(token)) {
+      if (current.length > 0) {
+        segments.push(current);
+        current = [];
+      }
+      if (token === "<" || token === "<<") i++;
+      continue;
+    }
+    current.push(token);
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
+function extractInputRedirectPath(tokens: string[]): string | null {
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const token = tokens[i];
+    if (token !== "<") continue;
+    const candidate = tokens[i + 1];
+    if (candidate && isPlausibleReadPathArg(candidate)) return candidate;
+  }
+  return null;
+}
+
+function extractReadFilePathFromCommandSegment(
+  tokens: string[],
+): string | null {
+  const commandTokens = [...tokens];
+  while (
+    commandTokens[0]?.includes("=") &&
+    /^[A-Za-z_][A-Za-z0-9_]*=/.test(commandTokens[0])
+  ) {
+    commandTokens.shift();
+  }
+  const commandName = commandTokens.shift()?.split("/").pop();
+  if (!commandName) return null;
+
+  let args: string[];
+  switch (commandName) {
+    case "bat":
+    case "batcat":
+    case "cat":
+    case "file":
+    case "less":
+    case "more":
+    case "nl":
+    case "stat":
+    case "wc":
+      args = stripSimpleOptions(commandTokens).args;
+      break;
+    case "head":
+    case "tail":
+      args = stripSimpleOptions(commandTokens, new Set(["-n", "-c"])).args;
+      break;
+    case "sed":
+      if (hasSedInPlaceFlag(commandTokens)) return null;
+      args = readCommandFileArgs(commandTokens, new Set(["-e", "-f"]));
+      break;
+    case "awk":
+      args = readCommandFileArgs(
+        commandTokens,
+        new Set(["-f", "-v"]),
+        new Set(["-f"]),
+      );
+      break;
+    case "grep":
+    case "rg":
+      args = readCommandFileArgs(
+        commandTokens,
+        new Set(["-A", "-B", "-C", "-e", "-f", "-g", "-m", "-t"]),
+        new Set(["-e", "-f"]),
+      );
+      break;
+    default:
+      return null;
+  }
+  return firstPlausibleReadPathArg(args);
+}
+
+function readCommandFileArgs(
+  args: string[],
+  flagsWithValues: Set<string>,
+  patternFlags = flagsWithValues,
+): string[] {
+  const stripped = stripSimpleOptions(args, flagsWithValues, patternFlags);
+  return stripped.consumedPatternFlag ? stripped.args : stripped.args.slice(1);
+}
+
+function hasSedInPlaceFlag(args: string[]): boolean {
+  return args.some(
+    (arg) =>
+      arg.startsWith("-i") ||
+      arg === "--in-place" ||
+      arg.startsWith("--in-place="),
+  );
+}
+
+function stripSimpleOptions(
+  args: string[],
+  flagsWithValues = new Set<string>(),
+  patternFlags = new Set<string>(),
+): { args: string[]; consumedPatternFlag: boolean } {
+  const out: string[] = [];
+  let consumedPatternFlag = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") {
+      out.push(...args.slice(i + 1));
+      break;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      if (flagsWithValues.has(arg)) {
+        if (patternFlags.has(arg)) consumedPatternFlag = true;
+        if (!arg.includes("=")) i++;
+      }
+      continue;
+    }
+    out.push(arg);
+  }
+  return { args: out, consumedPatternFlag };
+}
+
+function firstPlausibleReadPathArg(args: string[]): string | null {
+  return args.find(isPlausibleReadPathArg) ?? null;
+}
+
+function isPlausibleReadPathArg(arg: string): boolean {
+  if (!arg || arg === "-" || arg.startsWith("-")) return false;
+  if (BASH_COMMAND_SEPARATORS.has(arg)) return false;
+  if (/[\0*?[{}`$]/.test(arg)) return false;
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) return false;
+  return (
+    isObservedAbsolutePath(arg) ||
+    arg.startsWith("~/") ||
+    arg.startsWith("./") ||
+    arg.startsWith("../") ||
+    arg.includes("/") ||
+    /\.[A-Za-z0-9][A-Za-z0-9_-]*$/.test(arg) ||
+    /^[A-Z][A-Za-z0-9_.-]*$/.test(arg)
+  );
 }
 
 function mergePreToolUseContext(

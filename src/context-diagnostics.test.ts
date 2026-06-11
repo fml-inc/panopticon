@@ -23,16 +23,23 @@ describe("context diagnostics formatting", () => {
       {
         label: "PreToolUse read",
         env: "PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION",
+        enabled: true,
+        required: true,
+      },
+      {
+        label: "CRG file_overview",
+        env: "PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW",
         enabled: false,
         required: false,
       },
     ];
 
     expect(formatContextFlags(flags)).toBe(
-      "SessionStart=on, PreToolUse read=off",
+      "SessionStart=on, PreToolUse read=on, CRG file_overview=off",
     );
     expect(contextFlagsHealth(flags)).toBe("ok");
     expect(contextFlagsHealth([{ ...flags[0], enabled: false }])).toBe("warn");
+    expect(contextFlagsHealth([{ ...flags[1], enabled: false }])).toBe("warn");
   });
 
   it("summarizes hook targets and warns when source identity is missing", () => {

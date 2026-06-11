@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   afterAll,
   beforeAll,
@@ -22,7 +24,7 @@ vi.mock("../config.js", () => {
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
       enablePreToolUseFileContextInjection: true,
-      enablePreToolUseReadContextInjection: false,
+      enablePreToolUseReadContextInjection: true,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -71,7 +73,7 @@ afterAll(() => {
 
 beforeEach(() => {
   testConfig.enablePreToolUseFileContextInjection = true;
-  testConfig.enablePreToolUseReadContextInjection = false;
+  testConfig.enablePreToolUseReadContextInjection = true;
   _resetSessionRepoCache();
   _resetSessionTargetCache();
   _resetPreToolUseFileContextSeen();
@@ -480,6 +482,7 @@ describe("processHookEvent", () => {
   }
 
   it("keeps read-time file context behind its own flag", () => {
+    testConfig.enablePreToolUseReadContextInjection = false;
     const filePath = "/workspace/panopticon/src/read-context.ts";
     insertIntentEdit(filePath);
 
@@ -548,6 +551,197 @@ describe("processHookEvent", () => {
       (response.hookSpecificOutput as Record<string, unknown>)
         .additionalContext,
     ).toContain("Panopticon read context");
+  });
+
+  it("allows read-time file context for simple Codex Bash file reads", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const response = processHookEvent({
+      session_id: "codex-bash-reader",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "sed -n '1,80p' src/read-context.ts",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("allows read-time file context for chained and piped Bash reads", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    const filePath = "/workspace/panopticon/src/read-context.ts";
+    insertIntentEdit(filePath);
+
+    const response = processHookEvent({
+      session_id: "codex-bash-piped-reader",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "true && cat src/read-context.ts | head -n 5",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("allows read-time file context for multi-file Bash searches", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit("/workspace/panopticon/src/read-context.ts");
+
+    const response = processHookEvent({
+      session_id: "codex-bash-searcher",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "rg -n read-context src/read-context.ts src/other.ts",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("does not treat 1> or 2> inside a word as a file descriptor redirect", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit("/workspace/panopticon/src/log");
+
+    const response = processHookEvent({
+      session_id: "codex-bash-word-fd",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "cat src/log1> out",
+      },
+    });
+
+    expect(response).toEqual({});
+  });
+
+  it("keeps the first file after grep -e as the read target", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit("/workspace/panopticon/a.txt");
+
+    const response = processHookEvent({
+      session_id: "codex-bash-grep-e",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "grep -e foo a.txt b.txt",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("keeps the file after sed -e as the read target", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit("/workspace/panopticon/file.txt");
+
+    const response = processHookEvent({
+      session_id: "codex-bash-sed-e",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "sed -e 's/x/y/' file.txt",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("does not classify sed -i as read-time context", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit("/workspace/panopticon/file.txt");
+
+    const response = processHookEvent({
+      session_id: "codex-bash-sed-in-place",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "sed -i 's/x/y/' file.txt",
+      },
+    });
+
+    expect(response).toEqual({});
+  });
+
+  it("expands home-directory Bash read paths", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit(path.join(os.homedir(), "notes.md"));
+
+    const response = processHookEvent({
+      session_id: "codex-bash-home-reader",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "cat ~/notes.md",
+      },
+    });
+
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("Panopticon read context");
+  });
+
+  it("ignores directory-only Bash searches", () => {
+    testConfig.enablePreToolUseReadContextInjection = true;
+    insertIntentEdit("/workspace/panopticon/src/read-context.ts");
+
+    const response = processHookEvent({
+      session_id: "codex-bash-directory-searcher",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: "fml-inc/panopticon",
+      tool_input: {
+        command: "rg -n read-context src test scripts",
+      },
+    });
+
+    expect(response).toEqual({});
   });
 
   it("allows edit-time file context for Codex target hooks", () => {

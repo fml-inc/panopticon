@@ -121,6 +121,7 @@ export function buildPreToolUseFileContext(
   if (!filePath) return null;
 
   const repository = extractRepository(data);
+  const untilMs = extractNowMs(data);
   let overview: FileOverviewResult;
   try {
     overview = fileOverview({
@@ -128,6 +129,7 @@ export function buildPreToolUseFileContext(
       repository: repository ?? undefined,
       recent_limit: PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT,
       related_limit: PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT,
+      untilMs,
     });
   } catch {
     return null;
@@ -151,6 +153,7 @@ export function buildPreToolUseReadFileContext(
   if (!filePath) return null;
 
   const repository = extractRepository(data);
+  const untilMs = extractNowMs(data);
   let overview: FileOverviewResult;
   try {
     overview = fileOverview({
@@ -158,6 +161,7 @@ export function buildPreToolUseReadFileContext(
       repository: repository ?? undefined,
       recent_limit: PRE_TOOL_READ_CONTEXT_RECENT_LIMIT,
       related_limit: PRE_TOOL_READ_CONTEXT_RELATED_LIMIT,
+      untilMs,
     });
   } catch {
     return null;

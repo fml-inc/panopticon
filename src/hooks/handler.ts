@@ -26,6 +26,7 @@ import { startServerDetached } from "../server-control.js";
 import type { HookInput } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
+
 function getAgentVersion(): string | undefined {
   return typeof __PANOPTICON_VERSION__ !== "undefined"
     ? __PANOPTICON_VERSION__

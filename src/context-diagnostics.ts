@@ -55,7 +55,7 @@ export function getContextFlagStatuses(): ContextFlagStatus[] {
       label: "PreToolUse read",
       env: "PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION",
       enabled: config.enablePreToolUseReadContextInjection,
-      required: false,
+      required: true,
     },
     {
       label: "CRG file_overview",

@@ -689,9 +689,19 @@ describe("PreToolUse file context", () => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(1, "edit:read-target", 1, "session-read", 1_100, file, 1);
 
+    expect(
+      buildPreToolUseReadFileContext({
+        cwd,
+        repository: "fml-inc/panopticon",
+        now_ms: 1_050,
+        tool_input: { file_path: file },
+      }),
+    ).toBeNull();
+
     const context = buildPreToolUseReadFileContext({
       cwd,
       repository: "fml-inc/panopticon",
+      now_ms: 1_200,
       tool_input: { file_path: file },
     });
     expect(context).toContain("Panopticon read context");
