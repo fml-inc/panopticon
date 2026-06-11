@@ -168,6 +168,21 @@ but they become much richer once projections are enabled.
 | `recent_work_on_path` | Recent local intents, edits, and summaries that touched a file |
 | `file_overview` | File-centric overview with aggregate counts, best explanation, recent work, and related files |
 
+## Agent command and skill
+
+`panopticon install --target claude` installs a Claude Code `/panopticon`
+command, and `panopticon install --target pi` installs a Pi `/panopticon`
+prompt command. `panopticon install --target codex` installs a Codex
+`$panopticon` skill. All accept command-style arguments and route read-only
+queries to MCP tools when possible, falling back to the `panopticon` CLI for
+lifecycle and maintenance operations.
+
+The old `panopticon-review` and `pr-review` skills have moved to:
+
+```text
+/panopticon review
+```
+
 MCP tools that can return long histories are compact by default to keep agent
 context bounded. `sessions`, `timeline`, `summary`, `search`,
 `intent_for_code`, `search_intent`, `outcomes_for_intent`,

@@ -8,6 +8,7 @@ export {
 export type {
   CanonicalEvent,
   TargetAdapter,
+  TargetCommandsSpec,
   TargetConfigSpec,
   TargetDetectSpec,
   TargetEventSpec,

@@ -401,6 +401,11 @@ export interface TargetSkillsSpec {
   installDirs(): string[];
 }
 
+export interface TargetCommandsSpec {
+  /** Absolute directory paths where this harness loads slash/prompt commands from. */
+  installDirs(): string[];
+}
+
 // ── The Adapter ─────────────────────────────────────────────────────────────
 
 export interface TargetAdapter {
@@ -421,4 +426,6 @@ export interface TargetAdapter {
   scanner?: TargetScannerSpec;
   /** Harness-specific skill install locations, if supported. */
   skills?: TargetSkillsSpec;
+  /** Harness-specific slash/prompt command install locations, if supported. */
+  commands?: TargetCommandsSpec;
 }
