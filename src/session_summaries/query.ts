@@ -751,15 +751,27 @@ export function whyCode(opts: {
   path: string;
   line?: number;
   repository?: string;
+  untilMs?: number | null;
 }): WhyCodeResult {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const displayPath = resolveDisplayPath(normalizedPath, repositoryRoot);
   const line = typeof opts.line === "number" ? opts.line : null;
-  const history = intentForCode({ file_path: normalizedPath, limit: 10 });
+  const untilMs = normalizeUntilMs(opts.untilMs);
+  const history = intentForCode({
+    file_path: normalizedPath,
+    limit: 10,
+    untilMs,
+  });
 
   ensureSessionSummaryProjections();
   const db = getDb();
+  const untilClause = buildTimestampCutoffClause(
+    "cp.established_at_ms",
+    untilMs,
+  );
+  const params =
+    untilMs === null ? [normalizedPath] : [normalizedPath, untilMs];
   const candidates = db
     .prepare(
       `SELECT cp.repository,
@@ -789,6 +801,7 @@ export function whyCode(opts: {
        LEFT JOIN intent_units u ON u.id = cp.intent_unit_id
        LEFT JOIN session_summaries s ON s.id = cp.session_summary_id
        WHERE cp.file_path = ?
+       ${untilClause}
        ORDER BY CASE cp.status
                   WHEN 'current' THEN 0
                   WHEN 'ambiguous' THEN 1
@@ -798,7 +811,7 @@ export function whyCode(opts: {
                 cp.established_at_ms DESC,
                 cp.id DESC`,
     )
-    .all(normalizedPath) as Array<{
+    .all(...params) as Array<{
     repository: string | null;
     file_path: string;
     binding_level: "span" | "file";
@@ -927,11 +940,19 @@ export function recentWorkOnPath(opts: {
   path: string;
   repository?: string;
   limit?: number;
+  untilMs?: number | null;
 }): RecentWorkOnPathResult {
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
+  const untilMs = normalizeUntilMs(opts.untilMs);
+  const untilClause = buildTimestampCutoffClause(
+    "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
+    untilMs,
+  );
+  const params =
+    untilMs === null ? [normalizedPath] : [normalizedPath, untilMs];
   ensureSessionSummaryProjections();
   const rows = db
     .prepare(
@@ -966,9 +987,10 @@ export function recentWorkOnPath(opts: {
        FROM intent_edits e
        JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
+       ${untilClause}
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC`,
     )
-    .all(normalizedPath) as Array<{
+    .all(...params) as Array<{
     intent_edit_id: number;
     timestamp_ms: number | null;
     landed: number | null;
@@ -1073,22 +1095,27 @@ export function fileOverview(opts: {
   repository?: string;
   recent_limit?: number;
   related_limit?: number;
+  untilMs?: number | null;
 }): FileOverviewResult {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
-  const summary = loadFileOverviewSummary(normalizedPath);
+  const untilMs = normalizeUntilMs(opts.untilMs);
+  const summary = loadFileOverviewSummary(normalizedPath, untilMs);
   const current = whyCode({
     path: opts.path,
     repository: opts.repository,
+    untilMs,
   });
   const recent = recentWorkOnPath({
     path: opts.path,
     repository: opts.repository,
     limit: opts.recent_limit ?? 5,
+    untilMs,
   });
   const relatedFiles = loadRelatedFilesForPath(
     normalizedPath,
     opts.related_limit ?? 10,
+    untilMs,
   );
   const displayPath = resolveDisplayPath(normalizedPath, repositoryRoot);
 
@@ -1635,8 +1662,14 @@ function lookupRepositoryForPath(filePath: string): string | null {
 
 function loadFileOverviewSummary(
   filePath: string,
+  untilMs: number | null,
 ): FileOverviewResult["summary"] {
   const db = getDb();
+  const untilClause = buildTimestampCutoffClause(
+    "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
+    untilMs,
+  );
+  const params = untilMs === null ? [filePath] : [filePath, untilMs];
   const row = db
     .prepare(
       `SELECT COUNT(*) AS edit_count,
@@ -1684,9 +1717,10 @@ function loadFileOverviewSummary(
        JOIN intent_units u ON u.id = e.intent_unit_id
        LEFT JOIN intent_session_summaries iss
          ON iss.intent_unit_id = e.intent_unit_id
-       WHERE e.file_path = ?`,
+       WHERE e.file_path = ?
+       ${untilClause}`,
     )
-    .get(filePath) as
+    .get(...params) as
     | {
         edit_count: number;
         intent_count: number;
@@ -1716,14 +1750,29 @@ function loadFileOverviewSummary(
 function loadRelatedFilesForPath(
   filePath: string,
   limit: number,
+  untilMs: number | null,
 ): FileOverviewResult["related_files"] {
   const db = getDb();
+  const untilClause = buildTimestampCutoffClause(
+    "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
+    untilMs,
+  );
+  const params: unknown[] = [filePath];
+  if (untilMs !== null) params.push(untilMs);
+  params.push(filePath);
+  if (untilMs !== null) params.push(untilMs);
+  params.push(filePath);
+  if (untilMs !== null) params.push(untilMs);
+  if (untilMs !== null) params.push(untilMs);
+  params.push(limit);
   const rows = db
     .prepare(
       `WITH seed_intents AS (
          SELECT DISTINCT intent_unit_id
-         FROM intent_edits
-         WHERE file_path = ?
+         FROM intent_edits e
+         JOIN intent_units u ON u.id = e.intent_unit_id
+         WHERE e.file_path = ?
+         ${untilClause}
        ),
        seed_summaries AS (
          SELECT DISTINCT iss.session_summary_id
@@ -1740,6 +1789,7 @@ function loadRelatedFilesForPath(
          JOIN intent_edits e ON e.intent_unit_id = si.intent_unit_id
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path != ?
+         ${untilClause}
        ),
        related_by_summary AS (
          SELECT e.file_path,
@@ -1751,6 +1801,7 @@ function loadRelatedFilesForPath(
          JOIN intent_edits e ON e.intent_unit_id = iss.intent_unit_id
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path != ?
+         ${untilClause}
        ),
        intent_counts AS (
          SELECT file_path,
@@ -1783,6 +1834,7 @@ function loadRelatedFilesForPath(
          FROM intent_edits e
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path IN (SELECT file_path FROM candidate_files)
+         ${untilClause}
        )
        SELECT cf.file_path,
               COALESCE(ic.shared_intent_count, 0) AS shared_intent_count,
@@ -1813,7 +1865,7 @@ function loadRelatedFilesForPath(
                 cf.file_path ASC
        LIMIT ?`,
     )
-    .all(filePath, filePath, filePath, limit) as Array<{
+    .all(...params) as Array<{
     file_path: string;
     shared_intent_count: number;
     shared_session_summary_count: number;
@@ -1829,6 +1881,20 @@ function loadRelatedFilesForPath(
     last_touched_ts_ms: row.last_touched_ts_ms,
     last_status: classifyEditStatus(row.landed, row.landed_reason),
   }));
+}
+
+function normalizeUntilMs(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function buildTimestampCutoffClause(
+  timestampExpr: string,
+  untilMs: number | null,
+): string {
+  // Cutoff queries are replay-time views: rows with no usable timestamp are
+  // excluded because Panopticon cannot prove they existed before the replay
+  // point. Live queries pass no cutoff and still include timestamp-less rows.
+  return untilMs === null ? "" : `AND ${timestampExpr} <= ?`;
 }
 
 function parseSince(since: string): number | null {

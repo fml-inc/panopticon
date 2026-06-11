@@ -30,7 +30,7 @@ The Panopticon server reads these flags at startup:
 | `PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION` | `1` | `SessionStart` | Recent local session summaries for the current cwd. |
 | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | `UserPromptSubmit` | Prompt-relevant local history for mid-session prompts. The first prompt in a session is intentionally silent. |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | `PreToolUse` edit tools | File provenance before `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` when the file has prior history. Deduped once per session/path. |
-| `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `0` | `PreToolUse` `Read` | Short file provenance before reads when the file has prior history. Opt-in while measuring token/noise tradeoffs. |
+| `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | `PreToolUse` `Read` | Short file provenance before reads when the file has prior history. Deduped once per session/path. |
 | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | `file_overview` | Adds Code Review Graph-derived `code_intel` when a repo-local graph exists. |
 
 Use `0`, `false`, `no`, or `off` to disable a flag. Use `1`, `true`, `yes`, or
@@ -38,21 +38,19 @@ Use `0`, `false`, `no`, or `off` to disable a flag. Use `1`, `true`, `yes`, or
 
 ## Enabling Flags
 
-For a one-off test, stop the existing server and start it with the desired
-flags:
+For a one-off test with Code Review Graph enrichment, stop the existing server
+and start it with the desired flag:
 
 ```bash
 panopticon stop
-PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1 \
 PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1 \
 panopticon start --force
 ```
 
-For persistent use, put the flags in the shell environment that launches your
-AI coding tool:
+For persistent overrides, put the flags in the shell environment that launches
+your AI coding tool:
 
 ```bash
-export PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1
 export PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1
 ```
 
@@ -130,9 +128,9 @@ session/path pair is emitted once to avoid nagging during iterative edits.
 ### PreToolUse For Reads
 
 `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION=1` emits a shorter
-provenance note before `Read` for files with existing Panopticon history. This
-is currently opt-in because read operations are frequent and the token/noise
-tradeoff is still being measured. The same session/path pair is emitted once.
+provenance note before `Read` for files with existing Panopticon history. The
+same session/path pair is emitted once, and the flag can be set to `0` when
+comparing discovery churn or token/noise tradeoffs.
 
 Current read-time output is provenance-focused. It does not render Code Review
 Graph relationships in the hook text; use `file_overview` when you want the
@@ -189,10 +187,10 @@ panopticon file overview src/config.ts
 still returns Panopticon's own provenance and reports Code Review Graph as
 unavailable.
 
-To verify read-time injection, enable the flag, restart Panopticon, then read a
-file with existing Panopticon provenance from a new agent session. The first
-read for that session/path should include `Panopticon read context`; later
-reads of the same path in the same session should be silent.
+To verify read-time injection, restart Panopticon, then read a file with
+existing Panopticon provenance from a new agent session. The first read for
+that session/path should include `Panopticon read context`; later reads of the
+same path in the same session should be silent.
 
 ## Historical ROI Eval
 

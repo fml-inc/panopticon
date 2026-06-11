@@ -48,9 +48,14 @@ export interface IntentForCodeRow {
 export function intentForCode(opts: {
   file_path: string;
   limit?: number;
+  untilMs?: number | null;
 }): IntentForCodeRow[] {
   const limit = opts.limit ?? 50;
-  const rows = collectIntentForCodeRows(opts.file_path, limit);
+  const rows = collectIntentForCodeRows(
+    opts.file_path,
+    limit,
+    normalizeUntilMs(opts.untilMs),
+  );
 
   return rows.map((r) => ({
     intent_unit_id: r.intent_unit_id,
@@ -100,6 +105,7 @@ interface IntentForCodeGroupedRow extends IntentForCodeCandidateRow {
 function collectIntentForCodeRows(
   filePath: string,
   limit: number,
+  untilMs: number | null,
 ): IntentForCodeGroupedRow[] {
   const candidateLimit = Math.max(limit * 20, 200);
   const candidatePaths = lookupCanonicalFilePathCandidates(filePath);
@@ -109,8 +115,13 @@ function collectIntentForCodeRows(
     const normalized = loadIntentForCodeRowsFromFileSubjects(
       candidatePath,
       candidateLimit,
+      untilMs,
     );
-    const legacy = loadIntentForCodeRowsLegacy(candidatePath, candidateLimit);
+    const legacy = loadIntentForCodeRowsLegacy(
+      candidatePath,
+      candidateLimit,
+      untilMs,
+    );
     for (const row of [...normalized, ...legacy]) {
       if (!byEditId.has(row.edit_id)) {
         byEditId.set(row.edit_id, row);
@@ -195,8 +206,15 @@ function lookupCanonicalFilePathCandidates(filePath: string): string[] {
 function loadIntentForCodeRowsFromFileSubjects(
   filePath: string,
   limit: number,
+  untilMs: number | null,
 ): IntentForCodeCandidateRow[] {
   const db = getDb();
+  const untilClause = buildTimestampCutoffClause(
+    "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
+    untilMs,
+  );
+  const params =
+    untilMs === null ? [filePath, limit] : [filePath, untilMs, limit];
   return db
     .prepare(
       `SELECT DISTINCT
@@ -223,17 +241,25 @@ function loadIntentForCodeRowsFromFileSubjects(
        WHERE c_file.subject_kind = 'file'
          AND c_file.predicate = 'file/path'
          AND c_file.value_text = ?
+         ${untilClause}
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
        LIMIT ?`,
     )
-    .all(filePath, limit) as IntentForCodeCandidateRow[];
+    .all(...params) as IntentForCodeCandidateRow[];
 }
 
 function loadIntentForCodeRowsLegacy(
   filePath: string,
   limit: number,
+  untilMs: number | null,
 ): IntentForCodeCandidateRow[] {
   const db = getDb();
+  const untilClause = buildTimestampCutoffClause(
+    "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
+    untilMs,
+  );
+  const params =
+    untilMs === null ? [filePath, limit] : [filePath, untilMs, limit];
   return db
     .prepare(
       `SELECT u.id AS intent_unit_id,
@@ -250,10 +276,25 @@ function loadIntentForCodeRowsLegacy(
        FROM intent_edits e
        JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
+       ${untilClause}
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
        LIMIT ?`,
     )
-    .all(filePath, limit) as IntentForCodeCandidateRow[];
+    .all(...params) as IntentForCodeCandidateRow[];
+}
+
+function normalizeUntilMs(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function buildTimestampCutoffClause(
+  timestampExpr: string,
+  untilMs: number | null,
+): string {
+  // Cutoff queries are replay-time views: rows with no usable timestamp are
+  // excluded because Panopticon cannot prove they existed before the replay
+  // point. Live queries pass no cutoff and still include timestamp-less rows.
+  return untilMs === null ? "" : `AND ${timestampExpr} <= ?`;
 }
 
 function classifyStatus(
