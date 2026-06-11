@@ -57,7 +57,7 @@ describe("target skills install dirs", () => {
 });
 
 describe("target command install dirs", () => {
-  it("declares Claude slash-command location", () => {
+  it("declares command/prompt locations for supporting harnesses", () => {
     const claude = getTarget("claude")!;
     const codex = getTarget("codex")!;
     const pi = getTarget("pi")!;
@@ -65,8 +65,12 @@ describe("target command install dirs", () => {
     expect(claude.commands?.installDirs()).toEqual([
       path.join(os.homedir(), ".claude", "commands"),
     ]);
+    expect(pi.commands?.installDirs()).toEqual([
+      path.join(os.homedir(), ".pi", "agent", "prompts"),
+    ]);
+    // Codex custom prompts are deprecated in favor of skills; we ship the
+    // `$panopticon` skill instead of a `/prompts:panopticon` command.
     expect(codex.commands).toBeUndefined();
-    expect(pi.commands).toBeUndefined();
   });
 });
 

@@ -238,6 +238,12 @@ const pi: TargetAdapter = {
     },
   },
 
+  commands: {
+    installDirs() {
+      return [path.join(piDir(), "agent", "prompts")];
+    },
+  },
+
   events: {
     // Empty: the extension emits canonical event names directly
     // (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
