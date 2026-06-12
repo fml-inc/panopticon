@@ -13,3 +13,7 @@ dist/
 .env
 .env.local
 .env.*.local
+
+# Python bytecode (hermes plugin tests import plugin.py)
+__pycache__/
+*.pyc

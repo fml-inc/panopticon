@@ -81,7 +81,9 @@ assert calls["enqueue"] == 1, calls
 assert mod._EVENT_MAP["pre_approval_request"] == "PermissionRequest"
 print("ok")
 `;
-      const out = execFileSync("python3", ["-c", script, pluginPath], {
+      // -B: importing the plugin via exec_module would otherwise write
+      // __pycache__ bytecode into the source tree.
+      const out = execFileSync("python3", ["-B", "-c", script, pluginPath], {
         stdio: "pipe",
         encoding: "utf-8",
       });
