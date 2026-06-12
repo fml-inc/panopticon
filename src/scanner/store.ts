@@ -158,6 +158,11 @@ export function readKnownScannerFiles(source: string): string[] {
 // maps to can change values between parses. Identical re-emissions are
 // effective no-ops; sync_id is intentionally never rewritten so remote
 // sync identity stays stable.
+//
+// NOTE: this is last-write-wins for ALL sources, not just hermes. The
+// JSONL-based scanners (claude/codex/gemini/pi) re-emit identical turns, so
+// the UPDATE is a no-op for them; the change is only observable for adapters
+// whose per-turn values legitimately move between parses.
 const INSERT_TURN_SQL = `
   INSERT INTO scanner_turns
     (session_id, source, turn_index, timestamp_ms, model, role,

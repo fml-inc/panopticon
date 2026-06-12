@@ -226,4 +226,31 @@ describe("hermes scanner", () => {
       cleanup();
     }
   });
+
+  it("emits a message-only session whose sessions row is missing (no watermark churn)", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const first = hermes.scanner!.parseFile(filePath, 0)!;
+
+      // A message whose session_id has no row in `sessions` (late/missing
+      // metadata). Before the fix, the incremental parse returned null here,
+      // so the watermark never advanced and every scan re-queried these rows.
+      const db = new Database(filePath);
+      db.prepare(
+        `INSERT INTO messages (session_id, role, content, timestamp, active)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("orphan_session", "user", "orphaned", 1_780_000_200, 1);
+      db.close();
+
+      const second = hermes.scanner!.parseFile(filePath, first.newByteOffset);
+      expect(second).not.toBeNull();
+      expect(second!.meta?.sessionId).toBe("orphan_session");
+      expect(second!.messages).toHaveLength(1);
+      // Watermark advances past the orphan message (fixture max id 3 -> 4).
+      expect(second!.newByteOffset).toBe(4);
+    } finally {
+      cleanup();
+    }
+  });
 });
