@@ -383,7 +383,6 @@ function parseHermesStateDb(
             )
             .all()
     ) as HermesSessionRow[];
-    if (sessions.length === 0) return null;
 
     const messages = (
       incremental
@@ -410,10 +409,33 @@ function parseHermesStateDb(
       bySession.set(message.session_id, rows);
     }
 
-    const results = sessions.map((session) =>
+    // Emit a result for every session that has a metadata row OR new
+    // messages, ordered by the sessions table first. Synthesizing a minimal
+    // row for a message-only session (its sessions row is missing or hasn't
+    // been written yet) guarantees the watermark advances past those
+    // messages — otherwise a session_id present in messages but absent from
+    // `sessions` would make every scan re-query the same rows forever.
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    const orderedIds: string[] = [];
+    const seen = new Set<string>();
+    for (const session of sessions) {
+      if (!seen.has(session.id)) {
+        seen.add(session.id);
+        orderedIds.push(session.id);
+      }
+    }
+    for (const sessionId of bySession.keys()) {
+      if (!seen.has(sessionId)) {
+        seen.add(sessionId);
+        orderedIds.push(sessionId);
+      }
+    }
+    if (orderedIds.length === 0) return null;
+
+    const results = orderedIds.map((sessionId) =>
       parseHermesSession(
-        session,
-        bySession.get(session.id) ?? [],
+        byId.get(sessionId) ?? { id: sessionId },
+        bySession.get(sessionId) ?? [],
         maxMessageId,
       ),
     );
@@ -454,9 +476,14 @@ function parseHermesSession(
   let ordinal = 0;
   let turnIndex = 0;
   let lastAssistantTurnIndex = -1;
+  // Messages are ordered by rowid (chronological). When a message has no
+  // timestamp, inherit the most recent known time (or session start) rather
+  // than the rowid — a rowid as epoch-ms would render as 1970.
+  let lastTsMs = startedAtMs ?? 0;
 
   for (const message of messages) {
-    const tsMs = timestampMs(message.timestamp) ?? startedAtMs ?? message.id;
+    const tsMs = timestampMs(message.timestamp) ?? lastTsMs;
+    lastTsMs = tsMs;
     const role = message.role;
     const content = textFromStructuredContent(
       decodeSqlText(message.content, message.content_hex),
@@ -714,6 +741,7 @@ const hermes: TargetAdapter = {
       api_request_error: "StopFailure",
       pre_tool_call: "PreToolUse",
       post_tool_call: "PostToolUse",
+      pre_approval_request: "PermissionRequest",
       subagent_start: "SubagentStart",
       subagent_stop: "SubagentStop",
     },

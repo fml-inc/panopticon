@@ -30,6 +30,7 @@ _EVENT_MAP = {
     "api_request_error": "StopFailure",
     "pre_tool_call": "PreToolUse",
     "post_tool_call": "PostToolUse",
+    "pre_approval_request": "PermissionRequest",
     "subagent_start": "SubagentStart",
     "subagent_stop": "SubagentStop",
 }
@@ -338,8 +339,22 @@ def _flush(timeout: float = 2.0) -> None:
 
 
 def _emit(event_name: str, **kwargs: Any) -> dict[str, Any] | None:
+    # Hermes fires on_session_end at the end of every turn (run_conversation),
+    # not at true session end. Use it purely as a per-turn durability
+    # checkpoint: drain the queue so events land before the agent idles, but
+    # emit no event of its own (it has no canonical Panopticon mapping).
+    if event_name == "on_session_end":
+        _flush()
+        return None
+
+    canonical = _EVENT_MAP.get(event_name)
+    if canonical is None:
+        # No canonical Panopticon event (pre/post_api_request,
+        # post_approval_response, ...). Don't POST — these would be stored
+        # under a non-canonical event_type and are pure downstream noise.
+        return None
+
     payload = _payload(event_name, kwargs)
-    canonical = payload.get("hook_event_name")
 
     if canonical == "SessionStart":
         if not _health_ok():
@@ -361,14 +376,6 @@ def _emit(event_name: str, **kwargs: Any) -> dict[str, Any] | None:
 
     if canonical == "SessionEnd":
         _post(payload)
-        _flush()
-        return None
-
-    if event_name == "on_session_end":
-        # Hermes fires on_session_end at the end of every turn
-        # (run_conversation), not at true session end. Use it as a per-turn
-        # durability checkpoint so queued events land before the agent idles.
-        _enqueue(payload)
         _flush()
         return None
 

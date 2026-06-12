@@ -47,4 +47,45 @@ describe("hermes plugin python source", () => {
       { stdio: "pipe" },
     );
   });
+
+  it.skipIf(!python3Available())(
+    "_emit drops unmapped events, flushes on_session_end, enqueues mapped",
+    () => {
+      // Load the plugin module, stub its sinks, and exercise _emit so the
+      // routing (mapped vs. unmapped vs. on_session_end checkpoint) is
+      // verified as behaviour, not just by grepping the source.
+      const script = `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("panopticon_observer", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+calls = {"post": 0, "enqueue": 0, "flush": 0}
+mod._post = lambda payload: (calls.__setitem__("post", calls["post"] + 1), {})[1]
+mod._enqueue = lambda payload: calls.__setitem__("enqueue", calls["enqueue"] + 1)
+mod._flush = lambda timeout=2.0: calls.__setitem__("flush", calls["flush"] + 1)
+
+# Unmapped native event -> dropped, no post/enqueue.
+assert mod._emit("pre_api_request", session_id="s") is None
+assert calls["post"] == 0 and calls["enqueue"] == 0, calls
+
+# on_session_end -> flush-only checkpoint, no event of its own.
+mod._emit("on_session_end", session_id="s")
+assert calls["flush"] == 1 and calls["enqueue"] == 0, calls
+
+# Mapped event -> enqueued for async delivery.
+mod._emit("post_tool_call", session_id="s", tool_name="terminal", result="ok")
+assert calls["enqueue"] == 1, calls
+
+# Approval requests now map to the canonical PermissionRequest.
+assert mod._EVENT_MAP["pre_approval_request"] == "PermissionRequest"
+print("ok")
+`;
+      const out = execFileSync("python3", ["-c", script, pluginPath], {
+        stdio: "pipe",
+        encoding: "utf-8",
+      });
+      expect(out.trim()).toBe("ok");
+    },
+  );
 });
