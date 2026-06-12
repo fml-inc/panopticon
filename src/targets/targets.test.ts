@@ -38,18 +38,48 @@ describe("target registry", () => {
   });
 });
 
+/** Fake plugin root with a dist/targets/hermes/plugin.py sentinel. */
+function makeHermesPluginRoot(name: string): {
+  pluginRoot: string;
+  sentinel: string;
+} {
+  const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), name));
+  const assetDir = path.join(pluginRoot, "dist", "targets", "hermes");
+  fs.mkdirSync(assetDir, { recursive: true });
+  const sentinel = "# sentinel hermes plugin\n";
+  fs.writeFileSync(path.join(assetDir, "plugin.py"), sentinel);
+  return { pluginRoot, sentinel };
+}
+
 describe("hermes target plugin install", () => {
+  it("throws when the plugin source asset is missing", () => {
+    const hermes = getTarget("hermes")!;
+    expect(() =>
+      hermes.hooks.applyInstallConfig(
+        { foo: "bar" },
+        { pluginRoot: "/nonexistent/path", port: 4318 },
+      ),
+    ).toThrow(/Hermes plugin source not found/);
+  });
+
   it("copies the observer plugin and enables it in Hermes config", () => {
     const hermes = getTarget("hermes")!;
     const oldHome = process.env.HERMES_HOME;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-home-"));
     process.env.HERMES_HOME = home;
+    const { pluginRoot, sentinel } = makeHermesPluginRoot("pano-hermes root-");
     try {
-      const pluginRoot = path.join("/tmp", "panopticon app");
       const result = hermes.hooks.applyInstallConfig(
         { plugins: { enabled: ["other-plugin"] } },
         { pluginRoot, port: 4318, proxy: false },
       );
+
+      expect(
+        fs.readFileSync(
+          path.join(home, "plugins", "panopticon-observer", "__init__.py"),
+          "utf-8",
+        ),
+      ).toBe(sentinel);
 
       expect(result).toMatchObject({
         plugins: { enabled: ["other-plugin", "panopticon-observer"] },
@@ -83,6 +113,7 @@ describe("hermes target plugin install", () => {
       if (oldHome === undefined) delete process.env.HERMES_HOME;
       else process.env.HERMES_HOME = oldHome;
       fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(pluginRoot, { recursive: true, force: true });
     }
   });
 
@@ -91,10 +122,11 @@ describe("hermes target plugin install", () => {
     const oldHome = process.env.HERMES_HOME;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-home-"));
     process.env.HERMES_HOME = home;
+    const { pluginRoot } = makeHermesPluginRoot("pano-hermes-root-");
     try {
       const once = hermes.hooks.applyInstallConfig(
         { plugins: { enabled: ["panopticon-observer"] } },
-        { pluginRoot: "/tmp/panopticon", port: 4318, proxy: false },
+        { pluginRoot, port: 4318, proxy: false },
       );
       expect((once.plugins as { enabled: string[] }).enabled).toEqual([
         "panopticon-observer",
@@ -110,6 +142,7 @@ describe("hermes target plugin install", () => {
       if (oldHome === undefined) delete process.env.HERMES_HOME;
       else process.env.HERMES_HOME = oldHome;
       fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(pluginRoot, { recursive: true, force: true });
     }
   });
 });
