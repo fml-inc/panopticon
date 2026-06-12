@@ -5,6 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { HookInput } from "../hooks/ingest.js";
 import { allTargets, getTarget, targetIds } from "./index.js";
 
+// The hermes adapter shells out to `hermes plugins enable/disable`. Mock
+// child_process so the tests assert the invocation without depending on a
+// real hermes binary (and without mutating a developer's ~/.hermes).
+const { spawnSyncMock } = vi.hoisted(() => ({
+  spawnSyncMock: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+}));
+vi.mock("node:child_process", () => ({ spawnSync: spawnSyncMock }));
+
 function quoteCommandArg(value: string): string {
   return `"${value.replaceAll('"', '\\"')}"`;
 }
@@ -62,34 +70,28 @@ describe("hermes target plugin install", () => {
     ).toThrow(/Hermes plugin source not found/);
   });
 
-  it("copies the observer plugin and enables it in Hermes config", () => {
+  it("copies the observer plugin and enables it via the hermes CLI", () => {
     const hermes = getTarget("hermes")!;
     const oldHome = process.env.HERMES_HOME;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-home-"));
     process.env.HERMES_HOME = home;
-    const { pluginRoot, sentinel } = makeHermesPluginRoot("pano-hermes root-");
+    const { pluginRoot, sentinel } = makeHermesPluginRoot("pano-hermes-root-");
+    spawnSyncMock.mockClear();
     try {
+      // self-managed: install passes {} and never rewrites config.yaml.
       const result = hermes.hooks.applyInstallConfig(
-        { plugins: { enabled: ["other-plugin"] } },
+        {},
         { pluginRoot, port: 4318, proxy: false },
       );
+      expect(result).toEqual({});
 
+      // Plugin files are dropped under the hermes home...
       expect(
         fs.readFileSync(
           path.join(home, "plugins", "panopticon-observer", "__init__.py"),
           "utf-8",
         ),
       ).toBe(sentinel);
-
-      expect(result).toMatchObject({
-        plugins: { enabled: ["other-plugin", "panopticon-observer"] },
-        mcp_servers: {
-          panopticon: {
-            command: process.execPath,
-            args: [path.join(pluginRoot, "bin", "mcp-server")],
-          },
-        },
-      });
       expect(
         fs.readFileSync(
           path.join(home, "plugins", "panopticon-observer", "plugin.yaml"),
@@ -109,6 +111,13 @@ describe("hermes target plugin install", () => {
         "start",
         "--force",
       ]);
+
+      // ...and the allow-list flip is delegated to hermes's own CLI.
+      expect(spawnSyncMock).toHaveBeenCalledWith(
+        "hermes",
+        ["plugins", "enable", "panopticon-observer"],
+        expect.anything(),
+      );
     } finally {
       if (oldHome === undefined) delete process.env.HERMES_HOME;
       else process.env.HERMES_HOME = oldHome;
@@ -117,24 +126,29 @@ describe("hermes target plugin install", () => {
     }
   });
 
-  it("does not duplicate the enabled plugin and removes owned files", () => {
+  it("disables via the hermes CLI and removes owned files on uninstall", () => {
     const hermes = getTarget("hermes")!;
     const oldHome = process.env.HERMES_HOME;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-home-"));
     process.env.HERMES_HOME = home;
     const { pluginRoot } = makeHermesPluginRoot("pano-hermes-root-");
     try {
-      const once = hermes.hooks.applyInstallConfig(
-        { plugins: { enabled: ["panopticon-observer"] } },
+      hermes.hooks.applyInstallConfig(
+        {},
         { pluginRoot, port: 4318, proxy: false },
       );
-      expect((once.plugins as { enabled: string[] }).enabled).toEqual([
-        "panopticon-observer",
-      ]);
+      expect(
+        fs.existsSync(path.join(home, "plugins", "panopticon-observer")),
+      ).toBe(true);
 
-      const removed = hermes.hooks.removeInstallConfig(once);
-      expect(removed.plugins).toBeUndefined();
-      expect(removed.mcp_servers).toBeUndefined();
+      spawnSyncMock.mockClear();
+      const removed = hermes.hooks.removeInstallConfig({});
+      expect(removed).toEqual({});
+      expect(spawnSyncMock).toHaveBeenCalledWith(
+        "hermes",
+        ["plugins", "disable", "panopticon-observer"],
+        expect.anything(),
+      );
       expect(
         fs.existsSync(path.join(home, "plugins", "panopticon-observer")),
       ).toBe(false);

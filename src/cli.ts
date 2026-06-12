@@ -58,7 +58,6 @@ import { setSyncEnabled } from "./sync/config.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
-import { readYamlFile, writeYamlFile } from "./yaml.js";
 
 const service = httpPanopticonService;
 
@@ -161,9 +160,6 @@ function readTargetConfig(
   if (target.config.configFormat === "toml") {
     return readTomlFile(target.config.configPath);
   }
-  if (target.config.configFormat === "yaml") {
-    return readYamlFile(target.config.configPath);
-  }
   return readJsonFile(target.config.configPath) ?? {};
 }
 
@@ -173,10 +169,6 @@ function writeTargetConfig(
 ): void {
   if (target.config.configFormat === "toml") {
     writeTomlFile(target.config.configPath, data);
-    return;
-  }
-  if (target.config.configFormat === "yaml") {
-    writeYamlFile(target.config.configPath, data);
     return;
   }
   writeJsonFile(target.config.configPath, data);
@@ -616,9 +608,13 @@ program
 
     for (const t of selectedTargets) {
       console.log(`[3/6] Removing panopticon from ${t.detect.displayName}...`);
-      const existing = readTargetConfig(t);
-      const updated = t.hooks.removeInstallConfig(existing);
-      writeTargetConfig(t, updated);
+      if (t.config.selfManagedConfig) {
+        t.hooks.removeInstallConfig({});
+      } else {
+        const existing = readTargetConfig(t);
+        const updated = t.hooks.removeInstallConfig(existing);
+        writeTargetConfig(t, updated);
+      }
       console.log(`      ${t.config.configPath}\n`);
     }
 
@@ -908,18 +904,28 @@ async function install(
   for (const t of selectedTargets) {
     console.log(`[3/5] Registering panopticon in ${t.detect.displayName}...`);
 
-    // Read existing config
-    const existingConfig = readTargetConfig(t);
+    if (t.config.selfManagedConfig) {
+      // Target owns its own config file; the hook applies changes via the
+      // target's own tooling (e.g. the hermes CLI) rather than us rewriting
+      // the file. We never read or write the config here.
+      t.hooks.applyInstallConfig(
+        {},
+        { pluginRoot, port: config.port, proxy: !!opts.proxy },
+      );
+    } else {
+      // Read existing config
+      const existingConfig = readTargetConfig(t);
 
-    // Apply target-specific install config
-    const updatedConfig = t.hooks.applyInstallConfig(existingConfig, {
-      pluginRoot,
-      port: config.port,
-      proxy: !!opts.proxy,
-    });
+      // Apply target-specific install config
+      const updatedConfig = t.hooks.applyInstallConfig(existingConfig, {
+        pluginRoot,
+        port: config.port,
+        proxy: !!opts.proxy,
+      });
 
-    // Write back
-    writeTargetConfig(t, updatedConfig);
+      // Write back
+      writeTargetConfig(t, updatedConfig);
+    }
 
     if (opts.proxy && t.id === "codex") {
       console.log("      API proxy enabled (--proxy)");
