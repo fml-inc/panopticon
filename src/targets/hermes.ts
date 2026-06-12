@@ -6,13 +6,13 @@
  * and posts Panopticon-shaped hook events to the local server.
  */
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Database } from "../db/driver.js";
 import type { HookInput } from "../hooks/ingest.js";
 import { defaultToolCategory } from "../scanner/categories.js";
-import { hasMcpServer } from "../yaml.js";
 import { registerTarget } from "./registry.js";
 import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
 
@@ -237,43 +237,34 @@ function writePluginFiles(opts: { pluginRoot: string; port: number }): void {
   );
 }
 
-function enabledPlugins(config: Record<string, unknown>): string[] {
-  const plugins = asRecord(config.plugins);
-  return asArray(plugins?.enabled).filter(
-    (value): value is string => typeof value === "string",
-  );
-}
-
-function withEnabledPlugin(
-  config: Record<string, unknown>,
-): Record<string, unknown> {
-  const updated = structuredClone(config);
-  const plugins = asRecord(updated.plugins) ?? {};
-  const enabled = enabledPlugins(updated).filter(
-    (name) => name !== PLUGIN_NAME,
-  );
-  enabled.push(PLUGIN_NAME);
-  plugins.enabled = enabled;
-  updated.plugins = plugins;
-  return updated;
-}
-
-function withoutEnabledPlugin(
-  config: Record<string, unknown>,
-): Record<string, unknown> {
-  const updated = structuredClone(config);
-  const plugins = asRecord(updated.plugins);
-  if (!plugins) return updated;
-  const enabled = enabledPlugins(updated).filter(
-    (name) => name !== PLUGIN_NAME,
-  );
-  if (enabled.length === 0) {
-    delete plugins.enabled;
-  } else {
-    plugins.enabled = enabled;
+/**
+ * Hermes owns config.yaml and rewrites it wholesale on every save (plain
+ * PyYAML dump — it does not preserve comments or formatting). Panopticon must
+ * therefore never write that file directly; instead we drive hermes's own CLI
+ * for the plugin allow-list. Returns whether the command succeeded so callers
+ * can fall back to a printed instruction when the `hermes` binary is absent.
+ */
+function runHermesCli(args: string[]): { ok: boolean; output: string } {
+  const bin = process.env.HERMES_BIN ?? "hermes";
+  try {
+    const res = spawnSync(bin, args, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (res.error) return { ok: false, output: String(res.error.message) };
+    return {
+      ok: res.status === 0,
+      output: `${res.stdout ?? ""}${res.stderr ?? ""}`.trim(),
+    };
+  } catch (err) {
+    return { ok: false, output: String((err as Error).message) };
   }
-  if (Object.keys(plugins).length === 0) delete updated.plugins;
-  return updated;
+}
+
+/** The `hermes mcp add` command the user runs to register the MCP server. */
+function mcpAddCommand(pluginRoot: string): string {
+  const serverBin = path.join(pluginRoot, "bin", "mcp-server");
+  return `hermes mcp add panopticon --command ${process.execPath} --args ${serverBin}`;
 }
 
 function normalizeHermesPayload(data: HookInput): HookInput {
@@ -655,6 +646,9 @@ const hermes: TargetAdapter = {
       return path.join(hermesDir(), "config.yaml");
     },
     configFormat: "yaml",
+    // Hermes rewrites config.yaml wholesale on every save, so panopticon never
+    // touches that file. The hooks below drive hermes's own CLI instead.
+    selfManagedConfig: true,
   },
 
   hooks: {
@@ -662,29 +656,39 @@ const hermes: TargetAdapter = {
 
     applyInstallConfig(existing, opts) {
       writePluginFiles({ pluginRoot: opts.pluginRoot, port: opts.port });
-      const updated = withEnabledPlugin(existing);
-      // Register panopticon's MCP server so hermes sessions can query their
-      // own history/costs. Absolute node path: hermes spawns MCP servers
-      // from Python where PATH may be minimal (same rationale as
-      // claude-desktop).
-      const servers = asRecord(updated.mcp_servers) ?? {};
-      servers.panopticon = {
-        command: process.execPath,
-        args: [path.join(opts.pluginRoot, "bin", "mcp-server")],
-      };
-      updated.mcp_servers = servers;
-      return updated;
+      // Enable the plugin through hermes's own CLI so hermes owns the write
+      // to its config.yaml allow-list. Fall back to a printed instruction
+      // when the hermes binary isn't reachable.
+      const enable = runHermesCli(["plugins", "enable", PLUGIN_NAME]);
+      if (!enable.ok) {
+        console.log(
+          `      Could not auto-enable the plugin (${enable.output || "hermes CLI not found on PATH"}).\n` +
+            `      Activate it manually with: hermes plugins enable ${PLUGIN_NAME}`,
+        );
+      }
+      // MCP registration is a separate interactive hermes wizard (it connects
+      // to the server and prompts for tool selection), so we can't script it.
+      // Print the command for the user to run; it lets hermes sessions query
+      // their own panopticon history/costs and is optional.
+      console.log(
+        "      Optional — let Hermes query its own history/costs by running:\n" +
+          `      ${mcpAddCommand(opts.pluginRoot)}`,
+      );
+      return existing;
     },
 
     removeInstallConfig(existing) {
-      fs.rmSync(pluginDest(), { recursive: true, force: true });
-      const updated = withoutEnabledPlugin(existing);
-      const servers = asRecord(updated.mcp_servers);
-      if (servers) {
-        delete servers.panopticon;
-        if (Object.keys(servers).length === 0) delete updated.mcp_servers;
+      const disable = runHermesCli(["plugins", "disable", PLUGIN_NAME]);
+      if (!disable.ok) {
+        console.log(
+          `      Could not auto-disable the plugin. Disable it manually with: hermes plugins disable ${PLUGIN_NAME}`,
+        );
       }
-      return updated;
+      fs.rmSync(pluginDest(), { recursive: true, force: true });
+      console.log(
+        "      If you registered the MCP server, remove it with: hermes mcp remove panopticon",
+      );
+      return existing;
     },
   },
 
@@ -732,9 +736,9 @@ const hermes: TargetAdapter = {
           path.join(hermesDir(), "config.yaml"),
           "utf-8",
         );
-        // Requiring the MCP entry too makes doctor flag pre-MCP installs as
-        // needing a re-run of `panopticon install --target hermes`.
-        return raw.includes(PLUGIN_NAME) && hasMcpServer(raw, "panopticon");
+        // Only the plugin is panopticon-managed. The MCP server is an optional
+        // user-run step, so it isn't required for the install to be "configured".
+        return raw.includes(PLUGIN_NAME);
       } catch {
         return false;
       }
