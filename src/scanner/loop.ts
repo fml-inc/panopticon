@@ -19,9 +19,7 @@ import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 // Import targets so they self-register before we iterate the registry
-import "../targets/claude.js";
-import "../targets/codex.js";
-import "../targets/gemini.js";
+import "../targets/index.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";

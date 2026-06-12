@@ -133,7 +133,7 @@ export interface TargetConfigSpec {
   /** Path to the main config file */
   configPath: string;
   /** Format of the config file */
-  configFormat: "json" | "toml";
+  configFormat: "json" | "toml" | "yaml";
 }
 
 // ── Hook Registration ───────────────────────────────────────────────────────

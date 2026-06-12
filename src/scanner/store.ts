@@ -152,12 +152,28 @@ export function readKnownScannerFiles(source: string): string[] {
 
 // ── Turn insert ─────────────────────────────────────────────────────────────
 
+// Re-parses of a full session snapshot must REFRESH existing rows, not
+// skip them: adapters that only have session-aggregate token data (hermes)
+// attach it to the latest assistant turn, so the row a given turn_index
+// maps to can change values between parses. Identical re-emissions are
+// effective no-ops; sync_id is intentionally never rewritten so remote
+// sync identity stays stable.
 const INSERT_TURN_SQL = `
-  INSERT OR IGNORE INTO scanner_turns
+  INSERT INTO scanner_turns
     (session_id, source, turn_index, timestamp_ms, model, role,
      content_preview, input_tokens, output_tokens,
      cache_read_tokens, cache_creation_tokens, reasoning_tokens, sync_id)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(session_id, source, turn_index) DO UPDATE SET
+    timestamp_ms = excluded.timestamp_ms,
+    model = excluded.model,
+    role = excluded.role,
+    content_preview = excluded.content_preview,
+    input_tokens = excluded.input_tokens,
+    output_tokens = excluded.output_tokens,
+    cache_read_tokens = excluded.cache_read_tokens,
+    cache_creation_tokens = excluded.cache_creation_tokens,
+    reasoning_tokens = excluded.reasoning_tokens
 `;
 
 export function insertTurns(turns: ParsedTurn[], source: string): void {
