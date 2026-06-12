@@ -133,7 +133,15 @@ export interface TargetConfigSpec {
   /** Path to the main config file */
   configPath: string;
   /** Format of the config file */
-  configFormat: "json" | "toml";
+  configFormat: "json" | "toml" | "yaml";
+  /**
+   * When true, the install/uninstall flow does NOT read or rewrite this
+   * target's config file. The target owns every write itself (e.g. via its
+   * own CLI) and applies changes as side effects inside applyInstallConfig /
+   * removeInstallConfig. Used by Hermes, whose own writer rewrites config.yaml
+   * wholesale — panopticon must never be a competing writer of that file.
+   */
+  selfManagedConfig?: boolean;
 }
 
 // ── Hook Registration ───────────────────────────────────────────────────────

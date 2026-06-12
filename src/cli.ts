@@ -154,6 +154,26 @@ function writeJsonFile(filePath: string, data: any): void {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+function readTargetConfig(
+  target: import("./targets/types.js").TargetAdapter,
+): Record<string, unknown> {
+  if (target.config.configFormat === "toml") {
+    return readTomlFile(target.config.configPath);
+  }
+  return readJsonFile(target.config.configPath) ?? {};
+}
+
+function writeTargetConfig(
+  target: import("./targets/types.js").TargetAdapter,
+  data: Record<string, unknown>,
+): void {
+  if (target.config.configFormat === "toml") {
+    writeTomlFile(target.config.configPath, data);
+    return;
+  }
+  writeJsonFile(target.config.configPath, data);
+}
+
 function readActiveScannerStatus(server: ServerStatus) {
   if (!server.running) return null;
   const status = readScannerStatus();
@@ -588,17 +608,12 @@ program
 
     for (const t of selectedTargets) {
       console.log(`[3/6] Removing panopticon from ${t.detect.displayName}...`);
-      let existing: Record<string, unknown>;
-      if (t.config.configFormat === "toml") {
-        existing = readTomlFile(t.config.configPath);
+      if (t.config.selfManagedConfig) {
+        t.hooks.removeInstallConfig({});
       } else {
-        existing = readJsonFile(t.config.configPath) ?? {};
-      }
-      const updated = t.hooks.removeInstallConfig(existing);
-      if (t.config.configFormat === "toml") {
-        writeTomlFile(t.config.configPath, updated);
-      } else {
-        writeJsonFile(t.config.configPath, updated);
+        const existing = readTargetConfig(t);
+        const updated = t.hooks.removeInstallConfig(existing);
+        writeTargetConfig(t, updated);
       }
       console.log(`      ${t.config.configPath}\n`);
     }
@@ -889,26 +904,27 @@ async function install(
   for (const t of selectedTargets) {
     console.log(`[3/5] Registering panopticon in ${t.detect.displayName}...`);
 
-    // Read existing config
-    let existingConfig: Record<string, unknown>;
-    if (t.config.configFormat === "toml") {
-      existingConfig = readTomlFile(t.config.configPath);
+    if (t.config.selfManagedConfig) {
+      // Target owns its own config file; the hook applies changes via the
+      // target's own tooling (e.g. the hermes CLI) rather than us rewriting
+      // the file. We never read or write the config here.
+      t.hooks.applyInstallConfig(
+        {},
+        { pluginRoot, port: config.port, proxy: !!opts.proxy },
+      );
     } else {
-      existingConfig = readJsonFile(t.config.configPath) ?? {};
-    }
+      // Read existing config
+      const existingConfig = readTargetConfig(t);
 
-    // Apply target-specific install config
-    const updatedConfig = t.hooks.applyInstallConfig(existingConfig, {
-      pluginRoot,
-      port: config.port,
-      proxy: !!opts.proxy,
-    });
+      // Apply target-specific install config
+      const updatedConfig = t.hooks.applyInstallConfig(existingConfig, {
+        pluginRoot,
+        port: config.port,
+        proxy: !!opts.proxy,
+      });
 
-    // Write back
-    if (t.config.configFormat === "toml") {
-      writeTomlFile(t.config.configPath, updatedConfig);
-    } else {
-      writeJsonFile(t.config.configPath, updatedConfig);
+      // Write back
+      writeTargetConfig(t, updatedConfig);
     }
 
     if (opts.proxy && t.id === "codex") {

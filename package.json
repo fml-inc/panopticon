@@ -95,7 +95,7 @@
     }
   },
   "scripts": {
-    "build": "node scripts/generate-plugin-manifest.js && tsup && node scripts/bundle-pi-extension.js",
+    "build": "node scripts/generate-plugin-manifest.js && tsup && node scripts/bundle-pi-extension.js && node scripts/copy-hermes-plugin.js",
     "dev": "tsup --watch",
     "check": "biome check src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts scripts/eval-pretooluse-read-realtime.ts scripts/eval-reduction-proxy.ts scripts/eval-reduction-proxy.test.ts scripts/eval-replay-counterfactual.ts scripts/eval-replay-counterfactual.test.ts scripts/eval-panop-historical.ts scripts/eval-panop-historical.test.ts scripts/eval-hydrate-pr-scenarios.ts",
     "check:fix": "biome check --write src/ scripts/eval-userprompt-context.ts scripts/eval-pretooluse-file-context.ts scripts/eval-pretooluse-read-realtime.ts scripts/eval-reduction-proxy.ts scripts/eval-reduction-proxy.test.ts scripts/eval-replay-counterfactual.ts scripts/eval-replay-counterfactual.test.ts scripts/eval-panop-historical.ts scripts/eval-panop-historical.test.ts scripts/eval-hydrate-pr-scenarios.ts",
