@@ -1,0 +1,229 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { Database } from "../db/driver.js";
+import { getTarget } from "./index.js";
+
+function makeHermesStateDb(): { filePath: string; cleanup: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-scanner-"));
+  const filePath = path.join(dir, "state.db");
+  const db = new Database(filePath);
+  db.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      parent_session_id TEXT,
+      source TEXT,
+      model TEXT,
+      started_at REAL,
+      ended_at REAL,
+      cwd TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_read_tokens INTEGER,
+      cache_write_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      title TEXT
+    );
+    CREATE TABLE messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      role TEXT,
+      content TEXT,
+      tool_call_id TEXT,
+      tool_calls TEXT,
+      tool_name TEXT,
+      timestamp REAL,
+      token_count INTEGER,
+      reasoning TEXT,
+      reasoning_content TEXT,
+      reasoning_details TEXT,
+      active INTEGER DEFAULT 1
+    );
+  `);
+  db.prepare(
+    `INSERT INTO sessions
+       (id, source, model, started_at, cwd, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens, reasoning_tokens, title)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "20260611_120000_abcd",
+    "cli",
+    "gpt-test",
+    1_780_000_000,
+    "/tmp/project",
+    100,
+    25,
+    7,
+    3,
+    5,
+    "fallback title",
+  );
+  db.prepare(
+    `INSERT INTO messages
+       (session_id, role, content, timestamp, active)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    "20260611_120000_abcd",
+    "user",
+    `${"\0"}json:${JSON.stringify([{ type: "text", text: "build it" }])}`,
+    1_780_000_001,
+    1,
+  );
+  db.prepare(
+    `INSERT INTO messages
+       (session_id, role, content, tool_calls, timestamp, token_count,
+        reasoning_content, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "20260611_120000_abcd",
+    "assistant",
+    "I will read the file.",
+    JSON.stringify([
+      {
+        id: "call_1",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ path: "/tmp/project/a.ts" }),
+        },
+      },
+    ]),
+    1_780_000_002,
+    25,
+    "Need the file contents first.",
+    1,
+  );
+  db.prepare(
+    `INSERT INTO messages
+       (session_id, role, content, tool_call_id, tool_name, timestamp, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "20260611_120000_abcd",
+    "tool",
+    "file contents",
+    "call_1",
+    "read_file",
+    1_780_000_003,
+    1,
+  );
+  db.close();
+  return {
+    filePath,
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+describe("hermes scanner", () => {
+  it("parses active state.db sessions, messages, tool calls, and token totals", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const result = hermes.scanner!.parseFile(filePath, 0)!;
+      expect(result.meta).toMatchObject({
+        sessionId: "20260611_120000_abcd",
+        model: "gpt-test",
+        cwd: "/tmp/project",
+        firstPrompt: "build it",
+      });
+      expect(result.absoluteIndices).toBe(true);
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages[0]).toMatchObject({
+        role: "user",
+        content: "build it",
+      });
+      expect(result.messages[1]).toMatchObject({
+        role: "assistant",
+        hasThinking: true,
+        hasToolUse: true,
+      });
+      expect(result.messages[1].toolCalls[0]).toMatchObject({
+        toolUseId: "call_1",
+        toolName: "read_file",
+        category: "Read",
+        inputJson: JSON.stringify({ path: "/tmp/project/a.ts" }),
+      });
+      expect(result.orphanedToolResults?.get("call_1")).toMatchObject({
+        contentRaw: "file contents",
+      });
+      expect(result.turns.at(-1)).toMatchObject({
+        role: "assistant",
+        inputTokens: 100,
+        outputTokens: 25,
+        cacheReadTokens: 7,
+        cacheCreationTokens: 3,
+        reasoningTokens: 5,
+      });
+      // Watermark is the max messages.id, not a byte size — state.db is
+      // SQLite/WAL, where the main file's byte size never tracks new data.
+      expect(result.newByteOffset).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns null when no messages were added since the watermark", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const first = hermes.scanner!.parseFile(filePath, 0)!;
+      expect(hermes.scanner!.parseFile(filePath, first.newByteOffset)).toBe(
+        null,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("re-snapshots only sessions with new messages on incremental parse", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const first = hermes.scanner!.parseFile(filePath, 0)!;
+
+      const db = new Database(filePath);
+      db.prepare(
+        `INSERT INTO sessions (id, source, model, started_at, input_tokens, output_tokens)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run("20260611_130000_efgh", "cli", "gpt-test", 1_780_000_100, 40, 9);
+      db.prepare(
+        `INSERT INTO messages (session_id, role, content, timestamp, active)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("20260611_130000_efgh", "user", "second session", 1_780_000_101, 1);
+      db.prepare(
+        `INSERT INTO messages (session_id, role, content, timestamp, active)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("20260611_130000_efgh", "assistant", "on it", 1_780_000_102, 1);
+      db.close();
+
+      const second = hermes.scanner!.parseFile(filePath, first.newByteOffset)!;
+      expect(second.meta?.sessionId).toBe("20260611_130000_efgh");
+      expect(second.forks ?? []).toHaveLength(0);
+      // Full snapshot of the changed session: both its messages, absolute indices
+      expect(second.messages).toHaveLength(2);
+      expect(second.messages[0]).toMatchObject({ ordinal: 0, role: "user" });
+      expect(second.absoluteIndices).toBe(true);
+      // Session-aggregate tokens land on its latest assistant turn
+      expect(second.turns.at(-1)).toMatchObject({
+        role: "assistant",
+        inputTokens: 40,
+        outputTokens: 9,
+      });
+      expect(second.newByteOffset).toBe(5);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("re-snapshots everything when the watermark exceeds max id (recreated db)", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const result = hermes.scanner!.parseFile(filePath, 999)!;
+      expect(result.meta?.sessionId).toBe("20260611_120000_abcd");
+      expect(result.messages).toHaveLength(2);
+      expect(result.newByteOffset).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+});

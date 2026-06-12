@@ -70,6 +70,11 @@ vi.mock("../session_summaries/pass.js", () => ({
 }));
 
 vi.mock("../targets/registry.js", () => ({
+  // loop.ts imports ../targets/index.js, whose adapters self-register at
+  // module load — the mock must accept those registerTarget calls.
+  registerTarget: () => {},
+  getTarget: () => undefined,
+  targetIds: () => ["fake"],
   allTargets: () => [
     {
       id: "fake",
@@ -81,10 +86,6 @@ vi.mock("../targets/registry.js", () => ({
     },
   ],
 }));
-
-vi.mock("../targets/claude.js", () => ({}));
-vi.mock("../targets/codex.js", () => ({}));
-vi.mock("../targets/gemini.js", () => ({}));
 
 vi.mock("./store.js", () => ({
   getMaxOrdinal: vi.fn(() => 0),

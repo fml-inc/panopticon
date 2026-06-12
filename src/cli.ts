@@ -58,6 +58,7 @@ import { setSyncEnabled } from "./sync/config.js";
 import { allTargets, getTarget, targetIds } from "./targets/index.js";
 import { readTomlFile, writeTomlFile } from "./toml.js";
 import { loadUnifiedConfig } from "./unified-config.js";
+import { readYamlFile, writeYamlFile } from "./yaml.js";
 
 const service = httpPanopticonService;
 
@@ -152,6 +153,33 @@ const LEGACY_COMMAND_NAMES = ["panopticon-review", "pr-review"];
 function writeJsonFile(filePath: string, data: any): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function readTargetConfig(
+  target: import("./targets/types.js").TargetAdapter,
+): Record<string, unknown> {
+  if (target.config.configFormat === "toml") {
+    return readTomlFile(target.config.configPath);
+  }
+  if (target.config.configFormat === "yaml") {
+    return readYamlFile(target.config.configPath);
+  }
+  return readJsonFile(target.config.configPath) ?? {};
+}
+
+function writeTargetConfig(
+  target: import("./targets/types.js").TargetAdapter,
+  data: Record<string, unknown>,
+): void {
+  if (target.config.configFormat === "toml") {
+    writeTomlFile(target.config.configPath, data);
+    return;
+  }
+  if (target.config.configFormat === "yaml") {
+    writeYamlFile(target.config.configPath, data);
+    return;
+  }
+  writeJsonFile(target.config.configPath, data);
 }
 
 function readActiveScannerStatus(server: ServerStatus) {
@@ -588,18 +616,9 @@ program
 
     for (const t of selectedTargets) {
       console.log(`[3/6] Removing panopticon from ${t.detect.displayName}...`);
-      let existing: Record<string, unknown>;
-      if (t.config.configFormat === "toml") {
-        existing = readTomlFile(t.config.configPath);
-      } else {
-        existing = readJsonFile(t.config.configPath) ?? {};
-      }
+      const existing = readTargetConfig(t);
       const updated = t.hooks.removeInstallConfig(existing);
-      if (t.config.configFormat === "toml") {
-        writeTomlFile(t.config.configPath, updated);
-      } else {
-        writeJsonFile(t.config.configPath, updated);
-      }
+      writeTargetConfig(t, updated);
       console.log(`      ${t.config.configPath}\n`);
     }
 
@@ -890,12 +909,7 @@ async function install(
     console.log(`[3/5] Registering panopticon in ${t.detect.displayName}...`);
 
     // Read existing config
-    let existingConfig: Record<string, unknown>;
-    if (t.config.configFormat === "toml") {
-      existingConfig = readTomlFile(t.config.configPath);
-    } else {
-      existingConfig = readJsonFile(t.config.configPath) ?? {};
-    }
+    const existingConfig = readTargetConfig(t);
 
     // Apply target-specific install config
     const updatedConfig = t.hooks.applyInstallConfig(existingConfig, {
@@ -905,11 +919,7 @@ async function install(
     });
 
     // Write back
-    if (t.config.configFormat === "toml") {
-      writeTomlFile(t.config.configPath, updatedConfig);
-    } else {
-      writeJsonFile(t.config.configPath, updatedConfig);
-    }
+    writeTargetConfig(t, updatedConfig);
 
     if (opts.proxy && t.id === "codex") {
       console.log("      API proxy enabled (--proxy)");
