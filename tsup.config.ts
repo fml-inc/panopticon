@@ -37,6 +37,7 @@ export default defineConfig({
     "otlp/server": "src/otlp/server.ts",
     "proxy/server": "src/proxy/server.ts",
     "api/client": "src/api/client.ts",
+    "service/index": "src/service/index.ts",
     "sync/index": "src/sync/index.ts",
     targets: "src/targets/index.ts",
     // Note: the Pi extension (src/targets/pi/extension.ts) is built separately

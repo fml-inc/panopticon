@@ -34,15 +34,17 @@ async function staticTool(name, params) {
   }
 }
 
-/** POST a read-only Panopticon tool and return its JSON result. */
+/** POST a read-only Panopticon tool and return its JSON result.
+ *  - live: /api/tool with bearer + SSE
+ *  - snapshot source "api": /api/tool over a read-only DB copy (no auth, no SSE)
+ *  - snapshot source "json": baked JSON files */
 async function tool(name, params = {}) {
-  if (STATIC) return staticTool(name, params);
+  if (STATIC && boot.source !== "api") return staticTool(name, params);
+  const headers = { "Content-Type": "application/json" };
+  if (!STATIC) headers.Authorization = `Bearer ${boot.token}`;
   const res = await fetch("/api/tool", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${boot.token}`,
-    },
+    headers,
     body: JSON.stringify({ name, params }),
   });
   if (!res.ok) throw new Error(`${name} -> ${res.status}`);
@@ -67,9 +69,10 @@ async function exec(command, params = {}) {
   return res.json();
 }
 
-/** Recent bus messages: baked JSON in snapshot mode, SQL otherwise. */
+/** Recent bus messages: baked JSON for snapshot source "json", SQL otherwise
+ *  (live and snapshot source "api" both query the server/DB). */
 async function loadBusMessages() {
-  if (STATIC) {
+  if (STATIC && boot.source !== "api") {
     const rows = await fetchJson("data/messages.json");
     return Array.isArray(rows) ? rows : [];
   }
