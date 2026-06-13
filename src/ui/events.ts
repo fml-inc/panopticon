@@ -21,7 +21,10 @@ export type UiEvent =
   | { type: "message"; data: Record<string, unknown> }
   /** Bus messages drained/delivered into an agent (Layer 2). Carries the ids
    *  that flipped to delivered so the feed can mark them. */
-  | { type: "delivery"; data: { ids: number[]; delivered_at_ms: number } };
+  | {
+      type: "delivery";
+      data: { ids: number[]; session_id?: string; delivered_at_ms: number };
+    };
 
 const clients = new Set<http.ServerResponse>();
 

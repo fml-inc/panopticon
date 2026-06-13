@@ -138,10 +138,13 @@ write("instances.json", { now_ms: Date.now(), room: REPO, counts, instances });
 // referencing a session outside the allowlist (belt-and-suspenders).
 const msgs = (
   await tool("query", {
-    sql: `SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms, delivered_at_ms
-            FROM agent_messages
-           WHERE room = '${REPO.replace(/'/g, "''")}' AND created_at_ms >= ${SINCE_MS}
-           ORDER BY id DESC`,
+    sql: `SELECT m.id, m.room, m.from_session, m.to_session, m.kind, m.body,
+                 m.subject, m.ref_path, m.source, m.created_at_ms,
+                 (SELECT MIN(d.delivered_at_ms) FROM agent_message_deliveries d
+                   WHERE d.message_id = m.id) AS delivered_at_ms
+            FROM agent_messages m
+           WHERE m.room = '${REPO.replace(/'/g, "''")}' AND m.created_at_ms >= ${SINCE_MS}
+           ORDER BY m.id DESC`,
   })
 ).filter(
   (m) =>

@@ -209,7 +209,11 @@ export function markDelivered(
     try {
       broadcast({
         type: "delivery",
-        data: { ids: deliveredIds, session_id: sessionId, delivered_at_ms: nowMs },
+        data: {
+          ids: deliveredIds,
+          session_id: sessionId,
+          delivered_at_ms: nowMs,
+        },
       });
     } catch {
       // ignore

@@ -76,8 +76,14 @@ async function loadBusMessages() {
     const rows = await fetchJson("data/messages.json");
     return Array.isArray(rows) ? rows : [];
   }
+  // Delivery is per-recipient (agent_message_deliveries); treat a message as
+  // delivered at the first time it reached any recipient.
   const rows = await tool("query", {
-    sql: "SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms, delivered_at_ms FROM agent_messages ORDER BY id DESC LIMIT 50",
+    sql: `SELECT m.id, m.room, m.from_session, m.to_session, m.kind, m.body,
+                 m.subject, m.ref_path, m.source, m.created_at_ms,
+                 (SELECT MIN(d.delivered_at_ms) FROM agent_message_deliveries d
+                   WHERE d.message_id = m.id) AS delivered_at_ms
+            FROM agent_messages m ORDER BY m.id DESC LIMIT 50`,
   });
   return Array.isArray(rows) ? rows : [];
 }
