@@ -172,24 +172,42 @@ function joinContext(...parts: (string | null | undefined)[]): string {
 // ones. Per-session dedupe is durable, via the agent_message_deliveries table.
 const BEACON_WINDOW_MS = 15 * 60_000;
 
+// Throttle the unread nudge: re-nudge a session only when a NEW message has
+// arrived since its last nudge (keyed on the highest unread id). In-memory,
+// resets on server restart (fine — a restart re-nudges current unread once).
+const lastNudgedMaxId = new Map<string, number>();
+
+/** Test seam: clear the nudge throttle state. */
+export function _resetNudgeState(): void {
+  lastNudgedMaxId.clear();
+}
+
 /**
- * Group-chat message provider: challenges and chat addressed to this session OR
- * broadcast to the room, drained oldest-first. Delivery is per-recipient
- * (undeliveredTo) so a broadcast reaches EVERY live session exactly once, not
- * just the first to hit a hook. Only messages created at/after this session
- * joined are surfaced, so a fresh session doesn't drain the whole room history.
+ * Unread-message nudge (non-consuming). The bus is a plain append-only chat:
+ * findings and chat are broadcast to the room and triaged by reading the thread.
+ * Rather than force-feed bodies into the hook (and consume them — lost if the
+ * model ignores the turn), inject a compact "you have N unread, call bus_read"
+ * pointer and leave the messages UNREAD. Reading (bus_read) is what marks them
+ * seen. Throttled to once per new highest-unread id so it isn't repeated on
+ * every tool call.
+ *
+ * Throttle caveat (intentional, not a bug): re-nudge fires only when a NEWER
+ * message lands. If an agent partially reads the backlog, the still-unread
+ * remainder isn't re-nudged until something new arrives — advisory, "inform not
+ * force," per the append-only-chat model. A standing finding the agent ignored
+ * thus shows once; resolution is emergent, not force-fed.
  */
-function drainMessages(
+const NUDGE_LIMIT = 20;
+
+function nudgeUnread(
   sessionId: string,
   room: string,
   nowMs: number,
 ): string | null {
-  // The presence row is seeded on every hook event before this drain runs, so
-  // first_seen_ms is the session's join time. Fail closed to `now` if it is
-  // somehow absent (a swallowed presence-upsert error) — a fresh reader should
-  // see nothing from before it existed, never the whole room backlog.
+  // first_seen_ms is the session's join time (seeded before this runs); fail
+  // closed to now so a fresh session never sees pre-existing room backlog.
   const sinceMs = getInstanceFirstSeen(sessionId) ?? nowMs;
-  const pending = readAgentMessages({
+  const unread = readAgentMessages({
     room,
     kinds: ["challenge", "chat"],
     // Broadcasts + messages addressed to me; never my own.
@@ -197,23 +215,28 @@ function drainMessages(
     excludeFrom: sessionId,
     undeliveredTo: sessionId,
     sinceMs,
-    // sinceId: 0 forces oldest-first delivery (id > 0, ascending).
     sinceId: 0,
-    limit: 5,
+    limit: NUDGE_LIMIT,
   });
-  if (pending.length === 0) return null;
-  markDelivered(
-    pending.map((m) => m.id),
-    sessionId,
-    nowMs,
-  );
-  return pending
-    .map((m) =>
-      m.kind === "challenge"
-        ? `🔴 Frenemy challenge: ${m.body}`
-        : `💬 ${m.from_session}: ${m.body}`,
-    )
+  if (unread.length === 0) return null;
+  const maxId = unread[unread.length - 1].id;
+  // Already nudged for this highest id — don't repeat until something newer lands.
+  if ((lastNudgedMaxId.get(sessionId) ?? 0) >= maxId) return null;
+  lastNudgedMaxId.set(sessionId, maxId);
+
+  const previews = unread
+    .slice(-3)
+    .map((m) => {
+      const who = m.from_session === "frenemy" ? "frenemy" : m.from_session;
+      const tag = m.kind === "challenge" ? "🔴" : "💬";
+      const body = m.body.length > 100 ? `${m.body.slice(0, 100)}…` : m.body;
+      return `  ${tag} #${m.id} ${who}: ${body}`;
+    })
     .join("\n");
+  // "20+" when the read hit the cap, so the count doesn't silently under-report.
+  const count =
+    unread.length >= NUDGE_LIMIT ? `${NUDGE_LIMIT}+` : `${unread.length}`;
+  return `🔔 ${count} unread message(s) in this room (incl. frenemy findings). Call bus_read to catch up.\n${previews}`;
 }
 
 /**
@@ -255,9 +278,9 @@ function drainBeacons(
 /**
  * Layer 2 bus delivery (advisory inject). Runs the coordination-context provider
  * list for this session and returns the combined additionalContext. Providers:
- * group-chat messages (challenge/chat, per-recipient consume-once) and
- * recruitment beacons (once-per-session). The shape generalizes — sidequest
- * claim-conflicts slot in as another provider. Best-effort; never throws.
+ * an unread-message nudge (non-consuming pointer; reading via bus_read marks
+ * seen) and recruitment beacons (once-per-session). The shape generalizes —
+ * sidequest claim-conflicts slot in as another provider. Best-effort; never throws.
  */
 function drainCoordinationContext(
   sessionId: string,
@@ -268,7 +291,7 @@ function drainCoordinationContext(
     const nowMs = Date.now();
     return (
       joinContext(
-        drainMessages(sessionId, room, nowMs),
+        nudgeUnread(sessionId, room, nowMs),
         drainBeacons(sessionId, room, nowMs),
       ) || null
     );

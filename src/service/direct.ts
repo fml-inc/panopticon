@@ -262,6 +262,22 @@ export function createDirectPanopticonService(): PanopticonService {
         excludeFrom: input.session_id,
         limit: input.limit,
       });
+      // Reading IS the "I've seen this" action: record per-recipient
+      // read-receipts so the unread nudge stops pointing at what was just read.
+      // Append-only and idempotent (INSERT OR IGNORE per message+session).
+      //
+      // This shares the delivery table with busRecv (chat wait) ON PURPOSE: a
+      // message seen via EITHER path is seen once, no double-delivery. Receipts
+      // are per-recipient, so one session's read never affects another's chat
+      // wait. (An agent is either chatting — blocked in recv — or working and
+      // triaging via bus_read; it doesn't do both for the same turn.)
+      if (input.session_id && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          input.session_id,
+          Date.now(),
+        );
+      }
       const cursor = messages.length
         ? messages[messages.length - 1].id
         : (input.sinceId ?? 0);

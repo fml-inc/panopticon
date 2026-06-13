@@ -68,7 +68,7 @@ function makeDeps(
     critiqueImpl: (activity: string) => Promise<string | null>;
   }> = {},
 ) {
-  const sends: Array<{ to: string; body: string }> = [];
+  const sends: Array<{ to: string | undefined; body: string }> = [];
   const critiqueCalls: string[] = [];
   const deps = {
     busRoster: vi.fn(
@@ -77,7 +77,7 @@ function makeDeps(
     hookTimeline: vi.fn(async (input: { sessionId: string }) =>
       timeline(over.timelineFor ? over.timelineFor(input.sessionId) : []),
     ),
-    busSend: vi.fn(async (input: { to: string; body: string }) => {
+    busSend: vi.fn(async (input: { to?: string; body: string }) => {
       sends.push({ to: input.to, body: input.body });
     }),
     critique: vi.fn(async (activity: string) => {
@@ -128,7 +128,8 @@ describe("runFrenemyOnce", () => {
     const cursors: FrenemyCursors = new Map();
     const sent = await runFrenemyOnce(OPTS, cursors, deps);
 
-    expect(sends).toEqual([{ to: "p1", body: "that looks risky" }]);
+    // Broadcast to the room (to: undefined), not directed to the author p1.
+    expect(sends).toEqual([{ to: undefined, body: "that looks risky" }]);
     expect(sent).toHaveLength(1);
     expect(cursors.get("p1")).toBe(1000);
   });

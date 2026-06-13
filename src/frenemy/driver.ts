@@ -172,17 +172,13 @@ export function gitDiff(
       ? `${out.slice(0, maxChars)}\n…[diff truncated]`
       : out;
 
-  // Keep only paths inside THIS worktree's repo. An out-of-repo path (a sibling
-  // worktree, a ~/.claude skill, a transcript file the agent read) makes git
-  // `fatal` on the whole `diff` command, which would otherwise throw away the
-  // diff for the real in-repo edits in the same batch — suppressing all review.
-  const top = run(["rev-parse", "--show-toplevel"])?.trim();
   // Keep only paths inside THIS worktree's repo. Resolve each against cwd first
   // so both absolute and relative pathspecs are checked correctly (a relative
   // path that escapes via `..` is dropped, not blanket-trusted). An out-of-repo
   // path (a sibling worktree, a ~/.claude skill, a transcript the agent read)
   // would otherwise make git `fatal` on the whole `diff` command, discarding the
   // diff for the real in-repo edits in the same batch and suppressing all review.
+  const top = run(["rev-parse", "--show-toplevel"])?.trim();
   const inRepo = top
     ? paths.filter((p) => {
         const abs = resolve(cwd, p);
@@ -238,7 +234,8 @@ interface FrenemyDeps {
   busSend: (input: {
     room: string;
     from: string;
-    to: string;
+    /** Omit to broadcast to the room (the default for findings). */
+    to?: string;
     kind: string;
     body: string;
     source: string;
@@ -356,14 +353,18 @@ export async function runFrenemyOnce(
 
     const challenge = parseChallenge(raw);
     if (!challenge) continue;
+    // Broadcast to the ROOM, not the author. A finding is addressed to no one:
+    // whoever is active reads the thread and decides to act. Directing it to the
+    // session whose timeline triggered it is wrong — that session may be idle,
+    // exited, or a read-only reviewer who made no edits (the targeting bug).
     await deps.busSend({
       room: opts.room,
       from: FRENEMY_FROM,
-      to: primary.session_id,
       kind: "challenge",
       body: challenge,
       source: "frenemy",
     });
+    // Tracked for the local log line only (which session's activity prompted it).
     sent.push({ to: primary.session_id, body: challenge });
   }
   return sent;
