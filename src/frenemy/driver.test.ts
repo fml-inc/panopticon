@@ -287,6 +287,14 @@ describe("gitDiff", () => {
     expect(diff.text).toBe("");
   });
 
+  it("drops a relative path that escapes the repo via ..", () => {
+    writeFileSync(join(repo, "f.txt"), "one\ntwo\n");
+    // Resolved against cwd, "../f.txt" lands outside the repo and must be
+    // dropped — not blanket-trusted just because it isn't absolute.
+    const diff = gitDiff(repo, ["../f.txt"]);
+    expect(diff.scope).toBe("none");
+  });
+
   it("reports scope=none when nothing changed vs base", () => {
     git("checkout", "-b", "feat"); // no commits beyond base
     const diff = gitDiff(repo, ["f.txt"]);

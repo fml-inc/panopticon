@@ -16,7 +16,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { resolve } from "node:path";
 import { resolveRoom } from "../bus/room.js";
 import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
@@ -177,12 +177,17 @@ export function gitDiff(
   // `fatal` on the whole `diff` command, which would otherwise throw away the
   // diff for the real in-repo edits in the same batch — suppressing all review.
   const top = run(["rev-parse", "--show-toplevel"])?.trim();
-  // Drop only ABSOLUTE paths that fall outside the repo; relative paths are
-  // resolved by git against cwd and are inherently in-repo.
+  // Keep only paths inside THIS worktree's repo. Resolve each against cwd first
+  // so both absolute and relative pathspecs are checked correctly (a relative
+  // path that escapes via `..` is dropped, not blanket-trusted). An out-of-repo
+  // path (a sibling worktree, a ~/.claude skill, a transcript the agent read)
+  // would otherwise make git `fatal` on the whole `diff` command, discarding the
+  // diff for the real in-repo edits in the same batch and suppressing all review.
   const inRepo = top
-    ? paths.filter(
-        (p) => !isAbsolute(p) || p === top || p.startsWith(`${top}/`),
-      )
+    ? paths.filter((p) => {
+        const abs = resolve(cwd, p);
+        return abs === top || abs.startsWith(`${top}/`);
+      })
     : paths;
   if (inRepo.length === 0) return { text: "", scope: "none" };
 
