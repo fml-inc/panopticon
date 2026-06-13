@@ -13,15 +13,7 @@
 import fs from "node:fs";
 import type http from "node:http";
 import { gunzipSync } from "node:zlib";
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // ── Mock config to use a temp directory ──────────────────────────────────────
 // vi.mock is hoisted — all values must be computed inside the factory.
@@ -73,7 +65,6 @@ import {
   upsertSession,
 } from "./db/store.js";
 import {
-  _resetBeaconSeen,
   _resetSessionRepoCache,
   _resetSessionTargetCache,
 } from "./hooks/ingest.js";
@@ -2066,6 +2057,37 @@ describe("server integration", () => {
       const res = await preToolUse({ session_id: "primary-3" });
       expect(additionalContext(res.body)).not.toContain("self addressed");
     });
+
+    it("fans a broadcast chat out to every session once (group chat)", async () => {
+      // Both sessions join first so the broadcast is after their join time.
+      for (const id of ["chat-a", "chat-b"]) {
+        await post("/hooks", {
+          session_id: id,
+          hook_event_name: "SessionStart",
+          source: "claude",
+          repository: ROOM,
+        });
+      }
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "opener",
+          kind: "chat",
+          body: "standup in 5",
+        },
+      });
+
+      // Each session drains the broadcast independently...
+      const a1 = await preToolUse({ session_id: "chat-a" });
+      const b1 = await preToolUse({ session_id: "chat-b" });
+      expect(additionalContext(a1.body)).toContain("standup in 5");
+      expect(additionalContext(b1.body)).toContain("standup in 5");
+
+      // ...and only once each.
+      const a2 = await preToolUse({ session_id: "chat-a" });
+      expect(additionalContext(a2.body)).not.toContain("standup in 5");
+    });
   });
 
   // ── Recruitment beacon (Layer 2 provider) ───────────────────────────────
@@ -2101,10 +2123,6 @@ describe("server integration", () => {
           .hookSpecificOutput?.additionalContext ?? ""
       );
     }
-
-    beforeEach(() => {
-      _resetBeaconSeen();
-    });
 
     it("shows a broadcast invite to an active session exactly once", async () => {
       await invite("design review for the auth refactor");
