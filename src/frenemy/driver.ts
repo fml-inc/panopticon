@@ -3,16 +3,19 @@
  * workspace and challenges questionable actions.
  *
  * Design: the DRIVER (this code) is deterministic plumbing — it reads the roster
- * and the primaries' recent activity from panopticon's capture, and posts
- * challenges back onto the bus. A headless LLM (`claude`/`codex`) is used purely
- * as a stateless CRITIC: activity in → a challenge or SKIP out. The critic needs
- * no MCP and holds no state, so the driver owns all bus/observation I/O.
+ * and the primaries' recent activity from panopticon's capture, hands the change
+ * (with its diff) to a CRITIC, and posts any findings back onto the bus. The
+ * critic is a headless Opus review agent with read-only access to the primary's
+ * worktree (Read/Grep/Glob/safe-Bash) so it can inspect surrounding code, call
+ * sites, and history — a real code review, not a glance at the diff. It holds no
+ * state between ticks; the cursor only bookmarks what's new.
  *
- * v1 polls on an interval (the "/loop" version, to confirm the chain end-to-end).
- * The structure is built so the poll can later be swapped for a server-side
- * long-poll on room activity without touching the critic or the bus contract.
+ * v1 polls on an interval (the "/loop" version). The seams are shaped so the
+ * poll can later become a server-side long-poll, and the per-tick critic a
+ * persistent (growing, GC'd) review session, without reshaping the driver.
  */
 
+import { execFileSync } from "node:child_process";
 import { resolveRoom } from "../bus/room.js";
 import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
@@ -22,21 +25,37 @@ import type { HookEvent, HookTimelineResult } from "../types.js";
 
 export const FRENEMY_FROM = "frenemy";
 
-export const FRENEMY_PERSONA = `You are a sharp, adversarial code reviewer — a "frenemy" — embedded in a
-developer's workspace. You watch what another AI agent is about to do and call
-out genuinely questionable moves. Hunt for flaws; do NOT rubber-stamp.
+/** Default critic model — a strong reviewer; Opus is the point of the frenemy. */
+export const FRENEMY_DEFAULT_MODEL = "opus";
 
-You will be given the recent actions of ONE agent. Decide if any action is
-questionable on grounds such as: deleting or weakening tests to make CI pass,
-broad/destructive shell commands (rm -rf, force pushes, dropping data), editing a
-file without having read it, committing secrets, scope creep beyond the stated
-task, or silently changing behavior.
+export const FRENEMY_PERSONA = `You are a meticulous senior code reviewer embedded in a developer's workspace —
+a "frenemy" who reviews changes AS THEY HAPPEN, so that by the time the work is
+finished it has effectively already been code-reviewed. Be a stickler: hunt for
+real problems and do not rubber-stamp. But do not nitpick — a reviewer who flags
+everything gets ignored.
+
+You are given what an agent just did and, when it edited files, the git diff of
+those changes. Review the diff as a thorough PR reviewer would, in priority
+order:
+- Correctness: bugs, logic errors, wrong conditions, off-by-one, unhandled
+  errors, race conditions, broken invariants, behavior changes that weren't
+  intended.
+- Edge cases the change fails to handle: null/empty, large input, concurrency,
+  error/failure paths.
+- Security: injection, secrets in code, unsafe shell, auth/permission gaps,
+  path traversal, SSRF.
+- Reinventing the wheel: code that reimplements something already in this
+  codebase, an imported library, or the standard library — name the existing
+  thing.
+- Maintainability that materially matters: misleading names, dead code,
+  swallowed errors, risky logic with no test.
+Skip pure style/formatting/import-order nitpicks — a linter handles those.
 
 Respond with EXACTLY one of:
-- "SKIP" — if nothing is clearly questionable. Bias toward SKIP for routine work;
-  a frenemy that cries wolf gets ignored.
-- "CHALLENGE: <one or two sentences>" — a single sharp challenge naming the
-  specific risk and what to do instead. No preamble, no markdown.`;
+- "SKIP" — if the change is sound. Bias toward SKIP for routine, correct work.
+- "CHALLENGE: <findings>" — concise, specific findings. Name the file and the
+  concrete risk and the fix for each; reference the changed lines from the diff.
+  No preamble, no markdown headers.`;
 
 /** Format a primary's recent hook events into a compact activity description. */
 export function formatActivity(events: HookEvent[]): string {
@@ -63,6 +82,48 @@ export function parseChallenge(raw: string | null): string | null {
   if (idx === -1) return null;
   const body = text.slice(idx + "CHALLENGE:".length).trim();
   return body.length > 0 ? body : null;
+}
+
+/** Unique file paths touched by these events (for diffing). */
+function touchedPaths(events: HookEvent[]): string[] {
+  return [
+    ...new Set(
+      events
+        .map((e) => e.filePath)
+        .filter((p): p is string => typeof p === "string" && p.length > 0),
+    ),
+  ];
+}
+
+/** First non-null cwd among events — the primary's working directory (worktree). */
+function eventCwd(events: HookEvent[]): string | null {
+  for (const e of events) if (e.cwd) return e.cwd;
+  return null;
+}
+
+/**
+ * The working-tree diff for specific files, so the critic reviews the ACTUAL
+ * change, not just "about to edit X". Run in the primary's cwd (its worktree).
+ * Best-effort: empty string on any failure (not a git repo, etc.). Truncated so
+ * a huge diff doesn't blow up the critic prompt.
+ */
+export function gitDiff(cwd: string, paths: string[], maxChars = 8000): string {
+  if (paths.length === 0) return "";
+  try {
+    // `diff HEAD` so staged AND unstaged edits are reviewed (plain `git diff`
+    // misses staged changes). The reviewer also has git tools to dig into
+    // committed history itself if it needs to.
+    const out = execFileSync(
+      "git",
+      ["-C", cwd, "--no-pager", "diff", "HEAD", "--", ...paths],
+      { encoding: "utf-8", maxBuffer: 16 * 1024 * 1024 },
+    );
+    return out.length > maxChars
+      ? `${out.slice(0, maxChars)}\n…[diff truncated]`
+      : out;
+  } catch {
+    return "";
+  }
 }
 
 export interface FrenemyOptions {
@@ -97,26 +158,47 @@ interface FrenemyDeps {
     body: string;
     source: string;
   }) => Promise<unknown>;
-  critique: (activity: string) => Promise<string | null>;
+  critique: (reviewInput: string, cwd: string | null) => Promise<string | null>;
 }
+
+/**
+ * Read-only tools the reviewer may use in the primary's worktree. Deliberately
+ * no Write/Edit (the frenemy reviews, never changes code) and Bash limited to
+ * safe inspection commands.
+ */
+const REVIEW_TOOLS = [
+  "Read",
+  "Grep",
+  "Glob",
+  "Bash(git diff:*)",
+  "Bash(git log:*)",
+  "Bash(git show:*)",
+  "Bash(cat:*)",
+  "Bash(ls:*)",
+  "Bash(rg:*)",
+  // Note: no `sed` — `sed -i` writes in place, which would break the
+  // reviews-never-changes-code invariant. Grep/rg cover content search.
+];
 
 function defaultDeps(opts: FrenemyOptions): FrenemyDeps {
   return {
     busRoster: (input) => httpPanopticonService.busRoster(input),
     hookTimeline: (input) => httpPanopticonService.hookTimeline(input),
     busSend: (input) => httpPanopticonService.busSend(input),
-    critique: async (activity) => {
-      const out = await invokeLlmAsync(
-        `Recent actions of the agent:\n${activity}`,
-        {
-          runner: opts.runner ?? "claude",
-          model: opts.model ?? null,
-          systemPrompt: FRENEMY_PERSONA,
-        },
-      );
+    critique: async (reviewInput, cwd) => {
+      // Give the reviewer read-only access to the primary's worktree so it can
+      // inspect surrounding code, call sites, and history — a real review, not
+      // just a glance at the diff.
+      const out = await invokeLlmAsync(reviewInput, {
+        runner: opts.runner ?? "claude",
+        model: opts.model ?? FRENEMY_DEFAULT_MODEL,
+        systemPrompt: FRENEMY_PERSONA,
+        cwd: cwd ?? undefined,
+        allowedTools: cwd ? REVIEW_TOOLS : undefined,
+      });
       if (process.env.PANOPTICON_FRENEMY_DEBUG) {
         log.server.info(
-          `frenemy critic: in=${JSON.stringify(activity)} out=${JSON.stringify(out)}`,
+          `frenemy critic: in=${JSON.stringify(reviewInput.slice(0, 500))} out=${JSON.stringify(out)}`,
         );
       }
       return out;
@@ -146,8 +228,10 @@ export async function runFrenemyOnce(
   for (const primary of primaries) {
     const cursor = cursors.get(primary.session_id) ?? 0;
     const timeline = await deps.hookTimeline({
+      // PostToolUse so we review edits that have actually landed (the diff is
+      // real), plus PreToolUse/prompt for about-to-run commands and intent.
       sessionId: primary.session_id,
-      eventTypes: ["PreToolUse", "UserPromptSubmit"],
+      eventTypes: ["PreToolUse", "PostToolUse", "UserPromptSubmit"],
       since: cursor > 0 ? new Date(cursor).toISOString() : undefined,
       limit: opts.lookback ?? 8,
     });
@@ -158,9 +242,14 @@ export async function runFrenemyOnce(
       Math.max(...fresh.map((e) => e.timestampMs)),
     );
 
-    const challenge = parseChallenge(
-      await deps.critique(formatActivity(fresh)),
-    );
+    // Review the ACTUAL diff of the files it changed, not just the action list.
+    const cwd = eventCwd(fresh);
+    const diff = cwd ? gitDiff(cwd, touchedPaths(fresh)) : "";
+    const reviewInput = diff
+      ? `What the agent just did:\n${formatActivity(fresh)}\n\nDiff of the files it changed:\n${diff}`
+      : `What the agent just did:\n${formatActivity(fresh)}`;
+
+    const challenge = parseChallenge(await deps.critique(reviewInput, cwd));
     if (!challenge) continue;
     await deps.busSend({
       room: opts.room,

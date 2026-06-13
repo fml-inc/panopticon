@@ -1913,11 +1913,11 @@ program
 program
   .command("frenemy")
   .description(
-    "Run an adversarial 'frenemy' that watches the agents working in this workspace and challenges questionable actions (advisory; delivered via the bus)",
+    "Run a stickler code-review 'frenemy' (Opus, read-only workspace access) that reviews changes as the agents in this workspace make them and posts findings via the bus — so the PR is effectively reviewed by the end",
   )
   .option("--room <room>", "Explicit room (default: current workspace repo)")
   .option("--runner <runner>", "Critic runner: claude or codex", "claude")
-  .option("--model <model>", "Model override for the critic")
+  .option("--model <model>", "Model override for the critic (default: opus)")
   .option("--interval <seconds>", "Poll interval", "8")
   .option("--once", "Run a single pass and exit")
   .action(async (opts: OptionValues) => {
