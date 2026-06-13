@@ -2215,5 +2215,28 @@ describe("server integration", () => {
         (res.body as { activityMs: number | null }).activityMs,
       ).toBeGreaterThan(0);
     });
+
+    it("is NOT woken by the frenemy's own (role:frenemy) events", async () => {
+      // The entire defense against the critic's hooks self-waking the loop.
+      const FRENEMY_ROOM = "fml-inc/waitroom-frenemy";
+      const waitP = post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: FRENEMY_ROOM, sinceMs: 0, timeoutMs: 600 },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // A frenemy-role event (what the critic subprocess's hooks look like).
+      await post("/hooks", {
+        session_id: "the-critic",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: FRENEMY_ROOM,
+        role: "frenemy",
+        tool_name: "Read",
+        tool_input: { file_path: "/x" },
+      });
+      const res = await waitP;
+      // Times out — the frenemy event did not wake it.
+      expect((res.body as { activityMs: number | null }).activityMs).toBeNull();
+    });
   });
 });

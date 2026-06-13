@@ -348,6 +348,10 @@ export function createFrenemyLoop(
       }
       if (res === STOP) break;
       if (res.activityMs == null) continue; // idle timeout — keep waiting
+      // Advance to the waking event, NOT the newest activity seen during
+      // settle/review. Conservative on purpose: edits that land after the diff
+      // is read still wake the next wait (one extra, usually-SKIP pass) rather
+      // than being silently dropped.
       watermark = Math.max(watermark, res.activityMs);
 
       if ((await untilStop(sleep(settleMs))) === STOP) break;

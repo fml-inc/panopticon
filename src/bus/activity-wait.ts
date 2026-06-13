@@ -8,6 +8,11 @@
  * (noteRoomActivity), or with null after a timeout. If activity newer than
  * `sinceMs` already happened, the wait resolves immediately — which closes the
  * race where an event lands between a watcher's passes.
+ *
+ * State is an in-process singleton: this works precisely because /hooks ingestion
+ * (which calls noteRoomActivity) and the wait_for_activity endpoint share one
+ * server process. Moving ingestion off the server, or running a second server,
+ * would silently break wakeups — they'd need a shared signal (DB poll, pub/sub).
  */
 
 const roomWatermark = new Map<string, number>();

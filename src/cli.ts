@@ -1950,6 +1950,11 @@ program
       process.exitCode = 1;
       return;
     }
+    // Mark this process — and, via the env it spawns critics with, the critic
+    // subprocesses' own Claude Code hooks — as the frenemy role. Without this the
+    // critic's tool-call hooks land as normal room activity, which wakes the
+    // long-poll and reviews the critic itself: a self-sustaining review storm.
+    process.env.PANOPTICON_FRENEMY_ROLE ??= "frenemy";
     const frenemyOpts = {
       room,
       runner: opts.runner as "claude" | "codex",
@@ -1968,6 +1973,10 @@ program
     });
     process.on("SIGINT", () => handle.stop());
     await handle.done;
+    // stop() resolves done promptly, but the abandoned long-poll socket is still
+    // an active handle that would keep the event loop alive; exit so Ctrl-C is
+    // actually immediate.
+    process.exit(0);
   });
 
 program
