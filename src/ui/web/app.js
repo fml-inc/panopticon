@@ -54,6 +54,14 @@ let totalSpend = 0;
 const rosterEl = document.getElementById("roster");
 const countsEl = document.getElementById("counts");
 const missionbarEl = document.getElementById("missionbar");
+const toggleExitedEl = document.getElementById("toggle-exited");
+
+/** Whether exited sessions are shown in the roster. */
+let showExited = true;
+toggleExitedEl?.addEventListener("click", () => {
+  showExited = !showExited;
+  renderRoster();
+});
 
 /** session_id of the roster member whose detail drawer is open, or null. */
 let selectedSession = null;
@@ -181,22 +189,39 @@ function renderRoster() {
     `<span class="c-idle">●${counts.idle}</span>` +
     `<span class="c-exited">●${counts.exited}</span>`;
 
-  if (rows.length === 0) {
-    rosterEl.innerHTML = `<li class="empty">No instances yet.</li>`;
+  // Exited-sessions toggle: label reflects current state; hide when there are
+  // none to toggle.
+  if (toggleExitedEl) {
+    toggleExitedEl.hidden = counts.exited === 0;
+    toggleExitedEl.textContent = showExited
+      ? `hide exited (${counts.exited})`
+      : `show exited (${counts.exited})`;
+  }
+
+  const visible = showExited ? rows : rows.filter((i) => i.status !== "exited");
+  if (visible.length === 0) {
+    rosterEl.innerHTML = `<li class="empty">No instances ${
+      rows.length ? "shown" : "yet"
+    }.</li>`;
     return;
   }
 
   // Group by room (repo) — surfaces the fleet topology. Rooms keep the global
-  // status sort within each group.
+  // status sort within each group; the catch-all "(no room)" group sorts last.
   const byRoom = new Map();
-  for (const i of rows) {
+  for (const i of visible) {
     const key = roomKey(i);
     if (!byRoom.has(key)) byRoom.set(key, []);
     byRoom.get(key).push(i);
   }
 
+  const NO_ROOM = "(no room)";
   rosterEl.innerHTML = [...byRoom.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .sort((a, b) => {
+      if (a[0] === NO_ROOM) return 1;
+      if (b[0] === NO_ROOM) return -1;
+      return a[0].localeCompare(b[0]);
+    })
     .map(([room, members]) => {
       const active = members.filter((m) => m.status === "active").length;
       return (

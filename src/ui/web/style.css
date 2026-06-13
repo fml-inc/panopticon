@@ -149,6 +149,29 @@ body {
   gap: 10px;
 }
 
+.panel-head .counts {
+  margin-left: auto;
+}
+
+.toggle-exited {
+  margin-left: 10px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.toggle-exited:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.toggle-exited[hidden] {
+  display: none;
+}
+
 .counts .c-active {
   color: var(--active);
 }
