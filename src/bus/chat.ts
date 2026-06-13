@@ -15,8 +15,8 @@
 
 import type { AgentMessageRow } from "../db/bus.js";
 import type {
-  BusReadInput,
   BusReadResult,
+  BusRecvInput,
   BusRosterInput,
   InstancesResult,
   WaitForActivityInput,
@@ -25,7 +25,8 @@ import type {
 
 /** Subset of the service the chat loop needs (injectable for tests). */
 export interface ChatDeps {
-  busRead: (input: BusReadInput) => Promise<BusReadResult>;
+  /** Consume-once receive: returns unseen chat for the caller, marks delivered. */
+  recv: (input: BusRecvInput) => Promise<BusReadResult>;
   waitForActivity: (
     input: WaitForActivityInput,
   ) => Promise<WaitForActivityResult>;
@@ -39,9 +40,7 @@ export interface ChatWaitOptions {
   room: string;
   /** Caller's session id — excludes own messages, addresses directed mail. */
   selfSession?: string;
-  /** Only return messages from this peer session. */
-  onlyFrom?: string;
-  /** Start cursor: only messages with id greater than this. */
+  /** Optional extra lower bound on id; the delivery gate handles dedup. */
   sinceId: number;
   /** Per server long-poll, ms (clamped server-side). */
   longPollMs?: number;
@@ -121,19 +120,20 @@ export async function runChatWait(
   let lastHeartbeat = startedAt;
 
   while (deps.now() < deadline) {
-    const read = await deps.busRead({
+    // Consume-once: returns chat this session hasn't seen (directed mail always,
+    // recent broadcasts) and marks it delivered server-side. The opener is never
+    // missed because "unseen" — not "after the tip" — is the gate. sinceId stays
+    // at the caller's start cursor (0 by default); the delivery table dedups.
+    const read = await deps.recv({
       room: opts.room,
       session_id: opts.selfSession,
-      sinceId: cursor,
+      sinceId: opts.sinceId || undefined,
       kinds: ["chat"],
       limit: 50,
     });
     cursor = Math.max(cursor, read.cursor);
-    const incoming = opts.onlyFrom
-      ? read.messages.filter((m) => m.from_session === opts.onlyFrom)
-      : read.messages;
-    if (incoming.length > 0) {
-      return { messages: incoming, cursor, timedOut: false };
+    if (read.messages.length > 0) {
+      return { messages: read.messages, cursor, timedOut: false };
     }
 
     const remaining = deadline - deps.now();

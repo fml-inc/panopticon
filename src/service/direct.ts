@@ -3,7 +3,11 @@ import { roomForSession } from "../bus/room.js";
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
 import { config } from "../config.js";
-import { insertAgentMessage, readAgentMessages } from "../db/bus.js";
+import {
+  insertAgentMessage,
+  markDelivered,
+  readAgentMessages,
+} from "../db/bus.js";
 import {
   CLAIMS_ACTIVE_COMPONENT,
   CLAIMS_PROJECTION_COMPONENT,
@@ -44,7 +48,10 @@ import {
   searchIntent,
 } from "../intent/query.js";
 import { log } from "../log.js";
-import { readInstancesResult } from "../presence/store.js";
+import {
+  getInstanceFirstSeen,
+  readInstancesResult,
+} from "../presence/store.js";
 import {
   rebuildClaimsDerivedState,
   reparseAll,
@@ -171,6 +178,13 @@ function resolveBusRoom(input: {
   return null;
 }
 
+/**
+ * How far back a first `busRecv` catches up on broadcast chat. Bounds the
+ * one-time replay of unseen room history so a fresh waiter sees recent openers
+ * but not ancient chatter. Directed mail ignores this (always delivered).
+ */
+const CHAT_CATCHUP_WINDOW_MS = 10 * 60 * 1000;
+
 export function createDirectPanopticonService(): PanopticonService {
   return {
     async listSessions(opts) {
@@ -248,6 +262,46 @@ export function createDirectPanopticonService(): PanopticonService {
         excludeFrom: input.session_id,
         limit: input.limit,
       });
+      const cursor = messages.length
+        ? messages[messages.length - 1].id
+        : (input.sinceId ?? 0);
+      return { room, cursor, messages };
+    },
+    async busRecv(input) {
+      const room = resolveBusRoom(input);
+      if (!room)
+        return { room: null, cursor: input.sinceId ?? 0, messages: [] };
+      const sessionId = input.session_id;
+      // Catch up on what this session hasn't seen, NOT the room tip — so a
+      // message sent before the caller started waiting isn't skipped as
+      // history (the opener race). Mirrors the hook drain: per-recipient
+      // consume-once via the delivery table. Broadcasts are bounded to the
+      // session's join time (or a recent window) so a first read doesn't
+      // replay ancient history; directed mail is always delivered.
+      const sinceMs =
+        input.sinceMs ??
+        Math.max(
+          sessionId ? (getInstanceFirstSeen(sessionId) ?? 0) : 0,
+          Date.now() - CHAT_CATCHUP_WINDOW_MS,
+        );
+      const messages = readAgentMessages({
+        room,
+        kinds: input.kinds ?? ["chat"],
+        toSession: sessionId,
+        excludeFrom: sessionId,
+        undeliveredTo: sessionId,
+        sinceMs,
+        // id > 0 ascending: oldest-unseen first.
+        sinceId: input.sinceId ?? 0,
+        limit: input.limit ?? 50,
+      });
+      if (sessionId && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          sessionId,
+          Date.now(),
+        );
+      }
       const cursor = messages.length
         ? messages[messages.length - 1].id
         : (input.sinceId ?? 0);

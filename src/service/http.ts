@@ -145,6 +145,8 @@ export const httpPanopticonService: PanopticonService = {
     callExec("bus-send", toParams(input) ?? {}) as Promise<BusSendResult>,
   busRead: (input) =>
     callTool("bus_read", toParams(input) ?? {}) as Promise<BusReadResult>,
+  busRecv: (input) =>
+    callExec("bus-recv", toParams(input) ?? {}) as Promise<BusReadResult>,
   busRoster: (input) =>
     callTool("bus_roster", toParams(input) ?? {}) as Promise<InstancesResult>,
   waitForActivity: (input) =>

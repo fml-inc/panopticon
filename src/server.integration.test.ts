@@ -2090,6 +2090,54 @@ describe("server integration", () => {
     });
   });
 
+  // ── Bus recv (chat catch-up for `panopticon chat wait`) ─────────────────
+  // Consume-once receive that catches up on UNSEEN chat rather than the room
+  // tip — so a message sent before a waiter started is still delivered (the
+  // opener race the live test surfaced), and per-recipient so each peer gets it.
+
+  describe("bus recv", () => {
+    const ROOM = "fml-inc/recv";
+    function sendChat(from: string, body: string) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from, kind: "chat", body },
+      });
+    }
+    function recv(session: string) {
+      return post("/api/exec", {
+        command: "bus-recv",
+        params: { room: ROOM, session_id: session },
+      });
+    }
+    function bodies(res: { body: unknown }): string[] {
+      return (res.body as { messages: { body: string }[] }).messages.map(
+        (m) => m.body,
+      );
+    }
+
+    it("returns a chat sent BEFORE the recv (no tip race) and consumes it once", async () => {
+      // Sent first — a tip-based wait would treat this as history and miss it.
+      await sendChat("peer-x", "opener before you waited");
+
+      const first = await recv("listener-1");
+      expect(bodies(first)).toContain("opener before you waited");
+
+      // Consume-once: the same session does not see it again.
+      const second = await recv("listener-1");
+      expect(bodies(second)).not.toContain("opener before you waited");
+    });
+
+    it("delivers a broadcast to each peer independently, never to the sender", async () => {
+      await sendChat("peer-y", "hello room");
+
+      expect(bodies(await recv("listener-2"))).toContain("hello room");
+      // A different session still gets its own copy (per-recipient).
+      expect(bodies(await recv("listener-3"))).toContain("hello room");
+      // The sender never drains its own message.
+      expect(bodies(await recv("peer-y"))).not.toContain("hello room");
+    });
+  });
+
   // ── Recruitment beacon (Layer 2 provider) ───────────────────────────────
   // A room-broadcast invite is shown to each active session once (not consumed
   // like a challenge), scoped to the room, and never to the inviter itself.

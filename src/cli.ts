@@ -2022,8 +2022,10 @@ chat
     "Block until a peer sends a chat message, then print it. Re-run after it returns. Heartbeats peer liveness to stderr.",
   )
   .option("--room <room>", "Explicit room (default: current workspace repo)")
-  .option("--since <id>", "Resume after this message id (else waits for new)")
-  .option("--from <session>", "Only wake on messages from this peer")
+  .option(
+    "--since <id>",
+    "Extra lower bound on message id (the delivery gate already dedups)",
+  )
   .option(
     "--timeout <seconds>",
     "Overall budget before returning so you can re-invoke",
@@ -2043,31 +2045,18 @@ chat
       return;
     }
     const budgetSec = Number(opts.timeout);
-    // Resolve the starting cursor: an explicit --since, else the room's current
-    // tip, so a first wait blocks for the NEXT message rather than replaying
-    // history.
-    let sinceId: number;
-    if (opts.since !== undefined) {
-      sinceId = Number(opts.since);
-    } else {
-      const tip = await service.busRead({
-        room,
-        session_id: self.sessionId,
-        kinds: ["chat"],
-        limit: 1,
-      });
-      sinceId = tip.cursor;
-    }
     const result = await runChatWait(
       {
         room,
         selfSession: self.sessionId,
-        onlyFrom: typeof opts.from === "string" ? opts.from : undefined,
-        sinceId,
+        // No tip cursor: the per-recipient delivery gate decides what's unseen,
+        // so a message sent before this wait started is still delivered (no
+        // opener race). --since is just an optional extra floor.
+        sinceId: opts.since !== undefined ? Number(opts.since) : 0,
         budgetMs: Number.isFinite(budgetSec) ? budgetSec * 1000 : undefined,
       },
       {
-        busRead: (input) => service.busRead(input),
+        recv: (input) => service.busRecv(input),
         waitForActivity: (input) => service.waitForActivity(input),
         busRoster: (input) => service.busRoster(input),
         now: () => Date.now(),

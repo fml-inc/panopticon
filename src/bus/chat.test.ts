@@ -94,7 +94,7 @@ describe("formatMessage", () => {
 
 describe("runChatWait", () => {
   const baseDeps = (over: Partial<ChatDeps>): ChatDeps => ({
-    busRead: vi.fn(async () => ({ room: "r", cursor: 0, messages: [] })),
+    recv: vi.fn(async () => ({ room: "r", cursor: 0, messages: [] })),
     waitForActivity: vi.fn(async () => ({ activityMs: null, room: "r" })),
     busRoster: vi.fn(async () => roster([])),
     now: () => 0,
@@ -102,9 +102,9 @@ describe("runChatWait", () => {
     ...over,
   });
 
-  it("returns a peer message immediately and advances the cursor", async () => {
+  it("returns unseen chat immediately (no tip race) and advances the cursor", async () => {
     const deps = baseDeps({
-      busRead: vi.fn(async () => ({
+      recv: vi.fn(async () => ({
         room: "r",
         cursor: 5,
         messages: [msg({ id: 5, body: "ping" })],
@@ -115,24 +115,6 @@ describe("runChatWait", () => {
     expect(res.messages.map((m) => m.body)).toEqual(["ping"]);
     expect(res.cursor).toBe(5);
     expect(deps.waitForActivity).not.toHaveBeenCalled();
-  });
-
-  it("applies the --from filter", async () => {
-    const deps = baseDeps({
-      busRead: vi.fn(async () => ({
-        room: "r",
-        cursor: 9,
-        messages: [
-          msg({ id: 8, from_session: "noise", body: "x" }),
-          msg({ id: 9, from_session: "wanted", body: "y" }),
-        ],
-      })),
-    });
-    const res = await runChatWait(
-      { room: "r", sinceId: 0, onlyFrom: "wanted" },
-      deps,
-    );
-    expect(res.messages.map((m) => m.body)).toEqual(["y"]);
   });
 
   it("blocks then times out, emitting a heartbeat", async () => {
