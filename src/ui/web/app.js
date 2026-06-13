@@ -17,6 +17,23 @@ async function tool(name, params = {}) {
   return res.json();
 }
 
+/** POST a write command (e.g. bus-send) to the exec dispatch. */
+async function exec(command, params = {}) {
+  const res = await fetch("/api/exec", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${boot.token}`,
+    },
+    body: JSON.stringify({ command, params }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`${command} -> ${res.status} ${txt}`.trim());
+  }
+  return res.json();
+}
+
 // ---- Roster -----------------------------------------------------------------
 
 /** session_id -> instance view */
@@ -24,9 +41,17 @@ const instances = new Map();
 
 /** session_id -> session row from the `sessions` tool (title, model, cost…). */
 const sessionMeta = new Map();
+/** parent session_id -> count of child (subagent) sessions, for topology. */
+const childCount = new Map();
+/** Fleet burn-rate state, recomputed from session-cost deltas each poll. */
+let prevAgg = null; // { ts, cost, tokens }
+let burnPerHr = null;
+let tokPerMin = null;
+let totalSpend = 0;
 
 const rosterEl = document.getElementById("roster");
 const countsEl = document.getElementById("counts");
+const missionbarEl = document.getElementById("missionbar");
 
 /** session_id of the roster member whose detail drawer is open, or null. */
 let selectedSession = null;
@@ -80,7 +105,66 @@ function scheduleRender(delay = 700) {
 
 const STATUS_RANK = { active: 0, idle: 1, exited: 2 };
 
+/** One roster row. */
+function instRowHtml(i) {
+  const meta = sessionMeta.get(i.session_id) ?? {};
+  const ss = meta.sessionSummary ?? {};
+  const isFrenemy = i.role === "frenemy";
+  const roleBadge = isFrenemy
+    ? `<span class="badge frenemy">frenemy</span>`
+    : i.role
+      ? `<span class="badge">${escapeHtml(i.role)}</span>`
+      : "";
+  const kids = childCount.get(i.session_id) ?? 0;
+  const agentBadge = kids ? `<span class="badge agents">⊕${kids}</span>` : "";
+  const selected = i.session_id === selectedSession ? " selected" : "";
+
+  const title =
+    (ss.title || meta.firstPrompt || "").trim() ||
+    `${i.target ?? "agent"} · ${shortId(i.session_id)}`;
+
+  // Sub-line: model · branch · messages · age — cost gets its own column.
+  const branch = ss.branch || i.branch;
+  const sub = [
+    modelShort(meta.model),
+    branch ? escapeHtml(branch) : "",
+    meta.messageCount ? `${fmtNum(meta.messageCount)} msg` : "",
+    ageStr(i.last_seen_ms),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const cost = fmtCost(meta.totalCost);
+
+  return `
+    <li class="inst status-${i.status}${selected}" data-session="${escapeHtml(i.session_id)}">
+      <span class="dot"></span>
+      <div class="inst-main">
+        <div class="inst-line">
+          <span class="inst-title">${escapeHtml(title)}</span>
+          ${roleBadge}${agentBadge}
+        </div>
+        <div class="inst-sub">${sub}</div>
+      </div>
+      <div class="inst-right">
+        ${cost ? `<div class="inst-cost">${cost}</div>` : ""}
+        <div class="inst-status">${i.status}${
+          i.ended_reason ? `<br/>${escapeHtml(i.ended_reason)}` : ""
+        }</div>
+      </div>
+    </li>`;
+}
+
+function roomKey(i) {
+  return (
+    i.room ||
+    sessionMeta.get(i.session_id)?.sessionSummary?.repository ||
+    "(no room)"
+  );
+}
+
 function renderRoster() {
+  renderMissionBar();
+
   // Sort by status, then by first-seen so a row holds a stable position instead
   // of jumping to the top every time its heartbeat ticks.
   const rows = [...instances.values()].sort((a, b) => {
@@ -100,53 +184,44 @@ function renderRoster() {
     return;
   }
 
-  rosterEl.innerHTML = rows
-    .map((i) => {
-      const meta = sessionMeta.get(i.session_id) ?? {};
-      const ss = meta.sessionSummary ?? {};
-      const isFrenemy = i.role === "frenemy";
-      const roleBadge = isFrenemy
-        ? `<span class="badge frenemy">frenemy</span>`
-        : i.role
-          ? `<span class="badge">${escapeHtml(i.role)}</span>`
-          : "";
-      const selected = i.session_id === selectedSession ? " selected" : "";
+  // Group by room (repo) — surfaces the fleet topology. Rooms keep the global
+  // status sort within each group.
+  const byRoom = new Map();
+  for (const i of rows) {
+    const key = roomKey(i);
+    if (!byRoom.has(key)) byRoom.set(key, []);
+    byRoom.get(key).push(i);
+  }
 
-      const title =
-        (ss.title || meta.firstPrompt || "").trim() ||
-        `${i.target ?? "agent"} · ${shortId(i.session_id)}`;
-
-      // Sub-line: model · branch · messages · age — cost gets its own column.
-      const branch = ss.branch || i.branch;
-      const sub = [
-        modelShort(meta.model),
-        branch ? escapeHtml(branch) : "",
-        meta.messageCount ? `${fmtNum(meta.messageCount)} msg` : "",
-        ageStr(i.last_seen_ms),
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      const cost = fmtCost(meta.totalCost);
-
-      return `
-        <li class="inst status-${i.status}${selected}" data-session="${escapeHtml(i.session_id)}">
-          <span class="dot"></span>
-          <div class="inst-main">
-            <div class="inst-line">
-              <span class="inst-title">${escapeHtml(title)}</span>
-              ${roleBadge}
-            </div>
-            <div class="inst-sub">${sub}</div>
-          </div>
-          <div class="inst-right">
-            ${cost ? `<div class="inst-cost">${cost}</div>` : ""}
-            <div class="inst-status">${i.status}${
-              i.ended_reason ? `<br/>${escapeHtml(i.ended_reason)}` : ""
-            }</div>
-          </div>
-        </li>`;
+  rosterEl.innerHTML = [...byRoom.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([room, members]) => {
+      const active = members.filter((m) => m.status === "active").length;
+      return (
+        `<li class="room-head"><span class="room-name">${escapeHtml(room)}</span>` +
+        `<span class="room-count">${active}/${members.length}</span></li>` +
+        members.map(instRowHtml).join("")
+      );
     })
     .join("");
+}
+
+/** Aggregate burn-rate header across the fleet. */
+function renderMissionBar() {
+  if (!missionbarEl) return;
+  const active = [...instances.values()].filter(
+    (i) => i.status === "active",
+  ).length;
+  const tile = (label, value) =>
+    `<div class="mtile"><span class="mval">${value}</span><span class="mlabel">${label}</span></div>`;
+  missionbarEl.innerHTML =
+    tile("active", active) +
+    tile("burn", burnPerHr == null ? "—" : `$${burnPerHr.toFixed(2)}/hr`) +
+    tile(
+      "tokens",
+      tokPerMin == null ? "—" : `${fmtNum(Math.round(tokPerMin))}/min`,
+    ) +
+    tile("spend", `$${totalSpend.toFixed(2)}`);
 }
 
 function applyInstance(view) {
@@ -226,7 +301,37 @@ function connectStream() {
 async function refreshSessionMeta() {
   try {
     const res = await tool("sessions", { limit: 100 });
-    for (const s of res.sessions ?? []) sessionMeta.set(s.sessionId, s);
+    const list = res.sessions ?? [];
+    for (const s of list) sessionMeta.set(s.sessionId, s);
+
+    // Topology: count subagents per parent.
+    childCount.clear();
+    for (const s of list) {
+      if (s.parentSessionId) {
+        childCount.set(
+          s.parentSessionId,
+          (childCount.get(s.parentSessionId) ?? 0) + 1,
+        );
+      }
+    }
+
+    // Burn rate: delta of fleet cost/tokens since the last poll.
+    let sumCost = 0;
+    let sumTok = 0;
+    for (const s of sessionMeta.values()) {
+      sumCost += s.totalCost ?? 0;
+      sumTok += s.totalOutputTokens ?? 0;
+    }
+    totalSpend = sumCost;
+    const now = Date.now();
+    if (prevAgg) {
+      const dtHr = (now - prevAgg.ts) / 3_600_000;
+      const dtMin = (now - prevAgg.ts) / 60_000;
+      if (dtHr > 0) burnPerHr = Math.max(0, (sumCost - prevAgg.cost) / dtHr);
+      if (dtMin > 0) tokPerMin = Math.max(0, (sumTok - prevAgg.tokens) / dtMin);
+    }
+    prevAgg = { ts: now, cost: sumCost, tokens: sumTok };
+
     scheduleRender();
   } catch (err) {
     console.error("session meta refresh failed", err);
@@ -245,12 +350,17 @@ async function seed() {
   await refreshSessionMeta();
   setInterval(refreshSessionMeta, 15000);
 
-  // bus_read is a Layer 1 tool; ignore until it exists.
+  // Seed recent bus messages across all rooms via SQL (the bus_read tool is
+  // room-scoped; the dashboard wants the whole fleet). Live updates arrive over
+  // the SSE `message` stream.
   try {
-    const res = await tool("bus_read", {});
-    for (const m of res.messages ?? []) applyMessage(m);
-  } catch {
-    /* bus not live yet */
+    const rows = await tool("query", {
+      sql: "SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms FROM agent_messages ORDER BY id DESC LIMIT 50",
+    });
+    for (const m of (Array.isArray(rows) ? rows : []).reverse())
+      applyMessage(m);
+  } catch (err) {
+    console.error("bus seed failed", err);
   }
 }
 
@@ -494,11 +604,55 @@ function renderDetail(sessionId, data) {
         }
       </ul>
     </div>
+
+    <div class="drawer-section console">
+      <h3>Send to this session</h3>
+      <div class="console-box">
+        <select id="op-kind" class="op-kind">
+          <option value="chat">chat</option>
+          <option value="challenge">challenge</option>
+        </select>
+        <textarea id="op-body" class="op-body" rows="2"
+          placeholder="Message ${escapeHtml(shortId(sessionId))} over the bus…"></textarea>
+        <div class="console-actions">
+          <span id="op-status" class="op-status"></span>
+          <button id="op-send" class="op-send">Send</button>
+        </div>
+      </div>
+    </div>
   `;
 
   document
     .getElementById("drawer-close")
     ?.addEventListener("click", closeDetail);
+
+  // Operator console: send a bus message/challenge to this session. Room comes
+  // from the instance row (falls back to the session's repository).
+  const sendBtn = document.getElementById("op-send");
+  sendBtn?.addEventListener("click", async () => {
+    const bodyEl = document.getElementById("op-body");
+    const statusEl = document.getElementById("op-status");
+    const body = bodyEl.value.trim();
+    if (!body) return;
+    const room = inst.room || meta.sessionSummary?.repository;
+    sendBtn.disabled = true;
+    statusEl.textContent = "sending…";
+    try {
+      await exec("bus-send", {
+        room,
+        from: "mission-control",
+        to: sessionId,
+        kind: document.getElementById("op-kind").value,
+        body,
+      });
+      bodyEl.value = "";
+      statusEl.textContent = "sent ✓";
+    } catch (err) {
+      statusEl.textContent = String(err).slice(0, 140);
+    } finally {
+      sendBtn.disabled = false;
+    }
+  });
 }
 
 seed();

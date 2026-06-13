@@ -5,6 +5,7 @@
  * for durable state (claim/release, projected elsewhere).
  */
 
+import { broadcast, hasClients } from "../ui/events.js";
 import { getDb } from "./schema.js";
 
 const MESSAGE_COLUMNS =
@@ -60,7 +61,35 @@ export function insertAgentMessage(row: AgentMessageInsert): number {
       source: row.source ?? null,
       created_at_ms: row.created_at_ms,
     });
-  return Number(result.lastInsertRowid);
+  const id = Number(result.lastInsertRowid);
+
+  // Push to any connected Mission Control dashboard. Cross-room: the dashboard
+  // shows the whole fleet, so we broadcast regardless of room. Never throws into
+  // the caller — a UI listener error must not break a bus write.
+  if (hasClients()) {
+    try {
+      broadcast({
+        type: "message",
+        data: {
+          id,
+          room: row.room,
+          from_session: row.from_session,
+          to_session: row.to_session ?? null,
+          kind: row.kind,
+          body: row.body,
+          subject: row.subject ?? null,
+          ref_tool: row.ref_tool ?? null,
+          ref_path: row.ref_path ?? null,
+          source: row.source ?? null,
+          created_at_ms: row.created_at_ms,
+        },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return id;
 }
 
 export interface ReadMessagesOptions {
