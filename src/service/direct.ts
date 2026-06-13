@@ -1,4 +1,4 @@
-import { waitForRoomActivity } from "../bus/activity-wait.js";
+import { noteRoomActivity, waitForRoomActivity } from "../bus/activity-wait.js";
 import { roomForSession } from "../bus/room.js";
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
@@ -225,6 +225,14 @@ export function createDirectPanopticonService(): PanopticonService {
         source: input.source ?? null,
         created_at_ms: Date.now(),
       });
+      // Wake anyone long-polling the room for a live conversation. Gated to
+      // chat so a frenemy challenge/activity post can't wake the frenemy's own
+      // long-poll (which would re-trigger a review storm). Hook events already
+      // note activity for the frenemy path; this covers messages that aren't
+      // hooks — the peer's chat send is what a waiting agent is blocked on.
+      if (input.kind === "chat") {
+        noteRoomActivity(room, Date.now());
+      }
       return { id, room };
     },
     async busRead(input) {
