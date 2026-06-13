@@ -63,6 +63,7 @@ const SESSION_TABLES = [
   "agent_message_deliveries",
   "messages",
   "tool_calls",
+  "scanner_turns",
   "otel_logs",
   "otel_metrics",
   "otel_spans",

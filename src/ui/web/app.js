@@ -91,12 +91,43 @@ const instances = new Map();
 const sessionMeta = new Map();
 /** parent session_id -> count of child (subagent) sessions, for topology. */
 const childCount = new Map();
-/** Fleet burn-rate state. Per-session prev cost/tokens so window churn (a
- *  session entering/leaving the 100-row `sessions` page) can't spike the rate. */
-const prevById = new Map(); // sessionId -> { cost, tok }
-let prevTs = null;
-let burnPerHr = null;
-let tokPerMin = null;
+
+/** Per-session cumulative cost/token step function from scanner_turns, so cost
+ *  is exact "as of T" (priced per-turn by that turn's own model). */
+const costSteps = new Map(); // session_id -> [{ ts, cum, cumTok }] sorted by ts
+
+// Per-turn cost = tokens × the best-matching model_pricing for that turn's model
+// (mirrors SESSION_COST_SQL in src/db/query.ts, applied per turn).
+const PER_TURN_COST_SQL = `COALESCE((
+  SELECT st.input_tokens * COALESCE(mp.input_per_m, 0) / 1000000.0
+       + st.output_tokens * COALESCE(mp.output_per_m, 0) / 1000000.0
+       + st.cache_read_tokens * COALESCE(mp.cache_read_per_m, 0) / 1000000.0
+       + st.cache_creation_tokens * COALESCE(mp.cache_write_per_m, 0) / 1000000.0
+    FROM model_pricing mp WHERE st.model LIKE mp.model_id || '%'
+    ORDER BY LENGTH(mp.model_id) DESC, mp.updated_ms DESC LIMIT 1
+), 0)`;
+
+/** Cumulative value (cost or tokens) for a session as of time T — binary search
+ *  for the latest turn at/*before* T. Exact; 0 if the session has no turns ≤ T. */
+function cumAt(sessionId, T, key) {
+  const arr = costSteps.get(sessionId);
+  if (!arr || arr.length === 0) return 0;
+  let lo = 0;
+  let hi = arr.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid].ts <= T) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans >= 0 ? arr[ans][key] : 0;
+}
+const costAsOf = (sessionId, T) => cumAt(sessionId, T, "cum");
+const tokAsOf = (sessionId, T) => cumAt(sessionId, T, "cumTok");
 
 const rosterEl = document.getElementById("roster");
 const countsEl = document.getElementById("counts");
@@ -137,13 +168,6 @@ function modelShort(m) {
 function fmtCost(c) {
   if (!c || c <= 0) return null;
   return `$${c.toFixed(2)}`;
-}
-
-/** True when the view is pinned to the present, so the stored totals (cost,
- *  message count) are accurate. When scrubbed into the past we don't have
- *  cost-as-of-T, so those numbers are suppressed rather than shown wrong. */
-function atPresent() {
-  return asOfT == null;
 }
 
 /** Compact "age since last activity" as of the current clock T: 5s / 2m / 1h.
@@ -204,9 +228,9 @@ function instRowHtml(i) {
   ]
     .filter(Boolean)
     .join(" · ");
-  // Cost is a stored total (not as-of-T) — only show it when pinned to present,
-  // never a fabricated figure while scrubbed.
-  const cost = atPresent() ? fmtCost(meta.totalCost) : null;
+  // Exact cost as of the current clock T (from scanner_turns), so it's right
+  // both live and while scrubbed.
+  const cost = fmtCost(costAsOf(i.session_id, currentT()));
 
   return `
     <li class="inst status-${i.status}${selected}" data-session="${escapeHtml(i.session_id)}">
@@ -297,28 +321,35 @@ function renderRoster() {
     .join("");
 }
 
-/** Aggregate header across the fleet. Active + spend come from the sessions
- *  currently present in the roster (so they accumulate during replay); burn /
- *  tokens are live-poll rates (— in snapshot mode). */
+/** Aggregate header across the fleet, all exact as of the current clock T:
+ *  spend = Σ cost(T) over present sessions; burn / tokens = the fleet's rate
+ *  over a trailing window ending at T. Works identically live and scrubbed. */
+const RATE_WINDOW_MS = 120_000; // 2-min trailing window for the rates
 function renderMissionBar() {
   if (!missionbarEl) return;
+  const T = currentT();
+  const T0 = T - RATE_WINDOW_MS;
   let active = 0;
   let spend = 0;
+  let spendPrev = 0;
+  let tok = 0;
+  let tokPrev = 0;
   for (const i of instances.values()) {
     if (i.status === "active") active += 1;
-    spend += sessionMeta.get(i.session_id)?.totalCost ?? 0;
+    spend += costAsOf(i.session_id, T);
+    spendPrev += costAsOf(i.session_id, T0);
+    tok += tokAsOf(i.session_id, T);
+    tokPrev += tokAsOf(i.session_id, T0);
   }
+  const burnPerHr = (spend - spendPrev) / (RATE_WINDOW_MS / 3_600_000);
+  const tokPerMin = (tok - tokPrev) / (RATE_WINDOW_MS / 60_000);
   const tile = (label, value) =>
     `<div class="mtile"><span class="mval">${value}</span><span class="mlabel">${label}</span></div>`;
   missionbarEl.innerHTML =
     tile("active", active) +
-    tile("burn", burnPerHr == null ? "—" : `$${burnPerHr.toFixed(2)}/hr`) +
-    tile(
-      "tokens",
-      tokPerMin == null ? "—" : `${fmtNum(Math.round(tokPerMin))}/min`,
-    ) +
-    // Spend is a stored total — only accurate at present; "—" while scrubbed.
-    tile("spend", atPresent() ? `$${spend.toFixed(2)}` : "—");
+    tile("burn", `$${burnPerHr.toFixed(2)}/hr`) +
+    tile("tokens", `${fmtNum(Math.round(tokPerMin))}/min`) +
+    tile("spend", `$${spend.toFixed(2)}`);
 }
 
 // ---- Source of truth + as-of-T view ----------------------------------------
@@ -483,35 +514,42 @@ async function refreshSessionMeta() {
       }
     }
 
-    // Burn rate = sum of per-session cost/token deltas since the last poll, over
-    // sessions seen in BOTH polls. A session newly entering the window only sets
-    // a baseline (its historical cost isn't attributed to one 15s tick), which
-    // avoids spikes from window churn. NOTE: the `sessions` page is limited to
-    // 100 rows, so this is a glanceable fleet rate, not exact accounting.
-    let dCost = 0;
-    let dTok = 0;
-    for (const s of sessionMeta.values()) {
-      const cost = s.totalCost ?? 0;
-      const tok = s.totalOutputTokens ?? 0;
-      const prev = prevById.get(s.sessionId);
-      if (prev) {
-        dCost += Math.max(0, cost - prev.cost);
-        dTok += Math.max(0, tok - prev.tok);
-      }
-      prevById.set(s.sessionId, { cost, tok });
-    }
-    const now = Date.now();
-    if (prevTs) {
-      const dtHr = (now - prevTs) / 3_600_000;
-      const dtMin = (now - prevTs) / 60_000;
-      if (dtHr > 0) burnPerHr = dCost / dtHr;
-      if (dtMin > 0) tokPerMin = dTok / dtMin;
-    }
-    prevTs = now;
-
     scheduleRender();
   } catch (err) {
     console.error("session meta refresh failed", err);
+  }
+}
+
+/** Load per-turn cost/token timelines (scanner_turns) for the roster sessions
+ *  so cost/burn/tokens are exact as of any T. Bounded to current instances. */
+async function refreshCostSteps() {
+  const ids = [...allInstances.keys()];
+  if (ids.length === 0) return;
+  const inList = ids.map((id) => `'${id.replace(/'/g, "''")}'`).join(",");
+  try {
+    const rows = await tool("query", {
+      sql: `SELECT session_id, timestamp_ms AS ts, ${PER_TURN_COST_SQL} AS cost, output_tokens AS tok
+              FROM scanner_turns st
+             WHERE session_id IN (${inList})
+             ORDER BY session_id, timestamp_ms`,
+    });
+    costSteps.clear();
+    for (const r of rows ?? []) {
+      let arr = costSteps.get(r.session_id);
+      if (!arr) {
+        arr = [];
+        costSteps.set(r.session_id, arr);
+      }
+      const prev = arr.length ? arr[arr.length - 1] : { cum: 0, cumTok: 0 };
+      arr.push({
+        ts: r.ts,
+        cum: prev.cum + (r.cost ?? 0),
+        cumTok: prev.cumTok + (r.tok ?? 0),
+      });
+    }
+    scheduleRender();
+  } catch (err) {
+    console.error("cost steps refresh failed", err);
   }
 }
 
@@ -530,11 +568,17 @@ async function loadSource() {
   } catch (err) {
     console.error("messages load failed", err);
   }
+  await refreshCostSteps();
 }
 
 async function seed() {
   await loadSource();
-  if (!STATIC) setInterval(refreshSessionMeta, 15000);
+  if (!STATIC) {
+    setInterval(() => {
+      refreshSessionMeta();
+      refreshCostSteps();
+    }, 15000);
+  }
   setupTimeline();
   following = true;
   asOfT = null;
