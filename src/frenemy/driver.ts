@@ -16,6 +16,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { resolveRoom } from "../bus/room.js";
 import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
@@ -171,9 +172,23 @@ export function gitDiff(
       ? `${out.slice(0, maxChars)}\n…[diff truncated]`
       : out;
 
+  // Keep only paths inside THIS worktree's repo. An out-of-repo path (a sibling
+  // worktree, a ~/.claude skill, a transcript file the agent read) makes git
+  // `fatal` on the whole `diff` command, which would otherwise throw away the
+  // diff for the real in-repo edits in the same batch — suppressing all review.
+  const top = run(["rev-parse", "--show-toplevel"])?.trim();
+  // Drop only ABSOLUTE paths that fall outside the repo; relative paths are
+  // resolved by git against cwd and are inherently in-repo.
+  const inRepo = top
+    ? paths.filter(
+        (p) => !isAbsolute(p) || p === top || p.startsWith(`${top}/`),
+      )
+    : paths;
+  if (inRepo.length === 0) return { text: "", scope: "none" };
+
   // `diff HEAD` so staged AND unstaged edits are reviewed (plain `git diff`
   // misses staged changes). The reviewer also has git tools to dig further.
-  const working = run(["diff", "HEAD", "--", ...paths]);
+  const working = run(["diff", "HEAD", "--", ...inRepo]);
   if (working && working.trim().length > 0) {
     return { text: truncate(working), scope: "uncommitted" };
   }
@@ -183,7 +198,7 @@ export function gitDiff(
   // reviewed instead of yielding an empty diff.
   const base = resolveBaseRef(run);
   if (base) {
-    const branch = run(["diff", `${base}...HEAD`, "--", ...paths]);
+    const branch = run(["diff", `${base}...HEAD`, "--", ...inRepo]);
     if (branch && branch.trim().length > 0) {
       return { text: truncate(branch), scope: "branch", base };
     }

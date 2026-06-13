@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -222,7 +222,8 @@ describe("gitDiff", () => {
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
 
   beforeEach(() => {
-    repo = mkdtempSync(join(tmpdir(), "frenemy-gitdiff-"));
+    // realpath so it matches `git rev-parse --show-toplevel` (macOS /var symlink).
+    repo = realpathSync(mkdtempSync(join(tmpdir(), "frenemy-gitdiff-")));
     execFileSync("git", ["-c", "init.defaultBranch=main", "init", repo]);
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
@@ -266,6 +267,24 @@ describe("gitDiff", () => {
     expect(diff.scope).toBe("branch");
     expect(diff.base).toBe("stable");
     expect(diff.text).toContain("+fromfeat");
+  });
+
+  it("ignores out-of-repo paths so they don't suppress the in-repo diff", () => {
+    writeFileSync(join(repo, "f.txt"), "one\ntwo\n");
+    // A sibling-worktree / ~/.claude path in the same batch must not make git
+    // fatal on the whole command and lose the real edit.
+    const diff = gitDiff(repo, [
+      join(repo, "f.txt"),
+      "/Users/somebody/.claude/skills/review.md",
+    ]);
+    expect(diff.scope).toBe("uncommitted");
+    expect(diff.text).toContain("+two");
+  });
+
+  it("returns scope=none when every path is outside the repo", () => {
+    const diff = gitDiff(repo, ["/etc/hosts", "/tmp/elsewhere.txt"]);
+    expect(diff.scope).toBe("none");
+    expect(diff.text).toBe("");
   });
 
   it("reports scope=none when nothing changed vs base", () => {
