@@ -1810,4 +1810,146 @@ describe("server integration", () => {
       expect(result1).toBe(result2);
     });
   });
+
+  // ── Agent-to-agent message bus (Layer 1) ────────────────────────────────
+  // Exercises the full wire path: writes via POST /api/exec bus-send and reads
+  // via POST /api/tool bus_read / bus_roster, with rooms resolved from the
+  // presence rows the dispatch records — no MCP layer, no hand-built session ids.
+
+  describe("agent message bus", () => {
+    const ROOM = "fml-inc/bus-integ";
+
+    function send(params: Record<string, unknown>) {
+      return post("/api/exec", { command: "bus-send", params });
+    }
+    function read(params: Record<string, unknown>) {
+      return post("/api/tool", { name: "bus_read", params });
+    }
+
+    it("round-trips a message through exec-send and tool-read", async () => {
+      const sent = await send({
+        room: ROOM,
+        from: "alice",
+        kind: "chat",
+        body: "hello bus",
+      });
+      expect(sent.status).toBe(200);
+      expect(sent.body).toMatchObject({ room: ROOM });
+      expect((sent.body as { id: number }).id).toBeGreaterThan(0);
+
+      const got = await read({ room: ROOM, session_id: "bob" });
+      expect(got.status).toBe(200);
+      const result = got.body as { room: string; messages: { body: string }[] };
+      expect(result.room).toBe(ROOM);
+      expect(result.messages.map((m) => m.body)).toContain("hello bus");
+    });
+
+    it("a reader does not see its own messages, but a peer does", async () => {
+      await send({
+        room: ROOM,
+        from: "carol",
+        kind: "chat",
+        body: "from carol",
+      });
+
+      const carol = await read({ room: ROOM, session_id: "carol" });
+      const dave = await read({ room: ROOM, session_id: "dave" });
+      const carolBodies = (
+        carol.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      const daveBodies = (
+        dave.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      expect(carolBodies).not.toContain("from carol");
+      expect(daveBodies).toContain("from carol");
+    });
+
+    it("directed messages reach only the addressee", async () => {
+      await send({
+        room: ROOM,
+        from: "eve",
+        to: "frank",
+        kind: "chat",
+        body: "for frank only",
+      });
+      const frank = await read({ room: ROOM, session_id: "frank" });
+      const grace = await read({ room: ROOM, session_id: "grace" });
+      expect(
+        (frank.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).toContain("for frank only");
+      expect(
+        (grace.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).not.toContain("for frank only");
+    });
+
+    it("the sinceId cursor returns only newer messages", async () => {
+      const first = await send({
+        room: ROOM,
+        from: "h",
+        kind: "chat",
+        body: "m1",
+      });
+      const cursor = (first.body as { id: number }).id;
+      await send({ room: ROOM, from: "h", kind: "chat", body: "m2" });
+
+      const got = await read({
+        room: ROOM,
+        session_id: "reader",
+        sinceId: cursor,
+      });
+      const bodies = (
+        got.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      expect(bodies).toContain("m2");
+      expect(bodies).not.toContain("m1");
+    });
+
+    it("bus_roster scopes the instance roster to the room", async () => {
+      // Two sessions present in our room, one elsewhere.
+      await post("/hooks", {
+        session_id: "roster-a",
+        hook_event_name: "SessionStart",
+        source: "claude",
+        repository: ROOM,
+        agent_pid: process.pid,
+      });
+      await post("/hooks", {
+        session_id: "roster-elsewhere",
+        hook_event_name: "SessionStart",
+        source: "claude",
+        repository: "fml-inc/other-room",
+        agent_pid: process.pid,
+      });
+
+      const roster = await post("/api/tool", {
+        name: "bus_roster",
+        params: { room: ROOM },
+      });
+      expect(roster.status).toBe(200);
+      const ids = (
+        roster.body as { instances: { session_id: string }[] }
+      ).instances.map((i) => i.session_id);
+      expect(ids).toContain("roster-a");
+      expect(ids).not.toContain("roster-elsewhere");
+    });
+
+    it("resolves the room implicitly from a session's recorded presence", async () => {
+      // A SessionStart records this session's room (repository) in presence.
+      await post("/hooks", {
+        session_id: "implicit-room-session",
+        hook_event_name: "SessionStart",
+        source: "claude",
+        repository: ROOM,
+        agent_pid: process.pid,
+      });
+      // bus_read with only a session_id (no room) must resolve to that room.
+      const got = await read({ session_id: "implicit-room-session" });
+      expect(got.status).toBe(200);
+      expect((got.body as { room: string }).room).toBe(ROOM);
+    });
+  });
 });

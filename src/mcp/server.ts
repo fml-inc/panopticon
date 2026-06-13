@@ -2,9 +2,11 @@
 
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { resolveRoom } from "../bus/room.js";
 import { log, openLogFd } from "../log.js";
 import { readFreshScannerStatus } from "../scanner/status.js";
 import { httpPanopticonService } from "../service/http.js";
@@ -16,6 +18,39 @@ import {
 } from "./permissions.js";
 
 const service = httpPanopticonService;
+
+/**
+ * Best-effort self-identification for the calling Claude session. Claude Code
+ * does not expose the session id to MCP servers, but it writes a per-pid
+ * registry file at ~/.claude/sessions/<pid>.json mapping pid -> sessionId + cwd,
+ * and a stdio MCP server's parent process IS the launching agent. So we read the
+ * file for our ppid to learn which session we belong to — letting the bus tools
+ * resolve the caller's room (and sender identity) with zero arguments.
+ *
+ * This couples to an undocumented Claude Code file, so it is wrapped in a guard:
+ * on any failure the bus tools simply fall back to requiring an explicit
+ * room/session_id, which is the pre-existing behavior.
+ */
+function resolveSelfIdentity(): { sessionId?: string; cwd?: string } {
+  try {
+    const ppid = process.ppid;
+    if (!ppid) return {};
+    const file = path.join(os.homedir(), ".claude", "sessions", `${ppid}.json`);
+    const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+    return {
+      sessionId:
+        typeof data.sessionId === "string" ? data.sessionId : undefined,
+      cwd: typeof data.cwd === "string" ? data.cwd : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+const self = resolveSelfIdentity();
+const SELF_SESSION_ID = self.sessionId;
+const SELF_ROOM =
+  resolveRoom(self.cwd ?? process.env.CLAUDE_PROJECT_DIR) ?? undefined;
 
 const server = new McpServer({
   name: "panopticon",
@@ -850,10 +885,11 @@ server.tool(
 
 server.tool(
   "bus_send",
-  "Send a message to other agent sessions in your room (workspace). Pass your " +
-    "session_id so the room is resolved automatically; omit `to` to broadcast, " +
-    "or set it to a specific session id. `kind` is free-form (e.g. challenge, " +
-    "chat); `subject` scopes claims (e.g. 'path:src/auth.ts').",
+  "Send a message to other agent sessions in your room (workspace). Your room " +
+    "and sender identity are auto-detected from the calling session — pass " +
+    "room/session_id only to override. Omit `to` to broadcast, or set it to a " +
+    "specific session id. `kind` is free-form (e.g. challenge, chat); `subject` " +
+    "scopes claims (e.g. 'path:src/auth.ts').",
   {
     session_id: z
       .string()
@@ -877,8 +913,8 @@ server.tool(
   },
   async ({ session_id, room, to, kind, body, subject, ref_path }) => {
     const result = await service.busSend({
-      session_id,
-      room,
+      session_id: session_id ?? SELF_SESSION_ID,
+      room: room ?? SELF_ROOM,
       to,
       kind,
       body,
@@ -892,9 +928,9 @@ server.tool(
 
 server.tool(
   "bus_read",
-  "Read recent messages in your room (workspace). Pass your session_id to " +
-    "resolve the room and receive broadcasts plus messages addressed to you " +
-    "(never your own). Use `sinceId` as a cursor to poll only new messages.",
+  "Read recent messages in your room (workspace). Your room is auto-detected " +
+    "from the calling session; you receive broadcasts plus messages addressed " +
+    "to you (never your own). Use `sinceId` as a cursor to poll only new messages.",
   {
     session_id: z
       .string()
@@ -916,8 +952,8 @@ server.tool(
   },
   async ({ session_id, room, sinceId, kinds, limit }) => {
     const result = await service.busRead({
-      session_id,
-      room,
+      session_id: session_id ?? SELF_SESSION_ID,
+      room: room ?? SELF_ROOM,
       sinceId,
       kinds,
       limit,
@@ -929,7 +965,8 @@ server.tool(
 server.tool(
   "bus_roster",
   "List the agent sessions in your room (workspace) with liveness status. " +
-    "Pass your session_id to scope to your room; omit for all rooms.",
+    "Your room is auto-detected from the calling session; pass room to override " +
+    "or to inspect another room.",
   {
     session_id: z
       .string()
@@ -941,7 +978,10 @@ server.tool(
       .describe("Explicit room (overrides session_id)."),
   },
   async ({ session_id, room }) => {
-    const result = await service.busRoster({ session_id, room });
+    const result = await service.busRoster({
+      session_id: session_id ?? SELF_SESSION_ID,
+      room: room ?? SELF_ROOM,
+    });
     return jsonContent(result);
   },
 );
