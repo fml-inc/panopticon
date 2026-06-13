@@ -148,6 +148,19 @@ describe("runFrenemyOnce", () => {
     expect(cursors.get("p1")).toBe(1000);
   });
 
+  it("does NOT advance the cursor when the critic fails — retries next pass", async () => {
+    const { deps, critiqueCalls } = makeDeps({
+      timelineFor: () => [hookEvent({ timestampMs: 1000 })],
+      critiqueImpl: async () => null, // transient failure (timeout / missing binary)
+    });
+    const cursors: FrenemyCursors = new Map();
+    await runFrenemyOnce(OPTS, cursors, deps);
+    expect(cursors.get("p1")).toBeUndefined(); // unseen — not burned
+
+    await runFrenemyOnce(OPTS, cursors, deps); // same activity is retried
+    expect(critiqueCalls).toHaveLength(2);
+  });
+
   it("ignores frenemy-role and exited instances", async () => {
     const { deps, sends } = makeDeps({
       rosterResult: roster([

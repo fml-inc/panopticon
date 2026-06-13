@@ -1921,6 +1921,21 @@ program
   .option("--interval <seconds>", "Poll interval", "8")
   .option("--once", "Run a single pass and exit")
   .action(async (opts: OptionValues) => {
+    if (opts.runner !== "claude" && opts.runner !== "codex") {
+      console.error(
+        `Invalid --runner "${opts.runner}": expected "claude" or "codex".`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const intervalSec = Number(opts.interval);
+    if (!Number.isFinite(intervalSec) || intervalSec <= 0) {
+      console.error(
+        `Invalid --interval "${opts.interval}": expected a positive number of seconds.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
     const room = resolveFrenemyRoom(
       typeof opts.room === "string" ? opts.room : undefined,
     );
@@ -1933,8 +1948,7 @@ program
     }
     const frenemyOpts = {
       room,
-      runner:
-        opts.runner === "codex" ? ("codex" as const) : ("claude" as const),
+      runner: opts.runner as "claude" | "codex",
       model: typeof opts.model === "string" ? opts.model : null,
     };
     if (opts.once) {
@@ -1945,7 +1959,7 @@ program
     console.log(`Frenemy watching room "${room}" — Ctrl-C to stop.`);
     const handle = createFrenemyLoop({
       ...frenemyOpts,
-      intervalMs: Number(opts.interval) * 1000,
+      intervalMs: intervalSec * 1000,
       onChallenge: (c) => console.log(`→ ${c.to}: ${c.body}`),
     });
     process.on("SIGINT", () => handle.stop());

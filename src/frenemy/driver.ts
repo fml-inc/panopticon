@@ -233,14 +233,17 @@ export async function runFrenemyOnce(
       sessionId: primary.session_id,
       eventTypes: ["PreToolUse", "PostToolUse", "UserPromptSubmit"],
       since: cursor > 0 ? new Date(cursor).toISOString() : undefined,
+      // If a primary emits more than `lookback` events between passes, only the
+      // newest `lookback` are reviewed and the cursor jumps past the rest. Fine
+      // for a polling reviewer; the long-poll version reviews every event.
       limit: opts.lookback ?? 8,
     });
-    const fresh = timeline.events.filter((e) => e.timestampMs > cursor);
+    // Chronological order reads more naturally for the critic than hook_timeline's
+    // newest-first.
+    const fresh = timeline.events
+      .filter((e) => e.timestampMs > cursor)
+      .sort((a, b) => a.timestampMs - b.timestampMs);
     if (fresh.length === 0) continue;
-    cursors.set(
-      primary.session_id,
-      Math.max(...fresh.map((e) => e.timestampMs)),
-    );
 
     // Review the ACTUAL diff of the files it changed, not just the action list.
     const cwd = eventCwd(fresh);
@@ -249,7 +252,18 @@ export async function runFrenemyOnce(
       ? `What the agent just did:\n${formatActivity(fresh)}\n\nDiff of the files it changed:\n${diff}`
       : `What the agent just did:\n${formatActivity(fresh)}`;
 
-    const challenge = parseChallenge(await deps.critique(reviewInput, cwd));
+    const raw = await deps.critique(reviewInput, cwd);
+    // Advance the cursor only after a SUCCESSFUL critic response (a challenge or
+    // an explicit SKIP). A transient failure (null — timeout, missing binary)
+    // leaves the activity unseen so the next pass retries it, rather than
+    // silently burning a real questionable action.
+    if (raw === null) continue;
+    cursors.set(
+      primary.session_id,
+      Math.max(...fresh.map((e) => e.timestampMs)),
+    );
+
+    const challenge = parseChallenge(raw);
     if (!challenge) continue;
     await deps.busSend({
       room: opts.room,
@@ -289,6 +303,11 @@ export function createFrenemyLoop(
   });
   const intervalMs = opts.intervalMs ?? 8_000;
 
+  // Cancellable inter-pass sleep so stop() (e.g. Ctrl-C) wakes the loop
+  // immediately instead of waiting out the interval.
+  let sleepTimer: ReturnType<typeof setTimeout> | null = null;
+  let wakeSleep: (() => void) | null = null;
+
   async function tick(): Promise<void> {
     while (!stopped) {
       try {
@@ -301,7 +320,12 @@ export function createFrenemyLoop(
         log.server.error("frenemy pass failed:", err);
       }
       if (stopped) break;
-      await new Promise((r) => setTimeout(r, intervalMs));
+      await new Promise<void>((resolve) => {
+        wakeSleep = resolve;
+        sleepTimer = setTimeout(resolve, intervalMs);
+        sleepTimer.unref?.();
+      });
+      wakeSleep = null;
     }
     resolveDone();
   }
@@ -310,6 +334,9 @@ export function createFrenemyLoop(
   return {
     stop() {
       stopped = true;
+      if (sleepTimer) clearTimeout(sleepTimer);
+      // Resolve any pending sleep so the loop re-checks `stopped` and exits now.
+      wakeSleep?.();
     },
     done,
   };
