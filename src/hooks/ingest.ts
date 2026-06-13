@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { roomForSession } from "../bus/room.js";
 import { config } from "../config.js";
 import {
   captureUserConfigSnapshot,
   extractWrittenFilePath,
   isTrackedUserConfigPath,
 } from "../config-capture.js";
+import { markDelivered, readAgentMessages } from "../db/bus.js";
 import { getDb } from "../db/schema.js";
 import {
   incrementEventTypeCount,
@@ -121,6 +123,8 @@ export interface HookInput {
   prompt?: string;
   /** PID of the live agent process (handler's process.ppid). */
   agent_pid?: number;
+  /** Session role marker, e.g. 'frenemy' (forwarded from PANOPTICON_FRENEMY_ROLE). */
+  role?: string;
   [key: string]: unknown;
 }
 
@@ -145,6 +149,54 @@ export function isPanopticonMcpTool(toolName: string): boolean {
     toolName.startsWith("mcp__panopticon__") ||
     toolName.startsWith("panopticon/")
   );
+}
+
+/** A session launched as a frenemy sidecar carries this role marker (forwarded
+ *  from PANOPTICON_FRENEMY_ROLE by the hook handler). It must not receive bus
+ *  delivery, so its own challenges never loop back into it. */
+function isFrenemySession(data: HookInput): boolean {
+  return data.role === "frenemy";
+}
+
+function joinContext(...parts: (string | null | undefined)[]): string {
+  return parts.filter((p): p is string => Boolean(p)).join("\n\n");
+}
+
+/**
+ * Layer 2 bus delivery (advisory inject). Drains pending coordination messages
+ * addressed to this session and returns them as additionalContext. v1 has a
+ * single provider — frenemy challenges — but the shape generalizes (sidequest
+ * claim-conflicts slot in here later). Consume-once: drained challenges are
+ * marked delivered so they don't re-inject on the next hook. Best-effort and
+ * never throws into hook ingest.
+ */
+function drainCoordinationContext(
+  sessionId: string,
+  room: string | null,
+): string | null {
+  if (!room) return null;
+  try {
+    const pending = readAgentMessages({
+      room,
+      kinds: ["challenge"],
+      // Broadcasts + challenges addressed to me; never my own.
+      toSession: sessionId,
+      excludeFrom: sessionId,
+      undeliveredOnly: true,
+      // sinceId: 0 forces oldest-first delivery (id > 0, ascending).
+      sinceId: 0,
+      limit: 3,
+    });
+    if (pending.length === 0) return null;
+    markDelivered(
+      pending.map((m) => m.id),
+      Date.now(),
+    );
+    return pending.map((m) => `🔴 Frenemy challenge: ${m.body}`).join("\n");
+  } catch (err) {
+    log.hooks.error("bus challenge drain failed:", err);
+    return null;
+  }
 }
 
 /**
@@ -700,6 +752,17 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       data,
       target,
     );
+    // Bus delivery (Layer 2): drain pending frenemy challenges for this session
+    // and compose them with any provenance context below. Advisory inject —
+    // eventual and best-effort. Gated by the flag; frenemy sidecars are excluded
+    // so their own challenges never loop back to them.
+    const challengeCtx =
+      eventType === "PreToolUse" &&
+      canInjectPreToolUseAdditionalContext(target) &&
+      config.enableBusDelivery &&
+      !isFrenemySession(data)
+        ? drainCoordinationContext(sessionId, repo ?? roomForSession(sessionId))
+        : null;
     // Point-of-use provenanced file context: when an additionalContext-capable
     // target is about to edit a file with prior history, surface it alongside
     // the permission decision. Codex PreToolUse allow responses stay a no-op;
@@ -721,7 +784,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
             : timestampMs,
       });
       if (additionalContext) {
-        return mergePreToolUseContext(permission, additionalContext);
+        return mergePreToolUseContext(
+          permission,
+          joinContext(challengeCtx, additionalContext),
+        );
       }
     }
     // Read-time provenance context is intentionally separate from edit-time
@@ -743,30 +809,51 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
             : timestampMs,
       });
       if (additionalContext) {
-        return mergePreToolUseContext(permission, additionalContext);
+        return mergePreToolUseContext(
+          permission,
+          joinContext(challengeCtx, additionalContext),
+        );
       }
+    }
+    // No provenance context fired — still deliver a pending challenge on its own.
+    if (challengeCtx) {
+      return mergePreToolUseContext(permission, challengeCtx);
     }
     return permission;
   }
 
-  if (
-    eventType === "UserPromptSubmit" &&
-    config.enableUserPromptSubmitContextInjection &&
-    // Injection is disabled on the session's first prompt by design: a vague
-    // opener only matches ambient repo vocabulary, and SessionStart history
-    // injection already covers session entry. Only mid-session prompts inject.
-    !isFirstUserPromptSubmit(sessionId)
-  ) {
-    const response = buildUserPromptSubmitContextResponse({
-      ...data,
-      repository: repo ?? data.repository,
-      is_first_user_prompt_submit: false,
-      now_ms:
-        typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
-          ? data.now_ms
-          : timestampMs,
-    });
-    if (response) return response;
+  if (eventType === "UserPromptSubmit") {
+    // Bus delivery: drain pending challenges at the prompt boundary too, so a
+    // challenge that arrived between turns lands before the next prompt runs.
+    const challengeCtx =
+      config.enableBusDelivery && !isFrenemySession(data)
+        ? drainCoordinationContext(sessionId, repo ?? roomForSession(sessionId))
+        : null;
+    // Local prompt-relevant history (the existing injection). Disabled on the
+    // session's first prompt by design: a vague opener only matches ambient repo
+    // vocabulary, and SessionStart history injection already covers entry.
+    const localCtx =
+      config.enableUserPromptSubmitContextInjection &&
+      !isFirstUserPromptSubmit(sessionId)
+        ? safeUserPromptSubmitLocalContext({
+            ...data,
+            repository: repo ?? data.repository,
+            is_first_user_prompt_submit: false,
+            now_ms:
+              typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
+                ? data.now_ms
+                : timestampMs,
+          })
+        : null;
+    const additionalContext = joinContext(challengeCtx, localCtx);
+    if (additionalContext) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext,
+        },
+      };
+    }
   }
 
   if (
@@ -804,18 +891,9 @@ function buildSessionStartContextResponse(
   }
 }
 
-function buildUserPromptSubmitContextResponse(
-  data: HookInput,
-): Record<string, unknown> | null {
+function safeUserPromptSubmitLocalContext(data: HookInput): string | null {
   try {
-    const additionalContext = buildUserPromptSubmitLocalContext(data);
-    if (!additionalContext) return null;
-    return {
-      hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext,
-      },
-    };
+    return buildUserPromptSubmitLocalContext(data);
   } catch (err) {
     log.hooks.error("user prompt submit context build failed:", err);
     return null;

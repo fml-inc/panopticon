@@ -44,6 +44,9 @@ vi.mock("./config.js", () => {
       proxyHost: "127.0.0.1",
       proxyPidFile: _path.join(tmpDir, "proxy.pid"),
       proxyIdleSessionMs: 30 * 60 * 1000,
+      // Layer 2 bus delivery on for the delivery tests. Inert for other tests:
+      // the drain only fires when a challenge is pending for the session.
+      enableBusDelivery: true,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -1962,6 +1965,97 @@ describe("server integration", () => {
       const got = await read({ session_id: "implicit-room-session" });
       expect(got.status).toBe(200);
       expect((got.body as { room: string }).room).toBe(ROOM);
+    });
+  });
+
+  // ── Bus delivery into hooks (Layer 2) ───────────────────────────────────
+  // A challenge sent to the bus is drained into the primary's PreToolUse /
+  // UserPromptSubmit additionalContext (advisory inject), consumed once, and
+  // never delivered to a frenemy-role session.
+
+  describe("bus delivery", () => {
+    const ROOM = "fml-inc/delivery";
+
+    function sendChallenge(to: string, body: string) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from: "frenemy-x", to, kind: "challenge", body },
+      });
+    }
+    function preToolUse(extra: Record<string, unknown>) {
+      return post("/hooks", {
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+        ...extra,
+      });
+    }
+    function additionalContext(body: unknown): string {
+      const out = (
+        body as { hookSpecificOutput?: { additionalContext?: string } }
+      ).hookSpecificOutput;
+      return out?.additionalContext ?? "";
+    }
+
+    it("drains a pending challenge into PreToolUse additionalContext, once", async () => {
+      await sendChallenge("primary-1", "deleting the test hides the flake");
+
+      const first = await preToolUse({ session_id: "primary-1" });
+      expect(first.status).toBe(200);
+      expect(additionalContext(first.body)).toContain(
+        "deleting the test hides the flake",
+      );
+
+      // Consume-once: a second tool call does not re-inject it.
+      const second = await preToolUse({ session_id: "primary-1" });
+      expect(additionalContext(second.body)).not.toContain(
+        "deleting the test hides the flake",
+      );
+    });
+
+    it("delivers a challenge at the UserPromptSubmit boundary too", async () => {
+      await sendChallenge("primary-2", "reconsider the schema change");
+      // Challenge delivery is NOT gated by the first-prompt silence (that only
+      // suppresses ambient-history injection), so the next prompt receives it.
+      const res = await post("/hooks", {
+        session_id: "primary-2",
+        hook_event_name: "UserPromptSubmit",
+        source: "claude",
+        repository: ROOM,
+        prompt: "anything",
+      });
+      expect(additionalContext(res.body)).toContain(
+        "reconsider the schema change",
+      );
+    });
+
+    it("does not deliver to a frenemy-role session (no feedback loop)", async () => {
+      await sendChallenge("frenemy-self", "you shouldn't see this");
+      const res = await preToolUse({
+        session_id: "frenemy-self",
+        role: "frenemy",
+      });
+      expect(additionalContext(res.body)).not.toContain(
+        "you shouldn't see this",
+      );
+    });
+
+    it("a reader's own challenge is never drained back to it", async () => {
+      // primary-3 is both the sender and the session being hooked.
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "primary-3",
+          to: "primary-3",
+          kind: "challenge",
+          body: "self addressed",
+        },
+      });
+      const res = await preToolUse({ session_id: "primary-3" });
+      expect(additionalContext(res.body)).not.toContain("self addressed");
     });
   });
 });

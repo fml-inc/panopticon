@@ -323,6 +323,13 @@ export async function runHandler(opts: {
       data.agent_pid = process.ppid;
     }
 
+    // A frenemy sidecar session is launched with PANOPTICON_FRENEMY_ROLE set.
+    // Forward it so the server can exclude the frenemy from bus delivery (its
+    // own challenges must never loop back into it). Inert until Layer 3 sets it.
+    if (typeof data.role !== "string" && process.env.PANOPTICON_FRENEMY_ROLE) {
+      data.role = process.env.PANOPTICON_FRENEMY_ROLE;
+    }
+
     // Replay env: when the Phase B replay harness spawns claude with these
     // envs, the hook handler injects them into the event body so the
     // (long-lived, env-unaware) panopticon server honors them per request:
