@@ -1,3 +1,4 @@
+import { waitForRoomActivity } from "../bus/activity-wait.js";
 import { roomForSession } from "../bus/room.js";
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
@@ -243,6 +244,22 @@ export function createDirectPanopticonService(): PanopticonService {
         ? messages[messages.length - 1].id
         : (input.sinceId ?? 0);
       return { room, cursor, messages };
+    },
+    async waitForActivity(input) {
+      const room = resolveBusRoom(input ?? {});
+      if (!room) return { activityMs: null, room: null };
+      // Clamp below the HTTP client's tool timeout so the long-poll always
+      // returns before the request is cut off.
+      const timeoutMs = Math.min(
+        Math.max(1000, Math.floor(input.timeoutMs ?? 25_000)),
+        28_000,
+      );
+      const activityMs = await waitForRoomActivity(
+        room,
+        input.sinceMs ?? 0,
+        timeoutMs,
+      );
+      return { activityMs, room };
     },
     async busRoster(input) {
       const room = resolveBusRoom(input ?? {});

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { noteRoomActivity } from "../bus/activity-wait.js";
 import { roomForSession } from "../bus/room.js";
 import { config } from "../config.js";
 import {
@@ -710,6 +711,11 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         room: repo ?? null,
         last_seen_ms: timestampMs,
       });
+    }
+    // Wake any room-activity long-pollers (e.g. the frenemy reviewer) — but not
+    // for the frenemy's own events, so it never wakes itself.
+    if (repo && !isFrenemySession(data)) {
+      noteRoomActivity(repo, timestampMs);
     }
   } catch (err) {
     log.hooks.error("instance presence upsert failed:", err);

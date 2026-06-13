@@ -169,6 +169,22 @@ export interface BusRosterInput {
   session_id?: string;
 }
 
+export interface WaitForActivityInput {
+  room?: string;
+  session_id?: string;
+  /** Resolve only once activity newer than this lands (cursor). */
+  sinceMs?: number;
+  /** Max time to block before resolving with no activity (clamped server-side). */
+  timeoutMs?: number;
+}
+
+export interface WaitForActivityResult {
+  /** Newest room-activity timestamp, or null if the wait timed out. */
+  activityMs: number | null;
+  /** The resolved room, or null if none could be determined. */
+  room: string | null;
+}
+
 export interface PruneExecuteInput {
   vacuum?: boolean;
 }
@@ -233,6 +249,7 @@ export interface PanopticonService {
   busSend(input: BusSendInput): Promise<BusSendResult>;
   busRead(input: BusReadInput): Promise<BusReadResult>;
   busRoster(input?: BusRosterInput): Promise<InstancesResult>;
+  waitForActivity(input: WaitForActivityInput): Promise<WaitForActivityResult>;
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;
   searchIntent(opts: SearchIntentInput): Promise<unknown>;
   outcomesForIntent(opts: OutcomesForIntentInput): Promise<unknown>;

@@ -19,7 +19,10 @@ import { execFileSync } from "node:child_process";
 import { resolveRoom } from "../bus/room.js";
 import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
-import type { InstancesResult } from "../service/types.js";
+import type {
+  InstancesResult,
+  WaitForActivityResult,
+} from "../service/types.js";
 import { invokeLlmAsync } from "../summary/llm.js";
 import type { HookEvent, HookTimelineResult } from "../types.js";
 
@@ -286,12 +289,17 @@ export interface FrenemyLoopHandle {
 
 /**
  * Naive poll loop (the "/loop" driver). Runs runFrenemyOnce every intervalMs.
- * Logs sent challenges. To be replaced by a server-side long-poll on room
- * activity — the critic and bus contract stay identical.
+ * Long-poll driver: instead of fixed-interval polling, block on the server until
+ * room activity happens, settle briefly so a burst of edits batches into one
+ * review, then run a pass. While the room is idle it does no work and makes no
+ * model calls. Wakes promptly (server-side notify) and exits promptly on stop().
  */
 export function createFrenemyLoop(
   opts: FrenemyOptions & {
-    intervalMs?: number;
+    /** Settle window: batch a burst of edits before reviewing (ms). */
+    settleMs?: number;
+    /** Max time to block per long-poll before re-waiting (ms). */
+    longPollMs?: number;
     onChallenge?: (c: { to: string; body: string }) => void;
   },
 ): FrenemyLoopHandle {
@@ -301,15 +309,53 @@ export function createFrenemyLoop(
   const done = new Promise<void>((r) => {
     resolveDone = r;
   });
-  const intervalMs = opts.intervalMs ?? 8_000;
+  const settleMs = opts.settleMs ?? 3_000;
+  const longPollMs = opts.longPollMs ?? 25_000;
 
-  // Cancellable inter-pass sleep so stop() (e.g. Ctrl-C) wakes the loop
-  // immediately instead of waiting out the interval.
-  let sleepTimer: ReturnType<typeof setTimeout> | null = null;
-  let wakeSleep: (() => void) | null = null;
+  // A stop signal raced against every await so stop() (Ctrl-C) breaks the loop
+  // immediately — even mid long-poll (the dangling request resolves server-side
+  // and is harmlessly ignored).
+  const STOP = "__frenemy_stop__" as const;
+  let resolveStop: () => void = () => {};
+  const stopPromise = new Promise<void>((r) => {
+    resolveStop = r;
+  });
+  const untilStop = <T>(p: Promise<T>): Promise<T | typeof STOP> =>
+    Promise.race<T | typeof STOP>([p, stopPromise.then(() => STOP)]);
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((r) => {
+      const t = setTimeout(r, ms);
+      t.unref?.();
+    });
+
+  let watermark = 0;
 
   async function tick(): Promise<void> {
     while (!stopped) {
+      let res: WaitForActivityResult | typeof STOP;
+      try {
+        res = await untilStop(
+          httpPanopticonService.waitForActivity({
+            room: opts.room,
+            sinceMs: watermark,
+            timeoutMs: longPollMs,
+          }),
+        );
+      } catch (err) {
+        log.server.error("frenemy wait failed:", err);
+        if ((await untilStop(sleep(5_000))) === STOP) break;
+        continue;
+      }
+      if (res === STOP) break;
+      if (res.activityMs == null) continue; // idle timeout — keep waiting
+      // Advance to the waking event, NOT the newest activity seen during
+      // settle/review. Conservative on purpose: edits that land after the diff
+      // is read still wake the next wait (one extra, usually-SKIP pass) rather
+      // than being silently dropped.
+      watermark = Math.max(watermark, res.activityMs);
+
+      if ((await untilStop(sleep(settleMs))) === STOP) break;
+
       try {
         const sent = await runFrenemyOnce(opts, cursors);
         for (const c of sent) {
@@ -319,13 +365,6 @@ export function createFrenemyLoop(
       } catch (err) {
         log.server.error("frenemy pass failed:", err);
       }
-      if (stopped) break;
-      await new Promise<void>((resolve) => {
-        wakeSleep = resolve;
-        sleepTimer = setTimeout(resolve, intervalMs);
-        sleepTimer.unref?.();
-      });
-      wakeSleep = null;
     }
     resolveDone();
   }
@@ -334,9 +373,7 @@ export function createFrenemyLoop(
   return {
     stop() {
       stopped = true;
-      if (sleepTimer) clearTimeout(sleepTimer);
-      // Resolve any pending sleep so the loop re-checks `stopped` and exits now.
-      wakeSleep?.();
+      resolveStop();
     },
     done,
   };

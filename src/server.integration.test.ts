@@ -2178,4 +2178,65 @@ describe("server integration", () => {
       expect(ctx(res.body)).not.toContain("frenemy should not be recruited");
     });
   });
+
+  // ── Long-poll for room activity (wait_for_activity) ─────────────────────
+  // The frenemy reviewer blocks here until an agent acts in its room.
+
+  describe("wait_for_activity", () => {
+    const ROOM = "fml-inc/waitroom";
+
+    it("times out with null when the room is idle", async () => {
+      const res = await post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: ROOM, sinceMs: 0, timeoutMs: 1000 },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ room: ROOM, activityMs: null });
+    });
+
+    it("wakes when a (non-frenemy) hook event lands in the room", async () => {
+      const waitP = post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: ROOM, sinceMs: 0, timeoutMs: 3000 },
+      });
+      // Give the waiter a moment to register, then act in the room.
+      await new Promise((r) => setTimeout(r, 50));
+      await post("/hooks", {
+        session_id: "waker",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      const res = await waitP;
+      expect(res.status).toBe(200);
+      expect(
+        (res.body as { activityMs: number | null }).activityMs,
+      ).toBeGreaterThan(0);
+    });
+
+    it("is NOT woken by the frenemy's own (role:frenemy) events", async () => {
+      // The entire defense against the critic's hooks self-waking the loop.
+      const FRENEMY_ROOM = "fml-inc/waitroom-frenemy";
+      const waitP = post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: FRENEMY_ROOM, sinceMs: 0, timeoutMs: 600 },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // A frenemy-role event (what the critic subprocess's hooks look like).
+      await post("/hooks", {
+        session_id: "the-critic",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: FRENEMY_ROOM,
+        role: "frenemy",
+        tool_name: "Read",
+        tool_input: { file_path: "/x" },
+      });
+      const res = await waitP;
+      // Times out — the frenemy event did not wake it.
+      expect((res.body as { activityMs: number | null }).activityMs).toBeNull();
+    });
+  });
 });
