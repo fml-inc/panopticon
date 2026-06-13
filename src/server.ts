@@ -7,6 +7,7 @@ import { syncAwarePrune } from "./db/sync-prune.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
 import { log } from "./log.js";
 import { handleOtlpRequest } from "./otlp/server.js";
+import { createReaperLoop, type ReaperHandle } from "./presence/reaper.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
 import { createScannerLoop } from "./scanner/index.js";
 import { readDatabaseRebuildStatus } from "./scanner/status.js";
@@ -192,6 +193,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   let syncHandle: SyncHandle | null = null;
   let otelSyncHandle: SyncHandle | null = null;
   let scannerHandle: ScannerHandle | null = null;
+  let reaperHandle: ReaperHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
   let backgroundStartTimer: ReturnType<typeof setTimeout> | null = null;
   let postScannerBackgroundStarted = false;
@@ -243,6 +245,12 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   function startBackgroundWork(): void {
     backgroundStartTimer = null;
 
+    // Instance presence reaper is always-on (independent of scanner/sync): it
+    // actively probes agent pids so killed/crashed sessions are detected even
+    // when they never fire a clean SessionEnd.
+    reaperHandle = createReaperLoop();
+    reaperHandle.start();
+
     // Start session file scanner first — sync is deferred until scanner
     // finishes any initial resync so we don't sync stale/partial data.
     scannerHandle = createScannerLoop({
@@ -278,6 +286,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   const shutdown = async () => {
     if (backgroundStartTimer) clearTimeout(backgroundStartTimer);
     if (pruneTimer) clearInterval(pruneTimer);
+    reaperHandle?.stop();
     scannerHandle?.stop();
     syncHandle?.stop();
     otelSyncHandle?.stop();

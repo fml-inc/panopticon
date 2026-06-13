@@ -1826,6 +1826,23 @@ program
   });
 
 program
+  .command("instances")
+  .description(
+    "List agent sessions connected to this server, with liveness status " +
+      "(active/idle/exited; death verified by probing the agent process)",
+  )
+  .option("--room <room>", "Restrict to one room (workspace)")
+  .option("--no-include-ended", "Hide instances that have already exited")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.instances({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        includeEnded: opts.includeEnded !== false,
+      }),
+    );
+  });
+
+program
   .command("scan")
   .description(
     "Trigger a synchronous scan pass on the running server (picks up new session JSONL files and regenerates summaries)",

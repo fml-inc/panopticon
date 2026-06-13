@@ -307,6 +307,14 @@ export async function runHandler(opts: {
       data.proxy_enabled = true;
     }
 
+    // The hook handler is a short-lived child of the agent process, so its
+    // parent pid identifies the live agent. Forward it so the server can track
+    // instance presence and actively reap dead agents (a stale heartbeat alone
+    // cannot distinguish an idle agent from a killed one).
+    if (typeof data.agent_pid !== "number" && process.ppid) {
+      data.agent_pid = process.ppid;
+    }
+
     // Replay env: when the Phase B replay harness spawns claude with these
     // envs, the hook handler injects them into the event body so the
     // (long-lived, env-unaware) panopticon server honors them per request:

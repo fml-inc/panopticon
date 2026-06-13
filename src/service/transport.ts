@@ -3,6 +3,7 @@ import type {
   CostBreakdownInput,
   FileOverviewInput,
   HookTimelineInput,
+  InstancesInput,
   IntentForCodeInput,
   ListPlansInput,
   ListSessionSummariesInput,
@@ -45,6 +46,8 @@ const BASE_TOOL_HANDLERS = {
   get: (service, params) => service.print(asType<PrintInput>(params)),
   query: (service, params) => service.rawQuery((params as { sql: string }).sql),
   status: (service) => service.dbStats(),
+  instances: (service, params) =>
+    service.instances(asType<InstancesInput>(params)),
   intent_for_code: (service, params) =>
     service.intentForCode(asType<IntentForCodeInput>(params)),
   search_intent: (service, params) =>

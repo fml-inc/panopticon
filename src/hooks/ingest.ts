@@ -28,6 +28,7 @@ import {
   isObservedAbsolutePath,
   resolveFilePathFromCwd,
 } from "../paths.js";
+import { endInstance, upsertInstance } from "../presence/store.js";
 import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
@@ -118,6 +119,8 @@ export interface HookInput {
   source?: string;
   target?: string;
   prompt?: string;
+  /** PID of the live agent process (handler's process.ppid). */
+  agent_pid?: number;
   [key: string]: unknown;
 }
 
@@ -554,6 +557,33 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     sessionFields.ended_at_ms = timestampMs;
   }
   upsertSession(sessionFields);
+
+  // Generic instance presence: record/refresh this agent's liveness on every
+  // hook event. The pid (handler's process.ppid) lets the reaper actively detect
+  // kills; the heartbeat only distinguishes active from idle. Best-effort and
+  // never allowed to break ingest. `room` is the repository for now; Layer 1
+  // refines it to the workspace superset via resolveRoom.
+  try {
+    const agentPid =
+      typeof data.agent_pid === "number" && Number.isInteger(data.agent_pid)
+        ? data.agent_pid
+        : null;
+    const role = typeof data.role === "string" ? data.role : null;
+    if (eventType === "SessionEnd") {
+      endInstance(sessionId, "session_end", timestampMs);
+    } else {
+      upsertInstance({
+        session_id: sessionId,
+        target: targetId,
+        role,
+        pid: agentPid,
+        room: repo ?? null,
+        last_seen_ms: timestampMs,
+      });
+    }
+  } catch (err) {
+    log.hooks.error("instance presence upsert failed:", err);
+  }
 
   // Link subagent sessions to their parents in real-time.
   // SubagentStart fires on the PARENT session with agent_id identifying

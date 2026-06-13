@@ -1,3 +1,4 @@
+import type { InstancesResult } from "../presence/store.js";
 import type { SyncPendingResult } from "../sync/pending.js";
 import type {
   ActivitySummaryResult,
@@ -7,6 +8,8 @@ import type {
   SessionTimelineResult,
   SpendingResult,
 } from "../types.js";
+
+export type { InstancesResult } from "../presence/store.js";
 
 export type { SyncPendingResult } from "../sync/pending.js";
 
@@ -111,6 +114,13 @@ export interface FileOverviewInput {
   related_limit?: number;
 }
 
+export interface InstancesInput {
+  /** Restrict to one room (workspace). Omit for all rooms. */
+  room?: string;
+  /** Include instances that have already exited (default true). */
+  includeEnded?: boolean;
+}
+
 export interface PruneExecuteInput {
   vacuum?: boolean;
 }
@@ -171,6 +181,7 @@ export interface PanopticonService {
   print(opts: PrintInput): Promise<unknown>;
   rawQuery(sql: string): Promise<unknown>;
   dbStats(): Promise<unknown>;
+  instances(opts?: InstancesInput): Promise<InstancesResult>;
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;
   searchIntent(opts: SearchIntentInput): Promise<unknown>;
   outcomesForIntent(opts: OutcomesForIntentInput): Promise<unknown>;

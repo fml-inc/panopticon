@@ -573,6 +573,27 @@ CREATE TABLE IF NOT EXISTS target_session_sync (
   PRIMARY KEY (session_id, target)
 );
 
+-- ── Live instance presence ─────────────────────────────────────────────────
+-- Every agent session currently connected to this panopticon server, across all
+-- targets. Liveness is detected by actively probing the recorded pid (a stale
+-- heartbeat alone cannot tell "idle/thinking" from "killed"); the reaper marks
+-- ended_reason='pid_dead' when process.kill(pid, 0) throws.
+
+CREATE TABLE IF NOT EXISTS panopticon_instances (
+  session_id TEXT PRIMARY KEY,
+  target TEXT,
+  role TEXT,
+  pid INTEGER,
+  pid_start_hint TEXT,
+  room TEXT,
+  worktree TEXT,
+  branch TEXT,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL,
+  ended_at_ms INTEGER,
+  ended_reason TEXT
+);
+
 -- ── Indexes ─────────────────────────────────────────────────────────────────
 
 -- otel_logs
@@ -709,6 +730,12 @@ CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
   ON code_provenance(intent_unit_id);
 CREATE INDEX IF NOT EXISTS idx_code_provenance_status
   ON code_provenance(status);
+
+-- panopticon_instances
+CREATE INDEX IF NOT EXISTS idx_panopticon_instances_room
+  ON panopticon_instances(room);
+CREATE INDEX IF NOT EXISTS idx_panopticon_instances_live
+  ON panopticon_instances(ended_at_ms, last_seen_ms);
 
 `;
 

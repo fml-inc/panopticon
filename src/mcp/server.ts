@@ -821,6 +821,28 @@ server.tool(
   },
 );
 
+server.tool(
+  "instances",
+  "List agent sessions currently connected to this panopticon server, with " +
+    "liveness status (active/idle/exited). Liveness is verified by probing each " +
+    "agent's process, so killed/crashed sessions are reported even without a " +
+    "clean exit. Optionally filter by room (workspace).",
+  {
+    room: z
+      .string()
+      .optional()
+      .describe("Restrict to one room (workspace). Omit for all rooms."),
+    includeEnded: z
+      .boolean()
+      .optional()
+      .describe("Include already-exited instances (default true)."),
+  },
+  async ({ room, includeEnded }) => {
+    const result = await service.instances({ room, includeEnded });
+    return jsonContent(result);
+  },
+);
+
 // ───────────────────────────────────────────────────────────────────────────
 // Intent index — maps engineer prompts to the file edits they produced.
 // ───────────────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 import type { ExecName, ToolName } from "./transport.js";
 import type {
+  InstancesResult,
   PanopticonService,
   RegenerateSessionSummariesInput,
   ScanResult,
@@ -135,6 +136,8 @@ export const httpPanopticonService: PanopticonService = {
   print: (opts) => callTool("get", toParams(opts)),
   rawQuery: (sql) => callTool("query", { sql }),
   dbStats: () => callTool("status"),
+  instances: (opts) =>
+    callTool("instances", toParams(opts) ?? {}) as Promise<InstancesResult>,
   intentForCode: (opts) => callTool("intent_for_code", toParams(opts)),
   searchIntent: (opts) => callTool("search_intent", toParams(opts)),
   outcomesForIntent: (opts) => callTool("outcomes_for_intent", toParams(opts)),
@@ -182,6 +185,7 @@ export const search = httpPanopticonService.search;
 export const print = httpPanopticonService.print;
 export const rawQuery = httpPanopticonService.rawQuery;
 export const dbStats = httpPanopticonService.dbStats;
+export const instances = httpPanopticonService.instances;
 export const intentForCode = httpPanopticonService.intentForCode;
 export const searchIntent = httpPanopticonService.searchIntent;
 export const outcomesForIntent = httpPanopticonService.outcomesForIntent;

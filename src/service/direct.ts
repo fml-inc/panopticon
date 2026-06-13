@@ -41,6 +41,7 @@ import {
   searchIntent,
 } from "../intent/query.js";
 import { log } from "../log.js";
+import { readInstancesResult } from "../presence/store.js";
 import {
   rebuildClaimsDerivedState,
   reparseAll,
@@ -188,6 +189,9 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async dbStats() {
       return dbStats();
+    },
+    async instances(opts) {
+      return readInstancesResult(opts ?? {});
     },
     async intentForCode(opts) {
       return intentForCode(opts);
