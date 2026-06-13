@@ -136,6 +136,13 @@ function fmtCost(c) {
   return `$${c.toFixed(2)}`;
 }
 
+/** True when the view is pinned to the present, so the stored totals (cost,
+ *  message count) are accurate. When scrubbed into the past we don't have
+ *  cost-as-of-T, so those numbers are suppressed rather than shown wrong. */
+function atPresent() {
+  return asOfT == null;
+}
+
 /** Compact "age since last activity" as of the current clock T: 5s / 2m / 1h.
  *  Clamps the reference to T so scrubbing into the past never shows a negative
  *  age (last_seen_ms holds the session's latest heartbeat, which can be > T). */
@@ -194,7 +201,9 @@ function instRowHtml(i) {
   ]
     .filter(Boolean)
     .join(" · ");
-  const cost = fmtCost(meta.totalCost);
+  // Cost is a stored total (not as-of-T) — only show it when pinned to present,
+  // never a fabricated figure while scrubbed.
+  const cost = atPresent() ? fmtCost(meta.totalCost) : null;
 
   return `
     <li class="inst status-${i.status}${selected}" data-session="${escapeHtml(i.session_id)}">
@@ -305,7 +314,8 @@ function renderMissionBar() {
       "tokens",
       tokPerMin == null ? "—" : `${fmtNum(Math.round(tokPerMin))}/min`,
     ) +
-    tile("spend", `$${spend.toFixed(2)}`);
+    // Spend is a stored total — only accurate at present; "—" while scrubbed.
+    tile("spend", atPresent() ? `$${spend.toFixed(2)}` : "—");
 }
 
 // ---- Source of truth + as-of-T view ----------------------------------------
@@ -850,7 +860,6 @@ const rbSpeed = document.getElementById("rb-speed");
 const rbLive = document.getElementById("rb-live");
 const rbEnd = document.getElementById("rb-end");
 
-const PLAY_BASE_MS = 120_000; // full window plays in ~2 min at 1×
 let tlMin = 0;
 let tlMaxStatic = 0;
 let playing = false;
@@ -921,9 +930,8 @@ function setPlaying(p) {
     const now = Date.now();
     const dt = now - last;
     last = now;
-    const speed = Number(rbSpeed?.value ?? 1);
-    const span = tlMax() - tlMin;
-    const next = (asOfT ?? tlMin) + dt * speed * (span / PLAY_BASE_MS);
+    const speed = Number(rbSpeed?.value ?? 100); // real-time multiplier
+    const next = (asOfT ?? tlMin) + dt * speed;
     if (next >= tlMax()) {
       if (STATIC) {
         seekTo(tlMax());
