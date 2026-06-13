@@ -136,10 +136,13 @@ function fmtCost(c) {
   return `$${c.toFixed(2)}`;
 }
 
-/** Compact "age since last activity": 5s / 2m / 1h. */
+/** Compact "age since last activity" as of the current clock T: 5s / 2m / 1h.
+ *  Clamps the reference to T so scrubbing into the past never shows a negative
+ *  age (last_seen_ms holds the session's latest heartbeat, which can be > T). */
 function ageStr(ms) {
   if (!ms) return "";
-  const s = Math.round((nowMs() - ms) / 1000);
+  const now = nowMs();
+  const s = Math.round((now - Math.min(ms, now)) / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
