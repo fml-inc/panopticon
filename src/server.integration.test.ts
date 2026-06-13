@@ -13,7 +13,15 @@
 import fs from "node:fs";
 import type http from "node:http";
 import { gunzipSync } from "node:zlib";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 // ── Mock config to use a temp directory ──────────────────────────────────────
 // vi.mock is hoisted — all values must be computed inside the factory.
@@ -65,6 +73,7 @@ import {
   upsertSession,
 } from "./db/store.js";
 import {
+  _resetNudgeState,
   _resetSessionRepoCache,
   _resetSessionTargetCache,
 } from "./hooks/ingest.js";
@@ -2135,6 +2144,86 @@ describe("server integration", () => {
       expect(bodies(await recv("listener-3"))).toContain("hello room");
       // The sender never drains its own message.
       expect(bodies(await recv("peer-y"))).not.toContain("hello room");
+    });
+  });
+
+  // ── Unread nudge (append-only chat model) ───────────────────────────────
+  // Findings/chat are broadcast to the room. The hook NUDGES ("N unread, call
+  // bus_read") without consuming; reading (bus_read) is what marks them seen.
+
+  describe("unread nudge", () => {
+    const ROOM = "fml-inc/nudge";
+    beforeEach(() => _resetNudgeState());
+    function broadcastChat(from: string, body: string) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from, kind: "chat", body },
+      });
+    }
+    function preToolUse(session: string) {
+      return post("/hooks", {
+        session_id: session,
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+    }
+    function busReadTool(session: string) {
+      return post("/api/tool", {
+        name: "bus_read",
+        params: { room: ROOM, session_id: session },
+      });
+    }
+    function ac(body: unknown): string {
+      return (
+        (body as { hookSpecificOutput?: { additionalContext?: string } })
+          .hookSpecificOutput?.additionalContext ?? ""
+      );
+    }
+
+    it("nudges without consuming; bus_read marks seen and stops the nudge", async () => {
+      // Join first (seed presence) so the broadcast is within this session's
+      // window, then post the finding to the room.
+      await preToolUse("reader-1");
+      await broadcastChat("teammate", "the auth check is backwards");
+
+      // Nudge appears, with a preview — but is NOT the consume-once body inject.
+      const first = await preToolUse("reader-1");
+      expect(ac(first.body)).toContain("unread");
+      expect(ac(first.body)).toContain("the auth check is backwards");
+
+      // Throttled: another tool call with nothing new does not re-nudge.
+      const again = await preToolUse("reader-1");
+      expect(ac(again.body)).not.toContain("unread");
+
+      // Non-consuming: the message is still there to read, and bus_read returns it.
+      const read = await busReadTool("reader-1");
+      const bodies = (
+        read.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      expect(bodies).toContain("the auth check is backwards");
+
+      // Having read it, a brand-new finding re-nudges — counting only the unread one.
+      await broadcastChat("teammate", "and the retry has no backoff");
+      const third = await preToolUse("reader-1");
+      expect(ac(third.body)).toContain("1 unread");
+      expect(ac(third.body)).toContain("and the retry has no backoff");
+    });
+
+    it("does not nudge a frenemy-role session about the room", async () => {
+      await broadcastChat("teammate", "secret finding");
+      const res = await post("/hooks", {
+        session_id: "frenemy-reader",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        role: "frenemy",
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      expect(ac(res.body)).not.toContain("unread");
     });
   });
 

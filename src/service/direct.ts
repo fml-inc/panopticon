@@ -262,6 +262,16 @@ export function createDirectPanopticonService(): PanopticonService {
         excludeFrom: input.session_id,
         limit: input.limit,
       });
+      // Reading IS the "I've seen this" action: record per-recipient
+      // read-receipts so the unread nudge stops pointing at what was just read.
+      // Append-only and idempotent (INSERT OR IGNORE per message+session).
+      if (input.session_id && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          input.session_id,
+          Date.now(),
+        );
+      }
       const cursor = messages.length
         ? messages[messages.length - 1].id
         : (input.sinceId ?? 0);
