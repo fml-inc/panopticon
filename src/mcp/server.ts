@@ -844,6 +844,109 @@ server.tool(
 );
 
 // ───────────────────────────────────────────────────────────────────────────
+// Agent-to-agent message bus. Rooms are implicit: pass your session_id and the
+// server resolves the room presence already recorded for you (or pass room).
+// ───────────────────────────────────────────────────────────────────────────
+
+server.tool(
+  "bus_send",
+  "Send a message to other agent sessions in your room (workspace). Pass your " +
+    "session_id so the room is resolved automatically; omit `to` to broadcast, " +
+    "or set it to a specific session id. `kind` is free-form (e.g. challenge, " +
+    "chat); `subject` scopes claims (e.g. 'path:src/auth.ts').",
+  {
+    session_id: z
+      .string()
+      .optional()
+      .describe("Your session id — sets sender and resolves the room."),
+    room: z
+      .string()
+      .optional()
+      .describe("Explicit room (overrides session_id)."),
+    to: z
+      .string()
+      .optional()
+      .describe("Recipient session id; omit to broadcast."),
+    kind: z.string().describe("Message kind, e.g. 'challenge' or 'chat'."),
+    body: z.string().describe("Message text."),
+    subject: z.string().optional().describe("Optional scope, e.g. 'path:...'."),
+    ref_path: z
+      .string()
+      .optional()
+      .describe("Optional file the message is about."),
+  },
+  async ({ session_id, room, to, kind, body, subject, ref_path }) => {
+    const result = await service.busSend({
+      session_id,
+      room,
+      to,
+      kind,
+      body,
+      subject,
+      ref_path,
+      source: "mcp",
+    });
+    return jsonContent(result);
+  },
+);
+
+server.tool(
+  "bus_read",
+  "Read recent messages in your room (workspace). Pass your session_id to " +
+    "resolve the room and receive broadcasts plus messages addressed to you " +
+    "(never your own). Use `sinceId` as a cursor to poll only new messages.",
+  {
+    session_id: z
+      .string()
+      .optional()
+      .describe("Your session id — resolves the room and address filter."),
+    room: z
+      .string()
+      .optional()
+      .describe("Explicit room (overrides session_id)."),
+    sinceId: z
+      .number()
+      .optional()
+      .describe("Return only messages with id greater than this cursor."),
+    kinds: z
+      .array(z.string())
+      .optional()
+      .describe("Restrict to these message kinds."),
+    limit: z.number().optional().describe("Max messages (default 200)."),
+  },
+  async ({ session_id, room, sinceId, kinds, limit }) => {
+    const result = await service.busRead({
+      session_id,
+      room,
+      sinceId,
+      kinds,
+      limit,
+    });
+    return jsonContent(result);
+  },
+);
+
+server.tool(
+  "bus_roster",
+  "List the agent sessions in your room (workspace) with liveness status. " +
+    "Pass your session_id to scope to your room; omit for all rooms.",
+  {
+    session_id: z
+      .string()
+      .optional()
+      .describe("Your session id — scopes the room."),
+    room: z
+      .string()
+      .optional()
+      .describe("Explicit room (overrides session_id)."),
+  },
+  async ({ session_id, room }) => {
+    const result = await service.busRoster({ session_id, room });
+    return jsonContent(result);
+  },
+);
+
+// ───────────────────────────────────────────────────────────────────────────
 // Intent index — maps engineer prompts to the file edits they produced.
 // ───────────────────────────────────────────────────────────────────────────
 

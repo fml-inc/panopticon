@@ -1843,6 +1843,69 @@ program
   });
 
 program
+  .command("bus-roster")
+  .description("List agent sessions in a room (workspace) with liveness status")
+  .option("--room <room>", "Explicit room")
+  .option("--session <id>", "Resolve the room from this session id")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.busRoster({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        session_id: typeof opts.session === "string" ? opts.session : undefined,
+      }),
+    );
+  });
+
+program
+  .command("bus-read")
+  .description("Read recent messages in a room (workspace)")
+  .option("--room <room>", "Explicit room")
+  .option(
+    "--session <id>",
+    "Resolve room + address filter from this session id",
+  )
+  .option("--since <id>", "Only messages with id greater than this cursor")
+  .option("--kinds <list>", "Comma-separated message kinds to include")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.busRead({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        session_id: typeof opts.session === "string" ? opts.session : undefined,
+        sinceId: opts.since ? Number(opts.since) : undefined,
+        kinds:
+          typeof opts.kinds === "string"
+            ? opts.kinds.split(",").map((k) => k.trim())
+            : undefined,
+      }),
+    );
+  });
+
+program
+  .command("bus-send")
+  .description("Send a message to a room (workspace)")
+  .requiredOption("--kind <kind>", "Message kind, e.g. challenge or chat")
+  .requiredOption("--body <text>", "Message body")
+  .option("--room <room>", "Explicit room")
+  .option("--session <id>", "Sender session id (also resolves the room)")
+  .option("--to <id>", "Recipient session id; omit to broadcast")
+  .option("--subject <subject>", "Optional scope, e.g. path:src/auth.ts")
+  .option("--ref-path <path>", "Optional file the message is about")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.busSend({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        session_id: typeof opts.session === "string" ? opts.session : undefined,
+        to: typeof opts.to === "string" ? opts.to : undefined,
+        kind: opts.kind,
+        body: opts.body,
+        subject: typeof opts.subject === "string" ? opts.subject : undefined,
+        ref_path: typeof opts.refPath === "string" ? opts.refPath : undefined,
+        source: "cli",
+      }),
+    );
+  });
+
+program
   .command("scan")
   .description(
     "Trigger a synchronous scan pass on the running server (picks up new session JSONL files and regenerates summaries)",

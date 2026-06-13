@@ -1,5 +1,8 @@
 import type {
   ActivitySummaryInput,
+  BusReadInput,
+  BusRosterInput,
+  BusSendInput,
   CostBreakdownInput,
   FileOverviewInput,
   HookTimelineInput,
@@ -48,6 +51,9 @@ const BASE_TOOL_HANDLERS = {
   status: (service) => service.dbStats(),
   instances: (service, params) =>
     service.instances(asType<InstancesInput>(params)),
+  bus_read: (service, params) => service.busRead(asType<BusReadInput>(params)),
+  bus_roster: (service, params) =>
+    service.busRoster(asType<BusRosterInput>(params)),
   intent_for_code: (service, params) =>
     service.intentForCode(asType<IntentForCodeInput>(params)),
   search_intent: (service, params) =>
@@ -76,6 +82,8 @@ export const TOOL_HANDLERS = {
 export type ToolName = keyof typeof TOOL_HANDLERS;
 
 export const EXEC_HANDLERS = {
+  "bus-send": (service, params) =>
+    service.busSend(asType<BusSendInput>(params)),
   prune: async (service, params) => {
     const cutoffMs = params.cutoffMs;
     if (typeof cutoffMs !== "number") {

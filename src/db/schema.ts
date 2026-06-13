@@ -593,6 +593,27 @@ CREATE TABLE IF NOT EXISTS panopticon_instances (
   ended_reason TEXT
 );
 
+-- ── Agent-to-agent message bus ─────────────────────────────────────────────
+-- Append-only log of messages between agent sessions sharing a room (workspace).
+-- Carries ephemeral events (challenge/activity, consumed once via delivered_at_ms)
+-- and the source events for durable state (claim/release, projected elsewhere).
+-- kind is plain TEXT so new message types never need a migration.
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room TEXT NOT NULL,
+  from_session TEXT NOT NULL,
+  to_session TEXT,
+  kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  subject TEXT,
+  ref_tool TEXT,
+  ref_path TEXT,
+  source TEXT,
+  created_at_ms INTEGER NOT NULL,
+  delivered_at_ms INTEGER
+);
+
 -- ── Indexes ─────────────────────────────────────────────────────────────────
 
 -- otel_logs
@@ -735,6 +756,14 @@ CREATE INDEX IF NOT EXISTS idx_panopticon_instances_room
   ON panopticon_instances(room);
 CREATE INDEX IF NOT EXISTS idx_panopticon_instances_live
   ON panopticon_instances(ended_at_ms, last_seen_ms);
+
+-- agent_messages
+CREATE INDEX IF NOT EXISTS idx_agent_messages_room
+  ON agent_messages(room, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_drain
+  ON agent_messages(to_session, delivered_at_ms);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_subject
+  ON agent_messages(room, kind, subject);
 
 `;
 

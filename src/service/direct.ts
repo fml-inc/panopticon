@@ -1,6 +1,8 @@
+import { roomForSession } from "../bus/room.js";
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
 import { config } from "../config.js";
+import { insertAgentMessage, readAgentMessages } from "../db/bus.js";
 import {
   CLAIMS_ACTIVE_COMPONENT,
   CLAIMS_PROJECTION_COMPONENT,
@@ -158,6 +160,16 @@ function maybeMarkClaimsActiveCurrent(sessionId: string | undefined): void {
   }
 }
 
+/** Resolve a bus room from an explicit room or the caller's recorded session. */
+function resolveBusRoom(input: {
+  room?: string;
+  session_id?: string;
+}): string | null {
+  if (input.room) return input.room;
+  if (input.session_id) return roomForSession(input.session_id);
+  return null;
+}
+
 export function createDirectPanopticonService(): PanopticonService {
   return {
     async listSessions(opts) {
@@ -192,6 +204,49 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async instances(opts) {
       return readInstancesResult(opts ?? {});
+    },
+    async busSend(input) {
+      const room = resolveBusRoom(input);
+      if (!room) {
+        throw new Error(
+          "bus_send: could not resolve a room (pass room, or a session_id with a recorded room)",
+        );
+      }
+      const id = insertAgentMessage({
+        room,
+        from_session: input.session_id ?? input.from ?? "external",
+        to_session: input.to ?? null,
+        kind: input.kind,
+        body: input.body,
+        subject: input.subject ?? null,
+        ref_tool: input.ref_tool ?? null,
+        ref_path: input.ref_path ?? null,
+        source: input.source ?? null,
+        created_at_ms: Date.now(),
+      });
+      return { id, room };
+    },
+    async busRead(input) {
+      const room = resolveBusRoom(input);
+      if (!room)
+        return { room: null, cursor: input.sinceId ?? 0, messages: [] };
+      const messages = readAgentMessages({
+        room,
+        sinceId: input.sinceId,
+        kinds: input.kinds,
+        // A reader sees broadcasts + messages addressed to it, never its own.
+        toSession: input.session_id,
+        excludeFrom: input.session_id,
+        limit: input.limit,
+      });
+      const cursor = messages.length
+        ? messages[messages.length - 1].id
+        : (input.sinceId ?? 0);
+      return { room, cursor, messages };
+    },
+    async busRoster(input) {
+      const room = resolveBusRoom(input ?? {}) ?? undefined;
+      return readInstancesResult({ room });
     },
     async intentForCode(opts) {
       return intentForCode(opts);
