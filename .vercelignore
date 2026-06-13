@@ -1,0 +1,7 @@
+# Vercel builds from source (pnpm build) and bundles the function from dist;
+# keep src/scripts/apps/static-site, drop the rest.
+node_modules
+*.tgz
+apps/mission-control
+.anamnesis
+.git
