@@ -176,6 +176,10 @@ describe("presence store", () => {
     const [view] = readInstances({ nowMs: NOW + 11, includeEnded: true });
     expect(view.status).toBe("exited");
     expect(view.ended_reason).toBe("session_end");
+    // A terminal row stays frozen: the stray event must not advance last_seen
+    // past ended_at_ms.
+    expect(view.last_seen_ms).toBe(NOW);
+    expect(view.ended_at_ms).toBe(NOW + 5);
   });
 
   it("pruneExitedInstances deletes old exited rows but keeps live and recent", () => {

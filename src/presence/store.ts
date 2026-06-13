@@ -102,7 +102,12 @@ export function upsertInstance(row: InstanceUpsert): void {
        room = COALESCE(excluded.room, panopticon_instances.room),
        worktree = COALESCE(excluded.worktree, panopticon_instances.worktree),
        branch = COALESCE(excluded.branch, panopticon_instances.branch),
-       last_seen_ms = MAX(panopticon_instances.last_seen_ms, excluded.last_seen_ms),
+       -- Keep a session_end-terminal row fully frozen: don't advance last_seen
+       -- past its ended_at_ms on a stray post-exit event. Live and pid_dead rows
+       -- bump normally (pid_dead is then revived below).
+       last_seen_ms = CASE WHEN panopticon_instances.ended_reason = 'session_end'
+                           THEN panopticon_instances.last_seen_ms
+                           ELSE MAX(panopticon_instances.last_seen_ms, excluded.last_seen_ms) END,
        -- Revive a pid_dead false-positive, but keep session_end terminal.
        ended_at_ms = CASE WHEN panopticon_instances.ended_reason = 'session_end'
                           THEN panopticon_instances.ended_at_ms ELSE NULL END,
