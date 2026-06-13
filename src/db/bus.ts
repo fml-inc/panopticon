@@ -73,8 +73,12 @@ export interface ReadMessagesOptions {
   toSession?: string;
   /** Exclude messages sent by this session (so a reader never sees its own). */
   excludeFrom?: string;
-  /** Only messages not yet marked delivered. */
+  /** Only messages globally undelivered (legacy 1:1 gate; prefer undeliveredTo). */
   undeliveredOnly?: boolean;
+  /** Exclude messages already delivered to THIS session (per-recipient gate). */
+  undeliveredTo?: string;
+  /** Only messages created at or after this time (e.g. the reader's join time). */
+  sinceMs?: number;
   /** Max rows (default 200, capped 1000). */
   limit?: number;
 }
@@ -107,6 +111,25 @@ export function readAgentMessages(
   if (opts.undeliveredOnly) {
     clauses.push("delivered_at_ms IS NULL");
   }
+  if (opts.undeliveredTo) {
+    clauses.push(
+      `NOT EXISTS (SELECT 1 FROM agent_message_deliveries d
+                    WHERE d.message_id = agent_messages.id
+                      AND d.session_id = @undeliveredTo)`,
+    );
+    params.undeliveredTo = opts.undeliveredTo;
+  }
+  if (typeof opts.sinceMs === "number") {
+    // Backlog gate for BROADCASTS only: a fresh reader shouldn't drain room
+    // history posted before it joined. Messages directed to the reader are its
+    // mail — always delivered, regardless of join time.
+    clauses.push(
+      opts.toSession
+        ? "(to_session = @toSession OR created_at_ms >= @sinceMs)"
+        : "created_at_ms >= @sinceMs",
+    );
+    params.sinceMs = opts.sinceMs;
+  }
 
   params.limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 200)), 1000);
 
@@ -126,19 +149,25 @@ export function readAgentMessages(
 }
 
 /**
- * Mark messages delivered (consume-once). Only flips rows that are still
- * undelivered, so a re-delivery is a no-op. Layer 2's hook drain uses this for
- * challenge messages; non-consumable kinds (activity) are simply never marked.
+ * Mark messages delivered to one recipient session (group-chat consume-once).
+ * Records a row per (message, session) so a broadcast delivered to session A is
+ * still pending for session B. Idempotent: re-delivering to the same session is
+ * a no-op. Returns the number of newly-recorded deliveries.
  */
-export function markDelivered(ids: number[], nowMs: number): number {
+export function markDelivered(
+  ids: number[],
+  sessionId: string,
+  nowMs: number,
+): number {
   if (ids.length === 0) return 0;
   const db = getDb();
   const stmt = db.prepare(
-    "UPDATE agent_messages SET delivered_at_ms = ? WHERE id = ? AND delivered_at_ms IS NULL",
+    `INSERT OR IGNORE INTO agent_message_deliveries (message_id, session_id, delivered_at_ms)
+     VALUES (?, ?, ?)`,
   );
   const tx = db.transaction((rows: number[]) => {
     let changed = 0;
-    for (const id of rows) changed += stmt.run(nowMs, id).changes;
+    for (const id of rows) changed += stmt.run(id, sessionId, nowMs).changes;
     return changed;
   });
   return tx(ids) as number;

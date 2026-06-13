@@ -104,27 +104,72 @@ describe("agent message bus store", () => {
     expect(msgs.map((m) => m.body)).toEqual(["theirs"]);
   });
 
-  it("undeliveredOnly + markDelivered implements consume-once", () => {
-    const id1 = insertAgentMessage(base({ kind: "challenge", body: "c1" }));
-    insertAgentMessage(base({ kind: "challenge", body: "c2" }));
+  it("broadcast fans out: each session drains it once, independently", () => {
+    const id = insertAgentMessage(base({ kind: "chat", body: "hello room" }));
 
-    let pending = readAgentMessages({
-      room: "fml-inc/panopticon",
-      undeliveredOnly: true,
-    });
-    expect(pending).toHaveLength(2);
+    // Both sessions see it as undelivered-to-them.
+    expect(
+      readAgentMessages({
+        room: "fml-inc/panopticon",
+        undeliveredTo: "alice",
+      }).map((m) => m.body),
+    ).toEqual(["hello room"]);
+    expect(
+      readAgentMessages({
+        room: "fml-inc/panopticon",
+        undeliveredTo: "bob",
+      }).map((m) => m.body),
+    ).toEqual(["hello room"]);
 
-    const changed = markDelivered([id1], 2000);
-    expect(changed).toBe(1);
+    // Alice consumes it — only for Alice.
+    expect(markDelivered([id], "alice", 2000)).toBe(1);
+    expect(
+      readAgentMessages({ room: "fml-inc/panopticon", undeliveredTo: "alice" }),
+    ).toHaveLength(0);
+    // Bob still has it pending.
+    expect(
+      readAgentMessages({
+        room: "fml-inc/panopticon",
+        undeliveredTo: "bob",
+      }).map((m) => m.body),
+    ).toEqual(["hello room"]);
 
-    pending = readAgentMessages({
-      room: "fml-inc/panopticon",
-      undeliveredOnly: true,
-    });
-    expect(pending.map((m) => m.body)).toEqual(["c2"]);
+    // Bob consumes it; re-marking for either session is a no-op.
+    expect(markDelivered([id], "bob", 2000)).toBe(1);
+    expect(markDelivered([id], "alice", 3000)).toBe(0);
+    expect(
+      readAgentMessages({ room: "fml-inc/panopticon", undeliveredTo: "bob" }),
+    ).toHaveLength(0);
+  });
 
-    // Re-marking an already-delivered id is a no-op.
-    expect(markDelivered([id1], 3000)).toBe(0);
+  it("directed message is only pending for its addressee", () => {
+    insertAgentMessage(base({ to_session: "alice", body: "for alice" }));
+    expect(
+      readAgentMessages({
+        room: "fml-inc/panopticon",
+        toSession: "alice",
+        undeliveredTo: "alice",
+      }).map((m) => m.body),
+    ).toEqual(["for alice"]);
+    expect(
+      readAgentMessages({
+        room: "fml-inc/panopticon",
+        toSession: "bob",
+        undeliveredTo: "bob",
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("sinceMs excludes messages created before a reader joined", () => {
+    insertAgentMessage(base({ body: "old", created_at_ms: 1000 }));
+    insertAgentMessage(base({ body: "new", created_at_ms: 5000 }));
+    expect(
+      readAgentMessages({
+        room: "fml-inc/panopticon",
+        undeliveredTo: "late",
+        sinceMs: 3000,
+      }).map((m) => m.body),
+    ).toEqual(["new"]);
   });
 
   it("persists subject/ref_path/source and caps the limit", () => {

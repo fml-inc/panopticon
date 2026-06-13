@@ -614,6 +614,16 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   delivered_at_ms INTEGER
 );
 
+-- Per-recipient delivery: a broadcast (to_session NULL) must reach EVERY live
+-- session in the room exactly once (group-chat fan-out), so delivery is tracked
+-- per (message, session), not by a single global column on agent_messages.
+CREATE TABLE IF NOT EXISTS agent_message_deliveries (
+  message_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  delivered_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (message_id, session_id)
+);
+
 -- ── Indexes ─────────────────────────────────────────────────────────────────
 
 -- otel_logs
@@ -764,6 +774,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_drain
   ON agent_messages(to_session, delivered_at_ms);
 CREATE INDEX IF NOT EXISTS idx_agent_messages_subject
   ON agent_messages(room, kind, subject);
+CREATE INDEX IF NOT EXISTS idx_amd_session
+  ON agent_message_deliveries(session_id, message_id);
 
 `;
 

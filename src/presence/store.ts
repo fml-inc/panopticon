@@ -125,6 +125,16 @@ export function upsertInstance(row: InstanceUpsert): void {
   });
 }
 
+/** When this session first appeared (its presence join time), or null. */
+export function getInstanceFirstSeen(sessionId: string): number | null {
+  const row = getDb()
+    .prepare(
+      "SELECT first_seen_ms FROM panopticon_instances WHERE session_id = ?",
+    )
+    .get(sessionId) as { first_seen_ms: number } | undefined;
+  return row?.first_seen_ms ?? null;
+}
+
 /** Mark an instance ended. No-op if it is already ended. */
 export function endInstance(
   sessionId: string,

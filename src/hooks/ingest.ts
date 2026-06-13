@@ -30,7 +30,11 @@ import {
   isObservedAbsolutePath,
   resolveFilePathFromCwd,
 } from "../paths.js";
-import { endInstance, upsertInstance } from "../presence/store.js";
+import {
+  endInstance,
+  getInstanceFirstSeen,
+  upsertInstance,
+} from "../presence/store.js";
 import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
@@ -162,13 +166,97 @@ function joinContext(...parts: (string | null | undefined)[]): string {
   return parts.filter((p): p is string => Boolean(p)).join("\n\n");
 }
 
+// Only surface invites posted within this window, so a session sees recent open
+// invitations (even if it joined the room after they were posted) but not stale
+// ones. Per-session dedupe is durable, via the agent_message_deliveries table.
+const BEACON_WINDOW_MS = 15 * 60_000;
+
 /**
- * Layer 2 bus delivery (advisory inject). Drains pending coordination messages
- * addressed to this session and returns them as additionalContext. v1 has a
- * single provider — frenemy challenges — but the shape generalizes (sidequest
- * claim-conflicts slot in here later). Consume-once: drained challenges are
- * marked delivered so they don't re-inject on the next hook. Best-effort and
- * never throws into hook ingest.
+ * Group-chat message provider: challenges and chat addressed to this session OR
+ * broadcast to the room, drained oldest-first. Delivery is per-recipient
+ * (undeliveredTo) so a broadcast reaches EVERY live session exactly once, not
+ * just the first to hit a hook. Only messages created at/after this session
+ * joined are surfaced, so a fresh session doesn't drain the whole room history.
+ */
+function drainMessages(
+  sessionId: string,
+  room: string,
+  nowMs: number,
+): string | null {
+  // The presence row is seeded on every hook event before this drain runs, so
+  // first_seen_ms is the session's join time. Fail closed to `now` if it is
+  // somehow absent (a swallowed presence-upsert error) — a fresh reader should
+  // see nothing from before it existed, never the whole room backlog.
+  const sinceMs = getInstanceFirstSeen(sessionId) ?? nowMs;
+  const pending = readAgentMessages({
+    room,
+    kinds: ["challenge", "chat"],
+    // Broadcasts + messages addressed to me; never my own.
+    toSession: sessionId,
+    excludeFrom: sessionId,
+    undeliveredTo: sessionId,
+    sinceMs,
+    // sinceId: 0 forces oldest-first delivery (id > 0, ascending).
+    sinceId: 0,
+    limit: 5,
+  });
+  if (pending.length === 0) return null;
+  markDelivered(
+    pending.map((m) => m.id),
+    sessionId,
+    nowMs,
+  );
+  return pending
+    .map((m) =>
+      m.kind === "challenge"
+        ? `🔴 Frenemy challenge: ${m.body}`
+        : `💬 ${m.from_session}: ${m.body}`,
+    )
+    .join("\n");
+}
+
+/**
+ * Recruitment beacon provider: room-broadcast invites/announcements, shown once
+ * per session (not consumed — other sessions still see them) and only while
+ * fresh. Phrased to INFORM, not command: a busy agent may ignore it. This is the
+ * "who's around / weigh in if relevant" channel, distinct from a directed
+ * challenge.
+ */
+function drainBeacons(
+  sessionId: string,
+  room: string,
+  nowMs: number,
+): string | null {
+  const invites = readAgentMessages({
+    room,
+    kinds: ["invite"],
+    toSession: sessionId,
+    excludeFrom: sessionId, // don't invite a session to its own discussion
+    undeliveredTo: sessionId, // per-recipient: each session sees it once (durable)
+    sinceMs: nowMs - BEACON_WINDOW_MS, // window: only recent open invites
+    sinceId: 0,
+    limit: 10,
+  });
+  if (invites.length === 0) return null;
+  markDelivered(
+    invites.map((m) => m.id),
+    sessionId,
+    nowMs,
+  );
+  return invites
+    .map(
+      (m) =>
+        `📣 Open in your workspace: ${m.body}\n(You may join with /panopticon debate join — invited, not required.)`,
+    )
+    .join("\n");
+}
+
+/**
+ * Layer 2 bus delivery (advisory inject). Runs the coordination-context provider
+ * list for this session and returns the combined additionalContext. Providers:
+ * group-chat messages (challenge/chat, per-recipient consume-once) and
+ * recruitment beacons (once-per-session). The shape generalizes — sidequest
+ * claim-conflicts slot in as another provider. Best-effort; never throws.
  */
 function drainCoordinationContext(
   sessionId: string,
@@ -176,25 +264,15 @@ function drainCoordinationContext(
 ): string | null {
   if (!room) return null;
   try {
-    const pending = readAgentMessages({
-      room,
-      kinds: ["challenge"],
-      // Broadcasts + challenges addressed to me; never my own.
-      toSession: sessionId,
-      excludeFrom: sessionId,
-      undeliveredOnly: true,
-      // sinceId: 0 forces oldest-first delivery (id > 0, ascending).
-      sinceId: 0,
-      limit: 3,
-    });
-    if (pending.length === 0) return null;
-    markDelivered(
-      pending.map((m) => m.id),
-      Date.now(),
+    const nowMs = Date.now();
+    return (
+      joinContext(
+        drainMessages(sessionId, room, nowMs),
+        drainBeacons(sessionId, room, nowMs),
+      ) || null
     );
-    return pending.map((m) => `🔴 Frenemy challenge: ${m.body}`).join("\n");
   } catch (err) {
-    log.hooks.error("bus challenge drain failed:", err);
+    log.hooks.error("bus coordination drain failed:", err);
     return null;
   }
 }

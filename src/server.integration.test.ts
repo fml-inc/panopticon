@@ -2057,5 +2057,125 @@ describe("server integration", () => {
       const res = await preToolUse({ session_id: "primary-3" });
       expect(additionalContext(res.body)).not.toContain("self addressed");
     });
+
+    it("fans a broadcast chat out to every session once (group chat)", async () => {
+      // Both sessions join first so the broadcast is after their join time.
+      for (const id of ["chat-a", "chat-b"]) {
+        await post("/hooks", {
+          session_id: id,
+          hook_event_name: "SessionStart",
+          source: "claude",
+          repository: ROOM,
+        });
+      }
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "opener",
+          kind: "chat",
+          body: "standup in 5",
+        },
+      });
+
+      // Each session drains the broadcast independently...
+      const a1 = await preToolUse({ session_id: "chat-a" });
+      const b1 = await preToolUse({ session_id: "chat-b" });
+      expect(additionalContext(a1.body)).toContain("standup in 5");
+      expect(additionalContext(b1.body)).toContain("standup in 5");
+
+      // ...and only once each.
+      const a2 = await preToolUse({ session_id: "chat-a" });
+      expect(additionalContext(a2.body)).not.toContain("standup in 5");
+    });
+  });
+
+  // ── Recruitment beacon (Layer 2 provider) ───────────────────────────────
+  // A room-broadcast invite is shown to each active session once (not consumed
+  // like a challenge), scoped to the room, and never to the inviter itself.
+
+  describe("recruitment beacon", () => {
+    const ROOM = "fml-inc/beacon";
+
+    function invite(body: string, extra: Record<string, unknown> = {}) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from: "opener", kind: "invite", body, ...extra },
+      });
+    }
+    function preToolUse(
+      session_id: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      return post("/hooks", {
+        session_id,
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+        ...extra,
+      });
+    }
+    function ctx(body: unknown): string {
+      return (
+        (body as { hookSpecificOutput?: { additionalContext?: string } })
+          .hookSpecificOutput?.additionalContext ?? ""
+      );
+    }
+
+    it("shows a broadcast invite to an active session exactly once", async () => {
+      await invite("design review for the auth refactor");
+
+      const first = await preToolUse("beacon-a");
+      expect(ctx(first.body)).toContain("design review for the auth refactor");
+
+      // Once-per-session: the next hook does not re-inject it.
+      const second = await preToolUse("beacon-a");
+      expect(ctx(second.body)).not.toContain(
+        "design review for the auth refactor",
+      );
+    });
+
+    it("delivers the same invite to multiple sessions independently", async () => {
+      await invite("vote on the migration approach");
+      const a = await preToolUse("beacon-b1");
+      const b = await preToolUse("beacon-b2");
+      expect(ctx(a.body)).toContain("vote on the migration approach");
+      expect(ctx(b.body)).toContain("vote on the migration approach");
+    });
+
+    it("does not invite the session that opened the discussion", async () => {
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "beacon-opener",
+          kind: "invite",
+          body: "my own topic",
+        },
+      });
+      const res = await preToolUse("beacon-opener");
+      expect(ctx(res.body)).not.toContain("my own topic");
+    });
+
+    it("is scoped to the room", async () => {
+      await invite("room-scoped invite");
+      const elsewhere = await post("/hooks", {
+        session_id: "beacon-other-room",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: "fml-inc/somewhere-else",
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      expect(ctx(elsewhere.body)).not.toContain("room-scoped invite");
+    });
+
+    it("is not delivered to a frenemy-role session", async () => {
+      await invite("frenemy should not be recruited");
+      const res = await preToolUse("beacon-frenemy", { role: "frenemy" });
+      expect(ctx(res.body)).not.toContain("frenemy should not be recruited");
+    });
   });
 });

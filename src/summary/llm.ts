@@ -321,6 +321,10 @@ export async function invokeLlmAsync(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    /** Run in this directory (e.g. a repo to inspect) instead of the headless cwd. */
+    cwd?: string;
+    /** Read-only tools to permit (Claude only). Enables tool use when set. */
+    allowedTools?: string[];
   } = {},
 ): Promise<string | null> {
   const runner = opts.runner ?? DEFAULT_RUNNER;
@@ -329,7 +333,7 @@ export async function invokeLlmAsync(
 
   const timeoutMs = opts.timeoutMs ?? LLM_TIMEOUT_MS;
   const env = cleanEnv();
-  const cwd = getHeadlessCwd(runner);
+  const cwd = opts.cwd ?? getHeadlessCwd(runner);
 
   if (runner === "codex") {
     return invokeCodexLlmAsync(prompt, {
@@ -351,6 +355,7 @@ export async function invokeLlmAsync(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
 }
 
@@ -360,6 +365,7 @@ function buildClaudeArgs(opts: {
   withMcp?: boolean;
   systemPrompt?: string;
   model?: string | null;
+  allowedTools?: string[];
 }): string[] | null {
   const args = [
     "-p",
@@ -374,9 +380,16 @@ function buildClaudeArgs(opts: {
     "--disable-slash-commands",
     "--setting-sources",
     "user",
-    "--tools",
-    "",
   ];
+
+  // When read-only tools are requested (e.g. the frenemy reviewer inspecting a
+  // worktree), pre-approve exactly those; otherwise disable all tools so the
+  // default headless run (session summaries) stays a pure text transform.
+  if (opts.allowedTools && opts.allowedTools.length > 0) {
+    args.push("--allowedTools", opts.allowedTools.join(" "));
+  } else {
+    args.push("--tools", "");
+  }
 
   if (shouldUseBareMode(opts.env)) {
     args.push("--bare");
@@ -617,6 +630,7 @@ async function invokeClaudeLlmAsync(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    allowedTools?: string[];
   },
 ): Promise<string | null> {
   const args = buildClaudeArgs({
@@ -625,6 +639,7 @@ async function invokeClaudeLlmAsync(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
   if (!args) return null;
 
