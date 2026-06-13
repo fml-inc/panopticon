@@ -194,10 +194,27 @@ export function markDelivered(
     `INSERT OR IGNORE INTO agent_message_deliveries (message_id, session_id, delivered_at_ms)
      VALUES (?, ?, ?)`,
   );
+  const deliveredIds: number[] = [];
   const tx = db.transaction((rows: number[]) => {
-    let changed = 0;
-    for (const id of rows) changed += stmt.run(id, sessionId, nowMs).changes;
-    return changed;
+    for (const id of rows) {
+      if (stmt.run(id, sessionId, nowMs).changes > 0) deliveredIds.push(id);
+    }
+    return deliveredIds.length;
   });
-  return tx(ids) as number;
+  const changed = tx(ids) as number;
+
+  // Notify Mission Control so the feed can flip these messages to delivered.
+  // Per-recipient now, so carry the session it was delivered to.
+  if (changed > 0 && hasClients()) {
+    try {
+      broadcast({
+        type: "delivery",
+        data: { ids: deliveredIds, session_id: sessionId, delivered_at_ms: nowMs },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return changed;
 }

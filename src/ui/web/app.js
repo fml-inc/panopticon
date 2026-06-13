@@ -250,6 +250,20 @@ function timeStr(ms) {
   return d.toLocaleTimeString([], { hour12: false });
 }
 
+/** Message ids the Layer 2 drain has delivered into an agent. Tracked
+ *  separately so a delivery event that races ahead of its message still applies
+ *  once the message renders. */
+const deliveredIds = new Set();
+
+/** Delivery chip for a drainable (challenge) message. */
+function delivChip(msg) {
+  if (msg.kind !== "challenge") return "";
+  const done = msg.delivered_at_ms != null || deliveredIds.has(msg.id);
+  return done
+    ? `<span class="msg-deliv delivered">delivered ✓</span>`
+    : `<span class="msg-deliv pending">pending</span>`;
+}
+
 function applyMessage(msg) {
   if (!msg) return;
   if (msg.id != null) {
@@ -265,11 +279,13 @@ function applyMessage(msg) {
   const to = msg.to_session ? `→ ${shortId(msg.to_session)}` : "→ room";
   const li = document.createElement("li");
   li.className = `msg kind-${kind}`;
+  if (msg.id != null) li.dataset.msgId = msg.id;
   li.innerHTML = `
     <div class="msg-head">
       <span class="msg-kind">${escapeHtml(kind)}</span>
       <span>${from} ${to}</span>
-      <span>${timeStr(msg.created_at_ms)}</span>
+      ${delivChip(msg)}
+      <span class="msg-time">${timeStr(msg.created_at_ms)}</span>
     </div>
     <div class="msg-body">${escapeHtml(msg.body ?? "")}</div>
     ${msg.subject ? `<div class="msg-subject">${escapeHtml(msg.subject)}</div>` : ""}
@@ -280,6 +296,18 @@ function applyMessage(msg) {
   // Bubble challenges to any host shell (Electron) for native notification.
   if (kind === "challenge" && window.__PANOPTICON_HOST__?.onChallenge) {
     window.__PANOPTICON_HOST__.onChallenge(msg);
+  }
+}
+
+/** Flip messages to "delivered" when the Layer 2 drain reports them. */
+function applyDelivery(payload) {
+  for (const id of payload?.ids ?? []) {
+    deliveredIds.add(id);
+    const chip = feedEl.querySelector(`li[data-msg-id="${id}"] .msg-deliv`);
+    if (chip) {
+      chip.textContent = "delivered ✓";
+      chip.className = "msg-deliv delivered";
+    }
   }
 }
 
@@ -301,6 +329,7 @@ function connectStream() {
   es.onerror = () => setConn("down", "reconnecting…");
   es.addEventListener("instance", (e) => applyInstance(JSON.parse(e.data)));
   es.addEventListener("message", (e) => applyMessage(JSON.parse(e.data)));
+  es.addEventListener("delivery", (e) => applyDelivery(JSON.parse(e.data)));
 }
 
 // ---- Boot -------------------------------------------------------------------
@@ -376,7 +405,7 @@ async function seed() {
   // the SSE `message` stream.
   try {
     const rows = await tool("query", {
-      sql: "SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms FROM agent_messages ORDER BY id DESC LIMIT 50",
+      sql: "SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms, delivered_at_ms FROM agent_messages ORDER BY id DESC LIMIT 50",
     });
     for (const m of (Array.isArray(rows) ? rows : []).reverse())
       applyMessage(m);

@@ -351,6 +351,26 @@ body {
   margin-top: 4px;
 }
 
+.msg-time {
+  margin-left: auto;
+}
+
+.msg-deliv {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.msg-deliv.pending {
+  color: var(--idle);
+  border-color: var(--idle);
+}
+.msg-deliv.delivered {
+  color: var(--active);
+  border-color: var(--active);
+}
+
 /* Roster rows are clickable -> open the session detail drawer */
 .inst {
   cursor: pointer;

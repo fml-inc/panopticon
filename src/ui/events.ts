@@ -18,7 +18,10 @@ export type UiEvent =
   | { type: "instance"; data: InstanceView }
   /** Bus message appended (Layer 1 `agent_messages`). Typed loosely until the
    *  bus lands so this module has no dependency on Layer 1. */
-  | { type: "message"; data: Record<string, unknown> };
+  | { type: "message"; data: Record<string, unknown> }
+  /** Bus messages drained/delivered into an agent (Layer 2). Carries the ids
+   *  that flipped to delivered so the feed can mark them. */
+  | { type: "delivery"; data: { ids: number[]; delivered_at_ms: number } };
 
 const clients = new Set<http.ServerResponse>();
 
