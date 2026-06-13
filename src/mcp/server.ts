@@ -902,7 +902,9 @@ server.tool(
     to: z
       .string()
       .optional()
-      .describe("Recipient session id; omit to broadcast."),
+      .describe(
+        "Recipient session id; omit to broadcast. Filtering/delivery hint, not access control.",
+      ),
     kind: z.string().describe("Message kind, e.g. 'challenge' or 'chat'."),
     body: z.string().describe("Message text."),
     subject: z.string().optional().describe("Optional scope, e.g. 'path:...'."),

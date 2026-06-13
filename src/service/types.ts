@@ -1,3 +1,4 @@
+import type { AgentMessageRow } from "../db/bus.js";
 import type { InstancesResult } from "../presence/store.js";
 import type { SyncPendingResult } from "../sync/pending.js";
 import type {
@@ -128,7 +129,11 @@ export interface BusSendInput {
   session_id?: string;
   /** Sender id when there is no session_id (defaults to session_id else "external"). */
   from?: string;
-  /** Address a specific session; omit to broadcast to the room. */
+  /**
+   * Address a specific session; omit to broadcast to the room. This is a
+   * delivery/filtering hint, NOT access control: a roommate who reads without
+   * identifying (no session_id) still sees directed messages.
+   */
   to?: string;
   kind: string;
   body: string;
@@ -156,7 +161,7 @@ export interface BusReadResult {
   room: string | null;
   /** Highest id returned (or the input cursor when empty) — pass back as sinceId. */
   cursor: number;
-  messages: unknown[];
+  messages: AgentMessageRow[];
 }
 
 export interface BusRosterInput {

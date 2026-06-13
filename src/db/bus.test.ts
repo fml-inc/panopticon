@@ -47,6 +47,15 @@ describe("agent message bus store", () => {
     expect(msgs.map((m) => m.body)).toEqual(["one", "two"]);
   });
 
+  it("without a cursor, returns the NEWEST N in ascending order", () => {
+    for (const b of ["m1", "m2", "m3", "m4", "m5"]) {
+      insertAgentMessage(base({ body: b }));
+    }
+    // Newest 2 messages, oldest-first within the page.
+    const msgs = readAgentMessages({ room: "fml-inc/panopticon", limit: 2 });
+    expect(msgs.map((m) => m.body)).toEqual(["m4", "m5"]);
+  });
+
   it("scopes reads by room", () => {
     insertAgentMessage(base({ room: "repo:one", body: "x" }));
     insertAgentMessage(base({ room: "repo:two", body: "y" }));

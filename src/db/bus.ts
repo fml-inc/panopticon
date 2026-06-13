@@ -110,14 +110,19 @@ export function readAgentMessages(
 
   params.limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 200)), 1000);
 
-  return getDb()
+  // Without a cursor, a fresh reader wants the NEWEST N (the present), so tail
+  // the log with DESC + LIMIT and flip back to ascending. With a cursor, page
+  // forward in ascending id order from where the reader left off.
+  const tailMode = typeof opts.sinceId !== "number";
+  const rows = getDb()
     .prepare(
       `SELECT ${MESSAGE_COLUMNS} FROM agent_messages
          WHERE ${clauses.join(" AND ")}
-         ORDER BY id ASC
+         ORDER BY id ${tailMode ? "DESC" : "ASC"}
          LIMIT @limit`,
     )
     .all(params) as AgentMessageRow[];
+  return tailMode ? rows.reverse() : rows;
 }
 
 /**

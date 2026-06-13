@@ -1937,6 +1937,18 @@ describe("server integration", () => {
       expect(ids).not.toContain("roster-elsewhere");
     });
 
+    it("bus_roster returns an empty, room-null roster when no room resolves", async () => {
+      const roster = await post("/api/tool", {
+        name: "bus_roster",
+        params: { session_id: "unknown-no-presence" },
+      });
+      expect(roster.status).toBe(200);
+      expect(roster.body).toMatchObject({ room: null });
+      expect((roster.body as { instances: unknown[] }).instances).toHaveLength(
+        0,
+      );
+    });
+
     it("resolves the room implicitly from a session's recorded presence", async () => {
       // A SessionStart records this session's room (repository) in presence.
       await post("/hooks", {

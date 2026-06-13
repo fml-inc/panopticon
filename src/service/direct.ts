@@ -245,7 +245,18 @@ export function createDirectPanopticonService(): PanopticonService {
       return { room, cursor, messages };
     },
     async busRoster(input) {
-      const room = resolveBusRoom(input ?? {}) ?? undefined;
+      const room = resolveBusRoom(input ?? {});
+      // bus_roster is your-room scoped: if we can't determine the caller's room,
+      // return an empty roster rather than silently widening to every workspace.
+      // (The generic `instances` tool is the explicit cross-room view.)
+      if (!room) {
+        return {
+          now_ms: Date.now(),
+          room: null,
+          counts: { active: 0, idle: 0, exited: 0, total: 0 },
+          instances: [],
+        };
+      }
       return readInstancesResult({ room });
     },
     async intentForCode(opts) {
