@@ -2,9 +2,41 @@
 // SSE stream (/api/events). Runs unchanged in a browser tab or Electron renderer.
 
 const boot = window.__PANOPTICON__ ?? { token: "", port: null };
+/** Snapshot mode: read pre-baked JSON instead of the live server (no auth, no
+ *  SSE, no write paths) and replay the day on a virtual clock. Set by the
+ *  static-site export. */
+const STATIC = !!boot.static;
+
+/** Virtual clock — Date.now() live, the replay cursor in snapshot mode. Used
+ *  anywhere "now" feeds the UI (e.g. session age). */
+let virtualNow = null;
+function nowMs() {
+  return virtualNow ?? Date.now();
+}
+
+async function fetchJson(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
+  return r.json();
+}
+
+/** In snapshot mode, map a tool call to its baked JSON file. */
+async function staticTool(name, params) {
+  switch (name) {
+    case "instances":
+      return fetchJson("data/instances.json");
+    case "sessions":
+      return fetchJson("data/sessions.json");
+    case "timeline":
+      return fetchJson(`data/timeline/${params.sessionId}.json`);
+    default:
+      throw new Error(`static: unsupported tool ${name}`);
+  }
+}
 
 /** POST a read-only Panopticon tool and return its JSON result. */
 async function tool(name, params = {}) {
+  if (STATIC) return staticTool(name, params);
   const res = await fetch("/api/tool", {
     method: "POST",
     headers: {
@@ -19,6 +51,7 @@ async function tool(name, params = {}) {
 
 /** POST a write command (e.g. bus-send) to the exec dispatch. */
 async function exec(command, params = {}) {
+  if (STATIC) throw new Error("read-only snapshot");
   const res = await fetch("/api/exec", {
     method: "POST",
     headers: {
@@ -32,6 +65,18 @@ async function exec(command, params = {}) {
     throw new Error(`${command} -> ${res.status} ${txt}`.trim());
   }
   return res.json();
+}
+
+/** Recent bus messages: baked JSON in snapshot mode, SQL otherwise. */
+async function loadBusMessages() {
+  if (STATIC) {
+    const rows = await fetchJson("data/messages.json");
+    return Array.isArray(rows) ? rows : [];
+  }
+  const rows = await tool("query", {
+    sql: "SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms, delivered_at_ms FROM agent_messages ORDER BY id DESC LIMIT 50",
+  });
+  return Array.isArray(rows) ? rows : [];
 }
 
 // ---- Roster -----------------------------------------------------------------
@@ -49,7 +94,6 @@ const prevById = new Map(); // sessionId -> { cost, tok }
 let prevTs = null;
 let burnPerHr = null;
 let tokPerMin = null;
-let totalSpend = 0;
 
 const rosterEl = document.getElementById("roster");
 const countsEl = document.getElementById("counts");
@@ -95,7 +139,7 @@ function fmtCost(c) {
 /** Compact "age since last activity": 5s / 2m / 1h. */
 function ageStr(ms) {
   if (!ms) return "";
-  const s = Math.round((Date.now() - ms) / 1000);
+  const s = Math.round((nowMs() - ms) / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
@@ -238,12 +282,17 @@ function renderRoster() {
     .join("");
 }
 
-/** Aggregate burn-rate header across the fleet. */
+/** Aggregate header across the fleet. Active + spend come from the sessions
+ *  currently present in the roster (so they accumulate during replay); burn /
+ *  tokens are live-poll rates (— in snapshot mode). */
 function renderMissionBar() {
   if (!missionbarEl) return;
-  const active = [...instances.values()].filter(
-    (i) => i.status === "active",
-  ).length;
+  let active = 0;
+  let spend = 0;
+  for (const i of instances.values()) {
+    if (i.status === "active") active += 1;
+    spend += sessionMeta.get(i.session_id)?.totalCost ?? 0;
+  }
   const tile = (label, value) =>
     `<div class="mtile"><span class="mval">${value}</span><span class="mlabel">${label}</span></div>`;
   missionbarEl.innerHTML =
@@ -253,7 +302,7 @@ function renderMissionBar() {
       "tokens",
       tokPerMin == null ? "—" : `${fmtNum(Math.round(tokPerMin))}/min`,
     ) +
-    tile("spend", `$${totalSpend.toFixed(2)}`);
+    tile("spend", `$${spend.toFixed(2)}`);
 }
 
 function applyInstance(view) {
@@ -389,13 +438,11 @@ async function refreshSessionMeta() {
     // a baseline (its historical cost isn't attributed to one 15s tick), which
     // avoids spikes from window churn. NOTE: the `sessions` page is limited to
     // 100 rows, so this is a glanceable fleet rate, not exact accounting.
-    totalSpend = 0;
     let dCost = 0;
     let dTok = 0;
     for (const s of sessionMeta.values()) {
       const cost = s.totalCost ?? 0;
       const tok = s.totalOutputTokens ?? 0;
-      totalSpend += cost;
       const prev = prevById.get(s.sessionId);
       if (prev) {
         dCost += Math.max(0, cost - prev.cost);
@@ -430,15 +477,10 @@ async function seed() {
   await refreshSessionMeta();
   setInterval(refreshSessionMeta, 15000);
 
-  // Seed recent bus messages across all rooms via SQL (the bus_read tool is
-  // room-scoped; the dashboard wants the whole fleet). Live updates arrive over
-  // the SSE `message` stream.
+  // Seed recent bus messages; live updates arrive over the SSE `message` stream.
   try {
-    const rows = await tool("query", {
-      sql: "SELECT id, room, from_session, to_session, kind, body, subject, ref_path, source, created_at_ms, delivered_at_ms FROM agent_messages ORDER BY id DESC LIMIT 50",
-    });
-    for (const m of (Array.isArray(rows) ? rows : []).reverse())
-      applyMessage(m);
+    const rows = await loadBusMessages();
+    for (const m of rows.reverse()) applyMessage(m);
   } catch (err) {
     console.error("bus seed failed", err);
   }
@@ -699,7 +741,10 @@ function renderDetail(sessionId, data) {
       </ul>
     </div>
 
-    <div class="drawer-section console">
+    ${
+      STATIC
+        ? ""
+        : `<div class="drawer-section console">
       <h3>Send to this session</h3>
       <div class="console-box">
         <select id="op-kind" class="op-kind">
@@ -713,7 +758,8 @@ function renderDetail(sessionId, data) {
           <button id="op-send" class="op-send">Send</button>
         </div>
       </div>
-    </div>
+    </div>`
+    }
   `;
 
   document
@@ -749,5 +795,197 @@ function renderDetail(sessionId, data) {
   });
 }
 
-seed();
-connectStream();
+// ---- Snapshot replay --------------------------------------------------------
+// Replays the day on a virtual clock by synthesizing the same events the live
+// SSE stream delivers (instance / message / delivery), in timestamp order.
+
+const replaybarEl = document.getElementById("replaybar");
+const rbPlay = document.getElementById("rb-play");
+const rbScrub = document.getElementById("rb-scrub");
+const rbTime = document.getElementById("rb-time");
+const rbSpeed = document.getElementById("rb-speed");
+
+const REPLAY_BASE_MS = 120_000; // whole window plays in ~2 min at 1×
+
+let replayEvents = [];
+let replayIdx = 0;
+let replayMinTs = 0;
+let replayMaxTs = 0;
+let replayCursorTs = 0;
+let replayProgress = 0; // 0..1
+let replayPlaying = false;
+let replayTimer = null;
+
+function buildReplay(instArr, messages) {
+  const ev = [];
+  for (const i of instArr) {
+    if (i.first_seen_ms) {
+      ev.push({
+        ts: i.first_seen_ms,
+        type: "instance",
+        // Appear as active; freeze age at appearance.
+        data: {
+          ...i,
+          last_seen_ms: i.first_seen_ms,
+          ended_at_ms: null,
+          ended_reason: null,
+          status: "active",
+        },
+      });
+    }
+    if (i.ended_at_ms) {
+      ev.push({
+        ts: i.ended_at_ms,
+        type: "instance",
+        data: { ...i, status: "exited" },
+      });
+    }
+  }
+  for (const m of messages) {
+    if (m.created_at_ms) {
+      ev.push({
+        ts: m.created_at_ms,
+        type: "message",
+        data: { ...m, delivered_at_ms: null },
+      });
+    }
+    if (m.delivered_at_ms) {
+      ev.push({
+        ts: m.delivered_at_ms,
+        type: "delivery",
+        data: { ids: [m.id], delivered_at_ms: m.delivered_at_ms },
+      });
+    }
+  }
+  ev.sort((a, b) => a.ts - b.ts);
+  replayEvents = ev;
+  replayMinTs = ev.length ? ev[0].ts : 0;
+  replayMaxTs = ev.length ? ev[ev.length - 1].ts : 0;
+}
+
+function resetReplay() {
+  replayIdx = 0;
+  instances.clear();
+  feedEl.innerHTML = `<li class="empty">Replaying…</li>`;
+  messageCount = 0;
+  seenMessageIds.clear();
+  deliveredIds.clear();
+  feedMetaEl.textContent = "";
+}
+
+function dispatchUpTo(ts) {
+  while (replayIdx < replayEvents.length && replayEvents[replayIdx].ts <= ts) {
+    const e = replayEvents[replayIdx++];
+    if (e.type === "instance") applyInstance(e.data);
+    else if (e.type === "message") applyMessage(e.data);
+    else if (e.type === "delivery") applyDelivery(e.data);
+  }
+}
+
+function seek(ts) {
+  if (ts < replayCursorTs) resetReplay();
+  replayCursorTs = ts;
+  virtualNow = ts;
+  dispatchUpTo(ts);
+  renderRoster();
+  if (rbTime) {
+    rbTime.textContent = replayMaxTs
+      ? new Date(ts).toLocaleTimeString([], { hour12: false })
+      : "—";
+  }
+  if (rbScrub) rbScrub.value = String(Math.round(replayProgress * 1000));
+}
+
+function seekProgress(p) {
+  replayProgress = Math.min(1, Math.max(0, p));
+  seek(replayMinTs + replayProgress * (replayMaxTs - replayMinTs));
+}
+
+function setPlaying(p) {
+  replayPlaying = p;
+  if (rbPlay) rbPlay.textContent = p ? "⏸" : "▶";
+  if (replayTimer) {
+    clearInterval(replayTimer);
+    replayTimer = null;
+  }
+  if (!p) return;
+  if (replayProgress >= 1) seekProgress(0);
+  let last = Date.now();
+  replayTimer = setInterval(() => {
+    const now = Date.now();
+    const dt = now - last;
+    last = now;
+    const speed = Number(rbSpeed?.value ?? 1);
+    seekProgress(replayProgress + (dt * speed) / REPLAY_BASE_MS);
+    if (replayProgress >= 1) setPlaying(false);
+  }, 100);
+}
+
+async function bootStatic() {
+  setConn(
+    "snapshot",
+    boot.snapshotAt ? `snapshot · ${boot.snapshotAt}` : "snapshot",
+  );
+  if (replaybarEl) replaybarEl.hidden = false;
+
+  // Session metadata + topology (loaded fully; the roster only shows sessions
+  // the replay has surfaced).
+  try {
+    const res = await tool("sessions");
+    const list = res.sessions ?? [];
+    for (const s of list) sessionMeta.set(s.sessionId, s);
+    childCount.clear();
+    for (const s of list) {
+      if (s.parentSessionId) {
+        childCount.set(
+          s.parentSessionId,
+          (childCount.get(s.parentSessionId) ?? 0) + 1,
+        );
+      }
+    }
+  } catch (err) {
+    console.error("static meta load failed", err);
+  }
+
+  let inst = [];
+  let msgs = [];
+  try {
+    inst = (await tool("instances")).instances ?? [];
+  } catch (err) {
+    console.error("static instances load failed", err);
+  }
+  try {
+    msgs = await loadBusMessages();
+  } catch (err) {
+    console.error("static messages load failed", err);
+  }
+
+  buildReplay(inst, msgs);
+  resetReplay();
+
+  rbPlay?.addEventListener("click", () => setPlaying(!replayPlaying));
+  rbScrub?.addEventListener("input", () => {
+    setPlaying(false);
+    seekProgress(Number(rbScrub.value) / 1000);
+  });
+  document.getElementById("rb-end")?.addEventListener("click", () => {
+    setPlaying(false);
+    seekProgress(1);
+  });
+  document.getElementById("rb-restart")?.addEventListener("click", () => {
+    seekProgress(0);
+    setPlaying(true);
+  });
+
+  seekProgress(0);
+  setPlaying(true); // autoplay
+}
+
+// ---- Boot -------------------------------------------------------------------
+
+if (STATIC) {
+  bootStatic();
+} else {
+  seed();
+  connectStream();
+}

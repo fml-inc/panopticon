@@ -70,6 +70,54 @@ body {
   color: var(--muted);
 }
 
+/* Replay control bar (snapshot mode) */
+.replaybar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.replaybar[hidden] {
+  display: none;
+}
+.rb-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  width: 30px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.rb-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.rb-scrub {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.rb-time {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 64px;
+  text-align: center;
+}
+.rb-speed {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
 .brand {
   display: flex;
   align-items: center;

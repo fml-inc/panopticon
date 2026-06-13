@@ -21,6 +21,27 @@
 
     <div class="missionbar" id="missionbar"></div>
 
+    <div class="replaybar" id="replaybar" hidden>
+      <button class="rb-btn" id="rb-play" type="button" title="Play/pause">▶</button>
+      <button class="rb-btn" id="rb-restart" type="button" title="Restart">⟲</button>
+      <input
+        class="rb-scrub"
+        id="rb-scrub"
+        type="range"
+        min="0"
+        max="1000"
+        value="0"
+      />
+      <span class="rb-time" id="rb-time">—</span>
+      <select class="rb-speed" id="rb-speed" title="Speed">
+        <option value="1">1×</option>
+        <option value="2" selected>2×</option>
+        <option value="4">4×</option>
+        <option value="8">8×</option>
+      </select>
+      <button class="rb-btn" id="rb-end" type="button" title="Jump to end">⏭</button>
+    </div>
+
     <main class="layout">
       <section class="panel roster">
         <div class="panel-head">
