@@ -16,11 +16,13 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
 import { resolveRoom } from "../bus/room.js";
 import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
 import type {
   InstancesResult,
+  WaitForActivityInput,
   WaitForActivityResult,
 } from "../service/types.js";
 import { invokeLlmAsync } from "../summary/llm.js";
@@ -104,29 +106,109 @@ function eventCwd(events: HookEvent[]): string | null {
   return null;
 }
 
+export interface FrenemyDiff {
+  text: string;
+  /**
+   * Where the diff came from, so the prompt can label it: `uncommitted` =
+   * staged+unstaged working-tree edits; `branch` = this branch's committed work
+   * vs its base; `none` = nothing to review.
+   */
+  scope: "uncommitted" | "branch" | "none";
+  /** The base ref a `branch`-scope diff was taken against (e.g. "origin/main"). */
+  base?: string;
+}
+
 /**
- * The working-tree diff for specific files, so the critic reviews the ACTUAL
- * change, not just "about to edit X". Run in the primary's cwd (its worktree).
- * Best-effort: empty string on any failure (not a git repo, etc.). Truncated so
- * a huge diff doesn't blow up the critic prompt.
+ * Best-effort base ref to diff a branch's committed work against. Honors
+ * PANOPTICON_FRENEMY_BASE (set this for stacked branches whose real base isn't
+ * the repo default), else the repo's default branch (origin/HEAD), else
+ * main/master. Returns null if none resolve.
  */
-export function gitDiff(cwd: string, paths: string[], maxChars = 8000): string {
-  if (paths.length === 0) return "";
-  try {
-    // `diff HEAD` so staged AND unstaged edits are reviewed (plain `git diff`
-    // misses staged changes). The reviewer also has git tools to dig into
-    // committed history itself if it needs to.
-    const out = execFileSync(
-      "git",
-      ["-C", cwd, "--no-pager", "diff", "HEAD", "--", ...paths],
-      { encoding: "utf-8", maxBuffer: 16 * 1024 * 1024 },
-    );
-    return out.length > maxChars
+function resolveBaseRef(run: (args: string[]) => string | null): string | null {
+  const verify = (ref: string): boolean =>
+    run(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) !== null;
+
+  const override = process.env.PANOPTICON_FRENEMY_BASE?.trim();
+  if (override && verify(override)) return override;
+
+  // origin/HEAD resolves to e.g. "refs/remotes/origin/main" — strip to "origin/main".
+  const head = run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+  const defaultRemote = head?.trim().replace(/^refs\/remotes\//, "");
+  if (defaultRemote && verify(defaultRemote)) return defaultRemote;
+
+  for (const ref of ["origin/main", "origin/master", "main", "master"]) {
+    if (verify(ref)) return ref;
+  }
+  return null;
+}
+
+/**
+ * The diff for specific files, so the critic reviews the ACTUAL change, not just
+ * "about to edit X". Run in the primary's cwd (its worktree). Prefers uncommitted
+ * work; when the worktree is clean (the change already landed in a commit, or the
+ * frenemy is in a sibling worktree) it falls back to this branch's committed work
+ * vs its base so there's still something real to review. Best-effort: `none` on
+ * any failure (not a git repo, etc.). Truncated so a huge diff doesn't blow up
+ * the critic prompt.
+ */
+export function gitDiff(
+  cwd: string,
+  paths: string[],
+  maxChars = 8000,
+): FrenemyDiff {
+  if (paths.length === 0) return { text: "", scope: "none" };
+  const run = (args: string[]): string | null => {
+    try {
+      return execFileSync("git", ["-C", cwd, "--no-pager", ...args], {
+        encoding: "utf-8",
+        maxBuffer: 16 * 1024 * 1024,
+      });
+    } catch {
+      return null;
+    }
+  };
+  const truncate = (out: string): string =>
+    out.length > maxChars
       ? `${out.slice(0, maxChars)}\n…[diff truncated]`
       : out;
-  } catch {
-    return "";
+
+  // Keep only paths inside THIS worktree's repo. An out-of-repo path (a sibling
+  // worktree, a ~/.claude skill, a transcript file the agent read) makes git
+  // `fatal` on the whole `diff` command, which would otherwise throw away the
+  // diff for the real in-repo edits in the same batch — suppressing all review.
+  const top = run(["rev-parse", "--show-toplevel"])?.trim();
+  // Keep only paths inside THIS worktree's repo. Resolve each against cwd first
+  // so both absolute and relative pathspecs are checked correctly (a relative
+  // path that escapes via `..` is dropped, not blanket-trusted). An out-of-repo
+  // path (a sibling worktree, a ~/.claude skill, a transcript the agent read)
+  // would otherwise make git `fatal` on the whole `diff` command, discarding the
+  // diff for the real in-repo edits in the same batch and suppressing all review.
+  const inRepo = top
+    ? paths.filter((p) => {
+        const abs = resolve(cwd, p);
+        return abs === top || abs.startsWith(`${top}/`);
+      })
+    : paths;
+  if (inRepo.length === 0) return { text: "", scope: "none" };
+
+  // `diff HEAD` so staged AND unstaged edits are reviewed (plain `git diff`
+  // misses staged changes). The reviewer also has git tools to dig further.
+  const working = run(["diff", "HEAD", "--", ...inRepo]);
+  if (working && working.trim().length > 0) {
+    return { text: truncate(working), scope: "uncommitted" };
   }
+
+  // Nothing uncommitted: review what this branch committed vs its base (three-dot
+  // = only this branch's changes since it diverged), so committed work is still
+  // reviewed instead of yielding an empty diff.
+  const base = resolveBaseRef(run);
+  if (base) {
+    const branch = run(["diff", `${base}...HEAD`, "--", ...inRepo]);
+    if (branch && branch.trim().length > 0) {
+      return { text: truncate(branch), scope: "branch", base };
+    }
+  }
+  return { text: "", scope: "none" };
 }
 
 export interface FrenemyOptions {
@@ -250,9 +332,15 @@ export async function runFrenemyOnce(
 
     // Review the ACTUAL diff of the files it changed, not just the action list.
     const cwd = eventCwd(fresh);
-    const diff = cwd ? gitDiff(cwd, touchedPaths(fresh)) : "";
-    const reviewInput = diff
-      ? `What the agent just did:\n${formatActivity(fresh)}\n\nDiff of the files it changed:\n${diff}`
+    const diff: FrenemyDiff = cwd
+      ? gitDiff(cwd, touchedPaths(fresh))
+      : { text: "", scope: "none" };
+    const diffHeading =
+      diff.scope === "branch"
+        ? `Diff of the files it changed (committed on this branch vs ${diff.base}):`
+        : "Diff of the files it changed:";
+    const reviewInput = diff.text
+      ? `What the agent just did:\n${formatActivity(fresh)}\n\n${diffHeading}\n${diff.text}`
       : `What the agent just did:\n${formatActivity(fresh)}`;
 
     const raw = await deps.critique(reviewInput, cwd);
@@ -301,8 +389,20 @@ export function createFrenemyLoop(
     /** Max time to block per long-poll before re-waiting (ms). */
     longPollMs?: number;
     onChallenge?: (c: { to: string; body: string }) => void;
+    /** Test seams (default to the real service / pass). */
+    _waitForActivity?: (
+      input: WaitForActivityInput,
+    ) => Promise<WaitForActivityResult>;
+    _runOnce?: (
+      o: FrenemyOptions,
+      c: FrenemyCursors,
+    ) => Promise<Array<{ to: string; body: string }>>;
   },
 ): FrenemyLoopHandle {
+  const waitForActivity =
+    opts._waitForActivity ??
+    ((input) => httpPanopticonService.waitForActivity(input));
+  const runOnce = opts._runOnce ?? ((o, c) => runFrenemyOnce(o, c));
   const cursors: FrenemyCursors = new Map();
   let stopped = false;
   let resolveDone: () => void = () => {};
@@ -322,10 +422,14 @@ export function createFrenemyLoop(
   });
   const untilStop = <T>(p: Promise<T>): Promise<T | typeof STOP> =>
     Promise.race<T | typeof STOP>([p, stopPromise.then(() => STOP)]);
+  // NB: do NOT unref this timer. During the settle/backoff wait it is the only
+  // pending handle (the long-poll request has already resolved), so an unref'd
+  // timer lets Node treat the event loop as empty and exit mid-settle before any
+  // review runs. Prompt shutdown comes from the stop-race + process.exit, not
+  // from unref.
   const sleep = (ms: number): Promise<void> =>
     new Promise((r) => {
-      const t = setTimeout(r, ms);
-      t.unref?.();
+      setTimeout(r, ms);
     });
 
   let watermark = 0;
@@ -335,7 +439,7 @@ export function createFrenemyLoop(
       let res: WaitForActivityResult | typeof STOP;
       try {
         res = await untilStop(
-          httpPanopticonService.waitForActivity({
+          waitForActivity({
             room: opts.room,
             sinceMs: watermark,
             timeoutMs: longPollMs,
@@ -357,7 +461,7 @@ export function createFrenemyLoop(
       if ((await untilStop(sleep(settleMs))) === STOP) break;
 
       try {
-        const sent = await runFrenemyOnce(opts, cursors);
+        const sent = await runOnce(opts, cursors);
         for (const c of sent) {
           log.server.info(`frenemy → ${c.to}: ${c.body}`);
           opts.onChallenge?.(c);

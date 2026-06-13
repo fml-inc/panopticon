@@ -1,9 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
-import type { InstancesResult } from "../service/types.js";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  InstancesResult,
+  WaitForActivityResult,
+} from "../service/types.js";
 import type { HookEvent, HookTimelineResult } from "../types.js";
 import {
+  createFrenemyLoop,
   type FrenemyCursors,
   formatActivity,
+  gitDiff,
   parseChallenge,
   runFrenemyOnce,
 } from "./driver.js";
@@ -174,5 +183,129 @@ describe("runFrenemyOnce", () => {
     await runFrenemyOnce(OPTS, cursors, deps);
     // frenemy-role excluded, exited excluded, the reserved FRENEMY_FROM id excluded.
     expect(sends).toHaveLength(0);
+  });
+});
+
+describe("createFrenemyLoop", () => {
+  it("wakes on activity, runs a review pass, and stops cleanly", async () => {
+    // Proves the loop reaches the review pass after the settle wait and then
+    // stops cleanly. NB: this does NOT guard the original bug (an unref'd settle
+    // timer let the *process* exit mid-settle) — vitest keeps the process alive
+    // regardless, so re-adding the unref leaves this green. It guards the loop's
+    // control flow, not process liveness.
+    let runs = 0;
+    let waits = 0;
+    const handle = createFrenemyLoop({
+      room: "fml-inc/panopticon",
+      settleMs: 5,
+      longPollMs: 1000,
+      _waitForActivity: async (): Promise<WaitForActivityResult> => {
+        waits += 1;
+        // First wait: activity is already present. After: block until stop().
+        if (waits === 1) {
+          return { activityMs: 100, room: "fml-inc/panopticon" };
+        }
+        return new Promise<WaitForActivityResult>(() => {});
+      },
+      _runOnce: async () => {
+        runs += 1;
+        return [];
+      },
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(runs).toBe(1);
+    handle.stop();
+    await handle.done; // resolves promptly via the stop-race
+  });
+});
+
+describe("gitDiff", () => {
+  let repo: string;
+  const git = (...args: string[]): string =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
+
+  beforeEach(() => {
+    // realpath so it matches `git rev-parse --show-toplevel` (macOS /var symlink).
+    repo = realpathSync(mkdtempSync(join(tmpdir(), "frenemy-gitdiff-")));
+    execFileSync("git", ["-c", "init.defaultBranch=main", "init", repo]);
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "f.txt"), "one\n");
+    git("add", "f.txt");
+    git("commit", "-m", "base");
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    delete process.env.PANOPTICON_FRENEMY_BASE;
+  });
+
+  it("returns uncommitted working-tree changes (staged + unstaged)", () => {
+    writeFileSync(join(repo, "f.txt"), "one\ntwo\n");
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("uncommitted");
+    expect(diff.text).toContain("+two");
+  });
+
+  it("falls back to this branch's committed work vs base when clean", () => {
+    git("checkout", "-b", "feat");
+    writeFileSync(join(repo, "f.txt"), "one\ncommitted\n");
+    git("add", "f.txt");
+    git("commit", "-m", "feat work");
+    // Working tree clean — the change only lives in the commit.
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("branch");
+    expect(diff.base).toBe("main");
+    expect(diff.text).toContain("+committed");
+  });
+
+  it("honors PANOPTICON_FRENEMY_BASE for the branch fallback", () => {
+    git("branch", "stable");
+    git("checkout", "-b", "feat");
+    writeFileSync(join(repo, "f.txt"), "one\nfromfeat\n");
+    git("add", "f.txt");
+    git("commit", "-m", "feat work");
+    process.env.PANOPTICON_FRENEMY_BASE = "stable";
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("branch");
+    expect(diff.base).toBe("stable");
+    expect(diff.text).toContain("+fromfeat");
+  });
+
+  it("ignores out-of-repo paths so they don't suppress the in-repo diff", () => {
+    writeFileSync(join(repo, "f.txt"), "one\ntwo\n");
+    // A sibling-worktree / ~/.claude path in the same batch must not make git
+    // fatal on the whole command and lose the real edit.
+    const diff = gitDiff(repo, [
+      join(repo, "f.txt"),
+      "/Users/somebody/.claude/skills/review.md",
+    ]);
+    expect(diff.scope).toBe("uncommitted");
+    expect(diff.text).toContain("+two");
+  });
+
+  it("returns scope=none when every path is outside the repo", () => {
+    const diff = gitDiff(repo, ["/etc/hosts", "/tmp/elsewhere.txt"]);
+    expect(diff.scope).toBe("none");
+    expect(diff.text).toBe("");
+  });
+
+  it("drops a relative path that escapes the repo via ..", () => {
+    writeFileSync(join(repo, "f.txt"), "one\ntwo\n");
+    // Resolved against cwd, "../f.txt" lands outside the repo and must be
+    // dropped — not blanket-trusted just because it isn't absolute.
+    const diff = gitDiff(repo, ["../f.txt"]);
+    expect(diff.scope).toBe("none");
+  });
+
+  it("reports scope=none when nothing changed vs base", () => {
+    git("checkout", "-b", "feat"); // no commits beyond base
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("none");
+    expect(diff.text).toBe("");
+  });
+
+  it("returns scope=none for empty paths without touching git", () => {
+    expect(gitDiff(repo, [])).toEqual({ text: "", scope: "none" });
   });
 });
