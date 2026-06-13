@@ -162,13 +162,83 @@ function joinContext(...parts: (string | null | undefined)[]): string {
   return parts.filter((p): p is string => Boolean(p)).join("\n\n");
 }
 
+// Beacon dedupe: a room-broadcast invite is shown to each session at most once
+// (it isn't consume-once like a challenge — every active session should see it).
+// Keyed `${sessionId}:${messageId}`. In-memory; resets on restart, which is fine.
+const beaconSeen = new Set<string>();
+// Only surface invites posted within this window, so a session joining a room
+// later doesn't get flooded with stale invitations.
+const BEACON_WINDOW_MS = 15 * 60_000;
+
+// Test seam: clear beacon dedupe state.
+export function _resetBeaconSeen(): void {
+  beaconSeen.clear();
+}
+
 /**
- * Layer 2 bus delivery (advisory inject). Drains pending coordination messages
- * addressed to this session and returns them as additionalContext. v1 has a
- * single provider — frenemy challenges — but the shape generalizes (sidequest
- * claim-conflicts slot in here later). Consume-once: drained challenges are
- * marked delivered so they don't re-inject on the next hook. Best-effort and
- * never throws into hook ingest.
+ * Consume-once challenge provider: challenges addressed to this session (or
+ * broadcast), drained oldest-first and marked delivered so they don't re-inject.
+ */
+function drainChallenges(sessionId: string, room: string): string | null {
+  const pending = readAgentMessages({
+    room,
+    kinds: ["challenge"],
+    // Broadcasts + challenges addressed to me; never my own.
+    toSession: sessionId,
+    excludeFrom: sessionId,
+    undeliveredOnly: true,
+    // sinceId: 0 forces oldest-first delivery (id > 0, ascending).
+    sinceId: 0,
+    limit: 3,
+  });
+  if (pending.length === 0) return null;
+  markDelivered(
+    pending.map((m) => m.id),
+    Date.now(),
+  );
+  return pending.map((m) => `🔴 Frenemy challenge: ${m.body}`).join("\n");
+}
+
+/**
+ * Recruitment beacon provider: room-broadcast invites/announcements, shown once
+ * per session (not consumed — other sessions still see them) and only while
+ * fresh. Phrased to INFORM, not command: a busy agent may ignore it. This is the
+ * "who's around / weigh in if relevant" channel, distinct from a directed
+ * challenge.
+ */
+function drainBeacons(
+  sessionId: string,
+  room: string,
+  nowMs: number,
+): string | null {
+  const invites = readAgentMessages({
+    room,
+    kinds: ["invite"],
+    toSession: sessionId,
+    excludeFrom: sessionId, // don't invite a session to its own discussion
+    limit: 10,
+  });
+  const fresh = invites.filter(
+    (m) =>
+      nowMs - m.created_at_ms <= BEACON_WINDOW_MS &&
+      !beaconSeen.has(`${sessionId}:${m.id}`),
+  );
+  if (fresh.length === 0) return null;
+  for (const m of fresh) beaconSeen.add(`${sessionId}:${m.id}`);
+  return fresh
+    .map(
+      (m) =>
+        `📣 Open in your workspace: ${m.body}\n(You may join with /panopticon debate join — invited, not required.)`,
+    )
+    .join("\n");
+}
+
+/**
+ * Layer 2 bus delivery (advisory inject). Runs the coordination-context provider
+ * list for this session and returns the combined additionalContext. Providers:
+ * directed challenges (consume-once) and recruitment beacons (once-per-session).
+ * The shape generalizes — sidequest claim-conflicts slot in as another provider.
+ * Best-effort and never throws into hook ingest.
  */
 function drainCoordinationContext(
   sessionId: string,
@@ -176,25 +246,14 @@ function drainCoordinationContext(
 ): string | null {
   if (!room) return null;
   try {
-    const pending = readAgentMessages({
-      room,
-      kinds: ["challenge"],
-      // Broadcasts + challenges addressed to me; never my own.
-      toSession: sessionId,
-      excludeFrom: sessionId,
-      undeliveredOnly: true,
-      // sinceId: 0 forces oldest-first delivery (id > 0, ascending).
-      sinceId: 0,
-      limit: 3,
-    });
-    if (pending.length === 0) return null;
-    markDelivered(
-      pending.map((m) => m.id),
-      Date.now(),
+    return (
+      joinContext(
+        drainChallenges(sessionId, room),
+        drainBeacons(sessionId, room, Date.now()),
+      ) || null
     );
-    return pending.map((m) => `🔴 Frenemy challenge: ${m.body}`).join("\n");
   } catch (err) {
-    log.hooks.error("bus challenge drain failed:", err);
+    log.hooks.error("bus coordination drain failed:", err);
     return null;
   }
 }

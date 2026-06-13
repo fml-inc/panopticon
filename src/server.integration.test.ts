@@ -13,7 +13,15 @@
 import fs from "node:fs";
 import type http from "node:http";
 import { gunzipSync } from "node:zlib";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 // ── Mock config to use a temp directory ──────────────────────────────────────
 // vi.mock is hoisted — all values must be computed inside the factory.
@@ -65,6 +73,7 @@ import {
   upsertSession,
 } from "./db/store.js";
 import {
+  _resetBeaconSeen,
   _resetSessionRepoCache,
   _resetSessionTargetCache,
 } from "./hooks/ingest.js";
@@ -2056,6 +2065,99 @@ describe("server integration", () => {
       });
       const res = await preToolUse({ session_id: "primary-3" });
       expect(additionalContext(res.body)).not.toContain("self addressed");
+    });
+  });
+
+  // ── Recruitment beacon (Layer 2 provider) ───────────────────────────────
+  // A room-broadcast invite is shown to each active session once (not consumed
+  // like a challenge), scoped to the room, and never to the inviter itself.
+
+  describe("recruitment beacon", () => {
+    const ROOM = "fml-inc/beacon";
+
+    function invite(body: string, extra: Record<string, unknown> = {}) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from: "opener", kind: "invite", body, ...extra },
+      });
+    }
+    function preToolUse(
+      session_id: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      return post("/hooks", {
+        session_id,
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+        ...extra,
+      });
+    }
+    function ctx(body: unknown): string {
+      return (
+        (body as { hookSpecificOutput?: { additionalContext?: string } })
+          .hookSpecificOutput?.additionalContext ?? ""
+      );
+    }
+
+    beforeEach(() => {
+      _resetBeaconSeen();
+    });
+
+    it("shows a broadcast invite to an active session exactly once", async () => {
+      await invite("design review for the auth refactor");
+
+      const first = await preToolUse("beacon-a");
+      expect(ctx(first.body)).toContain("design review for the auth refactor");
+
+      // Once-per-session: the next hook does not re-inject it.
+      const second = await preToolUse("beacon-a");
+      expect(ctx(second.body)).not.toContain(
+        "design review for the auth refactor",
+      );
+    });
+
+    it("delivers the same invite to multiple sessions independently", async () => {
+      await invite("vote on the migration approach");
+      const a = await preToolUse("beacon-b1");
+      const b = await preToolUse("beacon-b2");
+      expect(ctx(a.body)).toContain("vote on the migration approach");
+      expect(ctx(b.body)).toContain("vote on the migration approach");
+    });
+
+    it("does not invite the session that opened the discussion", async () => {
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "beacon-opener",
+          kind: "invite",
+          body: "my own topic",
+        },
+      });
+      const res = await preToolUse("beacon-opener");
+      expect(ctx(res.body)).not.toContain("my own topic");
+    });
+
+    it("is scoped to the room", async () => {
+      await invite("room-scoped invite");
+      const elsewhere = await post("/hooks", {
+        session_id: "beacon-other-room",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: "fml-inc/somewhere-else",
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      expect(ctx(elsewhere.body)).not.toContain("room-scoped invite");
+    });
+
+    it("is not delivered to a frenemy-role session", async () => {
+      await invite("frenemy should not be recruited");
+      const res = await preToolUse("beacon-frenemy", { role: "frenemy" });
+      expect(ctx(res.body)).not.toContain("frenemy should not be recruited");
     });
   });
 });
