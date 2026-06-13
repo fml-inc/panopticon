@@ -344,6 +344,13 @@ body {
   margin-top: 4px;
 }
 
+.msg-subject {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--idle);
+  margin-top: 4px;
+}
+
 /* Roster rows are clickable -> open the session detail drawer */
 .inst {
   cursor: pointer;

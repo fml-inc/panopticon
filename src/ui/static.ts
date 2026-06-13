@@ -9,6 +9,12 @@
  * The same page is framework-agnostic and runs unchanged in a browser tab or an
  * Electron renderer; only the server-side contract (this + SSE + /api/tool) is
  * the durable surface.
+ *
+ * Security note: unlike /api/*, GET /ui is unauthenticated and the served HTML
+ * embeds the bearer token so the page can then call /api and open the SSE
+ * stream. This widens the unauthenticated surface but is bounded by the server's
+ * localhost-only bind plus same-origin policy (a cross-origin/DNS-rebind page
+ * cannot read the HTML body), consistent with panopticon's localhost auth model.
  */
 
 import fs from "node:fs";

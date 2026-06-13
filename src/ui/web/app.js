@@ -43,8 +43,10 @@ const instances = new Map();
 const sessionMeta = new Map();
 /** parent session_id -> count of child (subagent) sessions, for topology. */
 const childCount = new Map();
-/** Fleet burn-rate state, recomputed from session-cost deltas each poll. */
-let prevAgg = null; // { ts, cost, tokens }
+/** Fleet burn-rate state. Per-session prev cost/tokens so window churn (a
+ *  session entering/leaving the 100-row `sessions` page) can't spike the rate. */
+const prevById = new Map(); // sessionId -> { cost, tok }
+let prevTs = null;
 let burnPerHr = null;
 let tokPerMin = null;
 let totalSpend = 0;
@@ -238,6 +240,9 @@ function applyInstance(view) {
 const feedEl = document.getElementById("feed");
 const feedMetaEl = document.getElementById("feed-meta");
 let messageCount = 0;
+/** Message ids already rendered — dedups the seed/stream overlap (a message can
+ *  arrive over SSE and again in the bus-seed history; both carry the same id). */
+const seenMessageIds = new Set();
 
 function timeStr(ms) {
   if (!ms) return "";
@@ -247,6 +252,10 @@ function timeStr(ms) {
 
 function applyMessage(msg) {
   if (!msg) return;
+  if (msg.id != null) {
+    if (seenMessageIds.has(msg.id)) return;
+    seenMessageIds.add(msg.id);
+  }
   if (messageCount === 0) feedEl.innerHTML = "";
   messageCount += 1;
   feedMetaEl.textContent = `${messageCount} msg`;
@@ -263,6 +272,7 @@ function applyMessage(msg) {
       <span>${timeStr(msg.created_at_ms)}</span>
     </div>
     <div class="msg-body">${escapeHtml(msg.body ?? "")}</div>
+    ${msg.subject ? `<div class="msg-subject">${escapeHtml(msg.subject)}</div>` : ""}
     ${msg.ref_path ? `<div class="msg-ref">${escapeHtml(msg.ref_path)}</div>` : ""}
   `;
   feedEl.prepend(li);
@@ -315,22 +325,33 @@ async function refreshSessionMeta() {
       }
     }
 
-    // Burn rate: delta of fleet cost/tokens since the last poll.
-    let sumCost = 0;
-    let sumTok = 0;
+    // Burn rate = sum of per-session cost/token deltas since the last poll, over
+    // sessions seen in BOTH polls. A session newly entering the window only sets
+    // a baseline (its historical cost isn't attributed to one 15s tick), which
+    // avoids spikes from window churn. NOTE: the `sessions` page is limited to
+    // 100 rows, so this is a glanceable fleet rate, not exact accounting.
+    totalSpend = 0;
+    let dCost = 0;
+    let dTok = 0;
     for (const s of sessionMeta.values()) {
-      sumCost += s.totalCost ?? 0;
-      sumTok += s.totalOutputTokens ?? 0;
+      const cost = s.totalCost ?? 0;
+      const tok = s.totalOutputTokens ?? 0;
+      totalSpend += cost;
+      const prev = prevById.get(s.sessionId);
+      if (prev) {
+        dCost += Math.max(0, cost - prev.cost);
+        dTok += Math.max(0, tok - prev.tok);
+      }
+      prevById.set(s.sessionId, { cost, tok });
     }
-    totalSpend = sumCost;
     const now = Date.now();
-    if (prevAgg) {
-      const dtHr = (now - prevAgg.ts) / 3_600_000;
-      const dtMin = (now - prevAgg.ts) / 60_000;
-      if (dtHr > 0) burnPerHr = Math.max(0, (sumCost - prevAgg.cost) / dtHr);
-      if (dtMin > 0) tokPerMin = Math.max(0, (sumTok - prevAgg.tokens) / dtMin);
+    if (prevTs) {
+      const dtHr = (now - prevTs) / 3_600_000;
+      const dtMin = (now - prevTs) / 60_000;
+      if (dtHr > 0) burnPerHr = dCost / dtHr;
+      if (dtMin > 0) tokPerMin = dTok / dtMin;
     }
-    prevAgg = { ts: now, cost: sumCost, tokens: sumTok };
+    prevTs = now;
 
     scheduleRender();
   } catch (err) {
@@ -435,20 +456,34 @@ function fmtNum(n) {
   return String(n);
 }
 
-/** Best-effort one-line hint of what a tool call did, from its input JSON. */
+const HINT_KEYS = [
+  "file_path",
+  "path",
+  "command",
+  "pattern",
+  "description",
+  "query",
+];
+
+/**
+ * Best-effort one-line hint of what a tool call did, from its input JSON. The
+ * timeline is fetched without fullPayloads, so inputJson is server-truncated to
+ * ~500 chars and JSON.parse can throw — fall back to a regex pull so hints don't
+ * silently vanish for tool calls with large inputs.
+ */
 function toolHint(tc) {
+  const raw = tc.inputJson ?? "";
   try {
-    const input = JSON.parse(tc.inputJson ?? "{}");
-    const hint =
-      input.file_path ??
-      input.path ??
-      input.command ??
-      input.pattern ??
-      input.description ??
-      input.query ??
-      "";
-    return String(hint).slice(0, 90);
+    const input = JSON.parse(raw || "{}");
+    for (const k of HINT_KEYS) {
+      if (input[k]) return String(input[k]).slice(0, 90);
+    }
+    return "";
   } catch {
+    for (const k of HINT_KEYS) {
+      const m = raw.match(new RegExp(`"${k}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+      if (m) return m[1].slice(0, 90);
+    }
     return "";
   }
 }
