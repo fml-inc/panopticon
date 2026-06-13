@@ -307,6 +307,29 @@ export async function runHandler(opts: {
       data.proxy_enabled = true;
     }
 
+    // The hook handler is a short-lived child of the agent process, so its
+    // parent pid identifies the live agent. Forward it so the server can track
+    // instance presence and actively reap dead agents (a stale heartbeat alone
+    // cannot distinguish an idle agent from a killed one).
+    //
+    // This holds when the agent spawns the handler directly (Claude Code).
+    // A target that wraps the handler in a shell breaks the assumption: a
+    // short-lived wrapper yields a pid that dies immediately (a false pid_dead
+    // reap, self-healed by the next heartbeat's revival), and a long-lived
+    // wrapper yields a pid that never dies. Such targets degrade to
+    // heartbeat-only liveness, which is why agent_pid is best-effort, not
+    // required.
+    if (typeof data.agent_pid !== "number" && process.ppid) {
+      data.agent_pid = process.ppid;
+    }
+
+    // A frenemy sidecar session is launched with PANOPTICON_FRENEMY_ROLE set.
+    // Forward it so the server can exclude the frenemy from bus delivery (its
+    // own challenges must never loop back into it). Inert until Layer 3 sets it.
+    if (typeof data.role !== "string" && process.env.PANOPTICON_FRENEMY_ROLE) {
+      data.role = process.env.PANOPTICON_FRENEMY_ROLE;
+    }
+
     // Replay env: when the Phase B replay harness spawns claude with these
     // envs, the hook handler injects them into the event body so the
     // (long-lived, env-unaware) panopticon server honors them per request:

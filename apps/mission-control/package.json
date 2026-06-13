@@ -1,0 +1,24 @@
+{
+  "name": "@fml-inc/mission-control",
+  "version": "0.0.0-dev",
+  "private": true,
+  "description": "Panopticon Mission Control — desktop shell for the live roster + bus feed",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.fml.panopticon.missioncontrol",
+    "productName": "Mission Control",
+    "files": [
+      "main.js",
+      "preload.js"
+    ]
+  }
+}

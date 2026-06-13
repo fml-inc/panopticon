@@ -225,6 +225,11 @@ export const config = {
     "PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW",
     false,
   ),
+  // Agent-to-agent bus delivery: auto-publish hook activity onto the room and
+  // drain pending messages into hook additionalContext (Layer 2). Default off;
+  // the bus tables and MCP tools work regardless of this flag. Instance presence
+  // is always on, independent of this flag.
+  enableBusDelivery: envBool("PANOPTICON_ENABLE_BUS_DELIVERY", false),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,

@@ -7,6 +7,7 @@ import { syncAwarePrune } from "./db/sync-prune.js";
 import { type HookInput, processHookEvent } from "./hooks/ingest.js";
 import { log } from "./log.js";
 import { handleOtlpRequest } from "./otlp/server.js";
+import { createReaperLoop, type ReaperHandle } from "./presence/reaper.js";
 import { handleProxyRequest, tunnelWebSocket } from "./proxy/server.js";
 import { createScannerLoop } from "./scanner/index.js";
 import { readDatabaseRebuildStatus } from "./scanner/status.js";
@@ -26,6 +27,8 @@ import {
   OTEL_SESSION_TABLES,
 } from "./sync/registry.js";
 import type { SyncHandle } from "./sync/types.js";
+import { handleEventStream } from "./ui/sse.js";
+import { handleUiRequest } from "./ui/static.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -142,6 +145,20 @@ export function createUnifiedServer(): http.Server {
       return;
     }
 
+    // Mission Control — live event stream (SSE). Auth via ?token= because
+    // EventSource cannot set headers; carries presence + bus deltas to the UI.
+    if (url.startsWith("/api/events") && method === "GET") {
+      handleEventStream(req, res, authToken);
+      return;
+    }
+
+    // Mission Control — static web app (GET /ui, /ui/*). The HTML shell is
+    // templated with the token + port so the page can call /api and open SSE.
+    if ((url === "/ui" || url.startsWith("/ui/")) && method === "GET") {
+      handleUiRequest(req, res, authToken);
+      return;
+    }
+
     // 404
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
@@ -192,6 +209,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   let syncHandle: SyncHandle | null = null;
   let otelSyncHandle: SyncHandle | null = null;
   let scannerHandle: ScannerHandle | null = null;
+  let reaperHandle: ReaperHandle | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
   let backgroundStartTimer: ReturnType<typeof setTimeout> | null = null;
   let postScannerBackgroundStarted = false;
@@ -243,6 +261,12 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   function startBackgroundWork(): void {
     backgroundStartTimer = null;
 
+    // Instance presence reaper is always-on (independent of scanner/sync): it
+    // actively probes agent pids so killed/crashed sessions are detected even
+    // when they never fire a clean SessionEnd.
+    reaperHandle = createReaperLoop();
+    reaperHandle.start();
+
     // Start session file scanner first — sync is deferred until scanner
     // finishes any initial resync so we don't sync stale/partial data.
     scannerHandle = createScannerLoop({
@@ -278,6 +302,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
   const shutdown = async () => {
     if (backgroundStartTimer) clearTimeout(backgroundStartTimer);
     if (pruneTimer) clearInterval(pruneTimer);
+    reaperHandle?.stop();
     scannerHandle?.stop();
     syncHandle?.stop();
     otelSyncHandle?.stop();

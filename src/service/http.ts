@@ -11,10 +11,14 @@ import type {
 } from "../types.js";
 import type { ExecName, ToolName } from "./transport.js";
 import type {
+  BusReadResult,
+  BusSendResult,
+  InstancesResult,
   PanopticonService,
   RegenerateSessionSummariesInput,
   ScanResult,
   SyncPendingResult,
+  WaitForActivityResult,
 } from "./types.js";
 
 function toParams(value: unknown): Record<string, unknown> | undefined {
@@ -135,6 +139,21 @@ export const httpPanopticonService: PanopticonService = {
   print: (opts) => callTool("get", toParams(opts)),
   rawQuery: (sql) => callTool("query", { sql }),
   dbStats: () => callTool("status"),
+  instances: (opts) =>
+    callTool("instances", toParams(opts) ?? {}) as Promise<InstancesResult>,
+  busSend: (input) =>
+    callExec("bus-send", toParams(input) ?? {}) as Promise<BusSendResult>,
+  busRead: (input) =>
+    callTool("bus_read", toParams(input) ?? {}) as Promise<BusReadResult>,
+  busRecv: (input) =>
+    callExec("bus-recv", toParams(input) ?? {}) as Promise<BusReadResult>,
+  busRoster: (input) =>
+    callTool("bus_roster", toParams(input) ?? {}) as Promise<InstancesResult>,
+  waitForActivity: (input) =>
+    callTool(
+      "wait_for_activity",
+      toParams(input) ?? {},
+    ) as Promise<WaitForActivityResult>,
   intentForCode: (opts) => callTool("intent_for_code", toParams(opts)),
   searchIntent: (opts) => callTool("search_intent", toParams(opts)),
   outcomesForIntent: (opts) => callTool("outcomes_for_intent", toParams(opts)),
@@ -182,6 +201,10 @@ export const search = httpPanopticonService.search;
 export const print = httpPanopticonService.print;
 export const rawQuery = httpPanopticonService.rawQuery;
 export const dbStats = httpPanopticonService.dbStats;
+export const instances = httpPanopticonService.instances;
+export const busSend = httpPanopticonService.busSend;
+export const busRead = httpPanopticonService.busRead;
+export const busRoster = httpPanopticonService.busRoster;
 export const intentForCode = httpPanopticonService.intentForCode;
 export const searchIntent = httpPanopticonService.searchIntent;
 export const outcomesForIntent = httpPanopticonService.outcomesForIntent;
