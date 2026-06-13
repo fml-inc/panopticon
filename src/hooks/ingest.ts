@@ -178,8 +178,16 @@ const BEACON_WINDOW_MS = 15 * 60_000;
  * just the first to hit a hook. Only messages created at/after this session
  * joined are surfaced, so a fresh session doesn't drain the whole room history.
  */
-function drainMessages(sessionId: string, room: string): string | null {
-  const sinceMs = getInstanceFirstSeen(sessionId) ?? undefined;
+function drainMessages(
+  sessionId: string,
+  room: string,
+  nowMs: number,
+): string | null {
+  // The presence row is seeded on every hook event before this drain runs, so
+  // first_seen_ms is the session's join time. Fail closed to `now` if it is
+  // somehow absent (a swallowed presence-upsert error) — a fresh reader should
+  // see nothing from before it existed, never the whole room backlog.
+  const sinceMs = getInstanceFirstSeen(sessionId) ?? nowMs;
   const pending = readAgentMessages({
     room,
     kinds: ["challenge", "chat"],
@@ -196,7 +204,7 @@ function drainMessages(sessionId: string, room: string): string | null {
   markDelivered(
     pending.map((m) => m.id),
     sessionId,
-    Date.now(),
+    nowMs,
   );
   return pending
     .map((m) =>
@@ -256,10 +264,11 @@ function drainCoordinationContext(
 ): string | null {
   if (!room) return null;
   try {
+    const nowMs = Date.now();
     return (
       joinContext(
-        drainMessages(sessionId, room),
-        drainBeacons(sessionId, room, Date.now()),
+        drainMessages(sessionId, room, nowMs),
+        drainBeacons(sessionId, room, nowMs),
       ) || null
     );
   } catch (err) {
