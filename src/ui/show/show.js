@@ -106,14 +106,35 @@ async function load() {
     /* no bus */
   }
 
-  let min = Number.POSITIVE_INFINITY;
-  let max = 0;
-  for (const l of lanes.values()) {
-    min = Math.min(min, l.firstTs);
-    max = Math.max(max, l.lastTs);
+  // Time domain = the real activity window. A single session with corrupt
+  // (off-by-a-day) turn timestamps can otherwise stretch the domain across a
+  // huge dead gap. Find the largest gap between consecutive turns; if it's big,
+  // clip to whichever side holds the bulk of the activity.
+  const allTs = [];
+  for (const l of lanes.values()) for (const ts of l.turns) allTs.push(ts);
+  allTs.sort((a, b) => a - b);
+  if (allTs.length === 0) {
+    tlMin = Date.now();
+    tlMax = tlMin + 1;
+  } else {
+    tlMin = allTs[0];
+    tlMax = allTs[allTs.length - 1];
+    let gapAt = 0;
+    let gapMax = 0;
+    for (let i = 1; i < allTs.length; i++) {
+      const g = allTs[i] - allTs[i - 1];
+      if (g > gapMax) {
+        gapMax = g;
+        gapAt = i;
+      }
+    }
+    if (gapMax > 30 * 60_000) {
+      const after = allTs.length - gapAt;
+      if (after >= gapAt) tlMin = allTs[gapAt];
+      else tlMax = allTs[gapAt - 1];
+    }
+    if (tlMax <= tlMin) tlMax = tlMin + 1;
   }
-  tlMin = Number.isFinite(min) ? min : Date.now();
-  tlMax = Math.max(max, tlMin + 1);
 }
 
 function cumAt(lane, T) {
