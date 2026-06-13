@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   InstancesResult,
   WaitForActivityResult,
@@ -8,6 +12,7 @@ import {
   createFrenemyLoop,
   type FrenemyCursors,
   formatActivity,
+  gitDiff,
   parseChallenge,
   runFrenemyOnce,
 } from "./driver.js";
@@ -208,5 +213,69 @@ describe("createFrenemyLoop", () => {
     expect(runs).toBe(1);
     handle.stop();
     await handle.done; // resolves promptly via the stop-race
+  });
+});
+
+describe("gitDiff", () => {
+  let repo: string;
+  const git = (...args: string[]): string =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "frenemy-gitdiff-"));
+    execFileSync("git", ["-c", "init.defaultBranch=main", "init", repo]);
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "f.txt"), "one\n");
+    git("add", "f.txt");
+    git("commit", "-m", "base");
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    delete process.env.PANOPTICON_FRENEMY_BASE;
+  });
+
+  it("returns uncommitted working-tree changes (staged + unstaged)", () => {
+    writeFileSync(join(repo, "f.txt"), "one\ntwo\n");
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("uncommitted");
+    expect(diff.text).toContain("+two");
+  });
+
+  it("falls back to this branch's committed work vs base when clean", () => {
+    git("checkout", "-b", "feat");
+    writeFileSync(join(repo, "f.txt"), "one\ncommitted\n");
+    git("add", "f.txt");
+    git("commit", "-m", "feat work");
+    // Working tree clean — the change only lives in the commit.
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("branch");
+    expect(diff.base).toBe("main");
+    expect(diff.text).toContain("+committed");
+  });
+
+  it("honors PANOPTICON_FRENEMY_BASE for the branch fallback", () => {
+    git("branch", "stable");
+    git("checkout", "-b", "feat");
+    writeFileSync(join(repo, "f.txt"), "one\nfromfeat\n");
+    git("add", "f.txt");
+    git("commit", "-m", "feat work");
+    process.env.PANOPTICON_FRENEMY_BASE = "stable";
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("branch");
+    expect(diff.base).toBe("stable");
+    expect(diff.text).toContain("+fromfeat");
+  });
+
+  it("reports scope=none when nothing changed vs base", () => {
+    git("checkout", "-b", "feat"); // no commits beyond base
+    const diff = gitDiff(repo, ["f.txt"]);
+    expect(diff.scope).toBe("none");
+    expect(diff.text).toBe("");
+  });
+
+  it("returns scope=none for empty paths without touching git", () => {
+    expect(gitDiff(repo, [])).toEqual({ text: "", scope: "none" });
   });
 });
