@@ -188,8 +188,11 @@ describe("runFrenemyOnce", () => {
 
 describe("createFrenemyLoop", () => {
   it("wakes on activity, runs a review pass, and stops cleanly", async () => {
-    // Regression: the loop must reach the review pass after the settle wait.
-    // (A previously unref'd settle timer let the process exit mid-settle.)
+    // Proves the loop reaches the review pass after the settle wait and then
+    // stops cleanly. NB: this does NOT guard the original bug (an unref'd settle
+    // timer let the *process* exit mid-settle) — vitest keeps the process alive
+    // regardless, so re-adding the unref leaves this green. It guards the loop's
+    // control flow, not process liveness.
     let runs = 0;
     let waits = 0;
     const handle = createFrenemyLoop({
