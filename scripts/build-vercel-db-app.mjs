@@ -44,8 +44,8 @@ if (fs.existsSync(linkBak)) {
   fs.rmSync(linkBak, { recursive: true, force: true });
 }
 
-// 3) Static assets + DB.
-for (const f of ["index.html", "app.js", "style.css"]) {
+// 3) Static assets (the replay "show") + DB.
+for (const f of ["index.html", "show.js", "show.css"]) {
   fs.copyFileSync(path.join(SITE, f), path.join(OUT, f));
 }
 fs.cpSync(path.join(SITE, "db"), path.join(OUT, "db"), { recursive: true });

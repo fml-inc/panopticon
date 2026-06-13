@@ -13,7 +13,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DB_DIR = path.join(ROOT, "apps", "static-site", "db");
-const WEB = path.join(ROOT, "src", "ui", "web");
+const WEB = path.join(ROOT, "src", "ui", "show");
 const PORT = Number(process.argv[2] ?? 8787);
 
 // config reads PANOPTICON_DATA_DIR at import — set it before importing service.
@@ -36,9 +36,7 @@ function indexHtml() {
   })};</script>`;
   return fs
     .readFileSync(path.join(WEB, "index.html"), "utf-8")
-    .replace("<!--PANOPTICON_BOOTSTRAP-->", bootstrap)
-    .replaceAll("/ui/style.css", "style.css")
-    .replaceAll("/ui/app.js", "app.js");
+    .replace("<!--PANOPTICON_BOOTSTRAP-->", bootstrap);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -79,7 +77,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/" || url.pathname === "/index.html") {
     return send(200, CT[".html"], indexHtml());
   }
-  if (url.pathname === "/app.js" || url.pathname === "/style.css") {
+  if (url.pathname === "/show.js" || url.pathname === "/show.css") {
     const f = path.join(WEB, url.pathname.slice(1));
     return send(200, CT[path.extname(f)], fs.readFileSync(f));
   }

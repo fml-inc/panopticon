@@ -159,20 +159,20 @@ dst.exec("VACUUM");
 dst.close();
 src.close();
 
-// ---- emit the dashboard assets (source="api") -------------------------------
-const WEB = path.join(ROOT, "src", "ui", "web");
+// ---- emit the public "show" assets (source="api") ---------------------------
+// The public site is the forked replay show (src/ui/show), not the functional
+// dashboard (src/ui/web).
+const WEB = path.join(ROOT, "src", "ui", "show");
 const SITE = path.join(ROOT, "apps", "static-site");
-fs.copyFileSync(path.join(WEB, "app.js"), path.join(SITE, "app.js"));
-fs.copyFileSync(path.join(WEB, "style.css"), path.join(SITE, "style.css"));
+fs.copyFileSync(path.join(WEB, "show.js"), path.join(SITE, "show.js"));
+fs.copyFileSync(path.join(WEB, "show.css"), path.join(SITE, "show.css"));
 const snapshotAt = new Date().toISOString().slice(0, 10);
 const html = fs
   .readFileSync(path.join(WEB, "index.html"), "utf-8")
   .replace(
     "<!--PANOPTICON_BOOTSTRAP-->",
     `<script>window.__PANOPTICON__=${JSON.stringify({ static: true, source: "api", snapshotAt })};</script>`,
-  )
-  .replaceAll("/ui/style.css", "style.css")
-  .replaceAll("/ui/app.js", "app.js");
+  );
 fs.writeFileSync(path.join(SITE, "index.html"), html);
 
 const sizeMb = (fs.statSync(DST).size / 1e6).toFixed(1);
