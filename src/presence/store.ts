@@ -181,6 +181,8 @@ export function readInstances(opts: ReadInstancesOptions): InstanceView[] {
 
 export interface InstancesResult {
   now_ms: number;
+  /** The scope queried: a room key, or null when listing across all rooms. */
+  room: string | null;
   counts: { active: number; idle: number; exited: number; total: number };
   instances: InstanceView[];
 }
@@ -212,7 +214,7 @@ export function readInstancesResult(opts: {
   });
   const counts = { active: 0, idle: 0, exited: 0, total: instances.length };
   for (const i of instances) counts[i.status]++;
-  return { now_ms: nowMs, counts, instances };
+  return { now_ms: nowMs, room: opts.room ?? null, counts, instances };
 }
 
 /**

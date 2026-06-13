@@ -1,3 +1,4 @@
+import type { AgentMessageRow } from "../db/bus.js";
 import type { InstancesResult } from "../presence/store.js";
 import type { SyncPendingResult } from "../sync/pending.js";
 import type {
@@ -121,6 +122,53 @@ export interface InstancesInput {
   includeEnded?: boolean;
 }
 
+export interface BusSendInput {
+  /** Explicit room. If omitted, resolved from session_id's recorded room. */
+  room?: string;
+  /** Caller's session id — used as from_session and to resolve the room. */
+  session_id?: string;
+  /** Sender id when there is no session_id (defaults to session_id else "external"). */
+  from?: string;
+  /**
+   * Address a specific session; omit to broadcast to the room. This is a
+   * delivery/filtering hint, NOT access control: a roommate who reads without
+   * identifying (no session_id) still sees directed messages.
+   */
+  to?: string;
+  kind: string;
+  body: string;
+  subject?: string;
+  ref_tool?: string;
+  ref_path?: string;
+  source?: string;
+}
+
+export interface BusSendResult {
+  id: number;
+  room: string;
+}
+
+export interface BusReadInput {
+  room?: string;
+  session_id?: string;
+  /** Return only messages with id greater than this cursor. */
+  sinceId?: number;
+  kinds?: string[];
+  limit?: number;
+}
+
+export interface BusReadResult {
+  room: string | null;
+  /** Highest id returned (or the input cursor when empty) — pass back as sinceId. */
+  cursor: number;
+  messages: AgentMessageRow[];
+}
+
+export interface BusRosterInput {
+  room?: string;
+  session_id?: string;
+}
+
 export interface PruneExecuteInput {
   vacuum?: boolean;
 }
@@ -182,6 +230,9 @@ export interface PanopticonService {
   rawQuery(sql: string): Promise<unknown>;
   dbStats(): Promise<unknown>;
   instances(opts?: InstancesInput): Promise<InstancesResult>;
+  busSend(input: BusSendInput): Promise<BusSendResult>;
+  busRead(input: BusReadInput): Promise<BusReadResult>;
+  busRoster(input?: BusRosterInput): Promise<InstancesResult>;
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;
   searchIntent(opts: SearchIntentInput): Promise<unknown>;
   outcomesForIntent(opts: OutcomesForIntentInput): Promise<unknown>;
