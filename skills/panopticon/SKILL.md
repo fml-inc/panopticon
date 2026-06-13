@@ -22,6 +22,7 @@ Use these mappings for common requests:
 | User command | Preferred route |
 | --- | --- |
 | `review` | Read `references/review.md` and perform that PR review workflow. |
+| `chat [send\|wait]` | Read `references/chat.md`; live agent-to-agent conversation over the bus (`panopticon chat send`/`wait`). |
 | `sessions [--since X] [--limit N]` | MCP `sessions`. |
 | `timeline <session-id> [--limit N] [--offset N] [--full]` | MCP `timeline`. |
 | `summary [--since X]` | MCP `summary`. |

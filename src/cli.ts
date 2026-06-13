@@ -13,6 +13,8 @@ import { Command, type OptionValues } from "commander";
 type Opts = OptionValues;
 
 import { getOrCreateAuthToken } from "./auth.js";
+import { formatMessage, runChatWait } from "./bus/chat.js";
+import { resolveSelfIdentity } from "./bus/identity.js";
 import { config, ensureDataDir } from "./config.js";
 import {
   formatCodeIntelStatus,
@@ -1977,6 +1979,100 @@ program
     // an active handle that would keep the event loop alive; exit so Ctrl-C is
     // actually immediate.
     process.exit(0);
+  });
+
+const chat = program
+  .command("chat")
+  .description(
+    "Live agent-to-agent chat over the bus. Identity and room are resolved automatically from the calling agent's session.",
+  );
+
+chat
+  .command("send <message>")
+  .description("Send a chat message to the workspace room (or one peer)")
+  .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option("--to <session>", "Address one peer session; omit to broadcast")
+  .action(async (message: string, opts: OptionValues) => {
+    const self = resolveSelfIdentity();
+    const room = resolveFrenemyRoom(
+      typeof opts.room === "string" ? opts.room : undefined,
+    );
+    if (!room) {
+      console.error(
+        "Could not resolve a room from the current directory. Pass --room <repo>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const res = await service.busSend({
+      room,
+      session_id: self.sessionId,
+      from: self.sessionId ?? self.name ?? "agent",
+      to: typeof opts.to === "string" ? opts.to : undefined,
+      kind: "chat",
+      body: message,
+      source: "chat",
+    });
+    output(res);
+  });
+
+chat
+  .command("wait")
+  .description(
+    "Block until a peer sends a chat message, then print it. Re-run after it returns. Heartbeats peer liveness to stderr.",
+  )
+  .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option(
+    "--since <id>",
+    "Extra lower bound on message id (the delivery gate already dedups)",
+  )
+  .option(
+    "--timeout <seconds>",
+    "Overall budget before returning so you can re-invoke",
+    "540",
+  )
+  .option("--json", "Emit the raw message JSON instead of text")
+  .action(async (opts: OptionValues) => {
+    const self = resolveSelfIdentity();
+    const room = resolveFrenemyRoom(
+      typeof opts.room === "string" ? opts.room : undefined,
+    );
+    if (!room) {
+      console.error(
+        "Could not resolve a room from the current directory. Pass --room <repo>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const budgetSec = Number(opts.timeout);
+    const result = await runChatWait(
+      {
+        room,
+        selfSession: self.sessionId,
+        // No tip cursor: the per-recipient delivery gate decides what's unseen,
+        // so a message sent before this wait started is still delivered (no
+        // opener race). --since is just an optional extra floor.
+        sinceId: opts.since !== undefined ? Number(opts.since) : 0,
+        budgetMs: Number.isFinite(budgetSec) ? budgetSec * 1000 : undefined,
+      },
+      {
+        recv: (input) => service.busRecv(input),
+        waitForActivity: (input) => service.waitForActivity(input),
+        busRoster: (input) => service.busRoster(input),
+        now: () => Date.now(),
+        onHeartbeat: (line) => process.stderr.write(`chat: ${line}\n`),
+      },
+    );
+    if (result.timedOut) {
+      console.log(`(no message after ${budgetSec}s — re-run \`chat wait\`)`);
+      return;
+    }
+    if (opts.json) {
+      output({ cursor: result.cursor, messages: result.messages });
+      return;
+    }
+    for (const m of result.messages) console.log(formatMessage(m));
+    process.stderr.write(`chat: next --since ${result.cursor}\n`);
   });
 
 program

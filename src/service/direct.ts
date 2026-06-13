@@ -1,9 +1,13 @@
-import { waitForRoomActivity } from "../bus/activity-wait.js";
+import { noteRoomActivity, waitForRoomActivity } from "../bus/activity-wait.js";
 import { roomForSession } from "../bus/room.js";
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
 import { config } from "../config.js";
-import { insertAgentMessage, readAgentMessages } from "../db/bus.js";
+import {
+  insertAgentMessage,
+  markDelivered,
+  readAgentMessages,
+} from "../db/bus.js";
 import {
   CLAIMS_ACTIVE_COMPONENT,
   CLAIMS_PROJECTION_COMPONENT,
@@ -44,7 +48,10 @@ import {
   searchIntent,
 } from "../intent/query.js";
 import { log } from "../log.js";
-import { readInstancesResult } from "../presence/store.js";
+import {
+  getInstanceFirstSeen,
+  readInstancesResult,
+} from "../presence/store.js";
 import {
   rebuildClaimsDerivedState,
   reparseAll,
@@ -171,6 +178,13 @@ function resolveBusRoom(input: {
   return null;
 }
 
+/**
+ * How far back a first `busRecv` catches up on broadcast chat. Bounds the
+ * one-time replay of unseen room history so a fresh waiter sees recent openers
+ * but not ancient chatter. Directed mail ignores this (always delivered).
+ */
+const CHAT_CATCHUP_WINDOW_MS = 10 * 60 * 1000;
+
 export function createDirectPanopticonService(): PanopticonService {
   return {
     async listSessions(opts) {
@@ -225,6 +239,14 @@ export function createDirectPanopticonService(): PanopticonService {
         source: input.source ?? null,
         created_at_ms: Date.now(),
       });
+      // Wake anyone long-polling the room for a live conversation. Gated to
+      // chat so a frenemy challenge/activity post can't wake the frenemy's own
+      // long-poll (which would re-trigger a review storm). Hook events already
+      // note activity for the frenemy path; this covers messages that aren't
+      // hooks — the peer's chat send is what a waiting agent is blocked on.
+      if (input.kind === "chat") {
+        noteRoomActivity(room, Date.now());
+      }
       return { id, room };
     },
     async busRead(input) {
@@ -240,6 +262,62 @@ export function createDirectPanopticonService(): PanopticonService {
         excludeFrom: input.session_id,
         limit: input.limit,
       });
+      // Reading IS the "I've seen this" action: record per-recipient
+      // read-receipts so the unread nudge stops pointing at what was just read.
+      // Append-only and idempotent (INSERT OR IGNORE per message+session).
+      //
+      // This shares the delivery table with busRecv (chat wait) ON PURPOSE: a
+      // message seen via EITHER path is seen once, no double-delivery. Receipts
+      // are per-recipient, so one session's read never affects another's chat
+      // wait. (An agent is either chatting — blocked in recv — or working and
+      // triaging via bus_read; it doesn't do both for the same turn.)
+      if (input.session_id && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          input.session_id,
+          Date.now(),
+        );
+      }
+      const cursor = messages.length
+        ? messages[messages.length - 1].id
+        : (input.sinceId ?? 0);
+      return { room, cursor, messages };
+    },
+    async busRecv(input) {
+      const room = resolveBusRoom(input);
+      if (!room)
+        return { room: null, cursor: input.sinceId ?? 0, messages: [] };
+      const sessionId = input.session_id;
+      // Catch up on what this session hasn't seen, NOT the room tip — so a
+      // message sent before the caller started waiting isn't skipped as
+      // history (the opener race). Mirrors the hook drain: per-recipient
+      // consume-once via the delivery table. Broadcasts are bounded to the
+      // session's join time (or a recent window) so a first read doesn't
+      // replay ancient history; directed mail is always delivered.
+      const sinceMs =
+        input.sinceMs ??
+        Math.max(
+          sessionId ? (getInstanceFirstSeen(sessionId) ?? 0) : 0,
+          Date.now() - CHAT_CATCHUP_WINDOW_MS,
+        );
+      const messages = readAgentMessages({
+        room,
+        kinds: input.kinds ?? ["chat"],
+        toSession: sessionId,
+        excludeFrom: sessionId,
+        undeliveredTo: sessionId,
+        sinceMs,
+        // id > 0 ascending: oldest-unseen first.
+        sinceId: input.sinceId ?? 0,
+        limit: input.limit ?? 50,
+      });
+      if (sessionId && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          sessionId,
+          Date.now(),
+        );
+      }
       const cursor = messages.length
         ? messages[messages.length - 1].id
         : (input.sinceId ?? 0);

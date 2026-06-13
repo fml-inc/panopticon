@@ -164,6 +164,27 @@ export interface BusReadResult {
   messages: AgentMessageRow[];
 }
 
+export interface BusRecvInput {
+  room?: string;
+  /**
+   * Caller's session id. Required for the consume-once semantics: messages are
+   * filtered to those NOT yet delivered to this session and marked delivered on
+   * return (per-recipient, like the hook drain). Without it, falls back to a
+   * plain non-consuming read.
+   */
+  session_id?: string;
+  kinds?: string[];
+  /** Extra lower bound on id (rarely needed; the delivery gate handles dedup). */
+  sinceId?: number;
+  /**
+   * Only surface broadcasts created at/after this time (directed mail is always
+   * delivered). Defaults server-side to the session's join time, bounded to a
+   * recent window so a first read doesn't replay ancient room history.
+   */
+  sinceMs?: number;
+  limit?: number;
+}
+
 export interface BusRosterInput {
   room?: string;
   session_id?: string;
@@ -248,6 +269,7 @@ export interface PanopticonService {
   instances(opts?: InstancesInput): Promise<InstancesResult>;
   busSend(input: BusSendInput): Promise<BusSendResult>;
   busRead(input: BusReadInput): Promise<BusReadResult>;
+  busRecv(input: BusRecvInput): Promise<BusReadResult>;
   busRoster(input?: BusRosterInput): Promise<InstancesResult>;
   waitForActivity(input: WaitForActivityInput): Promise<WaitForActivityResult>;
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;

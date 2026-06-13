@@ -1,6 +1,7 @@
 import type {
   ActivitySummaryInput,
   BusReadInput,
+  BusRecvInput,
   BusRosterInput,
   BusSendInput,
   CostBreakdownInput,
@@ -87,6 +88,8 @@ export type ToolName = keyof typeof TOOL_HANDLERS;
 export const EXEC_HANDLERS = {
   "bus-send": (service, params) =>
     service.busSend(asType<BusSendInput>(params)),
+  "bus-recv": (service, params) =>
+    service.busRecv(asType<BusRecvInput>(params)),
   prune: async (service, params) => {
     const cutoffMs = params.cutoffMs;
     if (typeof cutoffMs !== "number") {
