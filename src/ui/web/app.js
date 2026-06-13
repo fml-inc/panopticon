@@ -153,7 +153,7 @@ function scheduleRender(delay = 700) {
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
     renderTimer = null;
-    renderRoster();
+    renderView();
   }, delay);
 }
 
@@ -305,89 +305,123 @@ function renderMissionBar() {
     tile("spend", `$${spend.toFixed(2)}`);
 }
 
+// ---- Source of truth + as-of-T view ----------------------------------------
+// Hold raw timestamped rows; render the dashboard "as of" a time T. Live pins T
+// to now (SSE appends rows); the timeline scrubber moves T into the past. One
+// code path drives live, scrubbed, and the static snapshot.
+
+const ACTIVE_WINDOW_MS = 30_000;
+const allInstances = new Map(); // session_id -> latest raw instance row
+let allMessages = []; // raw message rows
+let asOfT = null; // null => follow live (now)
+let following = true; // tracking now vs scrubbed into the past
+
+function currentT() {
+  return asOfT ?? Date.now();
+}
+
+/** Reconstruct a session's status at time T from its presence timestamps. */
+function statusAsOf(i, T) {
+  if (i.ended_at_ms != null && i.ended_at_ms <= T) return "exited";
+  if (T - (i.last_seen_ms ?? 0) < ACTIVE_WINDOW_MS) return "active";
+  return "idle";
+}
+
 function applyInstance(view) {
-  if (!view || !view.session_id) return;
-  instances.set(view.session_id, view);
-  scheduleRender();
-  // Keep the open drawer's live status chip in sync with presence (immediate —
-  // it's a single element, not the whole list).
+  if (!view?.session_id) return;
+  allInstances.set(view.session_id, view);
+  if (following) scheduleRender();
   if (view.session_id === selectedSession) updateDetailStatus(view);
+}
+
+function applyMessage(msg) {
+  if (!msg) return;
+  allMessages.push(msg);
+  // Notify a host shell (Electron) only for genuinely-new live challenges.
+  if (
+    following &&
+    msg.kind === "challenge" &&
+    window.__PANOPTICON_HOST__?.onChallenge
+  ) {
+    window.__PANOPTICON_HOST__.onChallenge(msg);
+  }
+  if (following) scheduleRender();
+}
+
+function applyDelivery(payload) {
+  for (const id of payload?.ids ?? []) {
+    const m = allMessages.find((x) => x.id === id);
+    if (m) m.delivered_at_ms = payload.delivered_at_ms ?? Date.now();
+  }
+  if (following) scheduleRender();
+}
+
+/** Rebuild roster + feed + header for the current time T. */
+function renderView() {
+  const T = currentT();
+  virtualNow = asOfT; // ageStr uses T when scrubbed, Date.now() when live
+
+  instances.clear();
+  for (const i of allInstances.values()) {
+    if ((i.first_seen_ms ?? 0) > T) continue; // hasn't appeared yet at T
+    instances.set(i.session_id, { ...i, status: statusAsOf(i, T) });
+  }
+  renderRoster();
+  renderFeed(T);
+  updateTimelineUI();
 }
 
 // ---- Bus feed ---------------------------------------------------------------
 
 const feedEl = document.getElementById("feed");
 const feedMetaEl = document.getElementById("feed-meta");
-let messageCount = 0;
-/** Message ids already rendered — dedups the seed/stream overlap (a message can
- *  arrive over SSE and again in the bus-seed history; both carry the same id). */
-const seenMessageIds = new Set();
 
 function timeStr(ms) {
   if (!ms) return "";
-  const d = new Date(ms);
-  return d.toLocaleTimeString([], { hour12: false });
+  return new Date(ms).toLocaleTimeString([], { hour12: false });
 }
 
-/** Message ids the Layer 2 drain has delivered into an agent. Tracked
- *  separately so a delivery event that races ahead of its message still applies
- *  once the message renders. */
-const deliveredIds = new Set();
-
-/** Delivery chip for a drainable (challenge) message. */
-function delivChip(msg) {
+/** Delivery chip for a challenge, evaluated as of T. */
+function delivChip(msg, T) {
   if (msg.kind !== "challenge") return "";
-  const done = msg.delivered_at_ms != null || deliveredIds.has(msg.id);
+  const done = msg.delivered_at_ms != null && msg.delivered_at_ms <= T;
   return done
     ? `<span class="msg-deliv delivered">delivered ✓</span>`
     : `<span class="msg-deliv pending">pending</span>`;
 }
 
-function applyMessage(msg) {
-  if (!msg) return;
-  if (msg.id != null) {
-    if (seenMessageIds.has(msg.id)) return;
-    seenMessageIds.add(msg.id);
-  }
-  if (messageCount === 0) feedEl.innerHTML = "";
-  messageCount += 1;
-  feedMetaEl.textContent = `${messageCount} msg`;
-
+function messageRow(msg, T) {
   const kind = msg.kind ?? "activity";
   const from = shortId(msg.from_session);
   const to = msg.to_session ? `→ ${shortId(msg.to_session)}` : "→ room";
   const li = document.createElement("li");
   li.className = `msg kind-${kind}`;
-  if (msg.id != null) li.dataset.msgId = msg.id;
   li.innerHTML = `
     <div class="msg-head">
       <span class="msg-kind">${escapeHtml(kind)}</span>
       <span>${from} ${to}</span>
-      ${delivChip(msg)}
+      ${delivChip(msg, T)}
       <span class="msg-time">${timeStr(msg.created_at_ms)}</span>
     </div>
     <div class="msg-body">${escapeHtml(msg.body ?? "")}</div>
     ${msg.subject ? `<div class="msg-subject">${escapeHtml(msg.subject)}</div>` : ""}
     ${msg.ref_path ? `<div class="msg-ref">${escapeHtml(msg.ref_path)}</div>` : ""}
   `;
-  feedEl.prepend(li);
-
-  // Bubble challenges to any host shell (Electron) for native notification.
-  if (kind === "challenge" && window.__PANOPTICON_HOST__?.onChallenge) {
-    window.__PANOPTICON_HOST__.onChallenge(msg);
-  }
+  return li;
 }
 
-/** Flip messages to "delivered" when the Layer 2 drain reports them. */
-function applyDelivery(payload) {
-  for (const id of payload?.ids ?? []) {
-    deliveredIds.add(id);
-    const chip = feedEl.querySelector(`li[data-msg-id="${id}"] .msg-deliv`);
-    if (chip) {
-      chip.textContent = "delivered ✓";
-      chip.className = "msg-deliv delivered";
-    }
+function renderFeed(T) {
+  const msgs = allMessages
+    .filter((m) => (m.created_at_ms ?? 0) <= T)
+    .sort((a, b) => (a.created_at_ms ?? 0) - (b.created_at_ms ?? 0));
+  if (msgs.length === 0) {
+    feedEl.innerHTML = `<li class="empty">No bus activity ${asOfT == null ? "yet" : "at this point"}.</li>`;
+    feedMetaEl.textContent = "";
+    return;
   }
+  feedEl.innerHTML = "";
+  for (const m of msgs) feedEl.prepend(messageRow(m, T)); // oldest→newest, newest on top
+  feedMetaEl.textContent = `${msgs.length} msg`;
 }
 
 // ---- Live stream ------------------------------------------------------------
@@ -404,7 +438,7 @@ function connectStream() {
   const es = new EventSource(
     `/api/events?token=${encodeURIComponent(boot.token)}`,
   );
-  es.onopen = () => setConn("live", "live");
+  es.onopen = () => setConn("live", following ? "live" : "paused");
   es.onerror = () => setConn("down", "reconnecting…");
   es.addEventListener("instance", (e) => applyInstance(JSON.parse(e.data)));
   es.addEventListener("message", (e) => applyMessage(JSON.parse(e.data)));
@@ -465,25 +499,30 @@ async function refreshSessionMeta() {
   }
 }
 
-async function seed() {
+/** Load session metadata + presence + messages into the source maps. Shared by
+ *  live seed and the static snapshot boot. */
+async function loadSource() {
+  await refreshSessionMeta();
   try {
     const res = await tool("instances", { includeEnded: true });
-    for (const i of res.instances ?? []) instances.set(i.session_id, i);
-    renderRoster();
+    for (const i of res.instances ?? []) allInstances.set(i.session_id, i);
   } catch (err) {
-    console.error("roster seed failed", err);
+    console.error("instances load failed", err);
   }
-
-  await refreshSessionMeta();
-  setInterval(refreshSessionMeta, 15000);
-
-  // Seed recent bus messages; live updates arrive over the SSE `message` stream.
   try {
-    const rows = await loadBusMessages();
-    for (const m of rows.reverse()) applyMessage(m);
+    allMessages = await loadBusMessages();
   } catch (err) {
-    console.error("bus seed failed", err);
+    console.error("messages load failed", err);
   }
+}
+
+async function seed() {
+  await loadSource();
+  if (!STATIC) setInterval(refreshSessionMeta, 15000);
+  setupTimeline();
+  following = true;
+  asOfT = null;
+  renderView();
 }
 
 function escapeHtml(s) {
@@ -795,130 +834,126 @@ function renderDetail(sessionId, data) {
   });
 }
 
-// ---- Snapshot replay --------------------------------------------------------
-// Replays the day on a virtual clock by synthesizing the same events the live
-// SSE stream delivers (instance / message / delivery), in timestamp order.
+// ---- Timeline (as-of-T scrubber) -------------------------------------------
+// One virtual clock T over the data window drives live and snapshot alike:
+// LIVE pins T to now and follows new events; scrubbing/playing moves T into the
+// past and renderView() reconstructs the dashboard as of that instant.
 
 const replaybarEl = document.getElementById("replaybar");
 const rbPlay = document.getElementById("rb-play");
 const rbScrub = document.getElementById("rb-scrub");
 const rbTime = document.getElementById("rb-time");
 const rbSpeed = document.getElementById("rb-speed");
+const rbLive = document.getElementById("rb-live");
+const rbEnd = document.getElementById("rb-end");
 
-const REPLAY_BASE_MS = 120_000; // whole window plays in ~2 min at 1×
+const PLAY_BASE_MS = 120_000; // full window plays in ~2 min at 1×
+let tlMin = 0;
+let tlMaxStatic = 0;
+let playing = false;
+let playTimer = null;
 
-let replayEvents = [];
-let replayIdx = 0;
-let replayMinTs = 0;
-let replayMaxTs = 0;
-let replayCursorTs = 0;
-let replayProgress = 0; // 0..1
-let replayPlaying = false;
-let replayTimer = null;
+/** Upper bound of the timeline: frozen in snapshot mode, "now" when live. */
+function tlMax() {
+  return STATIC ? tlMaxStatic : Date.now();
+}
 
-function buildReplay(instArr, messages) {
-  const ev = [];
-  for (const i of instArr) {
-    if (i.first_seen_ms) {
-      ev.push({
-        ts: i.first_seen_ms,
-        type: "instance",
-        // Appear as active; freeze age at appearance.
-        data: {
-          ...i,
-          last_seen_ms: i.first_seen_ms,
-          ended_at_ms: null,
-          ended_reason: null,
-          status: "active",
-        },
-      });
-    }
-    if (i.ended_at_ms) {
-      ev.push({
-        ts: i.ended_at_ms,
-        type: "instance",
-        data: { ...i, status: "exited" },
-      });
-    }
+function computeBounds() {
+  let min = Number.POSITIVE_INFINITY;
+  let max = 0;
+  for (const i of allInstances.values()) {
+    if (i.first_seen_ms) min = Math.min(min, i.first_seen_ms);
+    max = Math.max(max, i.last_seen_ms ?? 0, i.ended_at_ms ?? 0);
   }
-  for (const m of messages) {
+  for (const m of allMessages) {
     if (m.created_at_ms) {
-      ev.push({
-        ts: m.created_at_ms,
-        type: "message",
-        data: { ...m, delivered_at_ms: null },
-      });
-    }
-    if (m.delivered_at_ms) {
-      ev.push({
-        ts: m.delivered_at_ms,
-        type: "delivery",
-        data: { ids: [m.id], delivered_at_ms: m.delivered_at_ms },
-      });
+      min = Math.min(min, m.created_at_ms);
+      max = Math.max(max, m.created_at_ms, m.delivered_at_ms ?? 0);
     }
   }
-  ev.sort((a, b) => a.ts - b.ts);
-  replayEvents = ev;
-  replayMinTs = ev.length ? ev[0].ts : 0;
-  replayMaxTs = ev.length ? ev[ev.length - 1].ts : 0;
+  tlMin = Number.isFinite(min) ? min : Date.now();
+  tlMaxStatic = Math.max(max, tlMin + 1);
 }
 
-function resetReplay() {
-  replayIdx = 0;
-  instances.clear();
-  feedEl.innerHTML = `<li class="empty">Replaying…</li>`;
-  messageCount = 0;
-  seenMessageIds.clear();
-  deliveredIds.clear();
-  feedMetaEl.textContent = "";
-}
-
-function dispatchUpTo(ts) {
-  while (replayIdx < replayEvents.length && replayEvents[replayIdx].ts <= ts) {
-    const e = replayEvents[replayIdx++];
-    if (e.type === "instance") applyInstance(e.data);
-    else if (e.type === "message") applyMessage(e.data);
-    else if (e.type === "delivery") applyDelivery(e.data);
+function updateTimelineUI() {
+  if (!replaybarEl || replaybarEl.hidden) return;
+  const span = tlMax() - tlMin || 1;
+  const p = Math.min(1, Math.max(0, (currentT() - tlMin) / span));
+  if (rbScrub && document.activeElement !== rbScrub) {
+    rbScrub.value = String(Math.round(p * 1000));
   }
-}
-
-function seek(ts) {
-  if (ts < replayCursorTs) resetReplay();
-  replayCursorTs = ts;
-  virtualNow = ts;
-  dispatchUpTo(ts);
-  renderRoster();
   if (rbTime) {
-    rbTime.textContent = replayMaxTs
-      ? new Date(ts).toLocaleTimeString([], { hour12: false })
-      : "—";
+    rbTime.textContent = following && !STATIC ? "LIVE" : timeStr(currentT());
   }
-  if (rbScrub) rbScrub.value = String(Math.round(replayProgress * 1000));
+  if (rbLive) rbLive.classList.toggle("active", following);
 }
 
-function seekProgress(p) {
-  replayProgress = Math.min(1, Math.max(0, p));
-  seek(replayMinTs + replayProgress * (replayMaxTs - replayMinTs));
+/** Move to a past instant (stops following live). */
+function seekTo(ts) {
+  following = false;
+  asOfT = Math.max(tlMin, Math.min(ts, tlMax()));
+  renderView();
+}
+
+/** Re-pin to now and resume following (live mode). */
+function goLive() {
+  setPlaying(false);
+  following = true;
+  asOfT = null;
+  renderView();
 }
 
 function setPlaying(p) {
-  replayPlaying = p;
-  if (rbPlay) rbPlay.textContent = p ? "⏸" : "▶";
-  if (replayTimer) {
-    clearInterval(replayTimer);
-    replayTimer = null;
+  if (playTimer) {
+    clearInterval(playTimer);
+    playTimer = null;
   }
-  if (!p) return;
-  if (replayProgress >= 1) seekProgress(0);
+  playing = p;
+  if (rbPlay) rbPlay.textContent = playing ? "⏸" : "▶";
+  if (!playing) return;
+  // From the start if we're live or already at the end.
+  if (following || (asOfT != null && asOfT >= tlMax())) seekTo(tlMin);
   let last = Date.now();
-  replayTimer = setInterval(() => {
+  playTimer = setInterval(() => {
     const now = Date.now();
     const dt = now - last;
     last = now;
     const speed = Number(rbSpeed?.value ?? 1);
-    seekProgress(replayProgress + (dt * speed) / REPLAY_BASE_MS);
-    if (replayProgress >= 1) setPlaying(false);
+    const span = tlMax() - tlMin;
+    const next = (asOfT ?? tlMin) + dt * speed * (span / PLAY_BASE_MS);
+    if (next >= tlMax()) {
+      if (STATIC) {
+        seekTo(tlMax());
+        setPlaying(false);
+      } else {
+        goLive(); // caught up to the present → resume live
+      }
+    } else {
+      seekTo(next);
+    }
   }, 100);
+}
+
+function setupTimeline() {
+  computeBounds();
+  if (replaybarEl) replaybarEl.hidden = false;
+  if (rbLive) rbLive.hidden = STATIC; // LIVE only matters when live
+  if (rbEnd) rbEnd.hidden = !STATIC; // jump-to-end only in snapshot
+
+  rbPlay?.addEventListener("click", () => setPlaying(!playing));
+  rbScrub?.addEventListener("input", () => {
+    setPlaying(false);
+    seekTo(tlMin + (Number(rbScrub.value) / 1000) * (tlMax() - tlMin));
+  });
+  rbLive?.addEventListener("click", goLive);
+  rbEnd?.addEventListener("click", () => {
+    setPlaying(false);
+    seekTo(tlMax());
+  });
+  document.getElementById("rb-restart")?.addEventListener("click", () => {
+    seekTo(tlMin);
+    setPlaying(true);
+  });
 }
 
 async function bootStatic() {
@@ -926,59 +961,10 @@ async function bootStatic() {
     "snapshot",
     boot.snapshotAt ? `snapshot · ${boot.snapshotAt}` : "snapshot",
   );
-  if (replaybarEl) replaybarEl.hidden = false;
-
-  // Session metadata + topology (loaded fully; the roster only shows sessions
-  // the replay has surfaced).
-  try {
-    const res = await tool("sessions");
-    const list = res.sessions ?? [];
-    for (const s of list) sessionMeta.set(s.sessionId, s);
-    childCount.clear();
-    for (const s of list) {
-      if (s.parentSessionId) {
-        childCount.set(
-          s.parentSessionId,
-          (childCount.get(s.parentSessionId) ?? 0) + 1,
-        );
-      }
-    }
-  } catch (err) {
-    console.error("static meta load failed", err);
-  }
-
-  let inst = [];
-  let msgs = [];
-  try {
-    inst = (await tool("instances")).instances ?? [];
-  } catch (err) {
-    console.error("static instances load failed", err);
-  }
-  try {
-    msgs = await loadBusMessages();
-  } catch (err) {
-    console.error("static messages load failed", err);
-  }
-
-  buildReplay(inst, msgs);
-  resetReplay();
-
-  rbPlay?.addEventListener("click", () => setPlaying(!replayPlaying));
-  rbScrub?.addEventListener("input", () => {
-    setPlaying(false);
-    seekProgress(Number(rbScrub.value) / 1000);
-  });
-  document.getElementById("rb-end")?.addEventListener("click", () => {
-    setPlaying(false);
-    seekProgress(1);
-  });
-  document.getElementById("rb-restart")?.addEventListener("click", () => {
-    seekProgress(0);
-    setPlaying(true);
-  });
-
-  seekProgress(0);
-  setPlaying(true); // autoplay
+  await loadSource();
+  setupTimeline();
+  seekTo(tlMin);
+  setPlaying(true); // autoplay the day
 }
 
 // ---- Boot -------------------------------------------------------------------
