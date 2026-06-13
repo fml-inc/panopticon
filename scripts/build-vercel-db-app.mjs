@@ -32,9 +32,17 @@ execFileSync(
   { stdio: "inherit" },
 );
 
-// 2) Fresh output dir.
+// 2) Fresh output dir — but preserve the Vercel project link across rebuilds
+//    so redeploys keep the same project/URL.
+const linkBak = path.join(ROOT, ".vercel-site-db-link");
+const link = path.join(OUT, ".vercel");
+if (fs.existsSync(link)) fs.cpSync(link, linkBak, { recursive: true });
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(path.join(OUT, "api"), { recursive: true });
+if (fs.existsSync(linkBak)) {
+  fs.cpSync(linkBak, link, { recursive: true });
+  fs.rmSync(linkBak, { recursive: true, force: true });
+}
 
 // 3) Static assets + DB.
 for (const f of ["index.html", "app.js", "style.css"]) {
