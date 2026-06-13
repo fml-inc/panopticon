@@ -19,7 +19,14 @@
     </header>
 
     <main class="stage">
-      <div class="ribbon"><div class="ribbon-fill" id="ribbonFill"></div></div>
+      <div class="ribbon">
+        <div class="ribbon-fill" id="ribbonFill"></div>
+        <div class="ticks" id="ticks"></div>
+      </div>
+      <div class="milestone" id="milestone" hidden>
+        <span class="m-label" id="mLabel"></span>
+        <span class="m-sub" id="mSub"></span>
+      </div>
       <ul class="lanes" id="lanes"></ul>
       <div class="loading" id="loading">loading the day…</div>
     </main>

@@ -93,14 +93,14 @@ async function load() {
     lane.cum.push({ ts: t.ts, cum: prev + (t.cost ?? 0) });
   }
 
-  // Challenges → mark on the addressed lane.
+  // Challenges → mark on the addressed lane, with the real critique text.
   try {
     const msgs = await tool("query", {
-      sql: "SELECT to_session sid, created_at_ms ts FROM agent_messages WHERE kind='challenge' AND to_session IS NOT NULL ORDER BY id",
+      sql: "SELECT to_session sid, created_at_ms ts, body FROM agent_messages WHERE kind='challenge' AND to_session IS NOT NULL ORDER BY id",
     });
     for (const m of msgs) {
       const lane = lanes.get(m.sid);
-      if (lane) lane.challenges.push(m.ts);
+      if (lane) lane.challenges.push({ ts: m.ts, body: m.body ?? "" });
     }
   } catch {
     /* no bus */
@@ -173,9 +173,40 @@ let playing = false;
 let lastFrame = 0;
 let scrubbing = false;
 
+// Product build story — real PR/commit landing times for each layer. When the
+// playhead crosses one, a callout fires and a tick sits on the ribbon.
+const MILESTONES = [
+  [
+    "2026-06-13T11:15:04-07:00",
+    "Layer 0",
+    "instance presence + active-pid reaper",
+  ],
+  ["2026-06-13T12:05:51-07:00", "Layer 1", "agent-to-agent message bus (#276)"],
+  [
+    "2026-06-13T14:03:36-07:00",
+    "Layer 2",
+    "bus delivery into agent context (#277)",
+  ],
+  [
+    "2026-06-13T14:38:37-07:00",
+    "Frenemy",
+    "adversarial reviewer on the bus (#281)",
+  ],
+  [
+    "2026-06-13T16:18:02-07:00",
+    "Mission Control",
+    "live dashboard + this replay",
+  ],
+].map(([iso, label, sub]) => ({ ts: Date.parse(iso), label, sub }));
+
 const lanesEl = document.getElementById("lanes");
 const loadingEl = document.getElementById("loading");
 const ribbonFill = document.getElementById("ribbonFill");
+const ticksEl = document.getElementById("ticks");
+const milestoneEl = document.getElementById("milestone");
+const mLabel = document.getElementById("mLabel");
+const mSub = document.getElementById("mSub");
+let milestoneTimer = null;
 const playBtn = document.getElementById("play");
 const scrub = document.getElementById("scrub");
 const speedSel = document.getElementById("speed");
@@ -202,7 +233,8 @@ function laneEl(lane) {
       <div class="l-sub"></div>
     </div>
     <div class="spark">${'<i style="height:1px"></i>'.repeat(SPARK_BINS)}</div>
-    <div class="l-cost">$0.00</div>`;
+    <div class="l-cost">$0.00</div>
+    <div class="l-chaltext" hidden></div>`;
   li.querySelector(".nm").textContent = lane.title;
   li.querySelector(".l-sub").textContent = [lane.model, shortId(lane.id)]
     .filter(Boolean)
@@ -214,6 +246,7 @@ function laneEl(lane) {
     badge: li.querySelector(".l-badge"),
     bars: [...li.querySelectorAll(".spark i")],
     cost: li.querySelector(".l-cost"),
+    chaltext: li.querySelector(".l-chaltext"),
   };
 }
 
@@ -237,12 +270,46 @@ function updateLane(r, lane, T) {
   r.li.classList.toggle("idle", recent === 0);
 }
 
-function flashChallenge(r) {
+function flashChallenge(r, body) {
   r.badge.hidden = false;
   r.li.classList.add("challenged");
-  setTimeout(() => {
+  if (body && r.chaltext) {
+    r.chaltext.textContent = `🔴 ${body}`;
+    r.chaltext.hidden = false;
+  }
+  clearTimeout(r._cf);
+  r._cf = setTimeout(() => {
     r.li.classList.remove("challenged");
-  }, 1500);
+    if (r.chaltext) r.chaltext.hidden = true;
+  }, 4500);
+}
+
+function showMilestone(m) {
+  mLabel.textContent = m.label;
+  mSub.textContent = m.sub;
+  milestoneEl.hidden = false;
+  milestoneEl.classList.remove("show");
+  void milestoneEl.offsetWidth; // restart the entry animation
+  milestoneEl.classList.add("show");
+  clearTimeout(milestoneTimer);
+  milestoneTimer = setTimeout(() => {
+    milestoneEl.classList.remove("show");
+    milestoneEl.hidden = true;
+  }, 4500);
+}
+
+function renderTicks() {
+  if (!ticksEl) return;
+  const span = tlMax - tlMin || 1;
+  ticksEl.innerHTML = "";
+  for (const m of MILESTONES) {
+    if (m.ts < tlMin || m.ts > tlMax) continue;
+    const t = document.createElement("span");
+    t.className = "tick";
+    t.style.left = `${((m.ts - tlMin) / span) * 100}%`;
+    t.title = `${m.label} — ${m.sub}`;
+    ticksEl.appendChild(t);
+  }
 }
 
 let prevT = null;
@@ -279,11 +346,18 @@ function renderFrame(instant) {
       lanesEl.prepend(r.li);
     }
     updateLane(r, lane, T);
-    // challenge burst when its time crosses the playhead (not while scrubbing)
+    // challenge burst (with real critique text) when crossed; not while scrubbing
     if (!instant && prevT != null) {
-      for (const cts of lane.challenges) {
-        if (cts > prevT && cts <= T) flashChallenge(r);
+      for (const c of lane.challenges) {
+        if (c.ts > prevT && c.ts <= T) flashChallenge(r, c.body);
       }
+    }
+  }
+
+  // product milestones — fire a callout as the playhead crosses each layer
+  if (!instant && prevT != null) {
+    for (const m of MILESTONES) {
+      if (m.ts > prevT && m.ts <= T) showMilestone(m);
     }
   }
 
@@ -377,6 +451,7 @@ scrub.addEventListener("change", endScrub);
 (async () => {
   document.getElementById("day").textContent = boot.snapshotAt ?? "";
   await load();
+  renderTicks();
   loadingEl.classList.add("hidden");
   setT(0);
   setPlaying(true);
