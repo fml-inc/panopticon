@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InstancesResult } from "../service/types.js";
+import type {
+  InstancesResult,
+  WaitForActivityResult,
+} from "../service/types.js";
 import type { HookEvent, HookTimelineResult } from "../types.js";
 import {
+  createFrenemyLoop,
   type FrenemyCursors,
   formatActivity,
   parseChallenge,
@@ -174,5 +178,35 @@ describe("runFrenemyOnce", () => {
     await runFrenemyOnce(OPTS, cursors, deps);
     // frenemy-role excluded, exited excluded, the reserved FRENEMY_FROM id excluded.
     expect(sends).toHaveLength(0);
+  });
+});
+
+describe("createFrenemyLoop", () => {
+  it("wakes on activity, runs a review pass, and stops cleanly", async () => {
+    // Regression: the loop must reach the review pass after the settle wait.
+    // (A previously unref'd settle timer let the process exit mid-settle.)
+    let runs = 0;
+    let waits = 0;
+    const handle = createFrenemyLoop({
+      room: "fml-inc/panopticon",
+      settleMs: 5,
+      longPollMs: 1000,
+      _waitForActivity: async (): Promise<WaitForActivityResult> => {
+        waits += 1;
+        // First wait: activity is already present. After: block until stop().
+        if (waits === 1) {
+          return { activityMs: 100, room: "fml-inc/panopticon" };
+        }
+        return new Promise<WaitForActivityResult>(() => {});
+      },
+      _runOnce: async () => {
+        runs += 1;
+        return [];
+      },
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(runs).toBe(1);
+    handle.stop();
+    await handle.done; // resolves promptly via the stop-race
   });
 });

@@ -21,6 +21,7 @@ import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
 import type {
   InstancesResult,
+  WaitForActivityInput,
   WaitForActivityResult,
 } from "../service/types.js";
 import { invokeLlmAsync } from "../summary/llm.js";
@@ -301,8 +302,20 @@ export function createFrenemyLoop(
     /** Max time to block per long-poll before re-waiting (ms). */
     longPollMs?: number;
     onChallenge?: (c: { to: string; body: string }) => void;
+    /** Test seams (default to the real service / pass). */
+    _waitForActivity?: (
+      input: WaitForActivityInput,
+    ) => Promise<WaitForActivityResult>;
+    _runOnce?: (
+      o: FrenemyOptions,
+      c: FrenemyCursors,
+    ) => Promise<Array<{ to: string; body: string }>>;
   },
 ): FrenemyLoopHandle {
+  const waitForActivity =
+    opts._waitForActivity ??
+    ((input) => httpPanopticonService.waitForActivity(input));
+  const runOnce = opts._runOnce ?? ((o, c) => runFrenemyOnce(o, c));
   const cursors: FrenemyCursors = new Map();
   let stopped = false;
   let resolveDone: () => void = () => {};
@@ -322,10 +335,14 @@ export function createFrenemyLoop(
   });
   const untilStop = <T>(p: Promise<T>): Promise<T | typeof STOP> =>
     Promise.race<T | typeof STOP>([p, stopPromise.then(() => STOP)]);
+  // NB: do NOT unref this timer. During the settle/backoff wait it is the only
+  // pending handle (the long-poll request has already resolved), so an unref'd
+  // timer lets Node treat the event loop as empty and exit mid-settle before any
+  // review runs. Prompt shutdown comes from the stop-race + process.exit, not
+  // from unref.
   const sleep = (ms: number): Promise<void> =>
     new Promise((r) => {
-      const t = setTimeout(r, ms);
-      t.unref?.();
+      setTimeout(r, ms);
     });
 
   let watermark = 0;
@@ -335,7 +352,7 @@ export function createFrenemyLoop(
       let res: WaitForActivityResult | typeof STOP;
       try {
         res = await untilStop(
-          httpPanopticonService.waitForActivity({
+          waitForActivity({
             room: opts.room,
             sinceMs: watermark,
             timeoutMs: longPollMs,
@@ -357,7 +374,7 @@ export function createFrenemyLoop(
       if ((await untilStop(sleep(settleMs))) === STOP) break;
 
       try {
-        const sent = await runFrenemyOnce(opts, cursors);
+        const sent = await runOnce(opts, cursors);
         for (const c of sent) {
           log.server.info(`frenemy → ${c.to}: ${c.body}`);
           opts.onChallenge?.(c);
