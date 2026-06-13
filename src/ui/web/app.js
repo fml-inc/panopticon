@@ -115,6 +115,10 @@ function scheduleRender(delay = 700) {
 
 const STATUS_RANK = { active: 0, idle: 1, exited: 2 };
 
+// Feather-style eye / eye-off icons for the exited-sessions toggle.
+const EYE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 /** One roster row. */
 function instRowHtml(i) {
   const meta = sessionMeta.get(i.session_id) ?? {};
@@ -189,13 +193,14 @@ function renderRoster() {
     `<span class="c-idle">●${counts.idle}</span>` +
     `<span class="c-exited">●${counts.exited}</span>`;
 
-  // Exited-sessions toggle: label reflects current state; hide when there are
-  // none to toggle.
+  // Exited-sessions toggle: eye icon shows the action (eye-off = hide, eye =
+  // show), title carries the count; hidden when there are none to toggle.
   if (toggleExitedEl) {
     toggleExitedEl.hidden = counts.exited === 0;
-    toggleExitedEl.textContent = showExited
-      ? `hide exited (${counts.exited})`
-      : `show exited (${counts.exited})`;
+    toggleExitedEl.innerHTML = showExited ? EYE_OFF_SVG : EYE_SVG;
+    toggleExitedEl.title = showExited
+      ? `Hide exited (${counts.exited})`
+      : `Show exited (${counts.exited})`;
   }
 
   const visible = showExited ? rows : rows.filter((i) => i.status !== "exited");
