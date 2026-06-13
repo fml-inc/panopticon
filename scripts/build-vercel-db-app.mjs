@@ -53,13 +53,33 @@ fs.cpSync(path.join(ROOT, "dist"), path.join(OUT, "_dist"), {
 fs.writeFileSync(
   path.join(OUT, "api", "tool.js"),
   `// Read-only /api/tool over the bundled scoped DB (node:sqlite, no native deps).
+import fs from "node:fs";
 import path from "node:path";
-process.env.PANOPTICON_DATA_DIR ||= path.join(process.cwd(), "db");
+
+// Locate the bundled DB robustly — Vercel's function cwd vs file dir vary.
+const CANDIDATES = [
+  path.join(import.meta.dirname, "..", "db"),
+  path.join(process.cwd(), "db"),
+  path.join(process.cwd(), "apps", "site-db", "db"),
+];
+const dbDir = CANDIDATES.find((d) => fs.existsSync(path.join(d, "panopticon.db")));
+if (dbDir) process.env.PANOPTICON_DATA_DIR = dbDir;
+
 const { dispatchTool, directPanopticonService, isToolName } = await import(
   "../_dist/service/index.js"
 );
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+  if (!dbDir) {
+    // Diagnostic: where did the bundled DB land?
+    const probe = CANDIDATES.map((d) => {
+      let here = null;
+      try { here = fs.readdirSync(path.dirname(d)); } catch {}
+      return { dir: d, hasDb: fs.existsSync(path.join(d, "panopticon.db")), parent: here };
+    });
+    return res.status(500).json({ error: "db not bundled", cwd: process.cwd(), probe });
+  }
   const { name, params } = req.body ?? {};
   if (!isToolName(name)) return res.status(404).json({ error: \`unknown tool: \${name}\` });
   try {
@@ -95,7 +115,6 @@ fs.writeFileSync(
     {
       $schema: "https://openapi.vercel.sh/vercel.json",
       functions: { "api/tool.js": { includeFiles: "db/**" } },
-      build: { env: { NODE_OPTIONS: "--experimental-sqlite" } },
     },
     null,
     2,
