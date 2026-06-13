@@ -150,6 +150,7 @@ let asOfT = null;
 let progress = 0;
 let playing = false;
 let lastFrame = 0;
+let scrubbing = false;
 
 const lanesEl = document.getElementById("lanes");
 const loadingEl = document.getElementById("loading");
@@ -224,9 +225,10 @@ function flashChallenge(r) {
 }
 
 let prevT = null;
-function renderFrame() {
+// instant=true (scrubbing): rebuild without enter/leave animations or challenge
+// flashes, so dragging is snappy and arbitrary-T-correct.
+function renderFrame(instant) {
   const T = asOfT ?? tlMin;
-  // alive = appeared and not yet finished+lingered
   const alive = [...lanes.values()]
     .filter((l) => l.firstTs <= T && T <= l.lastTs + LINGER)
     .sort((a, b) => b.lastTs - a.lastTs) // most-recently-active first
@@ -236,9 +238,13 @@ function renderFrame() {
   // remove lanes that left
   for (const [id, r] of rendered) {
     if (!aliveIds.has(id)) {
-      r.li.classList.add("leaving");
-      const el = r.li;
-      setTimeout(() => el.remove(), 520);
+      if (instant) {
+        r.li.remove();
+      } else {
+        r.li.classList.add("leaving");
+        const el = r.li;
+        setTimeout(() => el.remove(), 520);
+      }
       rendered.delete(id);
     }
   }
@@ -247,12 +253,13 @@ function renderFrame() {
     let r = rendered.get(lane.id);
     if (!r) {
       r = laneEl(lane);
+      if (instant) r.li.classList.add("no-anim");
       rendered.set(lane.id, r);
       lanesEl.prepend(r.li);
     }
     updateLane(r, lane, T);
-    // challenge burst when its time crosses the playhead
-    if (prevT != null) {
+    // challenge burst when its time crosses the playhead (not while scrubbing)
+    if (!instant && prevT != null) {
       for (const cts of lane.challenges) {
         if (cts > prevT && cts <= T) flashChallenge(r);
       }
@@ -278,15 +285,14 @@ function renderFrame() {
   els.burn.textContent = `$${((spend - spendPrev) / (RATE_WIN / 3_600_000)).toFixed(0)}/hr`;
   els.spend.textContent = fmtCost(spend);
   ribbonFill.style.width = `${progress * 100}%`;
-  if (scrub !== document.activeElement)
-    scrub.value = String(Math.round(progress * 1000));
+  if (!scrubbing) scrub.value = String(Math.round(progress * 1000));
   prevT = T;
 }
 
-function setT(p) {
+function setT(p, instant) {
   progress = Math.min(1, Math.max(0, p));
   asOfT = tlMin + progress * (tlMax - tlMin);
-  renderFrame();
+  renderFrame(instant);
 }
 
 function tick(now) {
@@ -328,14 +334,23 @@ document.getElementById("restart").addEventListener("click", () => {
   setT(0);
   setPlaying(true);
 });
-scrub.addEventListener("input", () => {
+// Grab the scrubber → pause and take control; drag → instant seek; release →
+// stays where you left it (resume with play).
+scrub.addEventListener("pointerdown", () => {
+  scrubbing = true;
   setPlaying(false);
-  // scrubbing backwards: rebuild from scratch so lanes reflect the new T
-  for (const r of rendered.values()) r.li.remove();
-  rendered.clear();
-  prevT = null;
-  setT(Number(scrub.value) / 1000);
 });
+const endScrub = () => {
+  scrubbing = false;
+};
+scrub.addEventListener("pointerup", endScrub);
+scrub.addEventListener("pointercancel", endScrub);
+scrub.addEventListener("input", () => {
+  scrubbing = true; // covers keyboard/track-click without a pointerdown
+  setPlaying(false);
+  setT(Number(scrub.value) / 1000, true);
+});
+scrub.addEventListener("change", endScrub);
 
 // ---- boot -------------------------------------------------------------------
 (async () => {

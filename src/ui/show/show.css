@@ -151,6 +151,9 @@ body {
     transform: none;
   }
 }
+.lane.no-anim {
+  animation: none;
+}
 .lane.leaving {
   opacity: 0;
   transform: translateX(60px);
