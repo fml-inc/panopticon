@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Panopticon · Mission Control</title>
+    <link rel="stylesheet" href="/ui/style.css" />
+    <!--PANOPTICON_BOOTSTRAP-->
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">◎</span>
+        <span class="title">Mission Control</span>
+      </div>
+      <div class="conn" id="conn">
+        <span class="conn-dot" id="conn-dot"></span>
+        <span id="conn-label">connecting…</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel roster">
+        <div class="panel-head">
+          <h2>Roster</h2>
+          <div class="counts" id="counts"></div>
+        </div>
+        <ul class="roster-list" id="roster">
+          <li class="empty">No instances yet.</li>
+        </ul>
+      </section>
+
+      <section class="panel feed">
+        <div class="panel-head">
+          <h2>Bus feed</h2>
+          <div class="feed-meta" id="feed-meta"></div>
+        </div>
+        <ul class="feed-list" id="feed">
+          <li class="empty">
+            Waiting for bus activity. The feed lights up once the message bus
+            (Layer 1) is live.
+          </li>
+        </ul>
+      </section>
+    </main>
+
+    <div class="backdrop" id="backdrop" hidden></div>
+    <aside class="drawer" id="drawer" hidden aria-label="Session detail"></aside>
+
+    <script src="/ui/app.js" type="module"></script>
+  </body>
+</html>
