@@ -584,7 +584,6 @@ CREATE TABLE IF NOT EXISTS panopticon_instances (
   target TEXT,
   role TEXT,
   pid INTEGER,
-  pid_start_hint TEXT,
   room TEXT,
   worktree TEXT,
   branch TEXT,

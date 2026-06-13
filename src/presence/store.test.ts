@@ -14,8 +14,10 @@ vi.mock("../config.js", () => ({
 import { closeDb, getDb } from "../db/schema.js";
 import {
   ACTIVE_WINDOW_MS,
+  EXITED_ROSTER_WINDOW_MS,
   endInstance,
   isPidAlive,
+  pruneExitedInstances,
   readInstances,
   readInstancesResult,
   reapDeadInstances,
@@ -124,13 +126,75 @@ describe("presence store", () => {
   });
 
   it("readInstancesResult returns status counts", () => {
-    upsertInstance({ session_id: "live", pid: process.pid, last_seen_ms: NOW });
-    upsertInstance({ session_id: "dead", pid: deadPid(), last_seen_ms: NOW });
-    endInstance("dead", "pid_dead", NOW);
+    // Recent timestamps so the exited row falls inside the roster window.
+    const recent = Date.now();
+    upsertInstance({
+      session_id: "live",
+      pid: process.pid,
+      last_seen_ms: recent,
+    });
+    upsertInstance({
+      session_id: "dead",
+      pid: deadPid(),
+      last_seen_ms: recent,
+    });
+    endInstance("dead", "pid_dead", recent);
     const result = readInstancesResult({});
     expect(result.counts.total).toBe(2);
     expect(result.counts.exited).toBe(1);
     expect(result.counts.active + result.counts.idle).toBe(1);
+  });
+
+  it("default roster drops exited rows older than the window but keeps recent ones", () => {
+    const now = Date.now();
+    // Exited long ago — outside the roster window.
+    upsertInstance({ session_id: "old", pid: deadPid(), last_seen_ms: now });
+    endInstance("old", "pid_dead", now - EXITED_ROSTER_WINDOW_MS - 1000);
+    // Exited just now — inside the window.
+    upsertInstance({ session_id: "fresh", pid: deadPid(), last_seen_ms: now });
+    endInstance("fresh", "pid_dead", now);
+
+    const ids = readInstancesResult({}).instances.map((i) => i.session_id);
+    expect(ids).toContain("fresh");
+    expect(ids).not.toContain("old");
+
+    // includeEnded:false drops all exited rows.
+    expect(readInstancesResult({ includeEnded: false }).instances).toHaveLength(
+      0,
+    );
+  });
+
+  it("session_end is terminal — a later event does not revive it", () => {
+    upsertInstance({ session_id: "s1", pid: process.pid, last_seen_ms: NOW });
+    endInstance("s1", "session_end", NOW + 5);
+    // A stray out-of-order event arrives after the clean exit.
+    upsertInstance({
+      session_id: "s1",
+      pid: process.pid,
+      last_seen_ms: NOW + 10,
+    });
+    const [view] = readInstances({ nowMs: NOW + 11, includeEnded: true });
+    expect(view.status).toBe("exited");
+    expect(view.ended_reason).toBe("session_end");
+  });
+
+  it("pruneExitedInstances deletes old exited rows but keeps live and recent", () => {
+    const now = Date.now();
+    upsertInstance({ session_id: "old", pid: deadPid(), last_seen_ms: now });
+    endInstance("old", "pid_dead", now - 2 * 60 * 60_000); // 2h ago
+    upsertInstance({ session_id: "recent", pid: deadPid(), last_seen_ms: now });
+    endInstance("recent", "pid_dead", now);
+    upsertInstance({ session_id: "live", pid: process.pid, last_seen_ms: now });
+
+    const deleted = pruneExitedInstances(now, 60 * 60_000); // 1h TTL
+    expect(deleted).toBe(1);
+
+    const ids = readInstances({ nowMs: now, includeEnded: true }).map(
+      (i) => i.session_id,
+    );
+    expect(ids).not.toContain("old");
+    expect(ids).toContain("recent");
+    expect(ids).toContain("live");
   });
 
   it("filters by room", () => {

@@ -311,6 +311,14 @@ export async function runHandler(opts: {
     // parent pid identifies the live agent. Forward it so the server can track
     // instance presence and actively reap dead agents (a stale heartbeat alone
     // cannot distinguish an idle agent from a killed one).
+    //
+    // This holds when the agent spawns the handler directly (Claude Code).
+    // A target that wraps the handler in a shell breaks the assumption: a
+    // short-lived wrapper yields a pid that dies immediately (a false pid_dead
+    // reap, self-healed by the next heartbeat's revival), and a long-lived
+    // wrapper yields a pid that never dies. Such targets degrade to
+    // heartbeat-only liveness, which is why agent_pid is best-effort, not
+    // required.
     if (typeof data.agent_pid !== "number" && process.ppid) {
       data.agent_pid = process.ppid;
     }

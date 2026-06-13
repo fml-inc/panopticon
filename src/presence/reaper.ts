@@ -6,7 +6,7 @@
  */
 
 import { log } from "../log.js";
-import { reapDeadInstances } from "./store.js";
+import { pruneExitedInstances, reapDeadInstances } from "./store.js";
 
 export const DEFAULT_REAP_INTERVAL_MS = 7_000;
 
@@ -32,12 +32,18 @@ export function createReaperLoop(opts: ReaperOptions = {}): ReaperHandle {
 
   function runOnce(): string[] {
     try {
-      const reaped = reapDeadInstances(now());
+      const nowMs = now();
+      const reaped = reapDeadInstances(nowMs);
       if (reaped.length > 0) {
         log.presence.debug(
           `Reaped ${reaped.length} dead instance(s): ${reaped.join(", ")}`,
         );
         opts.onReap?.(reaped);
+      }
+      // Bound table growth: drop exited rows past their retention window.
+      const pruned = pruneExitedInstances(nowMs);
+      if (pruned > 0) {
+        log.presence.debug(`Pruned ${pruned} stale exited instance(s)`);
       }
       return reaped;
     } catch (err) {
