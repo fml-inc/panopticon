@@ -1918,7 +1918,11 @@ program
   .option("--room <room>", "Explicit room (default: current workspace repo)")
   .option("--runner <runner>", "Critic runner: claude or codex", "claude")
   .option("--model <model>", "Model override for the critic (default: opus)")
-  .option("--interval <seconds>", "Poll interval", "8")
+  .option(
+    "--interval <seconds>",
+    "Settle window — batch a burst of edits before reviewing",
+    "3",
+  )
   .option("--once", "Run a single pass and exit")
   .action(async (opts: OptionValues) => {
     if (opts.runner !== "claude" && opts.runner !== "codex") {
@@ -1928,8 +1932,8 @@ program
       process.exitCode = 1;
       return;
     }
-    const intervalSec = Number(opts.interval);
-    if (!Number.isFinite(intervalSec) || intervalSec <= 0) {
+    const settleSec = Number(opts.interval);
+    if (!Number.isFinite(settleSec) || settleSec <= 0) {
       console.error(
         `Invalid --interval "${opts.interval}": expected a positive number of seconds.`,
       );
@@ -1959,7 +1963,7 @@ program
     console.log(`Frenemy watching room "${room}" — Ctrl-C to stop.`);
     const handle = createFrenemyLoop({
       ...frenemyOpts,
-      intervalMs: intervalSec * 1000,
+      settleMs: settleSec * 1000,
       onChallenge: (c) => console.log(`→ ${c.to}: ${c.body}`),
     });
     process.on("SIGINT", () => handle.stop());

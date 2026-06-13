@@ -21,6 +21,7 @@ import type {
   SessionSummaryDetailInput,
   SessionTimelineInput,
   SyncTargetAddInput,
+  WaitForActivityInput,
   WhyCodeInput,
 } from "./types.js";
 
@@ -54,6 +55,8 @@ const BASE_TOOL_HANDLERS = {
   bus_read: (service, params) => service.busRead(asType<BusReadInput>(params)),
   bus_roster: (service, params) =>
     service.busRoster(asType<BusRosterInput>(params)),
+  wait_for_activity: (service, params) =>
+    service.waitForActivity(asType<WaitForActivityInput>(params)),
   intent_for_code: (service, params) =>
     service.intentForCode(asType<IntentForCodeInput>(params)),
   search_intent: (service, params) =>

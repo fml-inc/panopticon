@@ -18,6 +18,7 @@ import type {
   RegenerateSessionSummariesInput,
   ScanResult,
   SyncPendingResult,
+  WaitForActivityResult,
 } from "./types.js";
 
 function toParams(value: unknown): Record<string, unknown> | undefined {
@@ -146,6 +147,11 @@ export const httpPanopticonService: PanopticonService = {
     callTool("bus_read", toParams(input) ?? {}) as Promise<BusReadResult>,
   busRoster: (input) =>
     callTool("bus_roster", toParams(input) ?? {}) as Promise<InstancesResult>,
+  waitForActivity: (input) =>
+    callTool(
+      "wait_for_activity",
+      toParams(input) ?? {},
+    ) as Promise<WaitForActivityResult>,
   intentForCode: (opts) => callTool("intent_for_code", toParams(opts)),
   searchIntent: (opts) => callTool("search_intent", toParams(opts)),
   outcomesForIntent: (opts) => callTool("outcomes_for_intent", toParams(opts)),
