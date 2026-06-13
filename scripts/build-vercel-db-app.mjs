@@ -56,34 +56,54 @@ fs.writeFileSync(
 import fs from "node:fs";
 import path from "node:path";
 
-// Locate the bundled DB robustly — Vercel's function cwd vs file dir vary.
+// includeFiles places the DB at <fn-root>/db relative to project root; resolve
+// from the function file (not process.cwd(), which differs on Vercel).
 const CANDIDATES = [
-  path.join(import.meta.dirname, "..", "db"),
-  path.join(process.cwd(), "db"),
-  path.join(process.cwd(), "apps", "site-db", "db"),
+  path.join(import.meta.dirname, "..", "db", "panopticon.db"),
+  path.join(process.cwd(), "db", "panopticon.db"),
 ];
-const dbDir = CANDIDATES.find((d) => fs.existsSync(path.join(d, "panopticon.db")));
-if (dbDir) process.env.PANOPTICON_DATA_DIR = dbDir;
+const src = CANDIDATES.find((p) => fs.existsSync(p));
 
-const { dispatchTool, directPanopticonService, isToolName } = await import(
-  "../_dist/service/index.js"
-);
+// The deployment filesystem is read-only, but getDb opens the DB read-write
+// (journal). Copy the bundled DB to writable /tmp once per instance and point
+// the service there.
+let ready = false;
+let initError = null;
+if (src) {
+  try {
+    const tmp = "/tmp/panopticon";
+    fs.mkdirSync(tmp, { recursive: true });
+    const dst = path.join(tmp, "panopticon.db");
+    if (!fs.existsSync(dst)) fs.copyFileSync(src, dst);
+    process.env.PANOPTICON_DATA_DIR = tmp;
+    ready = true;
+  } catch (err) {
+    initError = String(err);
+  }
+}
+
+const svc = ready ? await import("../_dist/service/index.js") : null;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
-  if (!dbDir) {
-    // Diagnostic: where did the bundled DB land?
-    const probe = CANDIDATES.map((d) => {
-      let here = null;
-      try { here = fs.readdirSync(path.dirname(d)); } catch {}
-      return { dir: d, hasDb: fs.existsSync(path.join(d, "panopticon.db")), parent: here };
+  if (!ready) {
+    return res.status(500).json({
+      error: src ? \`init failed: \${initError}\` : "db not bundled",
+      cwd: process.cwd(),
+      tried: CANDIDATES,
     });
-    return res.status(500).json({ error: "db not bundled", cwd: process.cwd(), probe });
   }
   const { name, params } = req.body ?? {};
-  if (!isToolName(name)) return res.status(404).json({ error: \`unknown tool: \${name}\` });
+  if (!svc.isToolName(name)) {
+    return res.status(404).json({ error: \`unknown tool: \${name}\` });
+  }
   try {
-    res.status(200).json(await dispatchTool(directPanopticonService, name, params ?? {}));
+    const result = await svc.dispatchTool(
+      svc.directPanopticonService,
+      name,
+      params ?? {},
+    );
+    res.status(200).json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -91,8 +111,8 @@ export default async function handler(req, res) {
 `,
 );
 
-// 6) package.json (deps Vercel installs for the function; node:sqlite is builtin)
-//    + engines, and NODE_OPTIONS so node:sqlite loads on flag-gated Node.
+// 6) package.json (deps Vercel installs for the function; node:sqlite is a
+//    builtin on Vercel's Node 24, no flag needed).
 fs.writeFileSync(
   path.join(OUT, "package.json"),
   `${JSON.stringify(
