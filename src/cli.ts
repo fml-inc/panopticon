@@ -26,6 +26,11 @@ import {
 } from "./context-diagnostics.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
+import {
+  createFrenemyLoop,
+  resolveFrenemyRoom,
+  runFrenemyOnce,
+} from "./frenemy/driver.js";
 import { DAEMON_NAMES, type DaemonName, LOG_DIR, logPaths } from "./log.js";
 import {
   permissionsApply,
@@ -1903,6 +1908,62 @@ program
         source: "cli",
       }),
     );
+  });
+
+program
+  .command("frenemy")
+  .description(
+    "Run a stickler code-review 'frenemy' (Opus, read-only workspace access) that reviews changes as the agents in this workspace make them and posts findings via the bus — so the PR is effectively reviewed by the end",
+  )
+  .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option("--runner <runner>", "Critic runner: claude or codex", "claude")
+  .option("--model <model>", "Model override for the critic (default: opus)")
+  .option("--interval <seconds>", "Poll interval", "8")
+  .option("--once", "Run a single pass and exit")
+  .action(async (opts: OptionValues) => {
+    if (opts.runner !== "claude" && opts.runner !== "codex") {
+      console.error(
+        `Invalid --runner "${opts.runner}": expected "claude" or "codex".`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const intervalSec = Number(opts.interval);
+    if (!Number.isFinite(intervalSec) || intervalSec <= 0) {
+      console.error(
+        `Invalid --interval "${opts.interval}": expected a positive number of seconds.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const room = resolveFrenemyRoom(
+      typeof opts.room === "string" ? opts.room : undefined,
+    );
+    if (!room) {
+      console.error(
+        "Could not resolve a room from the current directory. Pass --room <repo>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const frenemyOpts = {
+      room,
+      runner: opts.runner as "claude" | "codex",
+      model: typeof opts.model === "string" ? opts.model : null,
+    };
+    if (opts.once) {
+      const sent = await runFrenemyOnce(frenemyOpts, new Map());
+      output(sent);
+      return;
+    }
+    console.log(`Frenemy watching room "${room}" — Ctrl-C to stop.`);
+    const handle = createFrenemyLoop({
+      ...frenemyOpts,
+      intervalMs: intervalSec * 1000,
+      onChallenge: (c) => console.log(`→ ${c.to}: ${c.body}`),
+    });
+    process.on("SIGINT", () => handle.stop());
+    await handle.done;
   });
 
 program
