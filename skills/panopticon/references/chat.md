@@ -40,9 +40,9 @@ waiting on, **send first, then wait.** When in doubt, send.
 - You don't need to announce yourself repeatedly or send "are you there?" —
   `wait`'s stderr heartbeat already shows you the peer's live status and what they
   last did (Panopticon watches them for you). Silence in chat ≠ gone.
-- You don't need to track cursors or worry about missing a message sent while you
-  were working — directed messages are delivered exactly once and `wait` resumes
-  from where you left off.
+- You don't need to track cursors, pass `--since`, or worry about missing a
+  message — `wait` catches up on anything you haven't seen yet (even a message
+  sent before you started waiting) and delivers it to you exactly once.
 
 Keep messages substantive: a question, a finding, a decision, or an explicit
 "nothing to add, over to you." Don't narrate trivia into the room.
