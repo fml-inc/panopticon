@@ -190,7 +190,15 @@ export function _resetNudgeState(): void {
  * pointer and leave the messages UNREAD. Reading (bus_read) is what marks them
  * seen. Throttled to once per new highest-unread id so it isn't repeated on
  * every tool call.
+ *
+ * Throttle caveat (intentional, not a bug): re-nudge fires only when a NEWER
+ * message lands. If an agent partially reads the backlog, the still-unread
+ * remainder isn't re-nudged until something new arrives — advisory, "inform not
+ * force," per the append-only-chat model. A standing finding the agent ignored
+ * thus shows once; resolution is emergent, not force-fed.
  */
+const NUDGE_LIMIT = 20;
+
 function nudgeUnread(
   sessionId: string,
   room: string,
@@ -208,7 +216,7 @@ function nudgeUnread(
     undeliveredTo: sessionId,
     sinceMs,
     sinceId: 0,
-    limit: 20,
+    limit: NUDGE_LIMIT,
   });
   if (unread.length === 0) return null;
   const maxId = unread[unread.length - 1].id;
@@ -225,7 +233,10 @@ function nudgeUnread(
       return `  ${tag} #${m.id} ${who}: ${body}`;
     })
     .join("\n");
-  return `🔔 ${unread.length} unread message(s) in this room (incl. frenemy findings). Call bus_read to catch up.\n${previews}`;
+  // "20+" when the read hit the cap, so the count doesn't silently under-report.
+  const count =
+    unread.length >= NUDGE_LIMIT ? `${NUDGE_LIMIT}+` : `${unread.length}`;
+  return `🔔 ${count} unread message(s) in this room (incl. frenemy findings). Call bus_read to catch up.\n${previews}`;
 }
 
 /**

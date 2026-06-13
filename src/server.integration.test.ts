@@ -2213,17 +2213,45 @@ describe("server integration", () => {
     });
 
     it("does not nudge a frenemy-role session about the room", async () => {
+      const join = () =>
+        post("/hooks", {
+          session_id: "frenemy-reader",
+          hook_event_name: "PreToolUse",
+          source: "claude",
+          repository: ROOM,
+          role: "frenemy",
+          tool_name: "Bash",
+          tool_input: { command: "echo hi" },
+        });
+      // Seed presence FIRST so the finding is within the session's window — then
+      // only the role gate can suppress the nudge (deleting it must fail this).
+      await join();
       await broadcastChat("teammate", "secret finding");
-      const res = await post("/hooks", {
-        session_id: "frenemy-reader",
-        hook_event_name: "PreToolUse",
-        source: "claude",
-        repository: ROOM,
-        role: "frenemy",
-        tool_name: "Bash",
-        tool_input: { command: "echo hi" },
-      });
+      const res = await join();
       expect(ac(res.body)).not.toContain("unread");
+    });
+
+    it("bus_read consumes such that a later chat-wait recv won't re-surface it", async () => {
+      // bus_read and chat-wait (busRecv) share the per-recipient delivery table.
+      // Reading via bus_read marks seen, so a subsequent recv for the SAME
+      // session does not re-deliver — unified consume-once, no double-delivery.
+      await preToolUse("dual-reader"); // join (window)
+      await broadcastChat("teammate", "read me via bus_read");
+      const read = await busReadTool("dual-reader");
+      expect(
+        (read.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).toContain("read me via bus_read");
+      const recv = await post("/api/exec", {
+        command: "bus-recv",
+        params: { room: ROOM, session_id: "dual-reader" },
+      });
+      expect(
+        (recv.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).not.toContain("read me via bus_read");
     });
   });
 
