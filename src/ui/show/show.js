@@ -93,24 +93,26 @@ async function load() {
     lane.cum.push({ ts: t.ts, cum: prev + (t.cost ?? 0) });
   }
 
-  // Challenges → mark on the addressed lane, with the real critique text.
+  // Frenemy challenges → real critique text on the addressed lane; track the
+  // earliest for the headline milestone. Scoped to frenemy-authored messages so
+  // operator/smoke-test challenges don't count.
+  let firstChallengeTs = Number.POSITIVE_INFINITY;
   try {
     const msgs = await tool("query", {
-      sql: "SELECT to_session sid, created_at_ms ts, body FROM agent_messages WHERE kind='challenge' AND to_session IS NOT NULL ORDER BY id",
+      sql: "SELECT to_session sid, created_at_ms ts, body FROM agent_messages WHERE kind='challenge' AND (source='frenemy' OR from_session='frenemy') ORDER BY id",
     });
     for (const m of msgs) {
-      const lane = lanes.get(m.sid);
-      if (lane) lane.challenges.push({ ts: m.ts, body: m.body ?? "" });
+      firstChallengeTs = Math.min(firstChallengeTs, m.ts);
+      if (m.sid) {
+        const lane = lanes.get(m.sid);
+        if (lane) lane.challenges.push({ ts: m.ts, body: m.body ?? "" });
+      }
     }
   } catch {
     /* no bus */
   }
 
-  // The headline moment: when challenge-logging first kicked in. Emphasized.
-  let firstChallengeTs = Number.POSITIVE_INFINITY;
-  for (const l of lanes.values())
-    for (const c of l.challenges)
-      firstChallengeTs = Math.min(firstChallengeTs, c.ts);
+  // The headline moment: when frenemy challenge-logging first kicked in.
   milestones = BASE_MILESTONES.slice();
   if (Number.isFinite(firstChallengeTs)) {
     milestones.push({
