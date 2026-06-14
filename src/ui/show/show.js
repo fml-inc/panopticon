@@ -112,6 +112,16 @@ async function load() {
     /* no bus */
   }
 
+  // Full bus conversation (chat + challenges) for the conversation panel.
+  try {
+    busMsgs = await tool("query", {
+      sql: "SELECT id, room, from_session f, to_session t, kind, body, created_at_ms ts FROM agent_messages WHERE kind <> 'activity' ORDER BY created_at_ms",
+    });
+    if (!Array.isArray(busMsgs)) busMsgs = [];
+  } catch {
+    busMsgs = [];
+  }
+
   // The headline moment: when frenemy challenge-logging first kicked in.
   milestones = BASE_MILESTONES.slice();
   if (Number.isFinite(firstChallengeTs)) {
@@ -222,6 +232,9 @@ const BASE_MILESTONES = [
 // Combined, sorted milestone list (base + dynamic first-challenge); built in load().
 let milestones = BASE_MILESTONES.slice();
 
+// All bus conversation messages (chat + challenges), sorted by time.
+let busMsgs = [];
+
 const lanesEl = document.getElementById("lanes");
 const loadingEl = document.getElementById("loading");
 const ribbonFill = document.getElementById("ribbonFill");
@@ -232,6 +245,10 @@ const mSub = document.getElementById("mSub");
 const buildlogEl = document.getElementById("buildlog");
 const buildlogShown = new Map(); // milestone index -> chip element
 let milestoneTimer = null;
+const convEl = document.getElementById("conv");
+const convRoomEl = document.getElementById("convRoom");
+const CONV_MAX = 14;
+let convLastKey = "";
 const playBtn = document.getElementById("play");
 const scrub = document.getElementById("scrub");
 const speedSel = document.getElementById("speed");
@@ -361,6 +378,50 @@ function reconcileBuildlog(T) {
   }
 }
 
+function esc(s) {
+  return String(s).replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+}
+/** Friendly actor name: frenemy / mission-control / the session's title / id. */
+function actorLabel(id) {
+  if (!id) return "room";
+  if (id === "frenemy") return "🔴 frenemy";
+  if (id === "mission-control") return "mission-control";
+  const lane = lanes.get(id);
+  if (lane)
+    return lane.title.length > 26 ? `${lane.title.slice(0, 26)}…` : lane.title;
+  return shortId(id);
+}
+function msgHtml(m) {
+  const kind = m.kind || "chat";
+  const to = m.t ? actorLabel(m.t) : "room";
+  return `<li class="cmsg k-${esc(kind)}">
+    <div class="cmsg-h"><span class="cfrom">${esc(actorLabel(m.f))}</span><span class="carr">→ ${esc(to)}</span><span class="ckind">${esc(kind)}</span></div>
+    <div class="cmsg-b">${esc(m.body || "")}</div>
+  </li>`;
+}
+/** Stream the conversation up to T (chat-style; tail of recent messages). */
+function reconcileConversation(T) {
+  if (!convEl) return;
+  const visible = busMsgs.filter((m) => m.ts <= T);
+  const tail = visible.slice(-CONV_MAX);
+  const key = `${tail.length}:${tail.length ? tail[tail.length - 1].id : 0}`;
+  if (key === convLastKey) return;
+  convLastKey = key;
+  convEl.innerHTML = tail.map(msgHtml).join("");
+  convEl.scrollTop = convEl.scrollHeight;
+  if (convRoomEl) {
+    const rooms = new Set(visible.map((m) => m.room));
+    convRoomEl.textContent =
+      rooms.size === 1 ? [...rooms][0] : `${rooms.size} rooms`;
+  }
+}
+
 let prevT = null;
 // instant=true (scrubbing): rebuild without enter/leave animations or challenge
 // flashes, so dragging is snappy and arbitrary-T-correct.
@@ -410,6 +471,7 @@ function renderFrame(instant) {
     }
   }
   reconcileBuildlog(T); // accumulating list (works for play + scrub)
+  reconcileConversation(T); // streaming bus conversation
 
   // header
   let spend = 0;

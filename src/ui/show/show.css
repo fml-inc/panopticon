@@ -247,16 +247,120 @@ body {
   color: var(--hot);
 }
 
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
 .lanes {
   list-style: none;
   margin: 0;
   padding: 14px 24px;
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Bus conversation panel — agents talking across rooms, streamed by the clock */
+.conversation {
+  width: 384px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: rgba(11, 15, 28, 0.5);
+}
+.conv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--dim);
+}
+.conv-room {
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--accent);
+}
+.conv-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.cmsg {
+  animation: cIn 0.35s ease;
+}
+@keyframes cIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.cmsg-h {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+.cfrom {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink);
+}
+.carr {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.ckind {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 5px;
+}
+.cmsg-b {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #cfd6e6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 5.6em;
+  overflow: hidden;
+}
+.cmsg.k-challenge {
+  border-left: 2px solid var(--hot);
+  padding-left: 9px;
+}
+.cmsg.k-challenge .cfrom,
+.cmsg.k-challenge .ckind {
+  color: var(--hot);
+}
+.cmsg.k-challenge .ckind {
+  border-color: var(--hot);
 }
 
 /* a session lane: slides in on appear, slides off on exit */
