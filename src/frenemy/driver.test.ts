@@ -17,6 +17,7 @@ import {
   parseChallenge,
   runFrenemyOnce,
   subjectFor,
+  subjectWhere,
 } from "./driver.js";
 
 function hookEvent(over: Partial<HookEvent>): HookEvent {
@@ -324,6 +325,16 @@ describe("subjectFor", () => {
   });
 });
 
+describe("subjectWhere", () => {
+  it("extracts the path part so findings and resolutions correlate", () => {
+    // A `review:` finding and a `resolved:` note for the same files share a where.
+    expect(subjectWhere("review:bus/chat.ts#ab12")).toBe("bus/chat.ts");
+    expect(subjectWhere("resolved:bus/chat.ts#cd34")).toBe("bus/chat.ts");
+    // subjectFor keeps the last two path segments.
+    expect(subjectWhere(subjectFor(["a/b/c.ts"], "d"))).toBe("b/c.ts");
+  });
+});
+
 describe("runFrenemyOnce read-the-room dedup", () => {
   let repo: string;
   const git = (...args: string[]): string =>
@@ -399,5 +410,46 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     });
     await runFrenemyOnce(OPTS, new Map(), deps);
     expect(sends).toHaveLength(1);
+  });
+
+  // ── Resolution (re-review-on-fix) ──────────────────────────────────────────
+
+  it("posts a ✅ resolution when a previously-flagged region goes clean", async () => {
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP", // the change reviews clean now
+      // The frenemy flagged this same file earlier, at a different diff state.
+      priorMessages: [
+        priorFinding(subjectFor([join(repo, "f.txt")], "old buggy diff")),
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body).toContain("✅");
+    expect(sends[0].body).toContain("addressed");
+  });
+
+  it("does not resolve a region it never flagged", async () => {
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP",
+      // No prior finding — a clean region that was never flagged stays silent.
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(0);
+  });
+
+  it("does not re-resolve a region already marked addressed", async () => {
+    const where = subjectWhere(currentSubject());
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP",
+      priorMessages: [
+        priorFinding(subjectFor([join(repo, "f.txt")], "old buggy diff")), // flagged
+        priorFinding(`resolved:${where}#deadbeef`), // already resolved once
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(0);
   });
 });
