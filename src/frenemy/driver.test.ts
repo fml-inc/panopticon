@@ -452,4 +452,23 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     await runFrenemyOnce(OPTS, new Map(), deps);
     expect(sends).toHaveLength(0);
   });
+
+  it("re-resolves after a region is RE-flagged (latest state wins, not permanent)", async () => {
+    // The lifecycle bug a live frenemy caught: a file used to get only one ✅
+    // ever. A flag→fix→re-flag→fix cycle must resolve the SECOND fix too. Prior
+    // room state, chronological: flagged → resolved → re-flagged (latest = open).
+    const where = subjectWhere(currentSubject());
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP", // the second fix is clean
+      priorMessages: [
+        priorFinding(`review:${where}#h1`),
+        priorFinding(`resolved:${where}#h2`),
+        priorFinding(`review:${where}#h3`), // re-flagged after the resolution
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body).toContain("addressed");
+  });
 });

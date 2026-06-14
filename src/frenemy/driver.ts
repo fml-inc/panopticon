@@ -367,11 +367,14 @@ export async function runFrenemyOnce(
   // the frenemy's OWN messages in the result (a session_id would exclude them via
   // excludeFrom — exactly the ones we dedupe against).
   const seenSubjects = new Set<string>();
-  // Path-keys (the "where" of a subject) the frenemy has FLAGGED, and the ones it
-  // has already marked addressed — so when a flagged region goes clean we post a
-  // resolution once, and don't re-resolve.
-  const flaggedWheres = new Set<string>();
-  const resolvedWheres = new Set<string>();
+  // The LATEST state per path-key (the "where" of a subject), in chronological
+  // (id-ascending) order — so a region that was flagged, resolved, then RE-flagged
+  // reads back as "flagged" (open) again, not permanently resolved. Tracking two
+  // independent sets (flagged/resolved) made a resolution stick forever and
+  // suppressed every later fix on the same file — the lifecycle bug the frenemy
+  // itself caught. (busRead with no sinceId returns oldest-first, so last write
+  // wins.)
+  const whereState = new Map<string, "flagged" | "resolved">();
   try {
     const prior = await deps.busRead({
       room: opts.room,
@@ -382,9 +385,9 @@ export async function runFrenemyOnce(
       if (m.from_session !== FRENEMY_FROM || !m.subject) continue;
       seenSubjects.add(m.subject);
       if (m.subject.startsWith("review:")) {
-        flaggedWheres.add(subjectWhere(m.subject));
+        whereState.set(subjectWhere(m.subject), "flagged");
       } else if (m.subject.startsWith("resolved:")) {
-        resolvedWheres.add(subjectWhere(m.subject));
+        whereState.set(subjectWhere(m.subject), "resolved");
       }
     }
   } catch {
@@ -459,7 +462,11 @@ export async function runFrenemyOnce(
       // subject so it posts once per fix.
       if (subject) {
         const where = subjectWhere(subject);
-        if (flaggedWheres.has(where) && !resolvedWheres.has(where)) {
+        // Resolve only an OPEN region (latest state flagged). NB: correlation is
+        // path-only, so an unrelated clean edit to a file with a still-open
+        // finding will post "addressed" for it — an accepted false-positive of
+        // `where`-level correlation; tightening would need per-finding ids.
+        if (whereState.get(where) === "flagged") {
           const resolvedSubject = `resolved:${subject.slice("review:".length)}`;
           await deps.busSend({
             room: opts.room,
@@ -469,7 +476,7 @@ export async function runFrenemyOnce(
             source: "frenemy",
             subject: resolvedSubject,
           });
-          resolvedWheres.add(where);
+          whereState.set(where, "resolved");
           seenSubjects.add(resolvedSubject);
           sent.push({ to: primary.session_id, body: `✅ addressed: ${where}` });
         }
@@ -490,7 +497,8 @@ export async function runFrenemyOnce(
     });
     if (subject) {
       seenSubjects.add(subject);
-      flaggedWheres.add(subjectWhere(subject));
+      // (Re)flag → this region is OPEN again, so a later fix can re-resolve it.
+      whereState.set(subjectWhere(subject), "flagged");
     }
     // Tracked for the local log line only (which session's activity prompted it).
     sent.push({ to: primary.session_id, body: challenge });
