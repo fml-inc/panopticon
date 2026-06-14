@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentMessageRow } from "../db/bus.js";
 import type {
   InstancesResult,
   WaitForActivityResult,
@@ -66,6 +67,7 @@ function makeDeps(
     rosterResult: InstancesResult;
     timelineFor: (id: string) => HookEvent[];
     critiqueImpl: (activity: string) => Promise<string | null>;
+    priorMessages: AgentMessageRow[];
   }> = {},
 ) {
   const sends: Array<{ to: string | undefined; body: string }> = [];
@@ -80,6 +82,7 @@ function makeDeps(
     busSend: vi.fn(async (input: { to?: string; body: string }) => {
       sends.push({ to: input.to, body: input.body });
     }),
+    busRead: vi.fn(async () => ({ messages: over.priorMessages ?? [] })),
     critique: vi.fn(async (activity: string) => {
       critiqueCalls.push(activity);
       return over.critiqueImpl
