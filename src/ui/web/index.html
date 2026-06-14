@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Panopticon · Mission Control</title>
+    <link rel="stylesheet" href="/ui/style.css" />
+    <!--PANOPTICON_BOOTSTRAP-->
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">◎</span>
+        <span class="title">Mission Control</span>
+      </div>
+      <div class="conn" id="conn">
+        <span class="conn-dot" id="conn-dot"></span>
+        <span id="conn-label">connecting…</span>
+      </div>
+    </header>
+
+    <div class="missionbar" id="missionbar"></div>
+
+    <div class="replaybar" id="replaybar" hidden>
+      <button class="rb-btn" id="rb-play" type="button" title="Play/pause">▶</button>
+      <button class="rb-btn" id="rb-restart" type="button" title="Restart">⟲</button>
+      <input
+        class="rb-scrub"
+        id="rb-scrub"
+        type="range"
+        min="0"
+        max="1000"
+        value="0"
+      />
+      <span class="rb-time" id="rb-time">—</span>
+      <select class="rb-speed" id="rb-speed" title="Speed">
+        <option value="10">10×</option>
+        <option value="100" selected>100×</option>
+        <option value="1000">1000×</option>
+      </select>
+      <button class="rb-btn" id="rb-end" type="button" title="Jump to end">⏭</button>
+      <button class="rb-btn rb-live" id="rb-live" type="button" title="Resume live">LIVE</button>
+    </div>
+
+    <main class="layout">
+      <section class="panel roster">
+        <div class="panel-head">
+          <h2>Roster</h2>
+          <div class="counts" id="counts"></div>
+          <button class="toggle-exited" id="toggle-exited" type="button"></button>
+        </div>
+        <ul class="roster-list" id="roster">
+          <li class="empty">No instances yet.</li>
+        </ul>
+      </section>
+
+      <section class="panel feed">
+        <div class="panel-head">
+          <h2>Bus feed</h2>
+          <div class="feed-meta" id="feed-meta"></div>
+        </div>
+        <ul class="feed-list" id="feed">
+          <li class="empty">
+            Waiting for bus activity. The feed lights up once the message bus
+            (Layer 1) is live.
+          </li>
+        </ul>
+      </section>
+    </main>
+
+    <div class="backdrop" id="backdrop" hidden></div>
+    <aside class="drawer" id="drawer" hidden aria-label="Session detail"></aside>
+
+    <script src="/ui/app.js" type="module"></script>
+  </body>
+</html>

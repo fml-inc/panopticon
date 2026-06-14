@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Panopticon · Replay</title>
+    <link rel="stylesheet" href="show.css" />
+    <!--PANOPTICON_BOOTSTRAP-->
+  </head>
+  <body>
+    <header class="head">
+      <div class="brand"><span class="logo">◎</span> panopticon <span class="day" id="day"></span></div>
+      <div class="stats">
+        <div class="stat"><span class="v" id="clock">—</span><span class="l">time</span></div>
+        <div class="stat"><span class="v" id="active">0</span><span class="l">agents live</span></div>
+        <div class="stat"><span class="v" id="burn">$0/hr</span><span class="l">burn</span></div>
+        <div class="stat big"><span class="v" id="spend">$0.00</span><span class="l">spent</span></div>
+      </div>
+    </header>
+
+    <main class="stage">
+      <div class="ribbon">
+        <div class="ribbon-fill" id="ribbonFill"></div>
+        <div class="ticks" id="ticks"></div>
+      </div>
+      <div class="milestone" id="milestone" hidden>
+        <span class="m-label" id="mLabel"></span>
+        <span class="m-sub" id="mSub"></span>
+      </div>
+      <ol class="buildlog" id="buildlog"></ol>
+      <div class="body">
+        <ul class="lanes" id="lanes"></ul>
+        <aside class="conversation" id="conversation" hidden>
+          <div class="conv-head">
+            <span>bus · conversations</span><span class="conv-room" id="convRoom"></span>
+          </div>
+          <ol class="conv-list" id="conv"></ol>
+        </aside>
+      </div>
+      <div class="loading" id="loading">loading the day…</div>
+    </main>
+
+    <footer class="transport">
+      <button class="t-btn" id="play" type="button">⏸</button>
+      <button class="t-btn" id="restart" type="button" title="Restart">⟲</button>
+      <input class="scrub" id="scrub" type="range" min="0" max="1000" value="0" />
+      <select class="speed" id="speed" title="Speed">
+        <option value="60">60×</option>
+        <option value="300" selected>300×</option>
+        <option value="900">900×</option>
+        <option value="3600">3600×</option>
+      </select>
+    </footer>
+
+    <script src="show.js" type="module"></script>
+  </body>
+</html>

@@ -10,6 +10,7 @@
  */
 
 import { getDb } from "../db/schema.js";
+import { broadcast, hasClients } from "../ui/events.js";
 
 /** A heartbeat is considered "active" within this window; older but still-alive
  *  pids read as `idle`. Death is determined by pid probe, not this window. */
@@ -123,6 +124,7 @@ export function upsertInstance(row: InstanceUpsert): void {
     branch: row.branch ?? null,
     last_seen_ms: row.last_seen_ms,
   });
+  broadcastInstance(row.session_id);
 }
 
 /** When this session first appeared (its presence join time), or null. */
@@ -148,6 +150,22 @@ export function endInstance(
        WHERE session_id = @session_id AND ended_at_ms IS NULL`,
     )
     .run({ session_id: sessionId, reason, ended_at_ms: endedAtMs });
+  broadcastInstance(sessionId);
+}
+
+/**
+ * Push the current view of one instance to any connected Mission Control client.
+ * Skips the read-back entirely when no dashboard is open so the hook-ingest hot
+ * path (which upserts on every event) stays free. Never throws into the caller.
+ */
+function broadcastInstance(sessionId: string): void {
+  if (!hasClients()) return;
+  try {
+    const view = readInstance(sessionId, Date.now());
+    if (view) broadcast({ type: "instance", data: view });
+  } catch {
+    // Presence writes must never fail because a UI listener errored.
+  }
 }
 
 function deriveStatus(row: InstanceRow, nowMs: number): InstanceStatus {
@@ -187,6 +205,22 @@ export function readInstances(opts: ReadInstancesOptions): InstanceView[] {
     )
     .all(params) as InstanceRow[];
   return rows.map((row) => ({ ...row, status: deriveStatus(row, opts.nowMs) }));
+}
+
+/** Read a single instance (including ended ones) with derived status. */
+export function readInstance(
+  sessionId: string,
+  nowMs: number,
+): InstanceView | null {
+  const row = getDb()
+    .prepare(
+      `SELECT session_id, target, role, pid, room, worktree,
+              branch, first_seen_ms, last_seen_ms, ended_at_ms, ended_reason
+         FROM panopticon_instances
+         WHERE session_id = ?`,
+    )
+    .get(sessionId) as InstanceRow | undefined;
+  return row ? { ...row, status: deriveStatus(row, nowMs) } : null;
 }
 
 export interface InstancesResult {
