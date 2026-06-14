@@ -246,6 +246,7 @@ const buildlogEl = document.getElementById("buildlog");
 const buildlogShown = new Map(); // milestone index -> chip element
 let milestoneTimer = null;
 const convEl = document.getElementById("conv");
+const convPanel = document.getElementById("conversation");
 const convRoomEl = document.getElementById("convRoom");
 const CONV_MAX = 14;
 let convLastKey = "";
@@ -409,6 +410,13 @@ function msgHtml(m) {
 function reconcileConversation(T) {
   if (!convEl) return;
   const visible = busMsgs.filter((m) => m.ts <= T);
+  // Only show the column once there's a message to display.
+  if (visible.length === 0) {
+    if (convPanel) convPanel.hidden = true;
+    convLastKey = "";
+    return;
+  }
+  if (convPanel) convPanel.hidden = false;
   const tail = visible.slice(-CONV_MAX);
   const key = `${tail.length}:${tail.length ? tail[tail.length - 1].id : 0}`;
   if (key === convLastKey) return;

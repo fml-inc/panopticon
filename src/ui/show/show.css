@@ -274,6 +274,20 @@ body {
   flex-direction: column;
   min-height: 0;
   background: rgba(11, 15, 28, 0.5);
+  animation: convIn 0.4s ease;
+}
+.conversation[hidden] {
+  display: none;
+}
+@keyframes convIn {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .conv-head {
   display: flex;
