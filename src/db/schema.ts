@@ -573,6 +573,57 @@ CREATE TABLE IF NOT EXISTS target_session_sync (
   PRIMARY KEY (session_id, target)
 );
 
+-- ── Live instance presence ─────────────────────────────────────────────────
+-- Every agent session currently connected to this panopticon server, across all
+-- targets. Liveness is detected by actively probing the recorded pid (a stale
+-- heartbeat alone cannot tell "idle/thinking" from "killed"); the reaper marks
+-- ended_reason='pid_dead' when process.kill(pid, 0) throws.
+
+CREATE TABLE IF NOT EXISTS panopticon_instances (
+  session_id TEXT PRIMARY KEY,
+  target TEXT,
+  role TEXT,
+  pid INTEGER,
+  room TEXT,
+  worktree TEXT,
+  branch TEXT,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL,
+  ended_at_ms INTEGER,
+  ended_reason TEXT
+);
+
+-- ── Agent-to-agent message bus ─────────────────────────────────────────────
+-- Append-only log of messages between agent sessions sharing a room (workspace).
+-- Carries ephemeral events (challenge/activity, consumed once via delivered_at_ms)
+-- and the source events for durable state (claim/release, projected elsewhere).
+-- kind is plain TEXT so new message types never need a migration.
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room TEXT NOT NULL,
+  from_session TEXT NOT NULL,
+  to_session TEXT,
+  kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  subject TEXT,
+  ref_tool TEXT,
+  ref_path TEXT,
+  source TEXT,
+  created_at_ms INTEGER NOT NULL,
+  delivered_at_ms INTEGER
+);
+
+-- Per-recipient delivery: a broadcast (to_session NULL) must reach EVERY live
+-- session in the room exactly once (group-chat fan-out), so delivery is tracked
+-- per (message, session), not by a single global column on agent_messages.
+CREATE TABLE IF NOT EXISTS agent_message_deliveries (
+  message_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  delivered_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (message_id, session_id)
+);
+
 -- ── Indexes ─────────────────────────────────────────────────────────────────
 
 -- otel_logs
@@ -709,6 +760,22 @@ CREATE INDEX IF NOT EXISTS idx_code_provenance_intent
   ON code_provenance(intent_unit_id);
 CREATE INDEX IF NOT EXISTS idx_code_provenance_status
   ON code_provenance(status);
+
+-- panopticon_instances
+CREATE INDEX IF NOT EXISTS idx_panopticon_instances_room
+  ON panopticon_instances(room);
+CREATE INDEX IF NOT EXISTS idx_panopticon_instances_live
+  ON panopticon_instances(ended_at_ms, last_seen_ms);
+
+-- agent_messages
+CREATE INDEX IF NOT EXISTS idx_agent_messages_room
+  ON agent_messages(room, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_drain
+  ON agent_messages(to_session, delivered_at_ms);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_subject
+  ON agent_messages(room, kind, subject);
+CREATE INDEX IF NOT EXISTS idx_amd_session
+  ON agent_message_deliveries(session_id, message_id);
 
 `;
 

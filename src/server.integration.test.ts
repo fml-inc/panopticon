@@ -13,7 +13,15 @@
 import fs from "node:fs";
 import type http from "node:http";
 import { gunzipSync } from "node:zlib";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 // ── Mock config to use a temp directory ──────────────────────────────────────
 // vi.mock is hoisted — all values must be computed inside the factory.
@@ -44,6 +52,9 @@ vi.mock("./config.js", () => {
       proxyHost: "127.0.0.1",
       proxyPidFile: _path.join(tmpDir, "proxy.pid"),
       proxyIdleSessionMs: 30 * 60 * 1000,
+      // Layer 2 bus delivery on for the delivery tests. Inert for other tests:
+      // the drain only fires when a challenge is pending for the session.
+      enableBusDelivery: true,
     },
     ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
   };
@@ -62,6 +73,7 @@ import {
   upsertSession,
 } from "./db/store.js";
 import {
+  _resetNudgeState,
   _resetSessionRepoCache,
   _resetSessionTargetCache,
 } from "./hooks/ingest.js";
@@ -1808,6 +1820,588 @@ describe("server integration", () => {
       const result2 = llm.detectAgent();
       // Should return the same reference (cached)
       expect(result1).toBe(result2);
+    });
+  });
+
+  // ── Agent-to-agent message bus (Layer 1) ────────────────────────────────
+  // Exercises the full wire path: writes via POST /api/exec bus-send and reads
+  // via POST /api/tool bus_read / bus_roster, with rooms resolved from the
+  // presence rows the dispatch records — no MCP layer, no hand-built session ids.
+
+  describe("agent message bus", () => {
+    const ROOM = "fml-inc/bus-integ";
+
+    function send(params: Record<string, unknown>) {
+      return post("/api/exec", { command: "bus-send", params });
+    }
+    function read(params: Record<string, unknown>) {
+      return post("/api/tool", { name: "bus_read", params });
+    }
+
+    it("round-trips a message through exec-send and tool-read", async () => {
+      const sent = await send({
+        room: ROOM,
+        from: "alice",
+        kind: "chat",
+        body: "hello bus",
+      });
+      expect(sent.status).toBe(200);
+      expect(sent.body).toMatchObject({ room: ROOM });
+      expect((sent.body as { id: number }).id).toBeGreaterThan(0);
+
+      const got = await read({ room: ROOM, session_id: "bob" });
+      expect(got.status).toBe(200);
+      const result = got.body as { room: string; messages: { body: string }[] };
+      expect(result.room).toBe(ROOM);
+      expect(result.messages.map((m) => m.body)).toContain("hello bus");
+    });
+
+    it("a reader does not see its own messages, but a peer does", async () => {
+      await send({
+        room: ROOM,
+        from: "carol",
+        kind: "chat",
+        body: "from carol",
+      });
+
+      const carol = await read({ room: ROOM, session_id: "carol" });
+      const dave = await read({ room: ROOM, session_id: "dave" });
+      const carolBodies = (
+        carol.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      const daveBodies = (
+        dave.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      expect(carolBodies).not.toContain("from carol");
+      expect(daveBodies).toContain("from carol");
+    });
+
+    it("directed messages reach only the addressee", async () => {
+      await send({
+        room: ROOM,
+        from: "eve",
+        to: "frank",
+        kind: "chat",
+        body: "for frank only",
+      });
+      const frank = await read({ room: ROOM, session_id: "frank" });
+      const grace = await read({ room: ROOM, session_id: "grace" });
+      expect(
+        (frank.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).toContain("for frank only");
+      expect(
+        (grace.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).not.toContain("for frank only");
+    });
+
+    it("the sinceId cursor returns only newer messages", async () => {
+      const first = await send({
+        room: ROOM,
+        from: "h",
+        kind: "chat",
+        body: "m1",
+      });
+      const cursor = (first.body as { id: number }).id;
+      await send({ room: ROOM, from: "h", kind: "chat", body: "m2" });
+
+      const got = await read({
+        room: ROOM,
+        session_id: "reader",
+        sinceId: cursor,
+      });
+      const bodies = (
+        got.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      expect(bodies).toContain("m2");
+      expect(bodies).not.toContain("m1");
+    });
+
+    it("bus_roster scopes the instance roster to the room", async () => {
+      // Two sessions present in our room, one elsewhere.
+      await post("/hooks", {
+        session_id: "roster-a",
+        hook_event_name: "SessionStart",
+        source: "claude",
+        repository: ROOM,
+        agent_pid: process.pid,
+      });
+      await post("/hooks", {
+        session_id: "roster-elsewhere",
+        hook_event_name: "SessionStart",
+        source: "claude",
+        repository: "fml-inc/other-room",
+        agent_pid: process.pid,
+      });
+
+      const roster = await post("/api/tool", {
+        name: "bus_roster",
+        params: { room: ROOM },
+      });
+      expect(roster.status).toBe(200);
+      const ids = (
+        roster.body as { instances: { session_id: string }[] }
+      ).instances.map((i) => i.session_id);
+      expect(ids).toContain("roster-a");
+      expect(ids).not.toContain("roster-elsewhere");
+    });
+
+    it("bus_roster returns an empty, room-null roster when no room resolves", async () => {
+      const roster = await post("/api/tool", {
+        name: "bus_roster",
+        params: { session_id: "unknown-no-presence" },
+      });
+      expect(roster.status).toBe(200);
+      expect(roster.body).toMatchObject({ room: null });
+      expect((roster.body as { instances: unknown[] }).instances).toHaveLength(
+        0,
+      );
+    });
+
+    it("resolves the room implicitly from a session's recorded presence", async () => {
+      // A SessionStart records this session's room (repository) in presence.
+      await post("/hooks", {
+        session_id: "implicit-room-session",
+        hook_event_name: "SessionStart",
+        source: "claude",
+        repository: ROOM,
+        agent_pid: process.pid,
+      });
+      // bus_read with only a session_id (no room) must resolve to that room.
+      const got = await read({ session_id: "implicit-room-session" });
+      expect(got.status).toBe(200);
+      expect((got.body as { room: string }).room).toBe(ROOM);
+    });
+  });
+
+  // ── Bus delivery into hooks (Layer 2) ───────────────────────────────────
+  // A challenge sent to the bus is drained into the primary's PreToolUse /
+  // UserPromptSubmit additionalContext (advisory inject), consumed once, and
+  // never delivered to a frenemy-role session.
+
+  describe("bus delivery", () => {
+    const ROOM = "fml-inc/delivery";
+
+    function sendChallenge(to: string, body: string) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from: "frenemy-x", to, kind: "challenge", body },
+      });
+    }
+    function preToolUse(extra: Record<string, unknown>) {
+      return post("/hooks", {
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+        ...extra,
+      });
+    }
+    function additionalContext(body: unknown): string {
+      const out = (
+        body as { hookSpecificOutput?: { additionalContext?: string } }
+      ).hookSpecificOutput;
+      return out?.additionalContext ?? "";
+    }
+
+    it("drains a pending challenge into PreToolUse additionalContext, once", async () => {
+      await sendChallenge("primary-1", "deleting the test hides the flake");
+
+      const first = await preToolUse({ session_id: "primary-1" });
+      expect(first.status).toBe(200);
+      expect(additionalContext(first.body)).toContain(
+        "deleting the test hides the flake",
+      );
+
+      // Consume-once: a second tool call does not re-inject it.
+      const second = await preToolUse({ session_id: "primary-1" });
+      expect(additionalContext(second.body)).not.toContain(
+        "deleting the test hides the flake",
+      );
+    });
+
+    it("delivers a challenge at the UserPromptSubmit boundary too", async () => {
+      await sendChallenge("primary-2", "reconsider the schema change");
+      // Challenge delivery is NOT gated by the first-prompt silence (that only
+      // suppresses ambient-history injection), so the next prompt receives it.
+      const res = await post("/hooks", {
+        session_id: "primary-2",
+        hook_event_name: "UserPromptSubmit",
+        source: "claude",
+        repository: ROOM,
+        prompt: "anything",
+      });
+      expect(additionalContext(res.body)).toContain(
+        "reconsider the schema change",
+      );
+    });
+
+    it("does not deliver to a frenemy-role session (no feedback loop)", async () => {
+      await sendChallenge("frenemy-self", "you shouldn't see this");
+      const res = await preToolUse({
+        session_id: "frenemy-self",
+        role: "frenemy",
+      });
+      expect(additionalContext(res.body)).not.toContain(
+        "you shouldn't see this",
+      );
+    });
+
+    it("a reader's own challenge is never drained back to it", async () => {
+      // primary-3 is both the sender and the session being hooked.
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "primary-3",
+          to: "primary-3",
+          kind: "challenge",
+          body: "self addressed",
+        },
+      });
+      const res = await preToolUse({ session_id: "primary-3" });
+      expect(additionalContext(res.body)).not.toContain("self addressed");
+    });
+
+    it("fans a broadcast chat out to every session once (group chat)", async () => {
+      // Both sessions join first so the broadcast is after their join time.
+      for (const id of ["chat-a", "chat-b"]) {
+        await post("/hooks", {
+          session_id: id,
+          hook_event_name: "SessionStart",
+          source: "claude",
+          repository: ROOM,
+        });
+      }
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "opener",
+          kind: "chat",
+          body: "standup in 5",
+        },
+      });
+
+      // Each session drains the broadcast independently...
+      const a1 = await preToolUse({ session_id: "chat-a" });
+      const b1 = await preToolUse({ session_id: "chat-b" });
+      expect(additionalContext(a1.body)).toContain("standup in 5");
+      expect(additionalContext(b1.body)).toContain("standup in 5");
+
+      // ...and only once each.
+      const a2 = await preToolUse({ session_id: "chat-a" });
+      expect(additionalContext(a2.body)).not.toContain("standup in 5");
+    });
+  });
+
+  // ── Bus recv (chat catch-up for `panopticon chat wait`) ─────────────────
+  // Consume-once receive that catches up on UNSEEN chat rather than the room
+  // tip — so a message sent before a waiter started is still delivered (the
+  // opener race the live test surfaced), and per-recipient so each peer gets it.
+
+  describe("bus recv", () => {
+    const ROOM = "fml-inc/recv";
+    function sendChat(from: string, body: string) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from, kind: "chat", body },
+      });
+    }
+    function recv(session: string) {
+      return post("/api/exec", {
+        command: "bus-recv",
+        params: { room: ROOM, session_id: session },
+      });
+    }
+    function bodies(res: { body: unknown }): string[] {
+      return (res.body as { messages: { body: string }[] }).messages.map(
+        (m) => m.body,
+      );
+    }
+
+    it("returns a chat sent BEFORE the recv (no tip race) and consumes it once", async () => {
+      // Sent first — a tip-based wait would treat this as history and miss it.
+      await sendChat("peer-x", "opener before you waited");
+
+      const first = await recv("listener-1");
+      expect(bodies(first)).toContain("opener before you waited");
+
+      // Consume-once: the same session does not see it again.
+      const second = await recv("listener-1");
+      expect(bodies(second)).not.toContain("opener before you waited");
+    });
+
+    it("delivers a broadcast to each peer independently, never to the sender", async () => {
+      await sendChat("peer-y", "hello room");
+
+      expect(bodies(await recv("listener-2"))).toContain("hello room");
+      // A different session still gets its own copy (per-recipient).
+      expect(bodies(await recv("listener-3"))).toContain("hello room");
+      // The sender never drains its own message.
+      expect(bodies(await recv("peer-y"))).not.toContain("hello room");
+    });
+  });
+
+  // ── Unread nudge (append-only chat model) ───────────────────────────────
+  // Findings/chat are broadcast to the room. The hook NUDGES ("N unread, call
+  // bus_read") without consuming; reading (bus_read) is what marks them seen.
+
+  describe("unread nudge", () => {
+    const ROOM = "fml-inc/nudge";
+    beforeEach(() => _resetNudgeState());
+    function broadcastChat(from: string, body: string) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from, kind: "chat", body },
+      });
+    }
+    function preToolUse(session: string) {
+      return post("/hooks", {
+        session_id: session,
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+    }
+    function busReadTool(session: string) {
+      return post("/api/tool", {
+        name: "bus_read",
+        params: { room: ROOM, session_id: session },
+      });
+    }
+    function ac(body: unknown): string {
+      return (
+        (body as { hookSpecificOutput?: { additionalContext?: string } })
+          .hookSpecificOutput?.additionalContext ?? ""
+      );
+    }
+
+    it("nudges without consuming; bus_read marks seen and stops the nudge", async () => {
+      // Join first (seed presence) so the broadcast is within this session's
+      // window, then post the finding to the room.
+      await preToolUse("reader-1");
+      await broadcastChat("teammate", "the auth check is backwards");
+
+      // Nudge appears, with a preview — but is NOT the consume-once body inject.
+      const first = await preToolUse("reader-1");
+      expect(ac(first.body)).toContain("unread");
+      expect(ac(first.body)).toContain("the auth check is backwards");
+
+      // Throttled: another tool call with nothing new does not re-nudge.
+      const again = await preToolUse("reader-1");
+      expect(ac(again.body)).not.toContain("unread");
+
+      // Non-consuming: the message is still there to read, and bus_read returns it.
+      const read = await busReadTool("reader-1");
+      const bodies = (
+        read.body as { messages: { body: string }[] }
+      ).messages.map((m) => m.body);
+      expect(bodies).toContain("the auth check is backwards");
+
+      // Having read it, a brand-new finding re-nudges — counting only the unread one.
+      await broadcastChat("teammate", "and the retry has no backoff");
+      const third = await preToolUse("reader-1");
+      expect(ac(third.body)).toContain("1 unread");
+      expect(ac(third.body)).toContain("and the retry has no backoff");
+    });
+
+    it("does not nudge a frenemy-role session about the room", async () => {
+      const join = () =>
+        post("/hooks", {
+          session_id: "frenemy-reader",
+          hook_event_name: "PreToolUse",
+          source: "claude",
+          repository: ROOM,
+          role: "frenemy",
+          tool_name: "Bash",
+          tool_input: { command: "echo hi" },
+        });
+      // Seed presence FIRST so the finding is within the session's window — then
+      // only the role gate can suppress the nudge (deleting it must fail this).
+      await join();
+      await broadcastChat("teammate", "secret finding");
+      const res = await join();
+      expect(ac(res.body)).not.toContain("unread");
+    });
+
+    it("bus_read consumes such that a later chat-wait recv won't re-surface it", async () => {
+      // bus_read and chat-wait (busRecv) share the per-recipient delivery table.
+      // Reading via bus_read marks seen, so a subsequent recv for the SAME
+      // session does not re-deliver — unified consume-once, no double-delivery.
+      await preToolUse("dual-reader"); // join (window)
+      await broadcastChat("teammate", "read me via bus_read");
+      const read = await busReadTool("dual-reader");
+      expect(
+        (read.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).toContain("read me via bus_read");
+      const recv = await post("/api/exec", {
+        command: "bus-recv",
+        params: { room: ROOM, session_id: "dual-reader" },
+      });
+      expect(
+        (recv.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).not.toContain("read me via bus_read");
+    });
+  });
+
+  // ── Recruitment beacon (Layer 2 provider) ───────────────────────────────
+  // A room-broadcast invite is shown to each active session once (not consumed
+  // like a challenge), scoped to the room, and never to the inviter itself.
+
+  describe("recruitment beacon", () => {
+    const ROOM = "fml-inc/beacon";
+
+    function invite(body: string, extra: Record<string, unknown> = {}) {
+      return post("/api/exec", {
+        command: "bus-send",
+        params: { room: ROOM, from: "opener", kind: "invite", body, ...extra },
+      });
+    }
+    function preToolUse(
+      session_id: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      return post("/hooks", {
+        session_id,
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+        ...extra,
+      });
+    }
+    function ctx(body: unknown): string {
+      return (
+        (body as { hookSpecificOutput?: { additionalContext?: string } })
+          .hookSpecificOutput?.additionalContext ?? ""
+      );
+    }
+
+    it("shows a broadcast invite to an active session exactly once", async () => {
+      await invite("design review for the auth refactor");
+
+      const first = await preToolUse("beacon-a");
+      expect(ctx(first.body)).toContain("design review for the auth refactor");
+
+      // Once-per-session: the next hook does not re-inject it.
+      const second = await preToolUse("beacon-a");
+      expect(ctx(second.body)).not.toContain(
+        "design review for the auth refactor",
+      );
+    });
+
+    it("delivers the same invite to multiple sessions independently", async () => {
+      await invite("vote on the migration approach");
+      const a = await preToolUse("beacon-b1");
+      const b = await preToolUse("beacon-b2");
+      expect(ctx(a.body)).toContain("vote on the migration approach");
+      expect(ctx(b.body)).toContain("vote on the migration approach");
+    });
+
+    it("does not invite the session that opened the discussion", async () => {
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "beacon-opener",
+          kind: "invite",
+          body: "my own topic",
+        },
+      });
+      const res = await preToolUse("beacon-opener");
+      expect(ctx(res.body)).not.toContain("my own topic");
+    });
+
+    it("is scoped to the room", async () => {
+      await invite("room-scoped invite");
+      const elsewhere = await post("/hooks", {
+        session_id: "beacon-other-room",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: "fml-inc/somewhere-else",
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      expect(ctx(elsewhere.body)).not.toContain("room-scoped invite");
+    });
+
+    it("is not delivered to a frenemy-role session", async () => {
+      await invite("frenemy should not be recruited");
+      const res = await preToolUse("beacon-frenemy", { role: "frenemy" });
+      expect(ctx(res.body)).not.toContain("frenemy should not be recruited");
+    });
+  });
+
+  // ── Long-poll for room activity (wait_for_activity) ─────────────────────
+  // The frenemy reviewer blocks here until an agent acts in its room.
+
+  describe("wait_for_activity", () => {
+    const ROOM = "fml-inc/waitroom";
+
+    it("times out with null when the room is idle", async () => {
+      const res = await post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: ROOM, sinceMs: 0, timeoutMs: 1000 },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ room: ROOM, activityMs: null });
+    });
+
+    it("wakes when a (non-frenemy) hook event lands in the room", async () => {
+      const waitP = post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: ROOM, sinceMs: 0, timeoutMs: 3000 },
+      });
+      // Give the waiter a moment to register, then act in the room.
+      await new Promise((r) => setTimeout(r, 50));
+      await post("/hooks", {
+        session_id: "waker",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: ROOM,
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      });
+      const res = await waitP;
+      expect(res.status).toBe(200);
+      expect(
+        (res.body as { activityMs: number | null }).activityMs,
+      ).toBeGreaterThan(0);
+    });
+
+    it("is NOT woken by the frenemy's own (role:frenemy) events", async () => {
+      // The entire defense against the critic's hooks self-waking the loop.
+      const FRENEMY_ROOM = "fml-inc/waitroom-frenemy";
+      const waitP = post("/api/tool", {
+        name: "wait_for_activity",
+        params: { room: FRENEMY_ROOM, sinceMs: 0, timeoutMs: 600 },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // A frenemy-role event (what the critic subprocess's hooks look like).
+      await post("/hooks", {
+        session_id: "the-critic",
+        hook_event_name: "PreToolUse",
+        source: "claude",
+        repository: FRENEMY_ROOM,
+        role: "frenemy",
+        tool_name: "Read",
+        tool_input: { file_path: "/x" },
+      });
+      const res = await waitP;
+      // Times out — the frenemy event did not wake it.
+      expect((res.body as { activityMs: number | null }).activityMs).toBeNull();
     });
   });
 });

@@ -1,3 +1,5 @@
+import type { AgentMessageRow } from "../db/bus.js";
+import type { InstancesResult } from "../presence/store.js";
 import type { SyncPendingResult } from "../sync/pending.js";
 import type {
   ActivitySummaryResult,
@@ -7,6 +9,8 @@ import type {
   SessionTimelineResult,
   SpendingResult,
 } from "../types.js";
+
+export type { InstancesResult } from "../presence/store.js";
 
 export type { SyncPendingResult } from "../sync/pending.js";
 
@@ -111,6 +115,97 @@ export interface FileOverviewInput {
   related_limit?: number;
 }
 
+export interface InstancesInput {
+  /** Restrict to one room (workspace). Omit for all rooms. */
+  room?: string;
+  /** Include instances that have already exited (default true). */
+  includeEnded?: boolean;
+}
+
+export interface BusSendInput {
+  /** Explicit room. If omitted, resolved from session_id's recorded room. */
+  room?: string;
+  /** Caller's session id — used as from_session and to resolve the room. */
+  session_id?: string;
+  /** Sender id when there is no session_id (defaults to session_id else "external"). */
+  from?: string;
+  /**
+   * Address a specific session; omit to broadcast to the room. This is a
+   * delivery/filtering hint, NOT access control: a roommate who reads without
+   * identifying (no session_id) still sees directed messages.
+   */
+  to?: string;
+  kind: string;
+  body: string;
+  subject?: string;
+  ref_tool?: string;
+  ref_path?: string;
+  source?: string;
+}
+
+export interface BusSendResult {
+  id: number;
+  room: string;
+}
+
+export interface BusReadInput {
+  room?: string;
+  session_id?: string;
+  /** Return only messages with id greater than this cursor. */
+  sinceId?: number;
+  kinds?: string[];
+  limit?: number;
+}
+
+export interface BusReadResult {
+  room: string | null;
+  /** Highest id returned (or the input cursor when empty) — pass back as sinceId. */
+  cursor: number;
+  messages: AgentMessageRow[];
+}
+
+export interface BusRecvInput {
+  room?: string;
+  /**
+   * Caller's session id. Required for the consume-once semantics: messages are
+   * filtered to those NOT yet delivered to this session and marked delivered on
+   * return (per-recipient, like the hook drain). Without it, falls back to a
+   * plain non-consuming read.
+   */
+  session_id?: string;
+  kinds?: string[];
+  /** Extra lower bound on id (rarely needed; the delivery gate handles dedup). */
+  sinceId?: number;
+  /**
+   * Only surface broadcasts created at/after this time (directed mail is always
+   * delivered). Defaults server-side to the session's join time, bounded to a
+   * recent window so a first read doesn't replay ancient room history.
+   */
+  sinceMs?: number;
+  limit?: number;
+}
+
+export interface BusRosterInput {
+  room?: string;
+  session_id?: string;
+}
+
+export interface WaitForActivityInput {
+  room?: string;
+  session_id?: string;
+  /** Resolve only once activity newer than this lands (cursor). */
+  sinceMs?: number;
+  /** Max time to block before resolving with no activity (clamped server-side). */
+  timeoutMs?: number;
+}
+
+export interface WaitForActivityResult {
+  /** Newest room-activity timestamp, or null if the wait timed out. */
+  activityMs: number | null;
+  /** The resolved room, or null if none could be determined. */
+  room: string | null;
+}
+
 export interface PruneExecuteInput {
   vacuum?: boolean;
 }
@@ -171,6 +266,12 @@ export interface PanopticonService {
   print(opts: PrintInput): Promise<unknown>;
   rawQuery(sql: string): Promise<unknown>;
   dbStats(): Promise<unknown>;
+  instances(opts?: InstancesInput): Promise<InstancesResult>;
+  busSend(input: BusSendInput): Promise<BusSendResult>;
+  busRead(input: BusReadInput): Promise<BusReadResult>;
+  busRecv(input: BusRecvInput): Promise<BusReadResult>;
+  busRoster(input?: BusRosterInput): Promise<InstancesResult>;
+  waitForActivity(input: WaitForActivityInput): Promise<WaitForActivityResult>;
   intentForCode(opts: IntentForCodeInput): Promise<unknown>;
   searchIntent(opts: SearchIntentInput): Promise<unknown>;
   outcomesForIntent(opts: OutcomesForIntentInput): Promise<unknown>;
