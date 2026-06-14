@@ -178,13 +178,6 @@ function resolveBusRoom(input: {
   return null;
 }
 
-/**
- * How far back a first `busRecv` catches up on broadcast chat. Bounds the
- * one-time replay of unseen room history so a fresh waiter sees recent openers
- * but not ancient chatter. Directed mail ignores this (always delivered).
- */
-const CHAT_CATCHUP_WINDOW_MS = 10 * 60 * 1000;
-
 export function createDirectPanopticonService(): PanopticonService {
   return {
     async listSessions(opts) {
@@ -290,18 +283,16 @@ export function createDirectPanopticonService(): PanopticonService {
       const sessionId = input.session_id;
       // Catch up on what this session hasn't seen, NOT the room tip — so a
       // message sent before the caller started reading isn't skipped as history
-      // (the opener race). Mirrors the hook drain / unread nudge: per-recipient
-      // consume-once via the delivery table, scoped to the session's JOIN time
-      // (first_seen). Using first_seen — not a short rolling window — is what
-      // makes the nudge↔read loop close: the reader returns and marks exactly the
-      // unread set the nudge counts. Falls back to a recent window only when the
-      // session has no presence row. Directed mail is always delivered.
+      // (the opener race). Mirrors the hook drain / unread nudge EXACTLY:
+      // per-recipient consume-once via the delivery table, scoped to the
+      // session's JOIN time (first_seen), and failing closed to `now` when there
+      // is no presence row — identical to `nudgeUnread` (getInstanceFirstSeen ??
+      // now). Same gate on both sides ⇒ the reader returns and marks exactly the
+      // unread set the nudge counts. Directed mail is always delivered.
       const sinceMs =
         input.sinceMs ??
-        (sessionId
-          ? (getInstanceFirstSeen(sessionId) ??
-            Date.now() - CHAT_CATCHUP_WINDOW_MS)
-          : Date.now() - CHAT_CATCHUP_WINDOW_MS);
+        (sessionId ? getInstanceFirstSeen(sessionId) : null) ??
+        Date.now();
       const messages = readAgentMessages({
         room,
         kinds: input.kinds ?? ["chat"],

@@ -2114,8 +2114,11 @@ describe("server integration", () => {
     }
     function recv(session: string) {
       return post("/api/exec", {
+        // sinceMs:0 — these test sessions have no presence row, and busRecv now
+        // fails closed to `now` (matching the nudge); 0 keeps the test about
+        // consume-once / per-recipient, not the join-window.
         command: "bus-recv",
-        params: { room: ROOM, session_id: session },
+        params: { room: ROOM, session_id: session, sinceMs: 0 },
       });
     }
     function bodies(res: { body: unknown }): string[] {
@@ -2165,6 +2168,7 @@ describe("server integration", () => {
             room: ROOM,
             session_id: session,
             kinds: ["challenge", "chat"],
+            sinceMs: 0,
           },
         });
       expect(bodies(await recvKinds("reader-f"))).toContain(
