@@ -106,6 +106,22 @@ async function load() {
     /* no bus */
   }
 
+  // The headline moment: when challenge-logging first kicked in. Emphasized.
+  let firstChallengeTs = Number.POSITIVE_INFINITY;
+  for (const l of lanes.values())
+    for (const c of l.challenges)
+      firstChallengeTs = Math.min(firstChallengeTs, c.ts);
+  milestones = BASE_MILESTONES.slice();
+  if (Number.isFinite(firstChallengeTs)) {
+    milestones.push({
+      ts: firstChallengeTs,
+      label: "⚡ First frenemy challenge",
+      sub: "agents start reviewing each other on the bus",
+      hot: true,
+    });
+  }
+  milestones.sort((a, b) => a.ts - b.ts);
+
   // Time domain = the real activity window. A single session with corrupt
   // (off-by-a-day) turn timestamps can otherwise stretch the domain across a
   // huge dead gap. Find the largest gap between consecutive turns; if it's big,
@@ -174,8 +190,10 @@ let lastFrame = 0;
 let scrubbing = false;
 
 // Product build story — real PR/commit landing times for each layer. When the
-// playhead crosses one, a callout fires and a tick sits on the ribbon.
-const MILESTONES = [
+// playhead crosses one, a callout fires, a tick sits on the ribbon, and it's
+// added to the accumulating build-log. The "first challenge" milestone is added
+// dynamically from the data (see load()).
+const BASE_MILESTONES = [
   [
     "2026-06-13T11:15:04-07:00",
     "Layer 0",
@@ -199,6 +217,9 @@ const MILESTONES = [
   ],
 ].map(([iso, label, sub]) => ({ ts: Date.parse(iso), label, sub }));
 
+// Combined, sorted milestone list (base + dynamic first-challenge); built in load().
+let milestones = BASE_MILESTONES.slice();
+
 const lanesEl = document.getElementById("lanes");
 const loadingEl = document.getElementById("loading");
 const ribbonFill = document.getElementById("ribbonFill");
@@ -206,6 +227,8 @@ const ticksEl = document.getElementById("ticks");
 const milestoneEl = document.getElementById("milestone");
 const mLabel = document.getElementById("mLabel");
 const mSub = document.getElementById("mSub");
+const buildlogEl = document.getElementById("buildlog");
+const buildlogShown = new Map(); // milestone index -> chip element
 let milestoneTimer = null;
 const playBtn = document.getElementById("play");
 const scrub = document.getElementById("scrub");
@@ -289,6 +312,7 @@ function showMilestone(m) {
   mSub.textContent = m.sub;
   milestoneEl.hidden = false;
   milestoneEl.classList.remove("show");
+  milestoneEl.classList.toggle("hot", !!m.hot); // emphasize first-challenge
   void milestoneEl.offsetWidth; // restart the entry animation
   milestoneEl.classList.add("show");
   clearTimeout(milestoneTimer);
@@ -302,13 +326,36 @@ function renderTicks() {
   if (!ticksEl) return;
   const span = tlMax - tlMin || 1;
   ticksEl.innerHTML = "";
-  for (const m of MILESTONES) {
+  for (const m of milestones) {
     if (m.ts < tlMin || m.ts > tlMax) continue;
     const t = document.createElement("span");
-    t.className = "tick";
+    t.className = m.hot ? "tick hot" : "tick";
     t.style.left = `${((m.ts - tlMin) / span) * 100}%`;
     t.title = `${m.label} — ${m.sub}`;
     ticksEl.appendChild(t);
+  }
+}
+
+/** Accumulating build-log: chips for milestones reached by T (add on play,
+ *  remove when scrubbed before them — idempotent per frame). */
+function reconcileBuildlog(T) {
+  if (!buildlogEl) return;
+  for (let i = 0; i < milestones.length; i++) {
+    const m = milestones[i];
+    const reached = m.ts <= T;
+    const have = buildlogShown.get(i);
+    if (reached && !have) {
+      const li = document.createElement("li");
+      li.className = m.hot ? "blog hot" : "blog";
+      li.innerHTML = `<span class="b-label"></span><span class="b-sub"></span>`;
+      li.querySelector(".b-label").textContent = m.label;
+      li.querySelector(".b-sub").textContent = m.sub;
+      buildlogEl.appendChild(li);
+      buildlogShown.set(i, li);
+    } else if (!reached && have) {
+      have.remove();
+      buildlogShown.delete(i);
+    }
   }
 }
 
@@ -356,10 +403,11 @@ function renderFrame(instant) {
 
   // product milestones — fire a callout as the playhead crosses each layer
   if (!instant && prevT != null) {
-    for (const m of MILESTONES) {
+    for (const m of milestones) {
       if (m.ts > prevT && m.ts <= T) showMilestone(m);
     }
   }
+  reconcileBuildlog(T); // accumulating list (works for play + scrub)
 
   // header
   let spend = 0;
