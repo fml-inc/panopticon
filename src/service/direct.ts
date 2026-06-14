@@ -289,17 +289,19 @@ export function createDirectPanopticonService(): PanopticonService {
         return { room: null, cursor: input.sinceId ?? 0, messages: [] };
       const sessionId = input.session_id;
       // Catch up on what this session hasn't seen, NOT the room tip — so a
-      // message sent before the caller started waiting isn't skipped as
-      // history (the opener race). Mirrors the hook drain: per-recipient
-      // consume-once via the delivery table. Broadcasts are bounded to the
-      // session's join time (or a recent window) so a first read doesn't
-      // replay ancient history; directed mail is always delivered.
+      // message sent before the caller started reading isn't skipped as history
+      // (the opener race). Mirrors the hook drain / unread nudge: per-recipient
+      // consume-once via the delivery table, scoped to the session's JOIN time
+      // (first_seen). Using first_seen — not a short rolling window — is what
+      // makes the nudge↔read loop close: the reader returns and marks exactly the
+      // unread set the nudge counts. Falls back to a recent window only when the
+      // session has no presence row. Directed mail is always delivered.
       const sinceMs =
         input.sinceMs ??
-        Math.max(
-          sessionId ? (getInstanceFirstSeen(sessionId) ?? 0) : 0,
-          Date.now() - CHAT_CATCHUP_WINDOW_MS,
-        );
+        (sessionId
+          ? (getInstanceFirstSeen(sessionId) ??
+            Date.now() - CHAT_CATCHUP_WINDOW_MS)
+          : Date.now() - CHAT_CATCHUP_WINDOW_MS);
       const messages = readAgentMessages({
         room,
         kinds: input.kinds ?? ["chat"],
