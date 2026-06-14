@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentMessageRow } from "../db/bus.js";
 import type {
   InstancesResult,
   WaitForActivityResult,
@@ -15,6 +16,7 @@ import {
   gitDiff,
   parseChallenge,
   runFrenemyOnce,
+  subjectFor,
 } from "./driver.js";
 
 function hookEvent(over: Partial<HookEvent>): HookEvent {
@@ -66,6 +68,7 @@ function makeDeps(
     rosterResult: InstancesResult;
     timelineFor: (id: string) => HookEvent[];
     critiqueImpl: (activity: string) => Promise<string | null>;
+    priorMessages: AgentMessageRow[];
   }> = {},
 ) {
   const sends: Array<{ to: string | undefined; body: string }> = [];
@@ -80,6 +83,7 @@ function makeDeps(
     busSend: vi.fn(async (input: { to?: string; body: string }) => {
       sends.push({ to: input.to, body: input.body });
     }),
+    busRead: vi.fn(async () => ({ messages: over.priorMessages ?? [] })),
     critique: vi.fn(async (activity: string) => {
       critiqueCalls.push(activity);
       return over.critiqueImpl
@@ -308,5 +312,92 @@ describe("gitDiff", () => {
 
   it("returns scope=none for empty paths without touching git", () => {
     expect(gitDiff(repo, [])).toEqual({ text: "", scope: "none" });
+  });
+});
+
+describe("subjectFor", () => {
+  it("is stable for the same paths+diff and changes when either changes", () => {
+    const a = subjectFor(["src/a.ts"], "diff-1");
+    expect(subjectFor(["src/a.ts"], "diff-1")).toBe(a); // stable
+    expect(subjectFor(["src/a.ts"], "diff-2")).not.toBe(a); // diff changed
+    expect(subjectFor(["src/b.ts"], "diff-1")).not.toBe(a); // path changed
+  });
+});
+
+describe("runFrenemyOnce read-the-room dedup", () => {
+  let repo: string;
+  const git = (...args: string[]): string =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), "frenemy-dedup-")));
+    execFileSync("git", ["-c", "init.defaultBranch=main", "init", repo]);
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "f.txt"), "one\n");
+    git("add", "f.txt");
+    git("commit", "-m", "base");
+    // Uncommitted change → a real diff for the reviewer to find.
+    writeFileSync(join(repo, "f.txt"), "one\nrisky\n");
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  const edit = (): HookEvent =>
+    hookEvent({ timestampMs: 1000, cwd: repo, filePath: join(repo, "f.txt") });
+  const priorFinding = (
+    subject: string,
+    from = "frenemy",
+  ): AgentMessageRow => ({
+    id: 1,
+    room: "fml-inc/panopticon",
+    from_session: from,
+    to_session: null,
+    kind: "challenge",
+    body: "earlier finding",
+    subject,
+    ref_tool: null,
+    ref_path: null,
+    source: "frenemy",
+    created_at_ms: 0,
+    delivered_at_ms: null,
+  });
+  // The subject runFrenemyOnce will compute for this exact change.
+  const currentSubject = (): string =>
+    subjectFor(
+      [join(repo, "f.txt")],
+      gitDiff(repo, [join(repo, "f.txt")]).text,
+    );
+
+  it("skips (no critique, no send) when its own finding for this diff is on the bus", async () => {
+    const { deps, sends, critiqueCalls } = makeDeps({
+      timelineFor: () => [edit()],
+      priorMessages: [priorFinding(currentSubject())],
+    });
+    const cursors: FrenemyCursors = new Map();
+    await runFrenemyOnce(OPTS, cursors, deps);
+    expect(critiqueCalls).toHaveLength(0); // the expensive critic isn't even called
+    expect(sends).toHaveLength(0); // not re-posted
+    expect(cursors.get("p1")).toBe(1000); // cursor still advances past seen activity
+  });
+
+  it("still reviews when the same subject came from a NON-frenemy sender", async () => {
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      priorMessages: [priorFinding(currentSubject(), "some-other-agent")],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(1); // only the frenemy's OWN findings seed dedup
+  });
+
+  it("re-reviews when the diff changed (a fix → new subject)", async () => {
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      // A prior finding for a DIFFERENT diff state — must not suppress this one.
+      priorMessages: [
+        priorFinding(subjectFor([join(repo, "f.txt")], "stale diff")),
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(1);
   });
 });

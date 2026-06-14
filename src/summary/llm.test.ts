@@ -392,6 +392,28 @@ describe("summary llm wrapper", () => {
     );
   });
 
+  it("merges workspace tools with MCP into ONE --allowedTools (frenemy case)", async () => {
+    const { invokeLlm } = await loadLlm();
+
+    expect(
+      invokeLlm("Review this", {
+        withMcp: true,
+        allowedTools: ["Read", "Grep"],
+      }),
+    ).toBe("OK");
+
+    const [, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
+    // Exactly one --allowedTools flag (two would clobber each other).
+    expect(args.filter((a) => a === "--allowedTools")).toHaveLength(1);
+    // Workspace tools AND the panopticon MCP tools, together.
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe(
+      "Read Grep mcp__panopticon__timeline mcp__panopticon__get mcp__panopticon__query mcp__panopticon__search mcp__panopticon__status mcp__panopticon__session_summary_detail",
+    );
+    // Built-ins are NOT disabled — the reviewer needs Read/Grep in the worktree.
+    expect(args).not.toContain("--tools");
+    expect(args).toContain("--mcp-config");
+  });
+
   it("fails fast when the MCP server bundle cannot be found", async () => {
     existsSyncMock.mockReturnValue(false);
     const { invokeLlm } = await loadLlm();

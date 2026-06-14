@@ -16,8 +16,10 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { resolveRoom } from "../bus/room.js";
+import type { AgentMessageRow } from "../db/bus.js";
 import { log } from "../log.js";
 import { httpPanopticonService } from "../service/http.js";
 import type {
@@ -40,8 +42,12 @@ real problems and do not rubber-stamp. But do not nitpick — a reviewer who fla
 everything gets ignored.
 
 You are given what an agent just did and, when it edited files, the git diff of
-those changes. Review the diff as a thorough PR reviewer would, in priority
-order:
+those changes. You also have read-only Panopticon tools — use them when the diff
+alone is ambiguous: \`query\` (SQL over captured history), \`search\`, \`timeline\`,
+and \`session_summary_detail\` to see why a line exists, prior work on a path, or
+related sessions. Don't review in isolation when the answer is one query away.
+
+Review the diff as a thorough PR reviewer would, in priority order:
 - Correctness: bugs, logic errors, wrong conditions, off-by-one, unhandled
   errors, race conditions, broken invariants, behavior changes that weren't
   intended.
@@ -239,7 +245,15 @@ interface FrenemyDeps {
     kind: string;
     body: string;
     source: string;
+    /** Stable region+state key, so a finding can be deduped on re-review. */
+    subject?: string;
   }) => Promise<unknown>;
+  /** Read recent room messages (to see what's already been flagged). */
+  busRead: (input: {
+    room: string;
+    kinds?: string[];
+    limit?: number;
+  }) => Promise<{ messages: AgentMessageRow[] }>;
   critique: (reviewInput: string, cwd: string | null) => Promise<string | null>;
 }
 
@@ -267,6 +281,10 @@ function defaultDeps(opts: FrenemyOptions): FrenemyDeps {
     busRoster: (input) => httpPanopticonService.busRoster(input),
     hookTimeline: (input) => httpPanopticonService.hookTimeline(input),
     busSend: (input) => httpPanopticonService.busSend(input),
+    // No session_id on purpose: busRead with one sets excludeFrom, which would
+    // hide the frenemy's OWN prior findings — the exact ones we dedupe against.
+    // (Marking-seen would be harmless/accurate; it's the self-exclusion we avoid.)
+    busRead: (input) => httpPanopticonService.busRead(input),
     critique: async (reviewInput, cwd) => {
       // Give the reviewer read-only access to the primary's worktree so it can
       // inspect surrounding code, call sites, and history — a real review, not
@@ -277,6 +295,11 @@ function defaultDeps(opts: FrenemyOptions): FrenemyDeps {
         systemPrompt: FRENEMY_PERSONA,
         cwd: cwd ?? undefined,
         allowedTools: cwd ? REVIEW_TOOLS : undefined,
+        // Give the reviewer panopticon's read-only query tools (timeline, query,
+        // search, session_summary_detail, …) so it can pull historical context
+        // on demand — why a line exists, prior work on a path, related sessions —
+        // instead of judging the diff in isolation. Read-only: no bus_send.
+        withMcp: true,
       });
       if (process.env.PANOPTICON_FRENEMY_DEBUG) {
         log.server.info(
@@ -289,9 +312,29 @@ function defaultDeps(opts: FrenemyOptions): FrenemyDeps {
 }
 
 /**
+ * A stable key for "the exact change I'm reviewing": the touched files plus a
+ * hash of their diff. Posted as the finding's `subject` so the frenemy can read
+ * the room and recognize a finding it already made. Crucially it includes the
+ * DIFF hash — so an unchanged-but-still-dirty region keeps the same subject (skip
+ * the dupe), while a real fix changes the diff → new subject → fresh review.
+ */
+export function subjectFor(paths: string[], diffText: string): string {
+  const where = paths
+    .map((p) => p.split("/").slice(-2).join("/"))
+    .sort()
+    .join(",");
+  const hash = createHash("sha1").update(diffText).digest("hex").slice(0, 8);
+  return `review:${where}#${hash}`;
+}
+
+/**
  * One frenemy pass: for each live primary in the room, critique its activity
  * newer than the cursor and post any challenge. Returns the challenges sent.
  * Pure-ish: all I/O goes through `deps`, so it is unit-testable.
+ *
+ * Reads the room first and skips re-posting a finding whose subject is already
+ * on the bus (read-the-room dedup): the bus is an append-only chat, so "did I
+ * already say this?" is answered by reading it, not by private state.
  */
 export async function runFrenemyOnce(
   opts: FrenemyOptions,
@@ -306,6 +349,25 @@ export async function runFrenemyOnce(
       i.session_id !== FRENEMY_FROM &&
       i.status !== "exited",
   );
+
+  // Read the room for findings the frenemy already made, keyed by subject, so an
+  // unchanged region isn't flagged twice. Read WITHOUT a session_id: that keeps
+  // the frenemy's OWN messages in the result (a session_id would exclude them via
+  // excludeFrom — exactly the ones we dedupe against).
+  const seenSubjects = new Set<string>();
+  try {
+    const prior = await deps.busRead({
+      room: opts.room,
+      kinds: ["challenge"],
+      limit: 100,
+    });
+    for (const m of prior.messages) {
+      if (m.from_session === FRENEMY_FROM && m.subject)
+        seenSubjects.add(m.subject);
+    }
+  } catch {
+    // Best-effort: if the read fails, fall through (may re-post, never crash).
+  }
 
   for (const primary of primaries) {
     const cursor = cursors.get(primary.session_id) ?? 0;
@@ -329,9 +391,23 @@ export async function runFrenemyOnce(
 
     // Review the ACTUAL diff of the files it changed, not just the action list.
     const cwd = eventCwd(fresh);
+    const paths = touchedPaths(fresh);
     const diff: FrenemyDiff = cwd
-      ? gitDiff(cwd, touchedPaths(fresh))
+      ? gitDiff(cwd, paths)
       : { text: "", scope: "none" };
+
+    // Read-the-room dedup: if this exact change (paths + diff hash) already has a
+    // frenemy finding on the bus, skip — don't re-critique or re-post. A genuine
+    // fix changes the diff → new subject → this passes and gets a fresh review.
+    const subject = diff.text ? subjectFor(paths, diff.text) : null;
+    if (subject && seenSubjects.has(subject)) {
+      cursors.set(
+        primary.session_id,
+        Math.max(...fresh.map((e) => e.timestampMs)),
+      );
+      continue;
+    }
+
     const diffHeading =
       diff.scope === "branch"
         ? `Diff of the files it changed (committed on this branch vs ${diff.base}):`
@@ -363,7 +439,9 @@ export async function runFrenemyOnce(
       kind: "challenge",
       body: challenge,
       source: "frenemy",
+      subject: subject ?? undefined,
     });
+    if (subject) seenSubjects.add(subject);
     // Tracked for the local log line only (which session's activity prompted it).
     sent.push({ to: primary.session_id, body: challenge });
   }

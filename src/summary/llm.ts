@@ -280,6 +280,7 @@ export function invokeLlm(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    allowedTools?: string[];
   } = {},
 ): string | null {
   const runner = opts.runner ?? DEFAULT_RUNNER;
@@ -310,6 +311,7 @@ export function invokeLlm(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
 }
 
@@ -382,12 +384,34 @@ function buildClaudeArgs(opts: {
     "user",
   ];
 
-  // When read-only tools are requested (e.g. the frenemy reviewer inspecting a
-  // worktree), pre-approve exactly those; otherwise disable all tools so the
-  // default headless run (session summaries) stays a pure text transform.
-  if (opts.allowedTools && opts.allowedTools.length > 0) {
-    args.push("--allowedTools", opts.allowedTools.join(" "));
-  } else {
+  // Resolve the MCP config first so we can fold its tools into a SINGLE
+  // --allowedTools (Claude takes the last --allowedTools; two flags clobber).
+  let mcpConfig: string | null = null;
+  if (opts.withMcp) {
+    const mcpPath = getMcpServerPath();
+    if (!mcpPath) {
+      log.llm.warn("panopticon MCP server not found for Claude headless run");
+      return null;
+    }
+    mcpConfig = JSON.stringify({
+      mcpServers: { panopticon: { command: "node", args: [mcpPath] } },
+    });
+  }
+
+  // Pre-approve the requested workspace tools (e.g. the frenemy reviewer's
+  // read-only set) PLUS the panopticon MCP tools when enabled, in ONE list (two
+  // --allowedTools flags clobber). When NO workspace tools are requested, also
+  // disable built-ins with --tools "" so a plain/MCP-only run can't touch the
+  // filesystem — the frenemy passes its read-only set, so it keeps Read/Grep/etc.
+  const workspaceTools = opts.allowedTools ?? [];
+  const allowed = [
+    ...workspaceTools,
+    ...(opts.withMcp ? MCP_ALLOWED_TOOLS : []),
+  ];
+  if (allowed.length > 0) {
+    args.push("--allowedTools", allowed.join(" "));
+  }
+  if (workspaceTools.length === 0) {
     args.push("--tools", "");
   }
 
@@ -399,26 +423,8 @@ function buildClaudeArgs(opts: {
     args.push("--append-system-prompt", opts.systemPrompt);
   }
 
-  if (opts.withMcp) {
-    const mcpPath = getMcpServerPath();
-    if (!mcpPath) {
-      log.llm.warn("panopticon MCP server not found for Claude headless run");
-      return null;
-    }
-    args.push(
-      "--strict-mcp-config",
-      "--mcp-config",
-      JSON.stringify({
-        mcpServers: {
-          panopticon: {
-            command: "node",
-            args: [mcpPath],
-          },
-        },
-      }),
-      "--allowedTools",
-      MCP_ALLOWED_TOOLS.join(" "),
-    );
+  if (mcpConfig) {
+    args.push("--strict-mcp-config", "--mcp-config", mcpConfig);
   }
 
   return args;
@@ -570,6 +576,7 @@ function invokeClaudeLlm(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    allowedTools?: string[];
   },
 ): string | null {
   const args = buildClaudeArgs({
@@ -578,6 +585,7 @@ function invokeClaudeLlm(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
   if (!args) return null;
 
