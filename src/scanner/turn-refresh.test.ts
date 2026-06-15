@@ -235,4 +235,47 @@ describe("insertTurns refresh on conflict", () => {
       .get(sessionId) as { wm_scanner_turns: number };
     expect(tss.wm_scanner_turns).toBe(999);
   });
+
+  it("reports zero changed turns and no sync_seq bump on an unchanged re-snapshot", () => {
+    const db = getDb();
+    const sessionId = "hermes-idempotent-session";
+    upsertSession({ sessionId }, "/tmp/state.db", "hermes");
+
+    const readSeq = () =>
+      (
+        db
+          .prepare("SELECT sync_seq FROM sessions WHERE session_id = ?")
+          .get(sessionId) as { sync_seq: number }
+      ).sync_seq;
+
+    const firstCount = insertTurns(
+      [
+        { ...turn(0, "user"), sessionId },
+        {
+          ...turn(1, "assistant", { inputTokens: 30, outputTokens: 8 }),
+          sessionId,
+        },
+      ],
+      "hermes",
+    );
+    expect(firstCount).toBe(2); // both turns newly inserted
+    updateSessionTotals(sessionId);
+    const seqAfterFirst = readSeq();
+
+    // Recency revalidation re-snapshots the same session with identical data.
+    const secondCount = insertTurns(
+      [
+        { ...turn(0, "user"), sessionId },
+        {
+          ...turn(1, "assistant", { inputTokens: 30, outputTokens: 8 }),
+          sessionId,
+        },
+      ],
+      "hermes",
+    );
+    expect(secondCount).toBe(0); // no work — nothing changed
+    updateSessionTotals(sessionId);
+    // sync_seq must not advance: an unchanged re-snapshot is not a resync.
+    expect(readSeq()).toBe(seqAfterFirst);
+  });
 });

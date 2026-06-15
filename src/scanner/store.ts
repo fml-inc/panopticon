@@ -208,18 +208,26 @@ const BUMP_SESSION_SEQ_SQL = `
   UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?
 `;
 
-export function insertTurns(turns: ParsedTurn[], source: string): void {
-  if (turns.length === 0) return;
+/**
+ * Insert/refresh scanner turns. Returns the number of turns that were newly
+ * inserted or had a token value change — i.e. actual work. A full re-snapshot
+ * of an unchanged session (the recently-active revalidation path) returns 0,
+ * so the scanner loop can treat it as idle rather than spinning at its
+ * catch-up cadence.
+ */
+export function insertTurns(turns: ParsedTurn[], source: string): number {
+  if (turns.length === 0) return 0;
   const db = getDb();
   const insertStmt = db.prepare(INSERT_TURN_SQL);
   const updateStmt = db.prepare(UPDATE_TURN_SQL);
   const resyncStmt = db.prepare(RESYNC_TURNS_SQL);
   const bumpSeqStmt = db.prepare(BUMP_SESSION_SEQ_SQL);
 
+  let changedCount = 0;
   const tx = db.transaction(() => {
     const mutatedSessions = new Set<string>();
     for (const t of turns) {
-      insertStmt.run(
+      const inserted = insertStmt.run(
         t.sessionId,
         source,
         t.turnIndex,
@@ -234,7 +242,7 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
         t.reasoningTokens,
         buildScannerTurnSyncId(t.sessionId, source, t.turnIndex),
       );
-      const { changes } = updateStmt.run(
+      const updated = updateStmt.run(
         t.timestampMs,
         t.model ?? null,
         t.role,
@@ -253,7 +261,8 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
         t.cacheCreationTokens,
         t.reasoningTokens,
       );
-      if (changes > 0) mutatedSessions.add(t.sessionId);
+      if (inserted.changes > 0 || updated.changes > 0) changedCount++;
+      if (updated.changes > 0) mutatedSessions.add(t.sessionId);
     }
     for (const sessionId of mutatedSessions) {
       resyncStmt.run(sessionId);
@@ -261,6 +270,7 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
     }
   });
   tx();
+  return changedCount;
 }
 
 // ── Scanner events insert ───────────────────────────────────────────────────
@@ -352,6 +362,31 @@ const UPDATE_TOTALS_SQL = `
 
 export function updateSessionTotals(sessionId: string): void {
   const db = getDb();
+  // Snapshot the synced-relevant columns before recomputing so we only bump
+  // sync_seq when something actually changed. Re-snapshotting an unchanged
+  // session (the recently-active revalidation path) must NOT advance sync_seq,
+  // or it would re-sync the same row to the remote every scan tick.
+  const before = db
+    .prepare(
+      `SELECT total_input_tokens AS i, total_output_tokens AS o,
+              total_cache_read_tokens AS cr, total_cache_creation_tokens AS cc,
+              total_reasoning_tokens AS rt, turn_count AS tc,
+              tool_counts AS tj, event_type_counts AS ej
+         FROM sessions WHERE session_id = ?`,
+    )
+    .get(sessionId) as
+    | {
+        i: number;
+        o: number;
+        cr: number;
+        cc: number;
+        rt: number;
+        tc: number;
+        tj: string | null;
+        ej: string | null;
+      }
+    | undefined;
+
   db.prepare(UPDATE_TOTALS_SQL).run(
     sessionId,
     sessionId,
@@ -387,14 +422,59 @@ export function updateSessionTotals(sessionId: string): void {
     eventCounts[key] = (eventCounts[key] ?? 0) + r.cnt;
   }
 
-  if (toolRows.length > 0 || eventRows.length > 0) {
+  const hasCounts = toolRows.length > 0 || eventRows.length > 0;
+  const newToolCountsJson = hasCounts
+    ? JSON.stringify(toolCounts)
+    : (before?.tj ?? null);
+  const newEventCountsJson = hasCounts
+    ? JSON.stringify(eventCounts)
+    : (before?.ej ?? null);
+
+  const after = db
+    .prepare(
+      `SELECT total_input_tokens AS i, total_output_tokens AS o,
+              total_cache_read_tokens AS cr, total_cache_creation_tokens AS cc,
+              total_reasoning_tokens AS rt, turn_count AS tc
+         FROM sessions WHERE session_id = ?`,
+    )
+    .get(sessionId) as {
+    i: number;
+    o: number;
+    cr: number;
+    cc: number;
+    rt: number;
+    tc: number;
+  };
+
+  const changed =
+    !before ||
+    before.i !== after.i ||
+    before.o !== after.o ||
+    before.cr !== after.cr ||
+    before.cc !== after.cc ||
+    before.rt !== after.rt ||
+    before.tc !== after.tc ||
+    (before.tj ?? null) !== newToolCountsJson ||
+    (before.ej ?? null) !== newEventCountsJson;
+
+  if (hasCounts) {
+    // Persist counts; advance sync_seq only when a synced column changed.
     db.prepare(
-      `UPDATE sessions
-       SET tool_counts = ?,
-           event_type_counts = ?,
-           sync_seq = COALESCE(sync_seq, 0) + 1
-       WHERE session_id = ?`,
-    ).run(JSON.stringify(toolCounts), JSON.stringify(eventCounts), sessionId);
+      changed
+        ? `UPDATE sessions
+             SET tool_counts = ?, event_type_counts = ?,
+                 sync_seq = COALESCE(sync_seq, 0) + 1
+             WHERE session_id = ?`
+        : `UPDATE sessions
+             SET tool_counts = ?, event_type_counts = ?
+             WHERE session_id = ?`,
+    ).run(newToolCountsJson, newEventCountsJson, sessionId);
+  } else if (changed) {
+    // No tool/event rows, but token totals changed (e.g. hermes's late
+    // aggregate update) — still mark the session for re-sync.
+    db.prepare(
+      "UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?",
+    ).run(sessionId);
   }
   // Scanner produces token data that needs pricing for cost queries
   refreshIfStale().catch(() => {});

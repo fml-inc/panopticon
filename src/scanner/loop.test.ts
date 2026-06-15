@@ -93,7 +93,7 @@ vi.mock("./store.js", () => ({
   getEventCount: vi.fn(() => 0),
   insertMessages: vi.fn(),
   insertScannerEvents: vi.fn(),
-  insertTurns: vi.fn(),
+  insertTurns: vi.fn(() => 0),
   linkSubagentSessions: vi.fn(() => 0),
   readArchivedSize: vi.fn(() => 0),
   readFileWatermark: vi.fn(() => ({ byteOffset: 0 })),

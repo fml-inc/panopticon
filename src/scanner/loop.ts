@@ -503,11 +503,15 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         const fileResult = result;
         const db = getDb();
         const writeStartedAt = performance.now();
+        // Count turns that were actually inserted or changed (not just
+        // re-emitted), so an unchanged re-snapshot doesn't keep the loop at its
+        // catch-up cadence or look like work.
+        let changedTurns = 0;
         db.transaction(() => {
           upsertSession(fileMeta, filePath, source);
 
           if (fileResult.turns.length > 0) {
-            insertTurns(fileResult.turns, source);
+            changedTurns = insertTurns(fileResult.turns, source);
             updateSessionTotals(sessionId);
           }
 
@@ -529,7 +533,7 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         touchedSessions.add(sessionId);
         targetTouchedSessions.get(source)?.add(sessionId);
 
-        newTurns += result.turns.length;
+        newTurns += changedTurns;
         targetProfile.turns += result.turns.length;
 
         // Process fork results (additional sessions from DAG analysis)
@@ -542,10 +546,11 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             const forkSessionId = fork.meta.sessionId;
             const forkMeta = fork.meta;
             const forkWriteStartedAt = performance.now();
+            let forkChangedTurns = 0;
             db.transaction(() => {
               upsertSession(forkMeta, filePath, source);
               if (fork.turns.length > 0) {
-                insertTurns(fork.turns, source);
+                forkChangedTurns = insertTurns(fork.turns, source);
                 updateSessionTotals(forkSessionId);
               }
               if (fork.events.length > 0) {
@@ -563,7 +568,7 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             targetProfile.dbWriteMs += forkWriteMs;
             touchedSessions.add(forkSessionId);
             targetTouchedSessions.get(source)?.add(forkSessionId);
-            newTurns += fork.turns.length;
+            newTurns += forkChangedTurns;
             targetProfile.turns += fork.turns.length;
           }
         }
