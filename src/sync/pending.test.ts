@@ -21,16 +21,20 @@ import { watermarkKey, writeWatermark } from "./watermark.js";
 function insertConfirmedSession(
   target = "fml",
   opts: {
+    sessionId?: string;
     syncSeq?: number;
     syncedSeq?: number;
     targetSyncSeq?: number;
     derivedSyncSeq?: number;
     derivedSyncedSeq?: number;
+    parentSessionId?: string | null;
+    relationshipType?: string;
     repository?: string | null;
     wmMessages?: number;
   } = {},
 ): void {
   const db = getDb();
+  const sessionId = opts.sessionId ?? "session-1";
   const syncSeq = opts.syncSeq ?? 1;
   const targetSyncSeq = opts.targetSyncSeq ?? syncSeq;
   const syncedSeq = opts.syncedSeq ?? targetSyncSeq;
@@ -41,21 +45,35 @@ function insertConfirmedSession(
   const wmMessages = opts.wmMessages ?? 1;
   db.prepare(
     `INSERT INTO sessions (
-       session_id, sync_seq, derived_sync_seq, machine, relationship_type
-     ) VALUES ('session-1', ?, ?, 'test-machine', 'standalone')`,
-  ).run(syncSeq, derivedSyncSeq);
+       session_id, sync_seq, derived_sync_seq, machine, parent_session_id,
+       relationship_type
+     ) VALUES (?, ?, ?, 'test-machine', ?, ?)`,
+  ).run(
+    sessionId,
+    syncSeq,
+    derivedSyncSeq,
+    opts.parentSessionId ?? null,
+    opts.relationshipType ?? "standalone",
+  );
   if (repository !== null) {
     db.prepare(
       `INSERT INTO session_repositories (session_id, repository, first_seen_ms)
-       VALUES ('session-1', ?, 0)`,
-    ).run(repository);
+       VALUES (?, ?, 0)`,
+    ).run(sessionId, repository);
   }
   db.prepare(
     `INSERT INTO target_session_sync (
        session_id, target, confirmed, sync_seq, synced_seq,
        derived_synced_seq, wm_messages
-     ) VALUES ('session-1', ?, 1, ?, ?, ?, ?)`,
-  ).run(target, targetSyncSeq, syncedSeq, derivedSyncedSeq, wmMessages);
+     ) VALUES (?, ?, 1, ?, ?, ?, ?)`,
+  ).run(
+    sessionId,
+    target,
+    targetSyncSeq,
+    syncedSeq,
+    derivedSyncedSeq,
+    wmMessages,
+  );
 }
 
 describe("readSyncPending", () => {
@@ -128,6 +146,34 @@ describe("readSyncPending", () => {
 
     expect(result.tables.sessions).toBeUndefined();
     expect(result.totalPending).toBe(0);
+  });
+
+  it("counts child session rows when the parent has repo attribution", () => {
+    insertConfirmedSession("fml", {
+      sessionId: "parent",
+      syncSeq: 1,
+      targetSyncSeq: 1,
+      syncedSeq: 1,
+    });
+    insertConfirmedSession("fml", {
+      sessionId: "child",
+      syncSeq: 2,
+      targetSyncSeq: 1,
+      syncedSeq: 1,
+      parentSessionId: "parent",
+      relationshipType: "subagent",
+      repository: null,
+      wmMessages: 2,
+    });
+
+    const result = readSyncPending("fml");
+
+    expect(result.tables.sessions).toEqual({
+      total: 2,
+      synced: 1,
+      pending: 1,
+    });
+    expect(result.totalPending).toBe(1);
   });
 
   it("counts derived session state that still needs sync", () => {
