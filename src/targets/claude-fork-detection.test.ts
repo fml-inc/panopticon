@@ -54,6 +54,57 @@ function assistantLine(uuid: string, parentUuid: string, text: string) {
   };
 }
 
+function toolUseAssistantLine(
+  uuid: string,
+  parentUuid: string,
+  toolUseId: string,
+) {
+  return {
+    type: "assistant",
+    sessionId: SESSION_ID,
+    uuid,
+    parentUuid,
+    timestamp: "2026-04-01T10:00:01.000Z",
+    message: {
+      model: "claude-opus-4-7",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      stop_reason: "tool_use",
+      content: [
+        {
+          type: "tool_use",
+          id: toolUseId,
+          name: "Read",
+          input: { file_path: "/tmp/example.ts" },
+        },
+      ],
+    },
+  };
+}
+
+function toolResultUserLine(
+  uuid: string,
+  parentUuid: string,
+  toolUseId: string,
+) {
+  return {
+    type: "user",
+    sessionId: SESSION_ID,
+    uuid,
+    parentUuid,
+    timestamp: "2026-04-01T10:00:02.000Z",
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: "tool output",
+          is_error: false,
+        },
+      ],
+    },
+  };
+}
+
 function systemLine(uuid: string, parentUuid: string, content: string) {
   return {
     type: "system",
@@ -122,6 +173,28 @@ describe("claude DAG fork detection with intermediate lines", () => {
     expect(result).not.toBeNull();
     expect(result!.needsFullReparse).toBeFalsy();
     expect(result!.forks?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("does not split parallel tool results into fork sessions", () => {
+    const filePath = writeFixture([
+      userLine("u1", "", "inspect these files"),
+      assistantLine("asst1", "u1", "I will read them."),
+      toolUseAssistantLine("tool-use-1", "asst1", "tool-1"),
+      toolUseAssistantLine("tool-use-2", "tool-use-1", "tool-2"),
+      toolUseAssistantLine("tool-use-3", "tool-use-2", "tool-3"),
+      toolUseAssistantLine("tool-use-4", "tool-use-3", "tool-4"),
+      toolResultUserLine("tool-result-1", "tool-use-1", "tool-1"),
+      toolResultUserLine("tool-result-2", "tool-use-2", "tool-2"),
+      toolResultUserLine("tool-result-3", "tool-use-3", "tool-3"),
+      toolResultUserLine("tool-result-4", "tool-use-4", "tool-4"),
+      assistantLine("asst2", "tool-result-4", "done reading."),
+    ]);
+
+    const result = parseFile(filePath, 0);
+    expect(result).not.toBeNull();
+    expect(result!.needsFullReparse).toBeFalsy();
+    expect(result!.forks ?? []).toHaveLength(0);
+    expect(result!.messages.map((m) => m.uuid)).toContain("asst2");
   });
 
   it("compresses stacked intermediate lines without dropping conversation messages", () => {

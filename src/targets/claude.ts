@@ -201,6 +201,26 @@ interface ForkBranch {
   dagIndices: number[];
 }
 
+function isToolResultOnlyUserEntry(obj: Record<string, unknown>): boolean {
+  if (obj.type !== "user") return false;
+  const msg = obj.message as Record<string, unknown> | undefined;
+  const content = msg?.content;
+  if (!Array.isArray(content)) return false;
+
+  let hasToolResult = false;
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "tool_result") {
+      hasToolResult = true;
+    } else if (b.type === "text" && typeof b.text === "string") {
+      if (b.text.length > 0) return false;
+    }
+  }
+
+  return hasToolResult;
+}
+
 /**
  * Walk the DAG from root, detecting large-gap forks.
  * Returns which dag entry indices belong to the main path vs fork branches.
@@ -560,7 +580,11 @@ const claude: TargetAdapter = {
         if (uuid) {
           uuidToParent.set(uuid, parentUuid ?? "");
         }
-        if (uuid && (type === "user" || type === "assistant")) {
+        if (
+          uuid &&
+          (type === "assistant" ||
+            (type === "user" && !isToolResultOnlyUserEntry(obj)))
+        ) {
           userAssistantUuids.add(uuid);
           dagEntries.push({
             uuid,
