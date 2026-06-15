@@ -489,9 +489,15 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
           continue;
         }
 
-        // Wrap all per-file DB writes in a single transaction so that
-        // a crash can't leave messages inserted without watermark advancement
-        // (which would cause tool_call duplication on retry).
+        // Each session's rows commit in their own transaction. The file
+        // watermark is advanced only AFTER the main session and every fork are
+        // durable (below), so a crash mid-file leaves the watermark unmoved and
+        // the next scan reprocesses the whole file. Reprocessing is idempotent:
+        // scanner inserts are INSERT OR IGNORE / deterministic-sync_id upserts,
+        // so re-running cannot duplicate turns, messages, or tool calls. When
+        // the parser returns multiple sessions (state.db holds many), advancing
+        // the watermark inside the first session's transaction would strand the
+        // rest on any later error.
         const sessionId = result.meta.sessionId;
         const fileMeta = result.meta;
         const fileResult = result;
@@ -516,12 +522,6 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             insertMessages(fileResult.messages, fileResult.orphanedToolResults);
             updateSessionMessageCounts(sessionId);
           }
-
-          writeFileWatermark(
-            filePath,
-            fileResult.newByteOffset,
-            fileMeta.sessionId,
-          );
         })();
         fileDbWriteMs += performance.now() - writeStartedAt;
         dbWriteMs += fileDbWriteMs;
@@ -567,6 +567,11 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             targetProfile.turns += fork.turns.length;
           }
         }
+
+        // Advance the file watermark only after the main session and all forks
+        // are durable. A crash before this point leaves the watermark unmoved
+        // and the next scan reprocesses the file idempotently.
+        writeFileWatermark(filePath, result.newByteOffset, fileMeta.sessionId);
 
         // Archive raw file for 100% recall
         const archiveStartedAt = performance.now();

@@ -327,6 +327,14 @@ interface HermesMessageRow {
   active?: number | null;
 }
 
+// Re-snapshot sessions whose most recent message is within this window even
+// when no new message rows arrived, so late session-aggregate token updates
+// (hermes records usage via a separate UPDATE after the assistant message is
+// already written — see set_session_usage) are not missed. Comfortably larger
+// than the 60s scan cadence so a token finalization between two scans is
+// always re-read, while idle/old sessions stay excluded (no resync churn).
+const RECENT_ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
+
 const SESSION_COLUMNS = `id, parent_session_id, source, model, started_at, ended_at, cwd,
                 input_tokens, output_tokens, cache_read_tokens,
                 cache_write_tokens, reasoning_tokens, title`;
@@ -357,25 +365,58 @@ function parseHermesStateDb(
           .prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages")
           .get() as { max_id: number }
       ).max_id ?? 0;
-    if (maxMessageId === fromWatermark) return null;
+
+    // Sessions active within the recency window must be re-snapshotted even
+    // with no new messages, to capture late aggregate-token updates. Hermes
+    // timestamps are epoch seconds (time.time()); ms-valued rows compare as
+    // far-future and are simply always included (harmless re-snapshot).
+    const recentThresholdSec = (Date.now() - RECENT_ACTIVITY_WINDOW_MS) / 1000;
+    const recentlyActiveIds = (
+      db
+        .prepare(
+          `SELECT session_id FROM messages
+            WHERE timestamp >= ?
+            GROUP BY session_id`,
+        )
+        .all(recentThresholdSec) as Array<{ session_id: string }>
+    ).map((r) => r.session_id);
+
+    if (maxMessageId === fromWatermark && recentlyActiveIds.length === 0) {
+      return null;
+    }
 
     // fromWatermark > maxMessageId means state.db was pruned or recreated;
     // fall through to a full re-snapshot (the upserts below are idempotent).
     const incremental = fromWatermark > 0 && maxMessageId > fromWatermark;
+    const fullScan = fromWatermark === 0 || maxMessageId < fromWatermark;
 
     // Each selected session is emitted as a FULL snapshot of that session
-    // (absolute indices, INSERT OR IGNORE/upsert dedupes downstream). In
-    // incremental mode only sessions with new messages are re-snapshotted.
-    const changedSessionFilter = `id IN (SELECT DISTINCT session_id FROM messages WHERE id > ?)`;
+    // (absolute indices, INSERT OR IGNORE/upsert dedupes downstream). Full
+    // scans cover every session; otherwise we snapshot the union of sessions
+    // with new messages and recently-active sessions (token-only updates).
+    let targetIds: string[] | null = null;
+    if (!fullScan) {
+      const changedIds = incremental
+        ? (
+            db
+              .prepare(`SELECT DISTINCT session_id FROM messages WHERE id > ?`)
+              .all(fromWatermark) as Array<{ session_id: string }>
+          ).map((r) => r.session_id)
+        : [];
+      targetIds = [...new Set([...changedIds, ...recentlyActiveIds])];
+      if (targetIds.length === 0) return null;
+    }
+
+    const idPlaceholders = targetIds?.map(() => "?").join(", ");
     const sessions = (
-      incremental
+      targetIds
         ? db
             .prepare(
               `SELECT ${SESSION_COLUMNS} FROM sessions
-                WHERE ${changedSessionFilter}
+                WHERE id IN (${idPlaceholders})
                 ORDER BY COALESCE(started_at, 0), id`,
             )
-            .all(fromWatermark)
+            .all(...targetIds)
         : db
             .prepare(
               `SELECT ${SESSION_COLUMNS} FROM sessions
@@ -385,15 +426,15 @@ function parseHermesStateDb(
     ) as HermesSessionRow[];
 
     const messages = (
-      incremental
+      targetIds
         ? db
             .prepare(
               `SELECT ${MESSAGE_COLUMNS} FROM messages
                 WHERE COALESCE(active, 1) = 1
-                  AND session_id IN (SELECT DISTINCT session_id FROM messages WHERE id > ?)
+                  AND session_id IN (${idPlaceholders})
                 ORDER BY session_id, id`,
             )
-            .all(fromWatermark)
+            .all(...targetIds)
         : db
             .prepare(
               `SELECT ${MESSAGE_COLUMNS} FROM messages

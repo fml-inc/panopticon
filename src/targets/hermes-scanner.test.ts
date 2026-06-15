@@ -214,6 +214,68 @@ describe("hermes scanner", () => {
     }
   });
 
+  it("re-snapshots a recently active session when only token aggregates change", () => {
+    const hermes = getTarget("hermes")!;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-active-"));
+    const filePath = path.join(dir, "state.db");
+    const nowSec = Date.now() / 1000;
+    const db = new Database(filePath);
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, parent_session_id TEXT, source TEXT, model TEXT,
+        started_at REAL, ended_at REAL, cwd TEXT,
+        input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER, reasoning_tokens INTEGER, title TEXT
+      );
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
+        content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT,
+        timestamp REAL, token_count INTEGER, reasoning TEXT,
+        reasoning_content TEXT, reasoning_details TEXT, active INTEGER DEFAULT 1
+      );
+    `);
+    // Active session: messages are timestamped "now"; usage not yet recorded.
+    db.prepare(
+      `INSERT INTO sessions (id, source, model, started_at, input_tokens, output_tokens)
+       VALUES (?, ?, ?, ?, 0, 0)`,
+    ).run("live", "cli", "gpt-test", nowSec);
+    db.prepare(
+      `INSERT INTO messages (session_id, role, content, timestamp, active)
+       VALUES (?, 'user', 'hi', ?, 1)`,
+    ).run("live", nowSec);
+    db.prepare(
+      `INSERT INTO messages (session_id, role, content, timestamp, active)
+       VALUES (?, 'assistant', 'yo', ?, 1)`,
+    ).run("live", nowSec);
+    db.close();
+
+    try {
+      const first = hermes.scanner!.parseFile(filePath, 0)!;
+      expect(first.turns.at(-1)).toMatchObject({ outputTokens: 0 });
+
+      // Hermes finalizes usage AFTER the assistant message row (set_session_usage)
+      // — token columns change with no new messages, so MAX(messages.id) is
+      // unchanged. The recently-active session must still be re-snapshotted.
+      const db2 = new Database(filePath);
+      db2
+        .prepare(
+          "UPDATE sessions SET input_tokens = 500, output_tokens = 120 WHERE id = 'live'",
+        )
+        .run();
+      db2.close();
+
+      const second = hermes.scanner!.parseFile(filePath, first.newByteOffset);
+      expect(second).not.toBeNull();
+      expect(second!.meta?.sessionId).toBe("live");
+      expect(second!.turns.at(-1)).toMatchObject({
+        inputTokens: 500,
+        outputTokens: 120,
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("re-snapshots everything when the watermark exceeds max id (recreated db)", () => {
     const hermes = getTarget("hermes")!;
     const { filePath, cleanup } = makeHermesStateDb();
