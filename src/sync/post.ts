@@ -92,7 +92,9 @@ export async function postSync(
       // server's reason (e.g. `{error: "..."}`) survives to Sentry instead of a
       // contentless `HTTP 500`. startsWith("HTTP 4") still gates isExpectedSyncError.
       const text = await response.text().catch(() => "");
-      lastError = new Error(text ? `HTTP ${status}: ${text}` : `HTTP ${status}`);
+      lastError = new Error(
+        text ? `HTTP ${status}: ${text}` : `HTTP ${status}`,
+      );
     } catch (err) {
       if (
         err instanceof Error &&
