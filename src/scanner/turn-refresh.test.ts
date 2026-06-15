@@ -125,4 +125,114 @@ describe("insertTurns refresh on conflict", () => {
     expect(session.total_input_tokens).toBe(150);
     expect(session.total_output_tokens).toBe(40);
   });
+
+  it("forces a session's turns to re-sync when an already-synced turn's tokens change", () => {
+    const db = getDb();
+    const sessionId = "hermes-resync-session";
+    upsertSession({ sessionId }, "/tmp/state.db", "hermes");
+
+    // Parse 1: aggregate on turn 1.
+    insertTurns(
+      [
+        { ...turn(0, "user"), sessionId },
+        {
+          ...turn(1, "assistant", { inputTokens: 100, outputTokens: 25 }),
+          sessionId,
+        },
+      ],
+      "hermes",
+    );
+
+    // Simulate a sync target that has already synced both turns: its
+    // per-session watermark sits past their ids and synced_seq is caught up.
+    const maxId = (
+      db
+        .prepare("SELECT MAX(id) AS m FROM scanner_turns WHERE session_id = ?")
+        .get(sessionId) as { m: number }
+    ).m;
+    db.prepare(
+      `INSERT INTO target_session_sync
+         (session_id, target, confirmed, sync_seq, synced_seq, wm_scanner_turns)
+       VALUES (?, 'fml', 1, 1, 1, ?)`,
+    ).run(sessionId, maxId);
+
+    const seqBefore = (
+      db
+        .prepare("SELECT sync_seq FROM sessions WHERE session_id = ?")
+        .get(sessionId) as { sync_seq: number }
+    ).sync_seq;
+
+    // Parse 2: session grew; aggregate moved off turn 1 (reset to 0) onto a
+    // new turn 3. Turn 1's tokens mutate — the row the remote already has.
+    insertTurns(
+      [
+        { ...turn(0, "user"), sessionId },
+        { ...turn(1, "assistant"), sessionId },
+        { ...turn(2, "user"), sessionId },
+        {
+          ...turn(3, "assistant", { inputTokens: 150, outputTokens: 40 }),
+          sessionId,
+        },
+      ],
+      "hermes",
+    );
+
+    // The mutated session's turn watermark resets to 0 so readSessionScannerTurns
+    // re-reads (and re-sends) every turn, letting the remote patch the stale
+    // turn-1 row by sync_id. sync_seq is bumped so the session is re-selected.
+    const tss = db
+      .prepare(
+        "SELECT wm_scanner_turns FROM target_session_sync WHERE session_id = ? AND target = 'fml'",
+      )
+      .get(sessionId) as { wm_scanner_turns: number };
+    expect(tss.wm_scanner_turns).toBe(0);
+
+    const seqAfter = (
+      db
+        .prepare("SELECT sync_seq FROM sessions WHERE session_id = ?")
+        .get(sessionId) as { sync_seq: number }
+    ).sync_seq;
+    expect(seqAfter).toBeGreaterThan(seqBefore);
+  });
+
+  it("does not reset the watermark when turns are re-emitted unchanged", () => {
+    const db = getDb();
+    const sessionId = "hermes-stable-session";
+    upsertSession({ sessionId }, "/tmp/state.db", "claude");
+
+    insertTurns(
+      [
+        { ...turn(0, "user"), sessionId },
+        {
+          ...turn(1, "assistant", { inputTokens: 10, outputTokens: 5 }),
+          sessionId,
+        },
+      ],
+      "claude",
+    );
+    db.prepare(
+      `INSERT INTO target_session_sync
+         (session_id, target, confirmed, sync_seq, synced_seq, wm_scanner_turns)
+       VALUES (?, 'fml', 1, 1, 1, 999)`,
+    ).run(sessionId);
+
+    // Re-emit identical turns (the normal case for every non-hermes adapter).
+    insertTurns(
+      [
+        { ...turn(0, "user"), sessionId },
+        {
+          ...turn(1, "assistant", { inputTokens: 10, outputTokens: 5 }),
+          sessionId,
+        },
+      ],
+      "claude",
+    );
+
+    const tss = db
+      .prepare(
+        "SELECT wm_scanner_turns FROM target_session_sync WHERE session_id = ? AND target = 'fml'",
+      )
+      .get(sessionId) as { wm_scanner_turns: number };
+    expect(tss.wm_scanner_turns).toBe(999);
+  });
 });

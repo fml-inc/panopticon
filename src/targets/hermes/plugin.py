@@ -368,6 +368,11 @@ def _emit(event_name: str, **kwargs: Any) -> dict[str, Any] | None:
         return None
 
     if canonical == "PreToolUse":
+        # Intentionally a synchronous POST on the tool-execution hot path
+        # (blocks up to the request timeout): the server's response can deny
+        # the tool call, so permission gating cannot be deferred to the
+        # background queue like every other event. Fail-open — _post returns
+        # None on any error/timeout, which falls through to "allow".
         response = _post(payload) or {}
         if response.get("action") == "block":
             message = response.get("message") or response.get("reason") or "Blocked by Panopticon"

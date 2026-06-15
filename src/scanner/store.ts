@@ -152,42 +152,74 @@ export function readKnownScannerFiles(source: string): string[] {
 
 // ── Turn insert ─────────────────────────────────────────────────────────────
 
-// Re-parses of a full session snapshot must REFRESH existing rows, not
-// skip them: adapters that only have session-aggregate token data (hermes)
-// attach it to the latest assistant turn, so the row a given turn_index
-// maps to can change values between parses. Identical re-emissions are
-// effective no-ops; sync_id is intentionally never rewritten so remote
-// sync identity stays stable.
-//
-// NOTE: this is last-write-wins for ALL sources, not just hermes. The
-// JSONL-based scanners (claude/codex/gemini/pi) re-emit identical turns, so
-// the UPDATE is a no-op for them; the change is only observable for adapters
-// whose per-turn values legitimately move between parses.
+// New turns insert verbatim. Re-parses of a full session snapshot are common
+// (the scanner re-emits whole sessions), so a conflicting turn_index is the
+// normal case, handled by UPDATE_TURN_SQL below.
 const INSERT_TURN_SQL = `
   INSERT INTO scanner_turns
     (session_id, source, turn_index, timestamp_ms, model, role,
      content_preview, input_tokens, output_tokens,
      cache_read_tokens, cache_creation_tokens, reasoning_tokens, sync_id)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(session_id, source, turn_index) DO UPDATE SET
-    timestamp_ms = excluded.timestamp_ms,
-    model = excluded.model,
-    role = excluded.role,
-    content_preview = excluded.content_preview,
-    input_tokens = excluded.input_tokens,
-    output_tokens = excluded.output_tokens,
-    cache_read_tokens = excluded.cache_read_tokens,
-    cache_creation_tokens = excluded.cache_creation_tokens,
-    reasoning_tokens = excluded.reasoning_tokens
+  ON CONFLICT(session_id, source, turn_index) DO NOTHING
+`;
+
+// Refresh an existing turn, but only when a token value actually changed.
+// This is last-write-wins for ALL sources: the JSONL scanners
+// (claude/codex/gemini/pi) re-emit identical turns so the guarded WHERE makes
+// the UPDATE a no-op for them, while adapters whose per-turn values move
+// between parses (hermes attaches its session-aggregate to the latest
+// assistant turn) get refreshed. Crucially, changes() then precisely
+// identifies the mutated rows: those already propagated to the sync remote and
+// must be re-sent. sync_id is never rewritten — the remote keys on it, so
+// re-sending the same sync_id patches the existing remote row in place.
+const UPDATE_TURN_SQL = `
+  UPDATE scanner_turns SET
+    timestamp_ms = ?,
+    model = ?,
+    role = ?,
+    content_preview = ?,
+    input_tokens = ?,
+    output_tokens = ?,
+    cache_read_tokens = ?,
+    cache_creation_tokens = ?,
+    reasoning_tokens = ?
+  WHERE session_id = ? AND source = ? AND turn_index = ?
+    AND (
+      input_tokens != ?
+      OR output_tokens != ?
+      OR cache_read_tokens != ?
+      OR cache_creation_tokens != ?
+      OR reasoning_tokens != ?
+    )
+`;
+
+// When an already-synced turn's tokens change, force its session's
+// scanner_turns rows to re-sync. The per-session sync watermark
+// (target_session_sync.wm_scanner_turns) reads rows by `id > watermark`, so a
+// mutated row (same id) would otherwise never be re-read; resetting to 0
+// re-sends the whole session's turns and the remote patches each by sync_id.
+// Bumping sessions.sync_seq guarantees the session is re-selected as pending
+// regardless of whether tool/event counts also changed this pass.
+const RESYNC_TURNS_SQL = `
+  UPDATE target_session_sync SET wm_scanner_turns = 0 WHERE session_id = ?
+`;
+const BUMP_SESSION_SEQ_SQL = `
+  UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?
 `;
 
 export function insertTurns(turns: ParsedTurn[], source: string): void {
   if (turns.length === 0) return;
   const db = getDb();
-  const stmt = db.prepare(INSERT_TURN_SQL);
+  const insertStmt = db.prepare(INSERT_TURN_SQL);
+  const updateStmt = db.prepare(UPDATE_TURN_SQL);
+  const resyncStmt = db.prepare(RESYNC_TURNS_SQL);
+  const bumpSeqStmt = db.prepare(BUMP_SESSION_SEQ_SQL);
+
   const tx = db.transaction(() => {
+    const mutatedSessions = new Set<string>();
     for (const t of turns) {
-      stmt.run(
+      insertStmt.run(
         t.sessionId,
         source,
         t.turnIndex,
@@ -202,6 +234,30 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
         t.reasoningTokens,
         buildScannerTurnSyncId(t.sessionId, source, t.turnIndex),
       );
+      const { changes } = updateStmt.run(
+        t.timestampMs,
+        t.model ?? null,
+        t.role,
+        t.contentPreview ?? null,
+        t.inputTokens,
+        t.outputTokens,
+        t.cacheReadTokens,
+        t.cacheCreationTokens,
+        t.reasoningTokens,
+        t.sessionId,
+        source,
+        t.turnIndex,
+        t.inputTokens,
+        t.outputTokens,
+        t.cacheReadTokens,
+        t.cacheCreationTokens,
+        t.reasoningTokens,
+      );
+      if (changes > 0) mutatedSessions.add(t.sessionId);
+    }
+    for (const sessionId of mutatedSessions) {
+      resyncStmt.run(sessionId);
+      bumpSeqStmt.run(sessionId);
     }
   });
   tx();

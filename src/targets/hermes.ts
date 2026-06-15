@@ -587,9 +587,15 @@ function parseHermesSession(
         role: "assistant",
         model: session.model ?? undefined,
         contentPreview: fullContent.slice(0, 200),
+        // All per-turn token fields are 0: hermes only exposes a
+        // session-level aggregate, applied below to the last assistant turn.
+        // SUM(output_tokens) over the session must equal that aggregate, so we
+        // must NOT seed per-turn tokens from message.token_count here — if
+        // hermes ever populates it on non-last messages, doing so would make
+        // SUM = Σ(token_count) + aggregate and double-count. (message.token_count
+        // is still surfaced as per-message display metadata above.)
         inputTokens: 0,
-        outputTokens:
-          typeof message.token_count === "number" ? message.token_count : 0,
+        outputTokens: 0,
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
         reasoningTokens: 0,
@@ -736,6 +742,12 @@ const hermes: TargetAdapter = {
       on_session_start: "SessionStart",
       on_session_finalize: "SessionEnd",
       on_session_reset: "SessionEnd",
+      // Despite the name, pre_llm_call/post_llm_call fire once per user turn,
+      // not once per LLM API request: hermes invokes them from
+      // build_turn_context / turn_finalizer around run_conversation (one call
+      // per user message), carrying original_user_message and the final
+      // assistant_response — not inside the tool-continuation loop. So this 1:1
+      // mapping to UserPromptSubmit/Stop does not over-count prompts.
       pre_llm_call: "UserPromptSubmit",
       post_llm_call: "Stop",
       api_request_error: "StopFailure",
