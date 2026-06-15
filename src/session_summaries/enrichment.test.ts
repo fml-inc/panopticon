@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { selectSessionSummaryRunner } from "./enrichment.js";
+import {
+  SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT,
+  selectSessionSummaryRunner,
+} from "./enrichment.js";
 import {
   buildDeterministicSessionSummaryDocs,
   mergeSessionSummaryEnrichment,
@@ -31,6 +34,19 @@ const BASE_INPUT = {
 };
 
 describe("session summary enrichment merge", () => {
+  it("asks LLM summaries to preserve late-discovered external contracts", () => {
+    expect(SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT).toContain(
+      "final external behavioral contract",
+    );
+    expect(SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT).toContain("header names");
+    expect(SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT).toContain(
+      "fallback values",
+    );
+    expect(SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT).toContain(
+      "regression guards",
+    );
+  });
+
   it("removes absolute workspace paths from deterministic docs", () => {
     const docs = buildDeterministicSessionSummaryDocs({
       ...BASE_INPUT,

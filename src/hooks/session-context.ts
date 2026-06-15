@@ -36,6 +36,7 @@ const PRE_TOOL_READ_CONTEXT_MAX_CHARS = 700;
 const PRE_TOOL_READ_CONTEXT_PROMPT_MAX_CHARS = 160;
 const PRE_TOOL_READ_CONTEXT_RECENT_LIMIT = 2;
 const PRE_TOOL_READ_CONTEXT_RELATED_LIMIT = 3;
+const PRE_TOOL_NOTICE_MAX_CHARS = 220;
 
 interface SessionContextInput {
   session_id?: unknown;
@@ -56,6 +57,11 @@ interface UserPromptSubmitContextInput extends SessionContextInput {
 
 interface PreToolUseFileContextInput extends SessionContextInput {
   tool_input?: unknown;
+}
+
+export interface PreToolUseContextPayload {
+  additionalContext: string;
+  notice: string | null;
 }
 
 export function buildSessionStartRecentHistoryContext(
@@ -117,11 +123,19 @@ export function buildUserPromptSubmitLocalContext(
 export function buildPreToolUseFileContext(
   data: PreToolUseFileContextInput,
 ): string | null {
+  return buildPreToolUseFileContextPayload(data)?.additionalContext ?? null;
+}
+
+export function buildPreToolUseFileContextPayload(
+  data: PreToolUseFileContextInput,
+): PreToolUseContextPayload | null {
   const filePath = extractToolFilePath(data);
   if (!filePath) return null;
 
   const repository = extractRepository(data);
   const untilMs = extractNowMs(data);
+  const currentSessionId = extractSessionId(data);
+  const excludeSessionIds = extractExcludeSessionIds(data);
   let overview: FileOverviewResult;
   try {
     overview = fileOverview({
@@ -130,6 +144,8 @@ export function buildPreToolUseFileContext(
       recent_limit: PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT,
       related_limit: PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT,
       untilMs,
+      currentSessionId,
+      excludeSessionIds,
     });
   } catch {
     return null;
@@ -143,17 +159,28 @@ export function buildPreToolUseFileContext(
     overview.recent.length > 0 || overview.summary.edit_count > 0;
   if (!hasBoundIntent && !hasHistory) return null;
 
-  return formatPreToolUseFileContext(overview);
+  return {
+    additionalContext: formatPreToolUseFileContext(overview),
+    notice: formatPreToolUseFileNotice(overview),
+  };
 }
 
 export function buildPreToolUseReadFileContext(
   data: PreToolUseFileContextInput,
 ): string | null {
+  return buildPreToolUseReadFileContextPayload(data)?.additionalContext ?? null;
+}
+
+export function buildPreToolUseReadFileContextPayload(
+  data: PreToolUseFileContextInput,
+): PreToolUseContextPayload | null {
   const filePath = extractToolFilePath(data);
   if (!filePath) return null;
 
   const repository = extractRepository(data);
   const untilMs = extractNowMs(data);
+  const currentSessionId = extractSessionId(data);
+  const excludeSessionIds = extractExcludeSessionIds(data);
   let overview: FileOverviewResult;
   try {
     overview = fileOverview({
@@ -162,6 +189,8 @@ export function buildPreToolUseReadFileContext(
       recent_limit: PRE_TOOL_READ_CONTEXT_RECENT_LIMIT,
       related_limit: PRE_TOOL_READ_CONTEXT_RELATED_LIMIT,
       untilMs,
+      currentSessionId,
+      excludeSessionIds,
     });
   } catch {
     return null;
@@ -172,7 +201,10 @@ export function buildPreToolUseReadFileContext(
     overview.recent.length > 0 || overview.summary.edit_count > 0;
   if (!hasBoundIntent && !hasHistory) return null;
 
-  return formatPreToolUseReadFileContext(overview);
+  return {
+    additionalContext: formatPreToolUseReadFileContext(overview),
+    notice: formatPreToolUseReadFileNotice(overview),
+  };
 }
 
 function extractToolFilePath(data: PreToolUseFileContextInput): string | null {
@@ -308,6 +340,61 @@ export function formatPreToolUseReadFileContext(
     lines.join("\n").trim(),
     PRE_TOOL_READ_CONTEXT_MAX_CHARS,
   );
+}
+
+export function formatPreToolUseFileNotice(
+  overview: FileOverviewResult,
+): string {
+  const details = formatNoticeDetails(overview, { includeRelated: true });
+  const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";
+  return trimToMaxChars(
+    `Panopticon: surfaced prior work for ${sanitizeInline(overview.path)} before edit${suffix}.`,
+    PRE_TOOL_NOTICE_MAX_CHARS,
+  );
+}
+
+export function formatPreToolUseReadFileNotice(
+  overview: FileOverviewResult,
+): string | null {
+  const churnDetails = formatEditChurnDetails(overview);
+  const highHistory = overview.summary.edit_count >= 5;
+  if (churnDetails.length === 0 && !highHistory) return null;
+
+  const details =
+    churnDetails.length > 0
+      ? churnDetails
+      : [`${overview.summary.edit_count} prior edits`];
+  return trimToMaxChars(
+    `Panopticon: surfaced high-history read context for ${sanitizeInline(overview.path)} (${details.join(", ")}).`,
+    PRE_TOOL_NOTICE_MAX_CHARS,
+  );
+}
+
+function formatNoticeDetails(
+  overview: FileOverviewResult,
+  opts: { includeRelated: boolean },
+): string[] {
+  const details = formatEditChurnDetails(overview);
+  if (opts.includeRelated && overview.related_files.length > 0) {
+    const related = overview.related_files
+      .slice(0, 2)
+      .map((r) => sanitizeInline(r.file_path))
+      .join(", ");
+    details.push(`often changed with ${related}`);
+  }
+  return details;
+}
+
+function formatEditChurnDetails(overview: FileOverviewResult): string[] {
+  const details: string[] = [];
+  const s = overview.summary;
+  if (s.reverted_edit_count > 0) {
+    details.push(`reverted=${s.reverted_edit_count}`);
+  }
+  if (s.superseded_edit_count > 0) {
+    details.push(`superseded=${s.superseded_edit_count}`);
+  }
+  return details;
 }
 
 function extractCwdCandidates(data: SessionContextInput): string[] {

@@ -44,7 +44,7 @@ const LAST_ACTIVITY_SQL = sessionSummaryLastActivitySql();
 
 // Prompt/template changes should bump SESSION_SUMMARY_ENRICHMENT_VERSION.
 // policyHash intentionally covers runner/config policy only, not prompt text.
-const SYSTEM_PROMPT = `You are enriching a per-session coding summary for retrieval and future pickup.
+export const SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT = `You are enriching a per-session coding summary for retrieval and future pickup.
 
 Rules:
 1. Use only the structured session data provided in the prompt or retrieved through the requested Panopticon MCP tools
@@ -52,13 +52,16 @@ Rules:
 3. Follow the summary length target in the user prompt; use extra length for complex sessions to capture evolved decisions, deferred work, reverted approaches, and verification, but do not pad simple outcomes
 4. Lead with the main outcome, decision, or highest-value finding
 5. Capture what changed, what landed or was decided, and any context that would help someone pick up related work later
-6. For review sessions, emphasize findings, severity, and whether fixes landed
-7. For implementation or debugging sessions, emphasize what changed and how it was verified
-8. If there is no useful continuity context, do not invent it
-9. Do not mention the model, agent, message count, timestamps, absolute local paths, database paths, prompt engineering, validation batches, or investigation mechanics
-10. Do not mention any work that happened after the target session ended
-11. If no code changed, say that explicitly
-12. Output ONLY the summary text`;
+6. When a session converges from an ambiguous, incomplete, or initially wrong goal to a working outcome, preserve the final external behavioral contract that made it work: API names/paths, header names, flag names, fallback values, acceptance criteria, error handling expectations, and compatibility constraints
+7. Capture material non-goals and regression guards that future work must preserve, such as payload shape, auth behavior, batching, retry behavior, filtering behavior, persistence behavior, or public CLI/API compatibility
+8. Separate user-visible contracts from implementation details: include file/function/module names only when they are necessary for future pickup or code provenance, not as the only way to describe the goal
+9. For review sessions, emphasize findings, severity, and whether fixes landed
+10. For implementation or debugging sessions, emphasize what changed and how it was verified
+11. If there is no useful continuity context, do not invent it
+12. Do not mention the model, agent, message count, timestamps, absolute local paths, database paths, prompt engineering, validation batches, or investigation mechanics
+13. Do not mention any work that happened after the target session ended
+14. If no code changed, say that explicitly
+15. Output ONLY the summary text`;
 
 export interface SessionSummaryEnrichmentRefreshResult {
   attempted: number;
@@ -457,7 +460,7 @@ export async function refreshSessionSummaryEnrichmentsOnce(opts?: {
         runner: selection.runner,
         timeoutMs,
         withMcp: usePanopticonMcp,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: SESSION_SUMMARY_ENRICHMENT_SYSTEM_PROMPT,
         model: selection.model,
       });
       if (!result) {
@@ -804,6 +807,7 @@ function buildLlmPrompt(context: {
       ? `Existing deterministic summary/search scaffold:\n${context.deterministicSearchCorpus}`
       : null,
     "Use existing scaffold material as a foundation, but prefer raw recent messages when they add pivots, corrections, reverted work, deferred decisions, or newer verification.",
+    "If the session only became correct after later clarification or failed attempts, make the final external contract explicit: exact public names/values, required fallback behavior, acceptance criteria, and compatibility constraints. Do not reduce the summary to only changed files or internal implementation locations.",
     "Write the per-session summary.",
   ].filter((value): value is string => Boolean(value));
   return lines.join("\n\n");
@@ -836,6 +840,7 @@ function buildLlmMcpPrompt(
     "Start with session_summary_detail to get the existing summary, counts, files, and enrichment timestamp as a cheap foundation.",
     "Then inspect raw timeline evidence, especially messages/tool calls after the existing enrichment was generated; inspect earlier timeline pages too when the session is complex, mixed, contains pivots/reverts/deferred work, or the raw evidence changes the story.",
     "Use query, search, or get only if needed to resolve ambiguity or avoid paging through irrelevant timeline data.",
+    "If later turns reveal the contract that made the work succeed, preserve it explicitly: exact public names/values, required fallback behavior, acceptance criteria, non-goals, and compatibility constraints. Keep those user-visible constraints distinct from implementation details.",
     "Do not simply rewrite the existing summary.",
     "Write the per-session summary.",
   ].join("\n");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeHookOutput } from "./handler.js";
+import { extractHookNotice, normalizeHookOutput } from "./handler.js";
 
 describe("normalizeHookOutput", () => {
   it("turns bare operational errors into a no-op hook response", () => {
@@ -30,5 +30,31 @@ describe("normalizeHookOutput", () => {
       decision: "allow",
       reason: "allowed by policy",
     });
+  });
+
+  it("strips internal Panopticon notices from hook stdout", () => {
+    expect(
+      normalizeHookOutput({
+        panopticonNotice: "Panopticon: surfaced prior work for src/a.ts",
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: "ctx",
+        },
+      }),
+    ).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        additionalContext: "ctx",
+      },
+    });
+  });
+
+  it("extracts a single-line Panopticon hook notice", () => {
+    expect(
+      extractHookNotice({
+        panopticonNotice: " Panopticon:\n surfaced prior work\tfor src/a.ts ",
+      }),
+    ).toBe("Panopticon: surfaced prior work for src/a.ts");
+    expect(extractHookNotice({ panopticonNotice: "" })).toBeNull();
   });
 });

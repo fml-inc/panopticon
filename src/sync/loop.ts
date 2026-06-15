@@ -9,7 +9,11 @@ import {
 import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
-import { buildSyncableSessionIds, repoMatchesFilter } from "./filter.js";
+import {
+  buildSyncableSessionIds,
+  repoMatchesFilter,
+  sessionHasSyncableRepoSql,
+} from "./filter.js";
 import { isExpectedSyncError, postSync } from "./post.js";
 import {
   readSessionDerivedState,
@@ -233,7 +237,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     // branch indefinitely (so per-session watermarks for confirmed sessions
     // can never advance).
     const repoExists = requireRepo
-      ? "AND EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = s.session_id)"
+      ? `AND (${sessionHasSyncableRepoSql("s")})`
       : "";
 
     // Find sessions that need syncing: new (no tss entry) or updated

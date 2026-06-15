@@ -26,6 +26,7 @@ import { startServerDetached } from "../server-control.js";
 import type { HookInput } from "./ingest.js";
 
 declare const __PANOPTICON_VERSION__: string;
+const PANOPTICON_NOTICE_KEY = "panopticonNotice";
 
 function getAgentVersion(): string | undefined {
   return typeof __PANOPTICON_VERSION__ !== "undefined"
@@ -223,13 +224,29 @@ function postToServer(
 export function normalizeHookOutput(
   result: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (!Object.hasOwn(result, "error")) {
-    return result;
+  const sanitized = { ...result };
+  delete sanitized[PANOPTICON_NOTICE_KEY];
+  if (!Object.hasOwn(sanitized, "error")) {
+    return sanitized;
   }
 
-  const sanitized = { ...result };
   delete sanitized.error;
   return sanitized;
+}
+
+export function extractHookNotice(
+  result: Record<string, unknown>,
+): string | null {
+  const notice = result[PANOPTICON_NOTICE_KEY];
+  if (typeof notice !== "string") return null;
+  const sanitized = notice.replace(/\s+/g, " ").trim();
+  if (!sanitized) return null;
+  return sanitized.length <= 240 ? sanitized : `${sanitized.slice(0, 237)}...`;
+}
+
+function writeHookNotice(notice: string | null): void {
+  if (!notice) return;
+  process.stderr.write(`${notice}\n`);
 }
 
 /** Parse CLI args: `node hook-handler [target] [port] [--proxy]` */
@@ -394,9 +411,12 @@ export async function runHandler(opts: {
     // direct DB writes add latency, risk lock contention, and mask a
     // misconfigured server. The server auto-starts on SessionStart above.
     let result: Record<string, unknown>;
+    let notice: string | null = null;
     try {
       logHook("debug", "posting to server", { port });
-      result = normalizeHookOutput(await postToServer(data, port));
+      const rawResult = await postToServer(data, port);
+      notice = extractHookNotice(rawResult);
+      result = normalizeHookOutput(rawResult);
       logHook("debug", "server post succeeded", {
         resultKeys: Object.keys(result),
       });
@@ -407,6 +427,7 @@ export async function runHandler(opts: {
       result = {};
     }
 
+    writeHookNotice(notice);
     await writeJsonResponse(result);
     logHook("debug", "response written", {
       bytes: Buffer.byteLength(JSON.stringify(result)),

@@ -122,10 +122,11 @@ describe("historical proxy metrics", () => {
     expect(reliable.preToolUseEvents).toBe(0);
   });
 
-  it("defaults headline injection features to the replay-safe set", () => {
+  it("defaults headline injection features to all token injection surfaces", () => {
     expect(parseArgs([]).injectionFeatures).toEqual([
       "sessionstart",
       "userpromptsubmit",
+      "pretooluse",
     ]);
     expect(
       parseArgs(["--injection-features", "all"]).injectionFeatures,

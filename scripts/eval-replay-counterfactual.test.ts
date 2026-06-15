@@ -1309,6 +1309,87 @@ describe("replay aggregate reliability gates", () => {
     expect(markdown).toContain("95% CI");
   });
 
+  it("comparable scope gate accepts accomplished pairs with sufficient recall and no blowup", () => {
+    const args = parseArgs(["--scope-gate", "comparable", "--execute"]);
+    const twoFile = (matched: string[], unexpected: string[] = []) => ({
+      expectedFiles: ["src/a.ts", "src/b.ts"],
+      changedFiles: [...matched, ...unexpected],
+      matchedExpectedFiles: matched,
+      unexpectedFiles: unexpected,
+      fileRecall: matched.length / 2,
+      exactFileSet: matched.length === 2 && unexpected.length === 0,
+    });
+    const partialReady = {
+      session_id: "partial-ready",
+      pr_number: 1,
+      arms: {
+        none: arm("none", {
+          totalTokens: 1000,
+          durationMs: 1000,
+          outcomeDiagnostics: twoFile(["src/a.ts", "src/b.ts"]),
+        }),
+        panop: arm("panop", {
+          totalTokens: 700,
+          durationMs: 800,
+          outcomeDiagnostics: twoFile(["src/a.ts"]),
+        }),
+      },
+      verdicts: { none: "accomplished", panop: "accomplished" },
+    };
+    const lowRecall = {
+      session_id: "low-recall",
+      pr_number: 1,
+      arms: {
+        none: arm("none", {
+          outcomeDiagnostics: twoFile(["src/a.ts", "src/b.ts"]),
+        }),
+        panop: arm("panop", { outcomeDiagnostics: twoFile([]) }),
+      },
+      verdicts: { none: "accomplished", panop: "accomplished" },
+    };
+    const blowup = {
+      session_id: "blowup",
+      pr_number: 1,
+      arms: {
+        none: arm("none", {
+          outcomeDiagnostics: twoFile(["src/a.ts", "src/b.ts"]),
+        }),
+        panop: arm("panop", {
+          outcomeDiagnostics: twoFile(
+            ["src/a.ts", "src/b.ts"],
+            ["x1", "x2", "x3", "x4", "x5", "x6"],
+          ),
+        }),
+      },
+      verdicts: { none: "accomplished", panop: "accomplished" },
+    };
+
+    const aggregate = computeAggregate(
+      [partialReady, lowRecall, blowup] as never,
+      args as never,
+    );
+
+    expect(aggregate.metricReadiness.pairedReductionCount).toBe(1);
+    expect(aggregate.metricReadiness.scenarios).toContainEqual(
+      expect.objectContaining({ session_id: "partial-ready", status: "ready" }),
+    );
+    expect(aggregate.metricReadiness.scenarios).toContainEqual(
+      expect.objectContaining({
+        session_id: "low-recall",
+        status: "blocked",
+        blockers: ["missing_comparable_pr_scope"],
+        armBlockers: { panop: ["low_file_recall"] },
+      }),
+    );
+    expect(aggregate.metricReadiness.scenarios).toContainEqual(
+      expect.objectContaining({
+        session_id: "blowup",
+        status: "blocked",
+        armBlockers: { panop: ["unexpected_file_blowup"] },
+      }),
+    );
+  });
+
   it("reports the actual traced prompt window for single-source recomputes", () => {
     const aggregate = computeAggregate(
       [

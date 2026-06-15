@@ -58,6 +58,12 @@ export function getContextFlagStatuses(): ContextFlagStatus[] {
       required: true,
     },
     {
+      label: "Context notices",
+      env: "PANOPTICON_ENABLE_CONTEXT_NOTICES",
+      enabled: config.enableContextNotices,
+      required: false,
+    },
+    {
       label: "CRG file_overview",
       env: "PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW",
       enabled: config.enableCodeIntelFileOverview,

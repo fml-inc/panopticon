@@ -13,14 +13,15 @@ arm accomplished the same scoped outcome.
 Replay arms:
 
 - `none`: no Panopticon injection, no Code Review Graph prompt context.
-- `panop`: Panopticon SessionStart plus UserPromptSubmit injection.
+- `panop`: Panopticon injection.
 - `crg`: compact Code Review Graph prompt context only.
-- `panop+crg`: Panopticon SessionStart plus UserPromptSubmit injection with
-  compact Code Review Graph prompt context.
+- `panop+crg`: Panopticon injection with compact Code Review Graph prompt
+  context.
 
-The replay harness currently disables PreToolUse read/edit injection in all
-arms. That keeps replay point-in-time fair because file overview/read provenance
-does not yet have a replay-safe historical view.
+The Panopticon replay arms enable every token injection surface by default:
+`SessionStart`, `UserPromptSubmit`, and `PreToolUse` read/edit context. Replay
+timestamps are passed through to provenance queries so point-of-use file context
+does not see edits after the historical turn being replayed.
 
 ## Preconditions
 

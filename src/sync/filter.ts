@@ -26,6 +26,17 @@ export function repoMatchesFilter(
   return true;
 }
 
+export function sessionHasSyncableRepoSql(sessionAlias = "s"): string {
+  return `EXISTS (
+           SELECT 1 FROM session_repositories sr
+           WHERE sr.session_id = ${sessionAlias}.session_id
+         )
+         OR EXISTS (
+           SELECT 1 FROM session_repositories sr
+           WHERE sr.session_id = ${sessionAlias}.parent_session_id
+         )`;
+}
+
 /** Set of session IDs that have repo attribution matching the filter. */
 export function buildSyncableSessionIds(
   filter?: SyncFilter,
@@ -36,7 +47,13 @@ export function buildSyncableSessionIds(
   const db = getDb();
   const rows = db
     .prepare(
-      "SELECT DISTINCT sr.session_id, sr.repository FROM session_repositories sr",
+      `SELECT DISTINCT sr.session_id, sr.repository
+       FROM session_repositories sr
+       UNION
+       SELECT DISTINCT child.session_id, sr.repository
+       FROM sessions child
+       JOIN session_repositories sr
+         ON sr.session_id = child.parent_session_id`,
     )
     .all() as Array<{ session_id: string; repository: string }>;
 

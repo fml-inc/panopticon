@@ -32,10 +32,16 @@ describe("context diagnostics formatting", () => {
         enabled: false,
         required: false,
       },
+      {
+        label: "Context notices",
+        env: "PANOPTICON_ENABLE_CONTEXT_NOTICES",
+        enabled: false,
+        required: false,
+      },
     ];
 
     expect(formatContextFlags(flags)).toBe(
-      "SessionStart=on, PreToolUse read=on, CRG file_overview=off",
+      "SessionStart=on, PreToolUse read=on, CRG file_overview=off, Context notices=off",
     );
     expect(contextFlagsHealth(flags)).toBe("ok");
     expect(contextFlagsHealth([{ ...flags[0], enabled: false }])).toBe("warn");

@@ -29,6 +29,7 @@ panopticon install --target gemini
 panopticon install --target codex
 panopticon install --target claude-desktop
 panopticon install --target pi
+panopticon install --target hermes
 ```
 
 Claude Desktop stores the absolute Node executable path in its MCP config
@@ -39,7 +40,7 @@ Options:
 
 | Flag | Description |
 |------|-------------|
-| `--target <t>` | Target: `claude`, `gemini`, `codex`, `claude-desktop`, `pi`, or `all` (default: `all`) |
+| `--target <t>` | Target: `claude`, `gemini`, `codex`, `claude-desktop`, `pi`, `hermes`, or `all` (default: `all`) |
 | `--proxy` | Route API traffic through the panopticon proxy |
 | `--force` | Overwrite customized env vars with defaults |
 
@@ -136,6 +137,7 @@ concurrency/workpooling follow-up, see
 | Codex CLI | `hooks.json` | Native OTel SDK (HTTP) | `~/.codex/sessions/` JSONL | OpenAI API | Scanner captures tool calls, reasoning tokens, agent messages |
 | Claude Desktop | MCP server | — | — | — | MCP query tools only |
 | Pi | Extension (HTTP) | — | `~/.pi/agent/sessions/` JSONL | — | Extension and scanner capture hooks, normalized messages, assistant responses/tool calls/tokens when Pi exposes them; see [Pi coverage](docs/PI-COVERAGE.md) |
+| Hermes Agent | User plugin (HTTP) | — | `~/.hermes/state.db` SQLite | — | Plugin captures native observer hooks with turn/API/tool correlation IDs; scanner backfills durable sessions and messages |
 
 Each tool is implemented as a **target adapter** in `src/targets/`. To add support for a new tool, create a single adapter file that declares config paths, hook events, shell env vars, event normalization, detection logic, and proxy routing — then register it in `src/targets/index.ts`.
 
@@ -204,6 +206,7 @@ history.
 | Prompt-relevant history | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | Adds prompt-matched local history on mid-session `UserPromptSubmit`; the first prompt is intentionally silent |
 | Edit-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Adds file provenance before edit tools when the file has prior history; deduped once per session/path |
 | Read-time file provenance | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | Adds short provenance before `Read` for files with prior history; deduped once per session/path |
+| Context notices | `PANOPTICON_ENABLE_CONTEXT_NOTICES` | `1` | Emits one-line hook stderr receipts when point-of-use file context is surfaced |
 | Code Review Graph enrichment | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Adds `code_intel` to `file_overview` when the repo has `.code-review-graph/graph.db` |
 
 Flags are read by the Panopticon server at startup. For a one-off test with
@@ -280,7 +283,7 @@ fresh. To expose Code Review Graph as its own MCP server, also run
 
 ```
 panopticon install          Register hooks, init DB, configure shell
-  --target <t>              Target: claude, gemini, codex, claude-desktop, pi, all (default: all)
+  --target <t>              Target: claude, gemini, codex, claude-desktop, pi, hermes, all (default: all)
   --proxy                   Route API traffic through the panopticon proxy
   --disable-sync            Disable remote sync and skip Git detection
   --force                   Overwrite customized env vars with defaults
@@ -407,6 +410,7 @@ Target-specific env vars are declared by each target adapter in `src/targets/`.
 | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | Enable prompt-relevant mid-session `UserPromptSubmit` context injection |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Enable edit-time file provenance injection for supported `PreToolUse` edit tools |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | Enable read-time provenance injection for `PreToolUse` `Read` |
+| `PANOPTICON_ENABLE_CONTEXT_NOTICES` | `1` | Emit one-line hook stderr receipts when point-of-use file context is surfaced |
 | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Enable Code Review Graph enrichment inside `file_overview` |
 
 `hook-handler.log` now keeps server startup, warnings, and errors at the default `info` level. Per-event success-path lines are only written when `PANOPTICON_LOG_LEVEL=debug` (or lower).
@@ -495,7 +499,9 @@ src/
 │   ├── claude.ts       Claude Code adapter
 │   ├── claude-desktop.ts Claude Desktop adapter
 │   ├── gemini.ts       Gemini CLI adapter
-│   └── codex.ts        Codex CLI adapter
+│   ├── codex.ts        Codex CLI adapter
+│   ├── pi.ts           Pi adapter
+│   └── hermes.ts       Hermes Agent adapter
 ├── db/
 │   ├── schema.ts       SQLite schema, migrations, WAL + auto-vacuum
 │   ├── query.ts        Query helpers for MCP tools and CLI

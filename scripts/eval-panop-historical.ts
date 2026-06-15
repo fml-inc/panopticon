@@ -69,7 +69,7 @@ const RELIABLE_INJECTION_FEATURES = [
   "userpromptsubmit",
 ] as const satisfies readonly PanopFeatureName[];
 const DEFAULT_INJECTION_FEATURES =
-  RELIABLE_INJECTION_FEATURES satisfies readonly PanopFeatureName[];
+  PANOP_FEATURE_NAMES satisfies readonly PanopFeatureName[];
 const SELECTED_FEATURE_NAME = "selected";
 const DEFAULT_HOOK_COVERAGE_CANDIDATE_LIMIT = 1000;
 const MIN_TOKENS_PER_NON_EMPTY_READ = 10;
@@ -3190,7 +3190,7 @@ Compares selected deterministic context arms over the same historical scenarios:
 
 By default this runs one focused matrix:
   --arms none,panop,panop+optimized-crg
-  --injection-features reliable
+  --injection-features all
 
 Options:
   --repository SLUG      Repository filter, or "all" for every repository
@@ -3203,7 +3203,7 @@ Options:
   --arms LIST            Comma-separated arms (default: ${DEFAULT_ARM_NAMES.join(",")})
   --include-original-crg Add original-crg to the selected arms
   --injection-features LIST
-                         Comma-separated features or preset: reliable, all,
+                         Comma-separated features or preset: all, reliable,
                          sessionstart, userpromptsubmit, pretooluse
   --sample-mode MODE      recent or hook-coverage (default: recent)
   --hook-coverage         Alias for --sample-mode hook-coverage

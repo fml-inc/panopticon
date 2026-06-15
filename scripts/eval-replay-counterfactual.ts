@@ -8,9 +8,9 @@
 // a headless agent in isolated git worktrees:
 //
 //   none       — Panopticon injection disabled, no CRG prompt context
-//   panop      — Panopticon SessionStart + UserPromptSubmit injection enabled
+//   panop      — Panopticon injection enabled
 //   crg        — Panopticon injection disabled, compact CRG prompt context
-//   panop+crg  — Panopticon SessionStart + UserPromptSubmit injection enabled,
+//   panop+crg  — Panopticon injection enabled,
 //                compact CRG prompt context
 //
 // It captures wall-clock and token usage per arm, and an LLM judge decides
@@ -50,9 +50,8 @@ const RESULT_DIFF_PATCH_MAX_CHARS = 50_000;
 const JUDGE_DIFF_PATCH_MAX_CHARS = 24_000;
 const HISTORICAL_CONTEXT_PROMPT_MAX_CHARS = 900;
 
-// Arm B keeps replay-safe Panopticon injection on. Arm A turns every
-// injection surface off. PreToolUse file context is disabled for every arm
-// at execution time because fileOverview is not point-in-time yet.
+// Arm B keeps all Panopticon injection surfaces on. Arm A turns every
+// injection surface off.
 const INJECTION_OFF_ENV = {
   PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION: "0",
   PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION: "0",
@@ -63,11 +62,8 @@ const INJECTION_OFF_ENV = {
 const INJECTION_ON_ENV = {
   PANOPTICON_ENABLE_SESSION_START_HISTORY_INJECTION: "1",
   PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION: "1",
-  // No point-in-time path exists for fileOverview/read overview yet, so keep
-  // PreToolUse context off in every replay arm. SessionStart/UserPromptSubmit
-  // are the only Panopticon surfaces being tested here.
-  PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION: "0",
-  PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION: "0",
+  PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION: "1",
+  PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION: "1",
 };
 
 const STOPWORDS = new Set([
@@ -126,7 +122,7 @@ const ARM_CONFIGS: Record<
   panop: {
     panopticon: true,
     crgContext: false,
-    label: "Panopticon SessionStart + UserPromptSubmit injection only",
+    label: "Panopticon injection",
   },
   crg: {
     panopticon: false,
@@ -136,8 +132,7 @@ const ARM_CONFIGS: Record<
   "panop+crg": {
     panopticon: true,
     crgContext: true,
-    label:
-      "Panopticon SessionStart + UserPromptSubmit injection plus compact CRG context",
+    label: "Panopticon injection plus compact CRG context",
   },
 };
 
@@ -163,6 +158,14 @@ interface Args {
   minCandidateScore: number | null;
   minRelevanceScore: number | null;
   maxExpectedFiles: number | null;
+  // Scope gate for strict token/time reduction. "exact" requires each arm to
+  // reproduce the merged-PR file set byte-for-byte. "comparable" accepts arms
+  // that are judged accomplished and stay on-scope (high expected-file recall,
+  // no large unexpected-file blowup), so the token/time comparison is fair
+  // without demanding a perfect file-set reproduction from a replay agent.
+  scopeGateMode: "exact" | "comparable";
+  minFileRecall: number;
+  maxUnexpectedFiles: number;
   skipPriorAttempted: boolean;
   skipPriorStrictReady: boolean;
   rejudge: boolean;
@@ -609,7 +612,7 @@ async function runScenario(
         "    injection surface: SessionStart on turn 1; " +
           `${window.userPromptInjectionOpportunities} UserPromptSubmit opportunity(s) on turn 2+; ` +
           `likely mid-session action turn=${window.likelyActionPromptTurn ?? "none"}; ` +
-          "PreToolUse file context disabled for point-in-time fairness",
+          "PreToolUse file/read context enabled with replay timestamp clamps",
       );
       continue;
     }
@@ -2473,7 +2476,11 @@ function computeScenarioMetricReadiness(
       }
     }
   }
-  if (blockers.size === 0 && result.pr_number) {
+  if (
+    blockers.size === 0 &&
+    result.pr_number &&
+    args.scopeGateMode !== "comparable"
+  ) {
     for (const arm of args.arms) {
       const diagnostics = result.arms[arm]?.outcomeDiagnostics;
       if (diagnostics?.exactFileSet === true) continue;
@@ -2496,6 +2503,31 @@ function computeScenarioMetricReadiness(
         }
       }
       blockers.add("missing_exact_pr_scope");
+    }
+  }
+  if (
+    blockers.size === 0 &&
+    result.pr_number &&
+    args.scopeGateMode === "comparable"
+  ) {
+    // Comparable scope: each arm must stay on-scope so the token/time delta is
+    // a fair like-for-like comparison, without demanding byte-exact file sets.
+    for (const arm of args.arms) {
+      const diagnostics = result.arms[arm]?.outcomeDiagnostics;
+      if (!diagnostics) continue;
+      if (diagnostics.expectedFiles.length === 0) {
+        pushArmBlocker(armBlockers, arm, "no_expected_pr_files");
+        blockers.add("missing_comparable_pr_scope");
+        continue;
+      }
+      if (diagnostics.fileRecall < args.minFileRecall) {
+        pushArmBlocker(armBlockers, arm, "low_file_recall");
+        blockers.add("missing_comparable_pr_scope");
+      }
+      if (diagnostics.unexpectedFiles.length > args.maxUnexpectedFiles) {
+        pushArmBlocker(armBlockers, arm, "unexpected_file_blowup");
+        blockers.add("missing_comparable_pr_scope");
+      }
     }
   }
   if (blockers.size === 0) {
@@ -4160,6 +4192,9 @@ export function buildMarkdownReport(input: MarkdownReportInput): string {
     "",
     `Generated: ${input.generatedAt}`,
     `Arms: ${args.arms.join(", ")}`,
+    args.scopeGateMode === "comparable"
+      ? `Scope gate: comparable (expected-file recall >= ${args.minFileRecall}, unexpected files <= ${args.maxUnexpectedFiles}, judged accomplished)`
+      : "Scope gate: exact (byte-exact merged-PR file set, judged accomplished)",
     `Prompt window: ${formatReportPromptWindow(input)}`,
     `Scenarios: ${results.length}`,
   ];
@@ -4176,8 +4211,10 @@ export function buildMarkdownReport(input: MarkdownReportInput): string {
     "",
     "- Replays historical PR-backed sessions from their captured `head_sha` in isolated worktrees.",
     "- Baseline defaults to `none`; treatment arms enable Panopticon injection and/or CRG context.",
-    "- Reliable token/time deltas require every requested arm to complete, expose the expected injection surface, match the exact PR file set, and be judged accomplished.",
-    "- `PreToolUse` file context is disabled in all arms for point-in-time fairness.",
+    args.scopeGateMode === "comparable"
+      ? `- Reliable token/time deltas require every requested arm to complete, expose the expected injection surface, be judged accomplished, and stay on comparable scope (expected-file recall >= ${args.minFileRecall}, unexpected files <= ${args.maxUnexpectedFiles}).`
+      : "- Reliable token/time deltas require every requested arm to complete, expose the expected injection surface, match the exact PR file set, and be judged accomplished.",
+    "- `PreToolUse` file/read context is enabled for Panopticon arms and clamped to replay timestamps for point-in-time fairness.",
     "",
   );
   if (!aggregate) {
@@ -4207,7 +4244,11 @@ export function buildMarkdownReport(input: MarkdownReportInput): string {
     "",
     "## Metric Conclusions",
     "",
-    ...formatMetricConclusionLines(aggregate, results.length),
+    ...formatMetricConclusionLines(
+      aggregate,
+      results.length,
+      args.scopeGateMode,
+    ),
     "",
     "## Strict Token/Time Reduction",
     "",
@@ -4358,6 +4399,7 @@ function formatCorpusSelectionLines(input: MarkdownReportInput): string[] {
 function formatMetricConclusionLines(
   aggregate: AggregateMetrics,
   resultCount: number,
+  scopeGateMode: Args["scopeGateMode"],
 ): string[] {
   const lines: string[] = [];
   if (aggregate.scopeMetricReadiness.scopeReady) {
@@ -4376,7 +4418,7 @@ function formatMetricConclusionLines(
     );
   } else {
     lines.push(
-      `- Reliable strict token/time A/B metric: not reported; only ${aggregate.metricReadiness.pairedReductionCount}/${resultCount} strict pair(s) passed exact-scope and outcome gates.`,
+      `- Reliable strict token/time A/B metric: not reported; only ${aggregate.metricReadiness.pairedReductionCount}/${resultCount} strict pair(s) passed ${scopeGateMode}-scope and outcome gates.`,
     );
   }
   for (const delta of aggregate.scopeDeltas) {
@@ -4863,6 +4905,9 @@ export function parseArgs(argv: string[]): Args {
     minCandidateScore: null,
     minRelevanceScore: null,
     maxExpectedFiles: null,
+    scopeGateMode: "exact",
+    minFileRecall: 0.5,
+    maxUnexpectedFiles: 5,
     skipPriorAttempted: false,
     skipPriorStrictReady: false,
     rejudge: false,
@@ -4940,6 +4985,15 @@ export function parseArgs(argv: string[]): Args {
       parsed.maxExpectedFiles = parsePositiveInt(
         argv[++i],
         "--max-expected-files",
+      );
+    } else if (arg === "--scope-gate") {
+      parsed.scopeGateMode = parseScopeGateMode(argv[++i]);
+    } else if (arg === "--min-file-recall") {
+      parsed.minFileRecall = parseUnitInterval(argv[++i], "--min-file-recall");
+    } else if (arg === "--max-unexpected-files") {
+      parsed.maxUnexpectedFiles = parseNonNegativeInt(
+        argv[++i],
+        "--max-unexpected-files",
       );
     } else if (arg === "--skip-prior-attempted") {
       parsed.skipPriorAttempted = true;
@@ -5054,6 +5108,19 @@ function parseCandidateLabel(
 function parseJudgeRunner(value: string | undefined): JudgeRunner {
   if (value === "claude" || value === "codex") return value;
   throw new Error("--judge-runner expects claude or codex");
+}
+
+function parseScopeGateMode(value: string | undefined): "exact" | "comparable" {
+  if (value === "exact" || value === "comparable") return value;
+  throw new Error("--scope-gate expects exact or comparable");
+}
+
+function parseUnitInterval(value: string | undefined, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${flag} expects a number from 0 to 1`);
+  }
+  return parsed;
 }
 
 function parseMaxPrompts(value: string | undefined): number | null {
@@ -5180,6 +5247,18 @@ Options:
                       score at least N. Useful before expensive live replays.
   --max-expected-files N
                       Keep only merged-PR oracles touching N or fewer files.
+  --scope-gate MODE   Scope gate for strict token/time reduction: exact or
+                      comparable (default: exact). exact requires each arm to
+                      reproduce the merged-PR file set byte-for-byte. comparable
+                      accepts arms that are judged accomplished and stay on
+                      scope (expected-file recall >= --min-file-recall, unexpected
+                      files <= --max-unexpected-files), giving a fair like-for-like
+                      token/time comparison without a perfect file-set match.
+  --min-file-recall N Comparable-gate minimum expected-file recall, 0 to 1
+                      (default: 0.5).
+  --max-unexpected-files N
+                      Comparable-gate maximum unexpected (off-oracle) files per
+                      arm (default: 5).
   --skip-prior-attempted
                       Skip scenarios that already have a compatible executed
                       prior attempt in --prior-result-json overlays.

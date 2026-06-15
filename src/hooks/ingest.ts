@@ -40,10 +40,11 @@ import { allTargets } from "../targets/index.js";
 import type { TargetAdapter } from "../targets/types.js";
 import { checkBashPermission } from "./permissions.js";
 import {
-  buildPreToolUseFileContext,
-  buildPreToolUseReadFileContext,
+  buildPreToolUseFileContextPayload,
+  buildPreToolUseReadFileContextPayload,
   buildSessionStartRecentHistoryContext,
   buildUserPromptSubmitLocalContext,
+  type PreToolUseContextPayload,
 } from "./session-context.js";
 
 // Last resolved repo per session — used as fallback for events without paths
@@ -53,16 +54,16 @@ const lastSessionRepo = new Map<string, string>();
 // Track sessions where we've already captured user config
 const userConfigCaptured = new Set<string>();
 
-// Anti-nag: PreToolUse file-context fires at most once per session+path so
-// iterative edits to one file don't re-inject. Long-lived in the server
-// process (mirrors userConfigCaptured); resets on restart, which is fine.
+// Anti-nag: PreToolUse path context fires at most once per session+path across
+// read and edit surfaces, so inspecting a file and then editing it does not
+// re-inject the same local history. Long-lived in the server process (mirrors
+// userConfigCaptured); resets on restart, which is fine.
 const preToolUseFileContextSeen = new Set<string>();
-const preToolUseReadContextSeen = new Set<string>();
+const PANOPTICON_NOTICE_KEY = "panopticonNotice";
 
 // Test seam: clear the once-per-session+path dedupe set.
 export function _resetPreToolUseFileContextSeen(): void {
   preToolUseFileContextSeen.clear();
-  preToolUseReadContextSeen.clear();
 }
 
 /**
@@ -80,19 +81,6 @@ export function emitOncePerSessionPath<T>(
   const result = build();
   if (!result) return null;
   preToolUseFileContextSeen.add(key);
-  return result;
-}
-
-function emitReadOncePerSessionPath<T>(
-  sessionId: string,
-  filePath: string,
-  build: () => T | null,
-): T | null {
-  const key = `${sessionId}:${filePath}`;
-  if (preToolUseReadContextSeen.has(key)) return null;
-  const result = build();
-  if (!result) return null;
-  preToolUseReadContextSeen.add(key);
   return result;
 }
 
@@ -680,7 +668,7 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       config.enablePreToolUseFileContextInjection &&
       FILE_CONTEXT_TOOLS.has(toolName)
     ) {
-      const additionalContext = buildPreToolUseFileContextOnce(sessionId, {
+      const payload = buildPreToolUseFileContextOnce(sessionId, {
         ...data,
         repository: repo ?? data.repository,
         // Preserve replay-injected now_ms (handler.ts) when set;
@@ -690,21 +678,20 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
             ? data.now_ms
             : timestampMs,
       });
-      if (additionalContext) {
-        return mergePreToolUseContext(permission, additionalContext);
+      if (payload) {
+        return mergePreToolUseContext(permission, payload);
       }
     }
-    // Read-time provenance context is intentionally separate from edit-time
-    // context: reads are frequent, so keep this behind its own flag and
-    // dedupe independently. Only targets known to consume hookSpecificOutput
-    // additionalContext receive this payload.
+    // Read-time provenance context stays behind its own flag, but shares the
+    // same per-session path dedupe as edit-time context to avoid repeat
+    // injections when a file is inspected and then edited.
     if (
       eventType === "PreToolUse" &&
       canInjectPreToolUseAdditionalContext(target) &&
       config.enablePreToolUseReadContextInjection &&
       READ_CONTEXT_TOOLS.has(toolName)
     ) {
-      const additionalContext = buildPreToolUseReadFileContextOnce(sessionId, {
+      const payload = buildPreToolUseReadFileContextOnce(sessionId, {
         ...data,
         repository: repo ?? data.repository,
         now_ms:
@@ -712,8 +699,8 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
             ? data.now_ms
             : timestampMs,
       });
-      if (additionalContext) {
-        return mergePreToolUseContext(permission, additionalContext);
+      if (payload) {
+        return mergePreToolUseContext(permission, payload);
       }
     }
     return permission;
@@ -806,14 +793,16 @@ function canInjectPreToolUseAdditionalContext(
 function buildPreToolUseFileContextOnce(
   sessionId: string,
   data: HookInput,
-): string | null {
+): PreToolUseContextPayload | null {
   try {
     const filePath = extractWrittenFilePath(
       data.tool_input as Record<string, unknown> | undefined,
     );
     if (!filePath) return null;
-    return emitOncePerSessionPath(sessionId, filePath, () =>
-      buildPreToolUseFileContext(data),
+    return emitOncePerSessionPath(
+      sessionId,
+      contextDedupePath(filePath, data),
+      () => buildPreToolUseFileContextPayload(data),
     );
   } catch (err) {
     log.hooks.error("pre tool use file context build failed:", err);
@@ -824,7 +813,7 @@ function buildPreToolUseFileContextOnce(
 function buildPreToolUseReadFileContextOnce(
   sessionId: string,
   data: HookInput,
-): string | null {
+): PreToolUseContextPayload | null {
   try {
     const filePath = extractReadFilePath(data);
     if (!filePath) return null;
@@ -835,8 +824,10 @@ function buildPreToolUseReadFileContextOnce(
         file_path: filePath,
       },
     };
-    return emitReadOncePerSessionPath(sessionId, filePath, () =>
-      buildPreToolUseReadFileContext(contextInput),
+    return emitOncePerSessionPath(
+      sessionId,
+      contextDedupePath(filePath, data),
+      () => buildPreToolUseReadFileContextPayload(contextInput),
     );
   } catch (err) {
     log.hooks.error("pre tool use read context build failed:", err);
@@ -866,6 +857,10 @@ function resolveReadFilePath(filePath: string, data: HookInput): string {
   }
   const cwd = extractShellPwd(data) ?? data.cwd ?? null;
   return resolveFilePathFromCwd(filePath, cwd);
+}
+
+function contextDedupePath(filePath: string, data: HookInput): string {
+  return resolveReadFilePath(filePath, data);
 }
 
 const BASH_COMMAND_SEPARATORS = new Set([
@@ -1144,23 +1139,29 @@ function isPlausibleReadPathArg(arg: string): boolean {
 
 function mergePreToolUseContext(
   permission: Record<string, unknown>,
-  additionalContext: string,
+  payload: PreToolUseContextPayload,
 ): Record<string, unknown> {
+  const notice =
+    config.enableContextNotices && payload.notice
+      ? { [PANOPTICON_NOTICE_KEY]: payload.notice }
+      : {};
   const existing = permission.hookSpecificOutput;
   if (existing && typeof existing === "object") {
     return {
       ...permission,
+      ...notice,
       hookSpecificOutput: {
         ...(existing as Record<string, unknown>),
-        additionalContext,
+        additionalContext: payload.additionalContext,
       },
     };
   }
   return {
     ...permission,
+    ...notice,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
-      additionalContext,
+      additionalContext: payload.additionalContext,
     },
   };
 }

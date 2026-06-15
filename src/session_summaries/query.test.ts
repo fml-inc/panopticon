@@ -1752,5 +1752,21 @@ describe("file_overview", () => {
         }),
       ]),
     );
+
+    const currentSessionExcluded = fileOverview({
+      path: targetFile,
+      repository: repo,
+      recent_limit: 2,
+      related_limit: 5,
+      currentSessionId: SESSION,
+    });
+    expect(currentSessionExcluded.summary).toMatchObject({
+      intent_count: 0,
+      edit_count: 0,
+      session_summary_count: 0,
+    });
+    expect(currentSessionExcluded.current.intent_unit_id).toBeNull();
+    expect(currentSessionExcluded.recent).toEqual([]);
+    expect(currentSessionExcluded.related_files).toEqual([]);
   });
 });

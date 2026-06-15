@@ -31,6 +31,7 @@ The Panopticon server reads these flags at startup:
 | `PANOPTICON_ENABLE_USER_PROMPT_SUBMIT_CONTEXT_INJECTION` | `1` | `UserPromptSubmit` | Prompt-relevant local history for mid-session prompts. The first prompt in a session is intentionally silent. |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | `PreToolUse` edit tools | File provenance before `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` when the file has prior history. Deduped once per session/path. |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | `PreToolUse` `Read` | Short file provenance before reads when the file has prior history. Deduped once per session/path. |
+| `PANOPTICON_ENABLE_CONTEXT_NOTICES` | `1` | Hook stderr | One-line human-visible receipts when point-of-use file context is surfaced. |
 | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | `file_overview` | Adds Code Review Graph-derived `code_intel` when a repo-local graph exists. |
 
 Use `0`, `false`, `no`, or `off` to disable a flag. Use `1`, `true`, `yes`, or
@@ -136,6 +137,15 @@ Current read-time output is provenance-focused. It does not render Code Review
 Graph relationships in the hook text; use `file_overview` when you want the
 combined Panopticon plus CRG view.
 
+### Context Notices
+
+`PANOPTICON_ENABLE_CONTEXT_NOTICES=1` emits a single hook stderr line when
+point-of-use file context is surfaced. The full payload remains in structured
+`additionalContext`; the stderr notice is only a concise receipt for humans.
+Edit notices fire whenever edit-time file context is injected. Read notices are
+more conservative and fire only for high-history reads, such as reverted,
+superseded, or frequently edited paths.
+
 ## Code Review Graph Enrichment
 
 When `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW=1`, `file_overview` tries to
@@ -199,8 +209,9 @@ sessions. It does not replay agent output. Instead, it asks whether a selected
 injection feature set would have surfaced files or sessions the historical
 agent later discovered before its first edit.
 
-The default matrix compares `none`, `panop`, and `panop+optimized-crg` for the
-replay-safe injection features: `SessionStart` and `UserPromptSubmit`.
+The default matrix compares `none`, `panop`, and `panop+optimized-crg` with all
+Panopticon token injection surfaces enabled: `SessionStart`,
+`UserPromptSubmit`, and `PreToolUse`.
 
 ```bash
 pnpm eval:panop-historical -- \
@@ -238,11 +249,10 @@ then fills the remaining sample in normal recency order.
 
 Useful options:
 
-- `--injection-features reliable` measures only the replay-safe SessionStart
-  plus UserPromptSubmit set and is the default.
-- `--injection-features all` measures all three surfaces together. This includes
-  PreToolUse read context, which is useful diagnostically but not point-in-time
-  faithful until file overview has a historical view.
+- `--injection-features all` measures all three surfaces together and is the
+  default.
+- `--injection-features reliable` measures only the narrower SessionStart plus
+  UserPromptSubmit set.
 - `--injection-features sessionstart`, `userpromptsubmit`, or `pretooluse`
   measures one surface.
 - `--include-original-crg` adds the original Code Review Graph-only arm for

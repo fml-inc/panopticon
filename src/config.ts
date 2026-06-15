@@ -219,6 +219,9 @@ export const config = {
     "PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION",
     true,
   ),
+  // Emit one-line hook stderr receipts when point-of-use context is surfaced.
+  // Full context still travels through structured additionalContext.
+  enableContextNotices: envBool("PANOPTICON_ENABLE_CONTEXT_NOTICES", true),
   // Shadow-only code intelligence enrichment for file_overview. Default off
   // while the code-review-graph integration is being evaluated.
   enableCodeIntelFileOverview: envBool(
