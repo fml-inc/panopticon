@@ -3,6 +3,7 @@ import {
   createCodeReviewGraphProvider,
 } from "../code_intelligence/index.js";
 import { config } from "../config.js";
+import { buildTimestampCutoffClause, normalizeUntilMs } from "../db/cutoff.js";
 import { getDb, needsSessionSummaryProjectionRebuild } from "../db/schema.js";
 import { intentForCode } from "../intent/query.js";
 import {
@@ -1881,20 +1882,6 @@ function loadRelatedFilesForPath(
     last_touched_ts_ms: row.last_touched_ts_ms,
     last_status: classifyEditStatus(row.landed, row.landed_reason),
   }));
-}
-
-function normalizeUntilMs(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function buildTimestampCutoffClause(
-  timestampExpr: string,
-  untilMs: number | null,
-): string {
-  // Cutoff queries are replay-time views: rows with no usable timestamp are
-  // excluded because Panopticon cannot prove they existed before the replay
-  // point. Live queries pass no cutoff and still include timestamp-less rows.
-  return untilMs === null ? "" : `AND ${timestampExpr} <= ?`;
 }
 
 function parseSince(since: string): number | null {

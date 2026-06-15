@@ -2,6 +2,7 @@
  * Query helpers backing the intent_for_code / search_intent /
  * outcomes_for_intent MCP tools. Read-only.
  */
+import { buildTimestampCutoffClause, normalizeUntilMs } from "../db/cutoff.js";
 import { buildSafeFtsQuery, tokenizeSearchTerms } from "../db/fts.js";
 import { getDb } from "../db/schema.js";
 import {
@@ -281,20 +282,6 @@ function loadIntentForCodeRowsLegacy(
        LIMIT ?`,
     )
     .all(...params) as IntentForCodeCandidateRow[];
-}
-
-function normalizeUntilMs(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function buildTimestampCutoffClause(
-  timestampExpr: string,
-  untilMs: number | null,
-): string {
-  // Cutoff queries are replay-time views: rows with no usable timestamp are
-  // excluded because Panopticon cannot prove they existed before the replay
-  // point. Live queries pass no cutoff and still include timestamp-less rows.
-  return untilMs === null ? "" : `AND ${timestampExpr} <= ?`;
 }
 
 function classifyStatus(
