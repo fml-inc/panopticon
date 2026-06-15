@@ -753,16 +753,23 @@ export function whyCode(opts: {
   line?: number;
   repository?: string;
   untilMs?: number | null;
+  currentSessionId?: string | null;
+  excludeSessionIds?: string[];
 }): WhyCodeResult {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const displayPath = resolveDisplayPath(normalizedPath, repositoryRoot);
   const line = typeof opts.line === "number" ? opts.line : null;
   const untilMs = normalizeUntilMs(opts.untilMs);
+  const excludeSessionIds = normalizeExcludeSessionIds(
+    opts.currentSessionId,
+    opts.excludeSessionIds,
+  );
   const history = intentForCode({
     file_path: normalizedPath,
     limit: 10,
     untilMs,
+    excludeSessionIds,
   });
 
   ensureSessionSummaryProjections();
@@ -771,8 +778,10 @@ export function whyCode(opts: {
     "cp.established_at_ms",
     untilMs,
   );
-  const params =
-    untilMs === null ? [normalizedPath] : [normalizedPath, untilMs];
+  const excludeClause = sessionExcludeClause("u.session_id", excludeSessionIds);
+  const params: unknown[] = [normalizedPath];
+  if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   const candidates = db
     .prepare(
       `SELECT cp.repository,
@@ -803,6 +812,7 @@ export function whyCode(opts: {
        LEFT JOIN session_summaries s ON s.id = cp.session_summary_id
        WHERE cp.file_path = ?
        ${untilClause}
+       ${excludeClause}
        ORDER BY CASE cp.status
                   WHEN 'current' THEN 0
                   WHEN 'ambiguous' THEN 1
@@ -942,18 +952,26 @@ export function recentWorkOnPath(opts: {
   repository?: string;
   limit?: number;
   untilMs?: number | null;
+  currentSessionId?: string | null;
+  excludeSessionIds?: string[];
 }): RecentWorkOnPathResult {
   const db = getDb();
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const limit = opts.limit ?? 20;
   const untilMs = normalizeUntilMs(opts.untilMs);
+  const excludeSessionIds = normalizeExcludeSessionIds(
+    opts.currentSessionId,
+    opts.excludeSessionIds,
+  );
   const untilClause = buildTimestampCutoffClause(
     "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
     untilMs,
   );
-  const params =
-    untilMs === null ? [normalizedPath] : [normalizedPath, untilMs];
+  const excludeClause = sessionExcludeClause("u.session_id", excludeSessionIds);
+  const params: unknown[] = [normalizedPath];
+  if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   ensureSessionSummaryProjections();
   const rows = db
     .prepare(
@@ -989,6 +1007,7 @@ export function recentWorkOnPath(opts: {
        JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
        ${untilClause}
+       ${excludeClause}
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC`,
     )
     .all(...params) as Array<{
@@ -1097,26 +1116,39 @@ export function fileOverview(opts: {
   recent_limit?: number;
   related_limit?: number;
   untilMs?: number | null;
+  currentSessionId?: string | null;
+  excludeSessionIds?: string[];
 }): FileOverviewResult {
   const normalizedPath = normalizeLookupPath(opts.path, opts.repository);
   const repositoryRoot = lookupRepositoryRoot(opts.path, opts.repository);
   const untilMs = normalizeUntilMs(opts.untilMs);
-  const summary = loadFileOverviewSummary(normalizedPath, untilMs);
+  const excludeSessionIds = normalizeExcludeSessionIds(
+    opts.currentSessionId,
+    opts.excludeSessionIds,
+  );
+  const summary = loadFileOverviewSummary(
+    normalizedPath,
+    untilMs,
+    excludeSessionIds,
+  );
   const current = whyCode({
     path: opts.path,
     repository: opts.repository,
     untilMs,
+    excludeSessionIds,
   });
   const recent = recentWorkOnPath({
     path: opts.path,
     repository: opts.repository,
     limit: opts.recent_limit ?? 5,
     untilMs,
+    excludeSessionIds,
   });
   const relatedFiles = loadRelatedFilesForPath(
     normalizedPath,
     opts.related_limit ?? 10,
     untilMs,
+    excludeSessionIds,
   );
   const displayPath = resolveDisplayPath(normalizedPath, repositoryRoot);
 
@@ -1664,13 +1696,17 @@ function lookupRepositoryForPath(filePath: string): string | null {
 function loadFileOverviewSummary(
   filePath: string,
   untilMs: number | null,
+  excludeSessionIds: string[],
 ): FileOverviewResult["summary"] {
   const db = getDb();
   const untilClause = buildTimestampCutoffClause(
     "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
     untilMs,
   );
-  const params = untilMs === null ? [filePath] : [filePath, untilMs];
+  const excludeClause = sessionExcludeClause("u.session_id", excludeSessionIds);
+  const params: unknown[] = [filePath];
+  if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   const row = db
     .prepare(
       `SELECT COUNT(*) AS edit_count,
@@ -1719,7 +1755,8 @@ function loadFileOverviewSummary(
        LEFT JOIN intent_session_summaries iss
          ON iss.intent_unit_id = e.intent_unit_id
        WHERE e.file_path = ?
-       ${untilClause}`,
+       ${untilClause}
+       ${excludeClause}`,
     )
     .get(...params) as
     | {
@@ -1752,19 +1789,25 @@ function loadRelatedFilesForPath(
   filePath: string,
   limit: number,
   untilMs: number | null,
+  excludeSessionIds: string[],
 ): FileOverviewResult["related_files"] {
   const db = getDb();
   const untilClause = buildTimestampCutoffClause(
     "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
     untilMs,
   );
+  const excludeClause = sessionExcludeClause("u.session_id", excludeSessionIds);
   const params: unknown[] = [filePath];
   if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   params.push(filePath);
   if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   params.push(filePath);
   if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds);
   params.push(limit);
   const rows = db
     .prepare(
@@ -1774,6 +1817,7 @@ function loadRelatedFilesForPath(
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path = ?
          ${untilClause}
+         ${excludeClause}
        ),
        seed_summaries AS (
          SELECT DISTINCT iss.session_summary_id
@@ -1791,6 +1835,7 @@ function loadRelatedFilesForPath(
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path != ?
          ${untilClause}
+         ${excludeClause}
        ),
        related_by_summary AS (
          SELECT e.file_path,
@@ -1803,6 +1848,7 @@ function loadRelatedFilesForPath(
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path != ?
          ${untilClause}
+         ${excludeClause}
        ),
        intent_counts AS (
          SELECT file_path,
@@ -1836,6 +1882,7 @@ function loadRelatedFilesForPath(
          JOIN intent_units u ON u.id = e.intent_unit_id
          WHERE e.file_path IN (SELECT file_path FROM candidate_files)
          ${untilClause}
+         ${excludeClause}
        )
        SELECT cf.file_path,
               COALESCE(ic.shared_intent_count, 0) AS shared_intent_count,
@@ -1882,6 +1929,26 @@ function loadRelatedFilesForPath(
     last_touched_ts_ms: row.last_touched_ts_ms,
     last_status: classifyEditStatus(row.landed, row.landed_reason),
   }));
+}
+
+function normalizeExcludeSessionIds(
+  currentSessionId?: string | null,
+  extraSessionIds?: string[],
+): string[] {
+  return [currentSessionId, ...(extraSessionIds ?? [])].reduce<string[]>(
+    (acc, value) => {
+      if (typeof value !== "string" || value.length === 0) return acc;
+      if (!acc.includes(value)) acc.push(value);
+      return acc;
+    },
+    [],
+  );
+}
+
+function sessionExcludeClause(column: string, sessionIds: string[]): string {
+  return sessionIds.length > 0
+    ? `AND ${column} NOT IN (${sessionIds.map(() => "?").join(", ")})`
+    : "";
 }
 
 function parseSince(since: string): number | null {

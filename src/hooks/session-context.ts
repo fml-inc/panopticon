@@ -122,6 +122,8 @@ export function buildPreToolUseFileContext(
 
   const repository = extractRepository(data);
   const untilMs = extractNowMs(data);
+  const currentSessionId = extractSessionId(data);
+  const excludeSessionIds = extractExcludeSessionIds(data);
   let overview: FileOverviewResult;
   try {
     overview = fileOverview({
@@ -130,6 +132,8 @@ export function buildPreToolUseFileContext(
       recent_limit: PRE_TOOL_FILE_CONTEXT_RECENT_LIMIT,
       related_limit: PRE_TOOL_FILE_CONTEXT_RELATED_LIMIT,
       untilMs,
+      currentSessionId,
+      excludeSessionIds,
     });
   } catch {
     return null;
@@ -154,6 +158,8 @@ export function buildPreToolUseReadFileContext(
 
   const repository = extractRepository(data);
   const untilMs = extractNowMs(data);
+  const currentSessionId = extractSessionId(data);
+  const excludeSessionIds = extractExcludeSessionIds(data);
   let overview: FileOverviewResult;
   try {
     overview = fileOverview({
@@ -162,6 +168,8 @@ export function buildPreToolUseReadFileContext(
       recent_limit: PRE_TOOL_READ_CONTEXT_RECENT_LIMIT,
       related_limit: PRE_TOOL_READ_CONTEXT_RELATED_LIMIT,
       untilMs,
+      currentSessionId,
+      excludeSessionIds,
     });
   } catch {
     return null;
