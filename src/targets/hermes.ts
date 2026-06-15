@@ -801,6 +801,20 @@ const hermes: TargetAdapter = {
 
     normalizePayload: normalizeHermesPayload,
 
+    resolveSubagentSessionFromHook({ sessionId, data }) {
+      const childSessionId =
+        typeof data.child_session_id === "string" ? data.child_session_id : "";
+      if (!childSessionId) return null;
+      return {
+        sessionId: childSessionId,
+        parentSessionId:
+          typeof data.parent_session_id === "string"
+            ? data.parent_session_id
+            : sessionId,
+        relationshipType: "subagent",
+      };
+    },
+
     formatPermissionResponse(eventName, { allow, reason }) {
       if (eventName !== "PreToolUse") return {};
       return allow ? {} : { action: "block", message: reason };
