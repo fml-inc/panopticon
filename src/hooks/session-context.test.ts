@@ -573,6 +573,49 @@ describe("PreToolUse file context", () => {
     ).toBeNull();
   });
 
+  it("does not use the current session as edit-time path context", () => {
+    const file = path.join(cwd, "src/current-session-edit.ts");
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO intent_units
+       (id, intent_key, session_id, prompt_text, prompt_ts_ms, cwd, repository)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "intent:current-edit",
+      "current-session",
+      "active session edit should not echo back",
+      1_000,
+      cwd,
+      "fml-inc/panopticon",
+    );
+    db.prepare(
+      `INSERT INTO intent_edits
+       (id, edit_key, intent_unit_id, session_id, timestamp_ms, file_path, landed)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(1, "edit:current-edit", 1, "current-session", 1_100, file, 1);
+
+    expect(
+      buildPreToolUseFileContext({
+        session_id: "current-session",
+        cwd,
+        repository: "fml-inc/panopticon",
+        now_ms: 1_200,
+        tool_input: { file_path: file },
+      }),
+    ).toBeNull();
+
+    expect(
+      buildPreToolUseFileContext({
+        session_id: "other-session",
+        cwd,
+        repository: "fml-inc/panopticon",
+        now_ms: 1_200,
+        tool_input: { file_path: file },
+      }),
+    ).toContain("Panopticon file context");
+  });
+
   it("renders provenance with the lifecycle verb and reverted/superseded counts", () => {
     const overview: FileOverviewResult = {
       path: "src/auth.ts",
@@ -699,6 +742,7 @@ describe("PreToolUse file context", () => {
     ).toBeNull();
 
     const context = buildPreToolUseReadFileContext({
+      session_id: "other-session",
       cwd,
       repository: "fml-inc/panopticon",
       now_ms: 1_200,
@@ -706,6 +750,16 @@ describe("PreToolUse file context", () => {
     });
     expect(context).toContain("Panopticon read context");
     expect(context).toContain("read-target.ts");
+
+    expect(
+      buildPreToolUseReadFileContext({
+        session_id: "session-read",
+        cwd,
+        repository: "fml-inc/panopticon",
+        now_ms: 1_200,
+        tool_input: { file_path: file },
+      }),
+    ).toBeNull();
 
     expect(
       buildPreToolUseReadFileContext({

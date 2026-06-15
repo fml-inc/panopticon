@@ -768,7 +768,7 @@ describe("processHookEvent", () => {
     ).toContain("Panopticon file context");
   });
 
-  it("dedupes read-time file context independently of edit-time context", () => {
+  it("dedupes file context once per path across read and edit hooks", () => {
     testConfig.enablePreToolUseReadContextInjection = true;
     const filePath = "/workspace/panopticon/src/read-context.ts";
     insertIntentEdit(filePath);
@@ -796,7 +796,7 @@ describe("processHookEvent", () => {
       cwd: "/workspace/panopticon",
       repository: "fml-inc/panopticon",
       tool_input: {
-        file_path: filePath,
+        file_path: "src/read-context.ts",
         old_string: "before",
         new_string: "after",
       },
@@ -807,9 +807,7 @@ describe("processHookEvent", () => {
         .additionalContext,
     ).toContain("Panopticon read context");
     expect(secondRead).toEqual({});
-    expect(
-      (edit.hookSpecificOutput as Record<string, unknown>).additionalContext,
-    ).toContain("Panopticon file context");
+    expect(edit).toEqual({});
   });
 
   it("keeps Pi hook events out of transcript messages and tool calls", () => {

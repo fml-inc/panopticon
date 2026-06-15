@@ -53,16 +53,15 @@ const lastSessionRepo = new Map<string, string>();
 // Track sessions where we've already captured user config
 const userConfigCaptured = new Set<string>();
 
-// Anti-nag: PreToolUse file-context fires at most once per session+path so
-// iterative edits to one file don't re-inject. Long-lived in the server
-// process (mirrors userConfigCaptured); resets on restart, which is fine.
+// Anti-nag: PreToolUse path context fires at most once per session+path across
+// read and edit surfaces, so inspecting a file and then editing it does not
+// re-inject the same local history. Long-lived in the server process (mirrors
+// userConfigCaptured); resets on restart, which is fine.
 const preToolUseFileContextSeen = new Set<string>();
-const preToolUseReadContextSeen = new Set<string>();
 
 // Test seam: clear the once-per-session+path dedupe set.
 export function _resetPreToolUseFileContextSeen(): void {
   preToolUseFileContextSeen.clear();
-  preToolUseReadContextSeen.clear();
 }
 
 /**
@@ -80,19 +79,6 @@ export function emitOncePerSessionPath<T>(
   const result = build();
   if (!result) return null;
   preToolUseFileContextSeen.add(key);
-  return result;
-}
-
-function emitReadOncePerSessionPath<T>(
-  sessionId: string,
-  filePath: string,
-  build: () => T | null,
-): T | null {
-  const key = `${sessionId}:${filePath}`;
-  if (preToolUseReadContextSeen.has(key)) return null;
-  const result = build();
-  if (!result) return null;
-  preToolUseReadContextSeen.add(key);
   return result;
 }
 
@@ -694,10 +680,9 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         return mergePreToolUseContext(permission, additionalContext);
       }
     }
-    // Read-time provenance context is intentionally separate from edit-time
-    // context: reads are frequent, so keep this behind its own flag and
-    // dedupe independently. Only targets known to consume hookSpecificOutput
-    // additionalContext receive this payload.
+    // Read-time provenance context stays behind its own flag, but shares the
+    // same per-session path dedupe as edit-time context to avoid repeat
+    // injections when a file is inspected and then edited.
     if (
       eventType === "PreToolUse" &&
       canInjectPreToolUseAdditionalContext(target) &&
@@ -812,8 +797,10 @@ function buildPreToolUseFileContextOnce(
       data.tool_input as Record<string, unknown> | undefined,
     );
     if (!filePath) return null;
-    return emitOncePerSessionPath(sessionId, filePath, () =>
-      buildPreToolUseFileContext(data),
+    return emitOncePerSessionPath(
+      sessionId,
+      contextDedupePath(filePath, data),
+      () => buildPreToolUseFileContext(data),
     );
   } catch (err) {
     log.hooks.error("pre tool use file context build failed:", err);
@@ -835,8 +822,10 @@ function buildPreToolUseReadFileContextOnce(
         file_path: filePath,
       },
     };
-    return emitReadOncePerSessionPath(sessionId, filePath, () =>
-      buildPreToolUseReadFileContext(contextInput),
+    return emitOncePerSessionPath(
+      sessionId,
+      contextDedupePath(filePath, data),
+      () => buildPreToolUseReadFileContext(contextInput),
     );
   } catch (err) {
     log.hooks.error("pre tool use read context build failed:", err);
@@ -866,6 +855,12 @@ function resolveReadFilePath(filePath: string, data: HookInput): string {
   }
   const cwd = extractShellPwd(data) ?? data.cwd ?? null;
   return resolveFilePathFromCwd(filePath, cwd);
+}
+
+// Dedupe on the cwd-resolved path so relative and absolute references to the
+// same file share one read/edit context injection.
+function contextDedupePath(filePath: string, data: HookInput): string {
+  return resolveReadFilePath(filePath, data);
 }
 
 const BASH_COMMAND_SEPARATORS = new Set([

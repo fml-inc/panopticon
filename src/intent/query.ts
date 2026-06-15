@@ -50,12 +50,19 @@ export function intentForCode(opts: {
   file_path: string;
   limit?: number;
   untilMs?: number | null;
+  currentSessionId?: string | null;
+  excludeSessionIds?: string[];
 }): IntentForCodeRow[] {
   const limit = opts.limit ?? 50;
+  const excludeSessionIds = normalizeExcludeSessionIds(
+    opts.currentSessionId,
+    opts.excludeSessionIds,
+  );
   const rows = collectIntentForCodeRows(
     opts.file_path,
     limit,
     normalizeUntilMs(opts.untilMs),
+    excludeSessionIds,
   );
 
   return rows.map((r) => ({
@@ -107,6 +114,7 @@ function collectIntentForCodeRows(
   filePath: string,
   limit: number,
   untilMs: number | null,
+  excludeSessionIds: string[],
 ): IntentForCodeGroupedRow[] {
   const candidateLimit = Math.max(limit * 20, 200);
   const candidatePaths = lookupCanonicalFilePathCandidates(filePath);
@@ -117,11 +125,13 @@ function collectIntentForCodeRows(
       candidatePath,
       candidateLimit,
       untilMs,
+      excludeSessionIds,
     );
     const legacy = loadIntentForCodeRowsLegacy(
       candidatePath,
       candidateLimit,
       untilMs,
+      excludeSessionIds,
     );
     for (const row of [...normalized, ...legacy]) {
       if (!byEditId.has(row.edit_id)) {
@@ -208,14 +218,17 @@ function loadIntentForCodeRowsFromFileSubjects(
   filePath: string,
   limit: number,
   untilMs: number | null,
+  excludeSessionIds: string[],
 ): IntentForCodeCandidateRow[] {
   const db = getDb();
   const untilClause = buildTimestampCutoffClause(
     "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
     untilMs,
   );
-  const params =
-    untilMs === null ? [filePath, limit] : [filePath, untilMs, limit];
+  const excludeClause = sessionExcludeClause("u.session_id", excludeSessionIds);
+  const params: unknown[] = [filePath];
+  if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds, limit);
   return db
     .prepare(
       `SELECT DISTINCT
@@ -243,6 +256,7 @@ function loadIntentForCodeRowsFromFileSubjects(
          AND c_file.predicate = 'file/path'
          AND c_file.value_text = ?
          ${untilClause}
+         ${excludeClause}
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
        LIMIT ?`,
     )
@@ -253,14 +267,17 @@ function loadIntentForCodeRowsLegacy(
   filePath: string,
   limit: number,
   untilMs: number | null,
+  excludeSessionIds: string[],
 ): IntentForCodeCandidateRow[] {
   const db = getDb();
   const untilClause = buildTimestampCutoffClause(
     "COALESCE(e.timestamp_ms, u.prompt_ts_ms)",
     untilMs,
   );
-  const params =
-    untilMs === null ? [filePath, limit] : [filePath, untilMs, limit];
+  const excludeClause = sessionExcludeClause("u.session_id", excludeSessionIds);
+  const params: unknown[] = [filePath];
+  if (untilMs !== null) params.push(untilMs);
+  params.push(...excludeSessionIds, limit);
   return db
     .prepare(
       `SELECT u.id AS intent_unit_id,
@@ -278,10 +295,31 @@ function loadIntentForCodeRowsLegacy(
        JOIN intent_units u ON u.id = e.intent_unit_id
        WHERE e.file_path = ?
        ${untilClause}
+       ${excludeClause}
        ORDER BY COALESCE(e.timestamp_ms, 0) DESC, e.id DESC
        LIMIT ?`,
     )
     .all(...params) as IntentForCodeCandidateRow[];
+}
+
+function normalizeExcludeSessionIds(
+  currentSessionId?: string | null,
+  extraSessionIds?: string[],
+): string[] {
+  return [currentSessionId, ...(extraSessionIds ?? [])].reduce<string[]>(
+    (acc, value) => {
+      if (typeof value !== "string" || value.length === 0) return acc;
+      if (!acc.includes(value)) acc.push(value);
+      return acc;
+    },
+    [],
+  );
+}
+
+function sessionExcludeClause(column: string, sessionIds: string[]): string {
+  return sessionIds.length > 0
+    ? `AND ${column} NOT IN (${sessionIds.map(() => "?").join(", ")})`
+    : "";
 }
 
 function classifyStatus(
