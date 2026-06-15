@@ -889,7 +889,9 @@ server.tool(
     "and sender identity are auto-detected from the calling session — pass " +
     "room/session_id only to override. Omit `to` to broadcast, or set it to a " +
     "specific session id. `kind` is free-form (e.g. challenge, chat); `subject` " +
-    "scopes claims (e.g. 'path:src/auth.ts').",
+    "scopes claims (e.g. 'path:src/auth.ts'). Set `reply_to` to the id of a " +
+    "message you're responding to (e.g. the challenge a resolution addresses) " +
+    "so the thread is navigable.",
   {
     session_id: z
       .string()
@@ -908,12 +910,18 @@ server.tool(
     kind: z.string().describe("Message kind, e.g. 'challenge' or 'chat'."),
     body: z.string().describe("Message text."),
     subject: z.string().optional().describe("Optional scope, e.g. 'path:...'."),
+    reply_to: z
+      .number()
+      .optional()
+      .describe(
+        "Id of the message this replies to, e.g. the challenge a resolution addresses.",
+      ),
     ref_path: z
       .string()
       .optional()
       .describe("Optional file the message is about."),
   },
-  async ({ session_id, room, to, kind, body, subject, ref_path }) => {
+  async ({ session_id, room, to, kind, body, subject, reply_to, ref_path }) => {
     const result = await service.busSend({
       session_id: session_id ?? SELF_SESSION_ID,
       room: room ?? SELF_ROOM,
@@ -921,6 +929,7 @@ server.tool(
       kind,
       body,
       subject,
+      reply_to,
       ref_path,
       source: "mcp",
     });

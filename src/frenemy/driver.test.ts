@@ -73,6 +73,12 @@ function makeDeps(
   }> = {},
 ) {
   const sends: Array<{ to: string | undefined; body: string }> = [];
+  const sendInputs: Array<{
+    to?: string;
+    body: string;
+    subject?: string;
+    reply_to?: number;
+  }> = [];
   const critiqueCalls: string[] = [];
   const deps = {
     busRoster: vi.fn(
@@ -81,9 +87,17 @@ function makeDeps(
     hookTimeline: vi.fn(async (input: { sessionId: string }) =>
       timeline(over.timelineFor ? over.timelineFor(input.sessionId) : []),
     ),
-    busSend: vi.fn(async (input: { to?: string; body: string }) => {
-      sends.push({ to: input.to, body: input.body });
-    }),
+    busSend: vi.fn(
+      async (input: {
+        to?: string;
+        body: string;
+        subject?: string;
+        reply_to?: number;
+      }) => {
+        sends.push({ to: input.to, body: input.body });
+        sendInputs.push(input);
+      },
+    ),
     busRead: vi.fn(async () => ({ messages: over.priorMessages ?? [] })),
     critique: vi.fn(async (activity: string) => {
       critiqueCalls.push(activity);
@@ -92,7 +106,7 @@ function makeDeps(
         : "CHALLENGE: that looks risky";
     }),
   };
-  return { deps, sends, critiqueCalls };
+  return { deps, sends, sendInputs, critiqueCalls };
 }
 
 const OPTS = { room: "fml-inc/panopticon" };
@@ -366,6 +380,7 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     kind: "challenge",
     body: "earlier finding",
     subject,
+    reply_to: null,
     ref_tool: null,
     ref_path: null,
     source: "frenemy",
@@ -415,7 +430,7 @@ describe("runFrenemyOnce read-the-room dedup", () => {
   // ── Resolution (re-review-on-fix) ──────────────────────────────────────────
 
   it("posts a ✅ resolution when a previously-flagged region goes clean", async () => {
-    const { deps, sends } = makeDeps({
+    const { deps, sends, sendInputs } = makeDeps({
       timelineFor: () => [edit()],
       critiqueImpl: async () => "SKIP", // the change reviews clean now
       // The frenemy flagged this same file earlier, at a different diff state.
@@ -427,6 +442,9 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     expect(sends).toHaveLength(1);
     expect(sends[0].body).toContain("✅");
     expect(sends[0].body).toContain("addressed");
+    // The ✅ references the specific open challenge (priorFinding id), not just
+    // the path — per-finding correlation via reply_to.
+    expect(sendInputs[0].reply_to).toBe(1);
   });
 
   it("does not resolve a region it never flagged", async () => {

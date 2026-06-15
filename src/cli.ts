@@ -1896,6 +1896,7 @@ program
   .option("--session <id>", "Sender session id (also resolves the room)")
   .option("--to <id>", "Recipient session id; omit to broadcast")
   .option("--subject <subject>", "Optional scope, e.g. path:src/auth.ts")
+  .option("--reply-to <id>", "Id of the message this replies to")
   .option("--ref-path <path>", "Optional file the message is about")
   .action(async (opts: OptionValues) => {
     output(
@@ -1906,6 +1907,7 @@ program
         kind: opts.kind,
         body: opts.body,
         subject: typeof opts.subject === "string" ? opts.subject : undefined,
+        reply_to: opts.replyTo != null ? Number(opts.replyTo) : undefined,
         ref_path: typeof opts.refPath === "string" ? opts.refPath : undefined,
         source: "cli",
       }),

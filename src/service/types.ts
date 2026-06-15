@@ -138,6 +138,8 @@ export interface BusSendInput {
   kind: string;
   body: string;
   subject?: string;
+  /** Id of the message this references (e.g. the challenge a resolution resolves). */
+  reply_to?: number | null;
   ref_tool?: string;
   ref_path?: string;
   source?: string;

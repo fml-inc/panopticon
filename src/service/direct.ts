@@ -227,6 +227,7 @@ export function createDirectPanopticonService(): PanopticonService {
         kind: input.kind,
         body: input.body,
         subject: input.subject ?? null,
+        reply_to: input.reply_to ?? null,
         ref_tool: input.ref_tool ?? null,
         ref_path: input.ref_path ?? null,
         source: input.source ?? null,

@@ -247,6 +247,8 @@ interface FrenemyDeps {
     source: string;
     /** Stable region+state key, so a finding can be deduped on re-review. */
     subject?: string;
+    /** Id of the challenge this message resolves (per-finding correlation). */
+    reply_to?: number;
   }) => Promise<unknown>;
   /** Read recent room messages (to see what's already been flagged). */
   busRead: (input: {
@@ -375,6 +377,10 @@ export async function runFrenemyOnce(
   // itself caught. (busRead with no sinceId returns oldest-first, so last write
   // wins.)
   const whereState = new Map<string, "flagged" | "resolved">();
+  // The message id of the latest OPEN challenge per where, so a resolution can
+  // reference the specific finding it addresses (reply_to) — per-finding
+  // correlation, not just the path-level `resolved:<where>` subject.
+  const openChallengeId = new Map<string, number>();
   try {
     const prior = await deps.busRead({
       room: opts.room,
@@ -384,10 +390,13 @@ export async function runFrenemyOnce(
     for (const m of prior.messages) {
       if (m.from_session !== FRENEMY_FROM || !m.subject) continue;
       seenSubjects.add(m.subject);
+      const where = subjectWhere(m.subject);
       if (m.subject.startsWith("review:")) {
-        whereState.set(subjectWhere(m.subject), "flagged");
+        whereState.set(where, "flagged");
+        openChallengeId.set(where, m.id);
       } else if (m.subject.startsWith("resolved:")) {
-        whereState.set(subjectWhere(m.subject), "resolved");
+        whereState.set(where, "resolved");
+        openChallengeId.delete(where);
       }
     }
   } catch {
@@ -462,10 +471,13 @@ export async function runFrenemyOnce(
       // subject so it posts once per fix.
       if (subject) {
         const where = subjectWhere(subject);
-        // Resolve only an OPEN region (latest state flagged). NB: correlation is
-        // path-only, so an unrelated clean edit to a file with a still-open
-        // finding will post "addressed" for it — an accepted false-positive of
-        // `where`-level correlation; tightening would need per-finding ids.
+        // Resolve only an OPEN region (latest state flagged). The resolution
+        // references the specific challenge it addresses via reply_to (the open
+        // finding's message id), so a thread reads challenge → ✅ rather than
+        // correlating by `where` alone. NB: still triggered by a clean edit to
+        // the same path-set, so an unrelated clean edit to a file with a
+        // still-open finding can mark it addressed — an accepted false-positive
+        // of `where`-level *triggering* (the reply_to just makes the link exact).
         if (whereState.get(where) === "flagged") {
           const resolvedSubject = `resolved:${subject.slice("review:".length)}`;
           await deps.busSend({
@@ -475,8 +487,10 @@ export async function runFrenemyOnce(
             body: `✅ Earlier finding on ${where} looks addressed.`,
             source: "frenemy",
             subject: resolvedSubject,
+            reply_to: openChallengeId.get(where),
           });
           whereState.set(where, "resolved");
+          openChallengeId.delete(where);
           seenSubjects.add(resolvedSubject);
           sent.push({ to: primary.session_id, body: `✅ addressed: ${where}` });
         }

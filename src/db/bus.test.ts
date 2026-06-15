@@ -47,6 +47,16 @@ describe("agent message bus store", () => {
     expect(msgs.map((m) => m.body)).toEqual(["one", "two"]);
   });
 
+  it("round-trips reply_to and defaults it to null", () => {
+    const challengeId = insertAgentMessage(base({ body: "challenge" }));
+    insertAgentMessage(base({ body: "resolution", reply_to: challengeId }));
+    const msgs = readAgentMessages({ room: "fml-inc/panopticon" });
+    expect(msgs.map((m) => [m.body, m.reply_to])).toEqual([
+      ["challenge", null],
+      ["resolution", challengeId],
+    ]);
+  });
+
   it("without a cursor, returns the NEWEST N in ascending order", () => {
     for (const b of ["m1", "m2", "m3", "m4", "m5"]) {
       insertAgentMessage(base({ body: b }));
