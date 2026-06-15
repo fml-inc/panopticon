@@ -23,6 +23,7 @@ vi.mock("../config.js", () => {
       port: 4318,
       host: "127.0.0.1",
       serverPidFile: _path.join(tmpDir, "panopticon.pid"),
+      enableBusDelivery: false,
       enablePreToolUseFileContextInjection: true,
       enablePreToolUseReadContextInjection: true,
     },
@@ -30,9 +31,16 @@ vi.mock("../config.js", () => {
   };
 });
 
-import { config } from "../config.js";
-import { closeDb, getDb } from "../db/schema.js";
 import {
+  _resetActivityWait,
+  waitForRoomActivity,
+} from "../bus/activity-wait.js";
+import { config } from "../config.js";
+import { insertAgentMessage } from "../db/bus.js";
+import { closeDb, getDb } from "../db/schema.js";
+import { _resetEventConfigCache, saveEventConfig } from "../eventConfig.js";
+import {
+  _resetNudgeState,
   _resetPreToolUseFileContextSeen,
   _resetSessionRepoCache,
   _resetSessionTargetCache,
@@ -72,11 +80,16 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  testConfig.enableBusDelivery = false;
   testConfig.enablePreToolUseFileContextInjection = true;
   testConfig.enablePreToolUseReadContextInjection = true;
   _resetSessionRepoCache();
   _resetSessionTargetCache();
   _resetPreToolUseFileContextSeen();
+  _resetNudgeState();
+  _resetActivityWait();
+  fs.rmSync(path.join(config.dataDir, "event-config.json"), { force: true });
+  _resetEventConfigCache();
   const db = getDb();
   db.prepare("DELETE FROM claim_evidence").run();
   db.prepare("DELETE FROM evidence_ref_paths").run();
@@ -87,6 +100,9 @@ beforeEach(() => {
   db.prepare("DELETE FROM intent_units_fts").run();
   db.prepare("DELETE FROM intent_units").run();
   db.prepare("DELETE FROM hook_events").run();
+  db.prepare("DELETE FROM agent_message_deliveries").run();
+  db.prepare("DELETE FROM agent_messages").run();
+  db.prepare("DELETE FROM panopticon_instances").run();
   db.prepare("DELETE FROM tool_calls").run();
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM session_repositories").run();
@@ -480,6 +496,57 @@ describe("processHookEvent", () => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(1, "edit:read-context", 1, "history-session", 1_100, filePath, 1);
   }
+
+  it("keeps presence, activity, and bus nudges when event logging is disabled", async () => {
+    testConfig.enableBusDelivery = true;
+    const room = "fml-inc/panopticon";
+    const sessionId = "disabled-pretool-presence";
+
+    insertAgentMessage({
+      room,
+      from_session: "teammate",
+      to_session: sessionId,
+      kind: "chat",
+      body: "please read this",
+      created_at_ms: 1,
+      source: "test",
+    });
+    saveEventConfig({ PreToolUse: false } as any);
+
+    const activity = waitForRoomActivity(room, 0, 1_000);
+    const response = processHookEvent({
+      session_id: sessionId,
+      source: "claude",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      cwd: "/workspace/panopticon",
+      repository: room,
+      agent_pid: process.pid,
+      tool_input: { command: "echo hi" },
+    });
+
+    await expect(activity).resolves.toBeGreaterThan(0);
+    expect(
+      (response.hookSpecificOutput as Record<string, unknown>)
+        .additionalContext,
+    ).toContain("please read this");
+    expect(
+      (
+        getDb()
+          .prepare(
+            "SELECT COUNT(*) AS count FROM hook_events WHERE event_type = 'PreToolUse'",
+          )
+          .get() as { count: number }
+      ).count,
+    ).toBe(0);
+    expect(
+      getDb()
+        .prepare(
+          "SELECT session_id FROM panopticon_instances WHERE session_id = ?",
+        )
+        .get(sessionId),
+    ).toMatchObject({ session_id: sessionId });
+  });
 
   it("keeps read-time file context behind its own flag", () => {
     testConfig.enablePreToolUseReadContextInjection = false;

@@ -1866,6 +1866,54 @@ describe("runMigrations — existing DB", () => {
     );
   });
 
+  it("adds reply_to to existing agent_messages before creating its index", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE agent_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room TEXT NOT NULL,
+        from_session TEXT NOT NULL,
+        to_session TEXT,
+        kind TEXT NOT NULL,
+        body TEXT NOT NULL,
+        subject TEXT,
+        ref_tool TEXT,
+        ref_path TEXT,
+        source TEXT,
+        created_at_ms INTEGER NOT NULL,
+        delivered_at_ms INTEGER
+      )
+    `);
+    const stamp = db.prepare(
+      "INSERT INTO schema_migrations (id, name) VALUES (?, ?)",
+    );
+    for (const migration of MIGRATIONS) {
+      if (migration.id >= 25) break;
+      stamp.run(migration.id, `stamp${migration.id}`);
+    }
+
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+
+    const cols = db
+      .prepare("PRAGMA table_info(agent_messages)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((col) => col.name)).toContain("reply_to");
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_agent_messages_reply_to
+        ON agent_messages(reply_to)
+    `);
+    const indexes = db
+      .prepare("PRAGMA index_list(agent_messages)")
+      .all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain(
+      "idx_agent_messages_reply_to",
+    );
+    expect(getApplied(db).map((row) => row.id)).toEqual(
+      MIGRATIONS.map((migration) => migration.id),
+    );
+  });
+
   it("seeds derived sync progress for existing session summaries", () => {
     const db = createExistingDb();
     db.exec(SCHEMA_SQL);

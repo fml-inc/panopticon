@@ -142,4 +142,5 @@ export const log = {
   mcp: root.getSubLogger({ name: "mcp" }),
   otlp: root.getSubLogger({ name: "otlp" }),
   hooks: root.getSubLogger({ name: "hooks" }),
+  presence: root.getSubLogger({ name: "presence" }),
 };

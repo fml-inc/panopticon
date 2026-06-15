@@ -13,7 +13,9 @@ import { Command, type OptionValues } from "commander";
 type Opts = OptionValues;
 
 import { getOrCreateAuthToken } from "./auth.js";
-import { config, ensureDataDir } from "./config.js";
+import { formatMessage, runChatWait } from "./bus/chat.js";
+import { resolveSelfIdentity } from "./bus/identity.js";
+import { config, ensureDataDir, resolveFrenemyModelConfig } from "./config.js";
 import {
   formatCodeIntelStatus,
   formatContextActivity,
@@ -26,6 +28,11 @@ import {
 } from "./context-diagnostics.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
+import {
+  createFrenemyLoop,
+  resolveFrenemyRoom,
+  runFrenemyOnce,
+} from "./frenemy/driver.js";
 import { DAEMON_NAMES, type DaemonName, LOG_DIR, logPaths } from "./log.js";
 import {
   permissionsApply,
@@ -1823,6 +1830,280 @@ program
   .description("Show database row counts for each table")
   .action(async () => {
     output(await service.dbStats());
+  });
+
+program
+  .command("instances")
+  .description(
+    "List agent sessions connected to this server, with liveness status " +
+      "(active/idle/exited; death verified by probing the agent process)",
+  )
+  .option("--room <room>", "Restrict to one room (workspace)")
+  .option("--no-include-ended", "Hide instances that have already exited")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.instances({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        includeEnded: opts.includeEnded !== false,
+      }),
+    );
+  });
+
+program
+  .command("bus-roster")
+  .description("List agent sessions in a room (workspace) with liveness status")
+  .option("--room <room>", "Explicit room")
+  .option("--session <id>", "Resolve the room from this session id")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.busRoster({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        session_id: typeof opts.session === "string" ? opts.session : undefined,
+      }),
+    );
+  });
+
+program
+  .command("bus-read")
+  .description("Read recent messages in a room (workspace)")
+  .option("--room <room>", "Explicit room")
+  .option(
+    "--session <id>",
+    "Resolve room + address filter from this session id",
+  )
+  .option("--since <id>", "Only messages with id greater than this cursor")
+  .option("--kinds <list>", "Comma-separated message kinds to include")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.busRead({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        session_id: typeof opts.session === "string" ? opts.session : undefined,
+        sinceId: opts.since ? Number(opts.since) : undefined,
+        kinds:
+          typeof opts.kinds === "string"
+            ? opts.kinds.split(",").map((k) => k.trim())
+            : undefined,
+      }),
+    );
+  });
+
+program
+  .command("bus-send")
+  .description("Send a message to a room (workspace)")
+  .requiredOption("--kind <kind>", "Message kind, e.g. challenge or chat")
+  .requiredOption("--body <text>", "Message body")
+  .option("--room <room>", "Explicit room")
+  .option("--session <id>", "Sender session id (also resolves the room)")
+  .option("--to <id>", "Recipient session id; omit to broadcast")
+  .option("--subject <subject>", "Optional scope, e.g. path:src/auth.ts")
+  .option("--reply-to <id>", "Id of the message this replies to")
+  .option("--ref-path <path>", "Optional file the message is about")
+  .action(async (opts: OptionValues) => {
+    output(
+      await service.busSend({
+        room: typeof opts.room === "string" ? opts.room : undefined,
+        session_id: typeof opts.session === "string" ? opts.session : undefined,
+        to: typeof opts.to === "string" ? opts.to : undefined,
+        kind: opts.kind,
+        body: opts.body,
+        subject: typeof opts.subject === "string" ? opts.subject : undefined,
+        reply_to: opts.replyTo != null ? Number(opts.replyTo) : undefined,
+        ref_path: typeof opts.refPath === "string" ? opts.refPath : undefined,
+        source: "cli",
+      }),
+    );
+  });
+
+program
+  .command("frenemy")
+  .description(
+    "Run a stickler code-review 'frenemy' (read-only workspace access) that reviews changes as the agents in this workspace make them and posts findings via the bus — so the PR is effectively reviewed by the end",
+  )
+  .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option(
+    "--runner <runner>",
+    "Critic runner: claude or codex",
+    config.frenemyRunner,
+  )
+  .option(
+    "--model <model>",
+    "Model override for the critic (default: frenemy/enrichment config)",
+  )
+  .option(
+    "--interval <seconds>",
+    "Settle window — batch a burst of edits before reviewing",
+    "3",
+  )
+  .option("--once", "Run a single pass and exit")
+  .action(async (opts: OptionValues) => {
+    if (opts.runner !== "claude" && opts.runner !== "codex") {
+      console.error(
+        `Invalid --runner "${opts.runner}": expected "claude" or "codex".`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const settleSec = Number(opts.interval);
+    if (!Number.isFinite(settleSec) || settleSec <= 0) {
+      console.error(
+        `Invalid --interval "${opts.interval}": expected a positive number of seconds.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const room = resolveFrenemyRoom(
+      typeof opts.room === "string" ? opts.room : undefined,
+    );
+    if (!room) {
+      console.error(
+        "Could not resolve a room from the current directory. Pass --room <repo>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    // Mark this process — and, via the env it spawns critics with, the critic
+    // subprocesses' own Claude Code hooks — as the frenemy role. Without this the
+    // critic's tool-call hooks land as normal room activity, which wakes the
+    // long-poll and reviews the critic itself: a self-sustaining review storm.
+    process.env.PANOPTICON_FRENEMY_ROLE ??= "frenemy";
+    const frenemyOpts = {
+      room,
+      runner: opts.runner as "claude" | "codex",
+      model:
+        typeof opts.model === "string"
+          ? opts.model
+          : resolveFrenemyModelConfig(opts.runner as "claude" | "codex"),
+    };
+    if (opts.once) {
+      const sent = await runFrenemyOnce(frenemyOpts, new Map());
+      output(sent);
+      return;
+    }
+    console.log(`Frenemy watching room "${room}" — Ctrl-C to stop.`);
+    const handle = createFrenemyLoop({
+      ...frenemyOpts,
+      settleMs: settleSec * 1000,
+      onChallenge: (c) => console.log(`→ ${c.to}: ${c.body}`),
+    });
+    process.on("SIGINT", () => handle.stop());
+    await handle.done;
+    // stop() resolves done promptly, but the abandoned long-poll socket is still
+    // an active handle that would keep the event loop alive; exit so Ctrl-C is
+    // actually immediate.
+    process.exit(0);
+  });
+
+const chat = program
+  .command("chat")
+  .description(
+    "Live agent-to-agent chat over the bus. Identity and room are resolved automatically from the calling agent's session.",
+  );
+
+chat
+  .command("send <message>")
+  .description("Send a chat message to the workspace room (or one peer)")
+  .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option(
+    "--session <id>",
+    "Explicit sender session id if auto-detection fails",
+  )
+  .option("--to <session>", "Address one peer session; omit to broadcast")
+  .action(async (message: string, opts: OptionValues) => {
+    const self = resolveSelfIdentity();
+    const selfSession =
+      typeof opts.session === "string" ? opts.session : self.sessionId;
+    const room = resolveFrenemyRoom(
+      typeof opts.room === "string" ? opts.room : undefined,
+    );
+    if (!room) {
+      console.error(
+        "Could not resolve a room from the current directory. Pass --room <repo>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const res = await service.busSend({
+      room,
+      session_id: selfSession,
+      from: selfSession ?? self.name ?? "agent",
+      to: typeof opts.to === "string" ? opts.to : undefined,
+      kind: "chat",
+      body: message,
+      source: "chat",
+    });
+    output(res);
+  });
+
+chat
+  .command("wait")
+  .description(
+    "Block until a peer sends a chat message, then print it. Re-run after it returns. Heartbeats peer liveness to stderr.",
+  )
+  .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option(
+    "--session <id>",
+    "Explicit caller session id if auto-detection fails",
+  )
+  .option(
+    "--since <id>",
+    "Extra lower bound on message id (the delivery gate already dedups)",
+  )
+  .option(
+    "--timeout <seconds>",
+    "Overall budget before returning so you can re-invoke",
+    "540",
+  )
+  .option("--json", "Emit the raw message JSON instead of text")
+  .action(async (opts: OptionValues) => {
+    const self = resolveSelfIdentity();
+    const selfSession =
+      typeof opts.session === "string" ? opts.session : self.sessionId;
+    if (!selfSession) {
+      console.error(
+        "Could not resolve your session id. Run chat wait from an agent Bash tool, or pass --session <id>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const room = resolveFrenemyRoom(
+      typeof opts.room === "string" ? opts.room : undefined,
+    );
+    if (!room) {
+      console.error(
+        "Could not resolve a room from the current directory. Pass --room <repo>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const budgetSec = Number(opts.timeout);
+    const result = await runChatWait(
+      {
+        room,
+        selfSession,
+        // No tip cursor: the per-recipient delivery gate decides what's unseen,
+        // so a message sent before this wait started is still delivered (no
+        // opener race). --since is just an optional extra floor.
+        sinceId: opts.since !== undefined ? Number(opts.since) : 0,
+        budgetMs: Number.isFinite(budgetSec) ? budgetSec * 1000 : undefined,
+      },
+      {
+        recv: (input) => service.busRecv(input),
+        waitForActivity: (input) => service.waitForActivity(input),
+        busRoster: (input) => service.busRoster(input),
+        now: () => Date.now(),
+        onHeartbeat: (line) => process.stderr.write(`chat: ${line}\n`),
+      },
+    );
+    if (result.timedOut) {
+      console.log(`(no message after ${budgetSec}s — re-run \`chat wait\`)`);
+      return;
+    }
+    if (opts.json) {
+      output({ cursor: result.cursor, messages: result.messages });
+      return;
+    }
+    for (const m of result.messages) console.log(formatMessage(m));
+    process.stderr.write(`chat: next --since ${result.cursor}\n`);
   });
 
 program

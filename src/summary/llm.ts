@@ -280,6 +280,7 @@ export function invokeLlm(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    allowedTools?: string[];
   } = {},
 ): string | null {
   const runner = opts.runner ?? DEFAULT_RUNNER;
@@ -310,6 +311,7 @@ export function invokeLlm(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
 }
 
@@ -321,6 +323,12 @@ export async function invokeLlmAsync(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    /** Run in this directory (e.g. a repo to inspect) instead of the headless cwd. */
+    cwd?: string;
+    /** Read-only tools to permit (Claude only). Enables tool use when set. */
+    allowedTools?: string[];
+    /** Per-invocation env overrides layered onto the cleaned process env. */
+    envOverrides?: Record<string, string | undefined>;
   } = {},
 ): Promise<string | null> {
   const runner = opts.runner ?? DEFAULT_RUNNER;
@@ -329,7 +337,11 @@ export async function invokeLlmAsync(
 
   const timeoutMs = opts.timeoutMs ?? LLM_TIMEOUT_MS;
   const env = cleanEnv();
-  const cwd = getHeadlessCwd(runner);
+  for (const [key, value] of Object.entries(opts.envOverrides ?? {})) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  const cwd = opts.cwd ?? getHeadlessCwd(runner);
 
   if (runner === "codex") {
     return invokeCodexLlmAsync(prompt, {
@@ -351,6 +363,7 @@ export async function invokeLlmAsync(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
 }
 
@@ -360,6 +373,7 @@ function buildClaudeArgs(opts: {
   withMcp?: boolean;
   systemPrompt?: string;
   model?: string | null;
+  allowedTools?: string[];
 }): string[] | null {
   const args = [
     "-p",
@@ -374,9 +388,37 @@ function buildClaudeArgs(opts: {
     "--disable-slash-commands",
     "--setting-sources",
     "user",
-    "--tools",
-    "",
   ];
+
+  // Resolve the MCP config first so we can fold its tools into a SINGLE
+  // --allowedTools (Claude takes the last --allowedTools; two flags clobber).
+  let mcpConfig: string | null = null;
+  if (opts.withMcp) {
+    const mcpPath = getMcpServerPath();
+    if (!mcpPath) {
+      log.llm.warn("panopticon MCP server not found for Claude headless run");
+      return null;
+    }
+    mcpConfig = JSON.stringify({
+      mcpServers: { panopticon: { command: "node", args: [mcpPath] } },
+    });
+  }
+
+  // Pre-approve the requested workspace tools (e.g. the frenemy reviewer's
+  // read-only set) PLUS the panopticon MCP tools when enabled, in ONE list (two
+  // --allowedTools flags clobber). Separately restrict Claude's built-ins with
+  // --tools on every run: an empty workspace set disables built-ins entirely,
+  // while patterns like Bash(git diff:*) make only Bash available and rely on
+  // --allowedTools for exact command preapproval.
+  const workspaceTools = opts.allowedTools ?? [];
+  const allowed = [
+    ...workspaceTools,
+    ...(opts.withMcp ? MCP_ALLOWED_TOOLS : []),
+  ];
+  if (allowed.length > 0) {
+    args.push("--allowedTools", allowed.join(" "));
+  }
+  args.push("--tools", availableClaudeBuiltIns(workspaceTools).join(" "));
 
   if (shouldUseBareMode(opts.env)) {
     args.push("--bare");
@@ -386,29 +428,20 @@ function buildClaudeArgs(opts: {
     args.push("--append-system-prompt", opts.systemPrompt);
   }
 
-  if (opts.withMcp) {
-    const mcpPath = getMcpServerPath();
-    if (!mcpPath) {
-      log.llm.warn("panopticon MCP server not found for Claude headless run");
-      return null;
-    }
-    args.push(
-      "--strict-mcp-config",
-      "--mcp-config",
-      JSON.stringify({
-        mcpServers: {
-          panopticon: {
-            command: "node",
-            args: [mcpPath],
-          },
-        },
-      }),
-      "--allowedTools",
-      MCP_ALLOWED_TOOLS.join(" "),
-    );
+  if (mcpConfig) {
+    args.push("--strict-mcp-config", "--mcp-config", mcpConfig);
   }
 
   return args;
+}
+
+function availableClaudeBuiltIns(allowedTools: string[]): string[] {
+  const builtIns = new Set<string>();
+  for (const tool of allowedTools) {
+    const name = tool.split("(")[0]?.trim();
+    if (name && /^[A-Z][A-Za-z0-9_]*$/.test(name)) builtIns.add(name);
+  }
+  return [...builtIns];
 }
 
 function buildCodexArgs(
@@ -557,6 +590,7 @@ function invokeClaudeLlm(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    allowedTools?: string[];
   },
 ): string | null {
   const args = buildClaudeArgs({
@@ -565,6 +599,7 @@ function invokeClaudeLlm(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
   if (!args) return null;
 
@@ -617,6 +652,7 @@ async function invokeClaudeLlmAsync(
     withMcp?: boolean;
     systemPrompt?: string;
     model?: string | null;
+    allowedTools?: string[];
   },
 ): Promise<string | null> {
   const args = buildClaudeArgs({
@@ -625,6 +661,7 @@ async function invokeClaudeLlmAsync(
     withMcp: opts.withMcp,
     systemPrompt: opts.systemPrompt,
     model: opts.model,
+    allowedTools: opts.allowedTools,
   });
   if (!args) return null;
 

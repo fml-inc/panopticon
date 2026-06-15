@@ -133,6 +133,7 @@ describe("summary llm wrapper", () => {
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.CLAUDE_CODE_USE_VERTEX;
     delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+    delete process.env.PANOPTICON_FRENEMY_ROLE;
   });
 
   afterEach(() => {
@@ -330,6 +331,27 @@ describe("summary llm wrapper", () => {
     expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it("applies async per-invocation env overrides without mutating process env", async () => {
+    process.env.PANOPTICON_FRENEMY_ROLE = "global";
+    const { invokeLlmAsync } = await loadLlm();
+
+    await expect(
+      invokeLlmAsync("Review this", {
+        envOverrides: { PANOPTICON_FRENEMY_ROLE: "frenemy" },
+      }),
+    ).resolves.toBe("OK");
+
+    const [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      {
+        env: Record<string, string>;
+      },
+    ];
+    expect(options.env.PANOPTICON_FRENEMY_ROLE).toBe("frenemy");
+    expect(process.env.PANOPTICON_FRENEMY_ROLE).toBe("global");
+  });
+
   it("returns null for structured CLI errors even when stdout is populated", async () => {
     spawnSyncMock.mockReturnValue({
       stdout: Buffer.from(
@@ -389,6 +411,45 @@ describe("summary llm wrapper", () => {
         "mcp__panopticon__status",
         "mcp__panopticon__session_summary_detail",
       ].join(" "),
+    );
+  });
+
+  it("merges workspace tools with MCP into ONE --allowedTools (frenemy case)", async () => {
+    const { invokeLlm } = await loadLlm();
+
+    expect(
+      invokeLlm("Review this", {
+        withMcp: true,
+        allowedTools: ["Read", "Grep"],
+      }),
+    ).toBe("OK");
+
+    const [, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
+    // Exactly one --allowedTools flag (two would clobber each other).
+    expect(args.filter((a) => a === "--allowedTools")).toHaveLength(1);
+    // Workspace tools AND the panopticon MCP tools, together.
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe(
+      "Read Grep mcp__panopticon__timeline mcp__panopticon__get mcp__panopticon__query mcp__panopticon__search mcp__panopticon__status mcp__panopticon__session_summary_detail",
+    );
+    // Built-ins are restricted to the requested workspace set; --allowedTools
+    // pre-approves exact workspace+MCP tools, while --tools limits availability.
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read Grep");
+    expect(args).toContain("--mcp-config");
+  });
+
+  it("restricts Claude built-ins while allowing exact Bash command patterns", async () => {
+    const { invokeLlm } = await loadLlm();
+
+    expect(
+      invokeLlm("Review this", {
+        allowedTools: ["Read", "Bash(git diff:*)", "Bash(git show:*)"],
+      }),
+    ).toBe("OK");
+
+    const [, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read Bash");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe(
+      "Read Bash(git diff:*) Bash(git show:*)",
     );
   });
 

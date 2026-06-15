@@ -1,12 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { noteRoomActivity } from "../bus/activity-wait.js";
+import { roomForSession } from "../bus/room.js";
 import { config } from "../config.js";
 import {
   captureUserConfigSnapshot,
   extractWrittenFilePath,
   isTrackedUserConfigPath,
 } from "../config-capture.js";
+import { markDelivered, readAgentMessages } from "../db/bus.js";
 import { getDb } from "../db/schema.js";
 import {
   incrementEventTypeCount,
@@ -28,6 +31,11 @@ import {
   isObservedAbsolutePath,
   resolveFilePathFromCwd,
 } from "../paths.js";
+import {
+  endInstance,
+  getInstanceFirstSeen,
+  upsertInstance,
+} from "../presence/store.js";
 import { getProvider } from "../providers/index.js";
 import {
   type RepoInfo,
@@ -104,6 +112,10 @@ export interface HookInput {
   source?: string;
   target?: string;
   prompt?: string;
+  /** PID of the live agent process (handler's process.ppid). */
+  agent_pid?: number;
+  /** Session role marker, e.g. 'frenemy' (forwarded from PANOPTICON_FRENEMY_ROLE). */
+  role?: string;
   [key: string]: unknown;
 }
 
@@ -128,6 +140,151 @@ export function isPanopticonMcpTool(toolName: string): boolean {
     toolName.startsWith("mcp__panopticon__") ||
     toolName.startsWith("panopticon/")
   );
+}
+
+/** A session launched as a frenemy sidecar carries this role marker (forwarded
+ *  from PANOPTICON_FRENEMY_ROLE by the hook handler). It must not receive bus
+ *  delivery, so its own challenges never loop back into it. */
+function isFrenemySession(data: HookInput): boolean {
+  return data.role === "frenemy";
+}
+
+function joinContext(...parts: (string | null | undefined)[]): string {
+  return parts.filter((p): p is string => Boolean(p)).join("\n\n");
+}
+
+// Only surface invites posted within this window, so a session sees recent open
+// invitations (even if it joined the room after they were posted) but not stale
+// ones. Per-session dedupe is durable, via the agent_message_deliveries table.
+const BEACON_WINDOW_MS = 15 * 60_000;
+
+// Throttle the unread nudge: re-nudge a session only when a NEW message has
+// arrived since its last nudge (keyed on the highest unread id). In-memory,
+// resets on server restart (fine — a restart re-nudges current unread once).
+const lastNudgedMaxId = new Map<string, number>();
+
+/** Test seam: clear the nudge throttle state. */
+export function _resetNudgeState(): void {
+  lastNudgedMaxId.clear();
+}
+
+/**
+ * Unread-message nudge (non-consuming). The bus is a plain append-only chat:
+ * findings and chat are broadcast to the room and triaged by reading the thread.
+ * Rather than force-feed bodies into the hook (and consume them — lost if the
+ * model ignores the turn), inject a compact "you have N unread, call bus_read"
+ * pointer and leave the messages UNREAD. Reading (bus_read) is what marks them
+ * seen. Throttled to once per new highest-unread id so it isn't repeated on
+ * every tool call.
+ *
+ * Throttle caveat (intentional, not a bug): re-nudge fires only when a NEWER
+ * message lands. If an agent partially reads the backlog, the still-unread
+ * remainder isn't re-nudged until something new arrives — advisory, "inform not
+ * force," per the append-only-chat model. A standing finding the agent ignored
+ * thus shows once; resolution is emergent, not force-fed.
+ */
+const NUDGE_LIMIT = 20;
+
+function nudgeUnread(
+  sessionId: string,
+  room: string,
+  nowMs: number,
+): string | null {
+  // first_seen_ms is the session's join time (seeded before this runs); fail
+  // closed to now so a fresh session never sees pre-existing room backlog.
+  const sinceMs = getInstanceFirstSeen(sessionId) ?? nowMs;
+  const unread = readAgentMessages({
+    room,
+    kinds: ["challenge", "chat"],
+    // Broadcasts + messages addressed to me; never my own.
+    toSession: sessionId,
+    excludeFrom: sessionId,
+    undeliveredTo: sessionId,
+    sinceMs,
+    sinceId: 0,
+    limit: NUDGE_LIMIT,
+  });
+  if (unread.length === 0) return null;
+  const maxId = unread[unread.length - 1].id;
+  // Already nudged for this highest id — don't repeat until something newer lands.
+  if ((lastNudgedMaxId.get(sessionId) ?? 0) >= maxId) return null;
+  lastNudgedMaxId.set(sessionId, maxId);
+
+  const previews = unread
+    .slice(-3)
+    .map((m) => {
+      const who = m.from_session === "frenemy" ? "frenemy" : m.from_session;
+      const tag = m.kind === "challenge" ? "🔴" : "💬";
+      const body = m.body.length > 100 ? `${m.body.slice(0, 100)}…` : m.body;
+      return `  ${tag} #${m.id} ${who}: ${body}`;
+    })
+    .join("\n");
+  // "20+" when the read hit the cap, so the count doesn't silently under-report.
+  const count =
+    unread.length >= NUDGE_LIMIT ? `${NUDGE_LIMIT}+` : `${unread.length}`;
+  return `🔔 ${count} unread message(s) in this room (incl. frenemy findings). Call bus_read to catch up.\n${previews}`;
+}
+
+/**
+ * Recruitment beacon provider: room-broadcast invites/announcements, shown once
+ * per session (not consumed — other sessions still see them) and only while
+ * fresh. Phrased to INFORM, not command: a busy agent may ignore it. This is the
+ * "who's around / weigh in if relevant" channel, distinct from a directed
+ * challenge.
+ */
+function drainBeacons(
+  sessionId: string,
+  room: string,
+  nowMs: number,
+): string | null {
+  const invites = readAgentMessages({
+    room,
+    kinds: ["invite"],
+    toSession: sessionId,
+    excludeFrom: sessionId, // don't invite a session to its own discussion
+    undeliveredTo: sessionId, // per-recipient: each session sees it once (durable)
+    sinceMs: nowMs - BEACON_WINDOW_MS, // window: only recent open invites
+    sinceId: 0,
+    limit: 10,
+  });
+  if (invites.length === 0) return null;
+  markDelivered(
+    invites.map((m) => m.id),
+    sessionId,
+    nowMs,
+  );
+  return invites
+    .map(
+      (m) =>
+        `📣 Open in your workspace: ${m.body}\n(You may join with /panopticon debate join — invited, not required.)`,
+    )
+    .join("\n");
+}
+
+/**
+ * Layer 2 bus delivery (advisory inject). Runs the coordination-context provider
+ * list for this session and returns the combined additionalContext. Providers:
+ * an unread-message nudge (non-consuming pointer; reading via bus_read marks
+ * seen) and recruitment beacons (once-per-session). The shape generalizes —
+ * sidequest claim-conflicts slot in as another provider. Best-effort; never throws.
+ */
+function drainCoordinationContext(
+  sessionId: string,
+  room: string | null,
+): string | null {
+  if (!room) return null;
+  try {
+    const nowMs = Date.now();
+    return (
+      joinContext(
+        nudgeUnread(sessionId, room, nowMs),
+        drainBeacons(sessionId, room, nowMs),
+      ) || null
+    );
+  } catch (err) {
+    log.hooks.error("bus coordination drain failed:", err);
+    return null;
+  }
 }
 
 /**
@@ -419,71 +576,61 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         : undefined;
   const targetId = target?.id ?? providerId ?? "unknown";
 
-  // Check if this event type is enabled in the logging config.
-  // Permission enforcement still runs even for disabled events so that hook
-  // responses are not silently dropped.
-  if (!isEventEnabled(eventType)) {
-    // Skip storage but still handle permission enforcement below
-    if (
-      (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
-      toolName
-    ) {
-      return buildPermissionResponse(eventType, toolName, data, target);
-    }
-    return {};
-  }
+  const eventEnabled = isEventEnabled(eventType);
 
-  const hookEventId = insertHookEvent({
-    session_id: sessionId,
-    event_type: eventType,
-    timestamp_ms: timestampMs,
-    cwd: data.cwd,
-    repository: repo ?? undefined,
-    tool_name: toolName ?? undefined,
-    target: targetId,
-    payload: data,
-  });
-
-  try {
-    recordIntentClaimsFromHookEvent({
-      sessionId,
-      eventType,
-      hookEventId,
-      timestampMs,
-      cwd: typeof data.cwd === "string" ? data.cwd : null,
-      repository: repo ?? null,
-      payload: data as Record<string, unknown>,
+  if (eventEnabled) {
+    const hookEventId = insertHookEvent({
+      session_id: sessionId,
+      event_type: eventType,
+      timestamp_ms: timestampMs,
+      cwd: data.cwd,
+      repository: repo ?? undefined,
+      tool_name: toolName ?? undefined,
+      target: targetId,
+      payload: data,
     });
-  } catch (err) {
-    log.hooks.error("intent claim ingest failed:", err);
-  }
 
-  // Mirror the gate in recordIntentClaimsFromHookEvent — that function uses
-  // EDIT_TOOL_NAMES which includes Codex's edit_file/write_file/create_file/
-  // apply_patch. If we hardcode Claude-only tool names here, Codex
-  // PostToolUse events write claims but never trigger a projection refresh,
-  // so intent-backed MCP tools serve stale data mid-turn until the next
-  // UserPromptSubmit/Stop/SessionEnd event happens to land.
-  const shouldRefreshIntentProjection =
-    eventType === "UserPromptSubmit" ||
-    (eventType === "PostToolUse" &&
-      typeof toolName === "string" &&
-      isEditToolName(toolName));
-
-  if (shouldRefreshIntentProjection) {
     try {
-      rebuildIntentProjection({ sessionId });
+      recordIntentClaimsFromHookEvent({
+        sessionId,
+        eventType,
+        hookEventId,
+        timestampMs,
+        cwd: typeof data.cwd === "string" ? data.cwd : null,
+        repository: repo ?? null,
+        payload: data as Record<string, unknown>,
+      });
     } catch (err) {
-      log.hooks.error("intent projection refresh failed:", err);
+      log.hooks.error("intent claim ingest failed:", err);
     }
-  }
 
-  if (eventType === "Stop" || eventType === "SessionEnd") {
-    try {
-      reconcileLandedClaimsFromDisk({ sessionId });
-      rebuildIntentProjection({ sessionId });
-    } catch (err) {
-      log.hooks.error("intent reconciliation failed:", err);
+    // Mirror the gate in recordIntentClaimsFromHookEvent — that function uses
+    // EDIT_TOOL_NAMES which includes Codex's edit_file/write_file/create_file/
+    // apply_patch. If we hardcode Claude-only tool names here, Codex
+    // PostToolUse events write claims but never trigger a projection refresh,
+    // so intent-backed MCP tools serve stale data mid-turn until the next
+    // UserPromptSubmit/Stop/SessionEnd event happens to land.
+    const shouldRefreshIntentProjection =
+      eventType === "UserPromptSubmit" ||
+      (eventType === "PostToolUse" &&
+        typeof toolName === "string" &&
+        isEditToolName(toolName));
+
+    if (shouldRefreshIntentProjection) {
+      try {
+        rebuildIntentProjection({ sessionId });
+      } catch (err) {
+        log.hooks.error("intent projection refresh failed:", err);
+      }
+    }
+
+    if (eventType === "Stop" || eventType === "SessionEnd") {
+      try {
+        reconcileLandedClaimsFromDisk({ sessionId });
+        rebuildIntentProjection({ sessionId });
+      } catch (err) {
+        log.hooks.error("intent reconciliation failed:", err);
+      }
     }
   }
 
@@ -541,6 +688,38 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   }
   upsertSession(sessionFields);
 
+  // Generic instance presence: record/refresh this agent's liveness on every
+  // hook event. The pid (handler's process.ppid) lets the reaper actively detect
+  // kills; the heartbeat only distinguishes active from idle. Best-effort and
+  // never allowed to break ingest. `room` is the repository for now; Layer 1
+  // refines it to the workspace superset via resolveRoom.
+  try {
+    const agentPid =
+      typeof data.agent_pid === "number" && Number.isInteger(data.agent_pid)
+        ? data.agent_pid
+        : null;
+    const role = typeof data.role === "string" ? data.role : null;
+    if (eventType === "SessionEnd") {
+      endInstance(sessionId, "session_end", timestampMs);
+    } else {
+      upsertInstance({
+        session_id: sessionId,
+        target: targetId,
+        role,
+        pid: agentPid,
+        room: repo ?? null,
+        last_seen_ms: timestampMs,
+      });
+    }
+    // Wake any room-activity long-pollers (e.g. the frenemy reviewer) — but not
+    // for the frenemy's own events, so it never wakes itself.
+    if (repo && !isFrenemySession(data)) {
+      noteRoomActivity(repo, timestampMs);
+    }
+  } catch (err) {
+    log.hooks.error("instance presence upsert failed:", err);
+  }
+
   // Link subagent sessions to their parents in real-time.
   // SubagentStart fires on the PARENT session with agent_id identifying
   // the child. The subagent session ID follows the scanner convention:
@@ -565,66 +744,77 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
   }
 
-  // Increment event type + tool counts on the session
-  incrementEventTypeCount(sessionId, eventType);
-  if (
-    (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
-    toolName
-  ) {
-    incrementToolCount(sessionId, toolName);
-  }
-
-  // Populate session junction tables — greedily resolve all repos touched
-  // by this event (primary cwd + any paths in tool_input).
-  const allRepos = resolveAllEventRepos(data);
-  for (const { repo: r, dir, branch } of allRepos) {
-    const gitId = resolveGitIdentity(dir);
-    // Capture HEAD only at SessionStart: it is the replay anchor (the code
-    // state the session began from). Resolving it per-event would add a
-    // git call to the hot path; first-write-wins in the upsert preserves
-    // the start value as the working tree moves during the session.
-    const headSha =
-      eventType === "SessionStart" ? resolveGitHeadSha(dir) : null;
-    upsertSessionRepository(sessionId, r, timestampMs, gitId, branch, headSha);
-
-    // Capture repo config on first encounter per session
-    const repoKey = `${sessionId}:${r}`;
-    if (!seenSessionRepos.has(repoKey)) {
-      seenSessionRepos.add(repoKey);
-      try {
-        const cfg = readConfig(dir);
-        const gitRoot = resolveGitRoot(dir);
-        const localSettingsPath = path.join(
-          gitRoot ?? dir,
-          ".claude",
-          "settings.local.json",
-        );
-        insertRepoConfigSnapshot({
-          repository: r,
-          cwd: dir,
-          sessionId,
-          hooks: cfg.project?.hooks ?? [],
-          mcpServers: cfg.project?.mcpServers ?? [],
-          commands: cfg.project?.commands ?? [],
-          agents: cfg.project?.agents ?? [],
-          rules: cfg.project?.rules ?? [],
-          localHooks: cfg.projectLocal?.hooks ?? [],
-          localMcpServers: cfg.projectLocal?.mcpServers ?? [],
-          localPermissions: cfg.projectLocal?.permissions ?? {
-            allow: [],
-            ask: [],
-            deny: [],
-          },
-          localIsGitignored: isGitignored(localSettingsPath, gitRoot ?? dir),
-          instructions: cfg.instructions,
-        });
-      } catch {
-        // Non-fatal — config scan failure shouldn't break hook processing
-      }
+  if (eventEnabled) {
+    // Increment event type + tool counts on the session
+    incrementEventTypeCount(sessionId, eventType);
+    if (
+      (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
+      toolName
+    ) {
+      incrementToolCount(sessionId, toolName);
     }
   }
-  if (data.cwd) {
-    upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+
+  if (eventEnabled) {
+    // Populate session junction tables — greedily resolve all repos touched
+    // by this event (primary cwd + any paths in tool_input).
+    const allRepos = resolveAllEventRepos(data);
+    for (const { repo: r, dir, branch } of allRepos) {
+      const gitId = resolveGitIdentity(dir);
+      // Capture HEAD only at SessionStart: it is the replay anchor (the code
+      // state the session began from). Resolving it per-event would add a
+      // git call to the hot path; first-write-wins in the upsert preserves
+      // the start value as the working tree moves during the session.
+      const headSha =
+        eventType === "SessionStart" ? resolveGitHeadSha(dir) : null;
+      upsertSessionRepository(
+        sessionId,
+        r,
+        timestampMs,
+        gitId,
+        branch,
+        headSha,
+      );
+
+      // Capture repo config on first encounter per session
+      const repoKey = `${sessionId}:${r}`;
+      if (!seenSessionRepos.has(repoKey)) {
+        seenSessionRepos.add(repoKey);
+        try {
+          const cfg = readConfig(dir);
+          const gitRoot = resolveGitRoot(dir);
+          const localSettingsPath = path.join(
+            gitRoot ?? dir,
+            ".claude",
+            "settings.local.json",
+          );
+          insertRepoConfigSnapshot({
+            repository: r,
+            cwd: dir,
+            sessionId,
+            hooks: cfg.project?.hooks ?? [],
+            mcpServers: cfg.project?.mcpServers ?? [],
+            commands: cfg.project?.commands ?? [],
+            agents: cfg.project?.agents ?? [],
+            rules: cfg.project?.rules ?? [],
+            localHooks: cfg.projectLocal?.hooks ?? [],
+            localMcpServers: cfg.projectLocal?.mcpServers ?? [],
+            localPermissions: cfg.projectLocal?.permissions ?? {
+              allow: [],
+              ask: [],
+              deny: [],
+            },
+            localIsGitignored: isGitignored(localSettingsPath, gitRoot ?? dir),
+            instructions: cfg.instructions,
+          });
+        } catch {
+          // Non-fatal — config scan failure shouldn't break hook processing
+        }
+      }
+    }
+    if (data.cwd) {
+      upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+    }
   }
 
   // Capture user config on SessionStart (once per session) — baseline
@@ -656,6 +846,17 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       data,
       target,
     );
+    // Bus delivery (Layer 2): drain pending frenemy challenges for this session
+    // and compose them with any provenance context below. Advisory inject —
+    // eventual and best-effort. Gated by the flag; frenemy sidecars are excluded
+    // so their own challenges never loop back to them.
+    const challengeCtx =
+      eventType === "PreToolUse" &&
+      canInjectPreToolUseAdditionalContext(target) &&
+      config.enableBusDelivery &&
+      !isFrenemySession(data)
+        ? drainCoordinationContext(sessionId, repo ?? roomForSession(sessionId))
+        : null;
     // Point-of-use provenanced file context: when an additionalContext-capable
     // target is about to edit a file with prior history, surface it alongside
     // the permission decision. Codex PreToolUse allow responses stay a no-op;
@@ -677,7 +878,10 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
             : timestampMs,
       });
       if (additionalContext) {
-        return mergePreToolUseContext(permission, additionalContext);
+        return mergePreToolUseContext(
+          permission,
+          joinContext(challengeCtx, additionalContext),
+        );
       }
     }
     // Read-time provenance context stays behind its own flag, but shares the
@@ -698,30 +902,51 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
             : timestampMs,
       });
       if (additionalContext) {
-        return mergePreToolUseContext(permission, additionalContext);
+        return mergePreToolUseContext(
+          permission,
+          joinContext(challengeCtx, additionalContext),
+        );
       }
+    }
+    // No provenance context fired — still deliver a pending challenge on its own.
+    if (challengeCtx) {
+      return mergePreToolUseContext(permission, challengeCtx);
     }
     return permission;
   }
 
-  if (
-    eventType === "UserPromptSubmit" &&
-    config.enableUserPromptSubmitContextInjection &&
-    // Injection is disabled on the session's first prompt by design: a vague
-    // opener only matches ambient repo vocabulary, and SessionStart history
-    // injection already covers session entry. Only mid-session prompts inject.
-    !isFirstUserPromptSubmit(sessionId)
-  ) {
-    const response = buildUserPromptSubmitContextResponse({
-      ...data,
-      repository: repo ?? data.repository,
-      is_first_user_prompt_submit: false,
-      now_ms:
-        typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
-          ? data.now_ms
-          : timestampMs,
-    });
-    if (response) return response;
+  if (eventType === "UserPromptSubmit") {
+    // Bus delivery: drain pending challenges at the prompt boundary too, so a
+    // challenge that arrived between turns lands before the next prompt runs.
+    const challengeCtx =
+      config.enableBusDelivery && !isFrenemySession(data)
+        ? drainCoordinationContext(sessionId, repo ?? roomForSession(sessionId))
+        : null;
+    // Local prompt-relevant history (the existing injection). Disabled on the
+    // session's first prompt by design: a vague opener only matches ambient repo
+    // vocabulary, and SessionStart history injection already covers entry.
+    const localCtx =
+      config.enableUserPromptSubmitContextInjection &&
+      !isFirstUserPromptSubmit(sessionId)
+        ? safeUserPromptSubmitLocalContext({
+            ...data,
+            repository: repo ?? data.repository,
+            is_first_user_prompt_submit: false,
+            now_ms:
+              typeof data.now_ms === "number" && Number.isFinite(data.now_ms)
+                ? data.now_ms
+                : timestampMs,
+          })
+        : null;
+    const additionalContext = joinContext(challengeCtx, localCtx);
+    if (additionalContext) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext,
+        },
+      };
+    }
   }
 
   if (
@@ -759,18 +984,9 @@ function buildSessionStartContextResponse(
   }
 }
 
-function buildUserPromptSubmitContextResponse(
-  data: HookInput,
-): Record<string, unknown> | null {
+function safeUserPromptSubmitLocalContext(data: HookInput): string | null {
   try {
-    const additionalContext = buildUserPromptSubmitLocalContext(data);
-    if (!additionalContext) return null;
-    return {
-      hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext,
-      },
-    };
+    return buildUserPromptSubmitLocalContext(data);
   } catch (err) {
     log.hooks.error("user prompt submit context build failed:", err);
     return null;

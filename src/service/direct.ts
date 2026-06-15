@@ -1,6 +1,13 @@
+import { noteRoomActivity, waitForRoomActivity } from "../bus/activity-wait.js";
+import { roomForSession } from "../bus/room.js";
 import { rebuildActiveClaims } from "../claims/canonicalize.js";
 import { runIntegrityCheck } from "../claims/integrity.js";
 import { config } from "../config.js";
+import {
+  insertAgentMessage,
+  markDelivered,
+  readAgentMessages,
+} from "../db/bus.js";
 import {
   CLAIMS_ACTIVE_COMPONENT,
   CLAIMS_PROJECTION_COMPONENT,
@@ -41,6 +48,10 @@ import {
   searchIntent,
 } from "../intent/query.js";
 import { log } from "../log.js";
+import {
+  getInstanceFirstSeen,
+  readInstancesResult,
+} from "../presence/store.js";
 import {
   rebuildClaimsDerivedState,
   reparseAll,
@@ -157,6 +168,16 @@ function maybeMarkClaimsActiveCurrent(sessionId: string | undefined): void {
   }
 }
 
+/** Resolve a bus room from an explicit room or the caller's recorded session. */
+function resolveBusRoom(input: {
+  room?: string;
+  session_id?: string;
+}): string | null {
+  if (input.room) return input.room;
+  if (input.session_id) return roomForSession(input.session_id);
+  return null;
+}
+
 export function createDirectPanopticonService(): PanopticonService {
   return {
     async listSessions(opts) {
@@ -188,6 +209,157 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async dbStats() {
       return dbStats();
+    },
+    async instances(opts) {
+      return readInstancesResult(opts ?? {});
+    },
+    async busSend(input) {
+      const room = resolveBusRoom(input);
+      if (!room) {
+        throw new Error(
+          "bus_send: could not resolve a room (pass room, or a session_id with a recorded room)",
+        );
+      }
+      const id = insertAgentMessage({
+        room,
+        from_session: input.session_id ?? input.from ?? "external",
+        to_session: input.to ?? null,
+        kind: input.kind,
+        body: input.body,
+        subject: input.subject ?? null,
+        reply_to: input.reply_to ?? null,
+        ref_tool: input.ref_tool ?? null,
+        ref_path: input.ref_path ?? null,
+        source: input.source ?? null,
+        created_at_ms: Date.now(),
+      });
+      // Wake anyone long-polling the room for a live conversation. Gated to
+      // chat so a frenemy challenge/activity post can't wake the frenemy's own
+      // long-poll (which would re-trigger a review storm). Hook events already
+      // note activity for the frenemy path; this covers messages that aren't
+      // hooks — the peer's chat send is what a waiting agent is blocked on.
+      if (input.kind === "chat") {
+        noteRoomActivity(room, Date.now());
+      }
+      return { id, room };
+    },
+    async busRead(input) {
+      const room = resolveBusRoom(input);
+      if (!room)
+        return { room: null, cursor: input.sinceId ?? 0, messages: [] };
+      const messages = readAgentMessages({
+        room,
+        sinceId: input.sinceId,
+        kinds: input.kinds,
+        fromSession: input.from,
+        subjectPrefixes: input.subjectPrefixes,
+        // A reader sees broadcasts + messages addressed to it, never its own.
+        toSession: input.session_id,
+        excludeFrom: input.session_id,
+        limit: input.limit,
+      });
+      // Reading IS the "I've seen this" action: record per-recipient
+      // read-receipts so the unread nudge stops pointing at what was just read.
+      // Append-only and idempotent (INSERT OR IGNORE per message+session).
+      //
+      // This shares the delivery table with busRecv (chat wait) ON PURPOSE: a
+      // message seen via EITHER path is seen once, no double-delivery. Receipts
+      // are per-recipient, so one session's read never affects another's chat
+      // wait. (An agent is either chatting — blocked in recv — or working and
+      // triaging via bus_read; it doesn't do both for the same turn.)
+      if (input.session_id && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          input.session_id,
+          Date.now(),
+        );
+      }
+      const cursor = messages.length
+        ? messages[messages.length - 1].id
+        : (input.sinceId ?? 0);
+      return { room, cursor, messages };
+    },
+    async busRecv(input) {
+      const room = resolveBusRoom(input);
+      if (!room)
+        return { room: null, cursor: input.sinceId ?? 0, messages: [] };
+      const sessionId = input.session_id;
+      if (!sessionId) {
+        const messages = readAgentMessages({
+          room,
+          kinds: input.kinds ?? ["chat"],
+          sinceMs: input.sinceMs,
+          sinceId: input.sinceId,
+          limit: input.limit ?? 50,
+        });
+        const cursor = messages.length
+          ? messages[messages.length - 1].id
+          : (input.sinceId ?? 0);
+        return { room, cursor, messages };
+      }
+      // Catch up on what this session hasn't seen, NOT the room tip — so a
+      // message sent before the caller started reading isn't skipped as history
+      // (the opener race). Mirrors the hook drain / unread nudge EXACTLY:
+      // per-recipient consume-once via the delivery table, scoped to the
+      // session's JOIN time (first_seen), and failing closed to `now` when there
+      // is no presence row — identical to `nudgeUnread` (getInstanceFirstSeen ??
+      // now). Same gate on both sides ⇒ the reader returns and marks exactly the
+      // unread set the nudge counts. Directed mail is always delivered.
+      const sinceMs =
+        input.sinceMs ?? getInstanceFirstSeen(sessionId) ?? Date.now();
+      const messages = readAgentMessages({
+        room,
+        kinds: input.kinds ?? ["chat"],
+        toSession: sessionId,
+        excludeFrom: sessionId,
+        undeliveredTo: sessionId,
+        sinceMs,
+        // id > 0 ascending: oldest-unseen first.
+        sinceId: input.sinceId ?? 0,
+        limit: input.limit ?? 50,
+      });
+      if (sessionId && messages.length > 0) {
+        markDelivered(
+          messages.map((m) => m.id),
+          sessionId,
+          Date.now(),
+        );
+      }
+      const cursor = messages.length
+        ? messages[messages.length - 1].id
+        : (input.sinceId ?? 0);
+      return { room, cursor, messages };
+    },
+    async waitForActivity(input) {
+      const room = resolveBusRoom(input ?? {});
+      if (!room) return { activityMs: null, room: null };
+      // Clamp below the HTTP client's tool timeout so the long-poll always
+      // returns before the request is cut off.
+      const timeoutMs = Math.min(
+        Math.max(1000, Math.floor(input.timeoutMs ?? 25_000)),
+        28_000,
+      );
+      const activityMs = await waitForRoomActivity(
+        room,
+        input.sinceMs ?? 0,
+        timeoutMs,
+      );
+      return { activityMs, room };
+    },
+    async busRoster(input) {
+      const room = resolveBusRoom(input ?? {});
+      // bus_roster is your-room scoped: if we can't determine the caller's room,
+      // return an empty roster rather than silently widening to every workspace.
+      // (The generic `instances` tool is the explicit cross-room view.)
+      if (!room) {
+        return {
+          now_ms: Date.now(),
+          room: null,
+          counts: { active: 0, idle: 0, exited: 0, total: 0 },
+          instances: [],
+        };
+      }
+      return readInstancesResult({ room });
     },
     async intentForCode(opts) {
       return intentForCode(opts);

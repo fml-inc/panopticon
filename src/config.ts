@@ -146,6 +146,43 @@ const DEFAULT_SERVER_START_BACKOFF_SCHEDULE_MS = [
 ] as const;
 const DEFAULT_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_LOG_ROTATE_FILES = 5;
+const DEFAULT_FRENEMY_SETTLE_MS = 3_000;
+const DEFAULT_FRENEMY_RECONCILE_MS = 5_000;
+const DEFAULT_FRENEMY_IDLE_STOP_MS = 10 * 60_000;
+
+const SESSION_SUMMARY_RUNNER_MODELS: Record<
+  SessionSummaryRunnerName,
+  string | null
+> = {
+  claude: process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? "sonnet",
+  codex: process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null,
+};
+
+const FRENEMY_RUNNER = parseSessionSummaryRunner(
+  process.env.PANOPTICON_FRENEMY_RUNNER,
+  "claude",
+);
+
+function explicitSessionSummaryModelForRunner(
+  runner: SessionSummaryRunnerName,
+): string | null {
+  return runner === "codex"
+    ? (process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null)
+    : (process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? null);
+}
+
+export function resolveFrenemyModelConfig(
+  runner: SessionSummaryRunnerName,
+): string | null {
+  // Frenemy-specific config wins. Otherwise inherit an explicitly configured
+  // enrichment model for the selected runner. When the enrichment model is only
+  // its built-in default, return null so the frenemy driver keeps its own
+  // runner-specific default policy.
+  return (
+    process.env.PANOPTICON_FRENEMY_MODEL ??
+    explicitSessionSummaryModelForRunner(runner)
+  );
+}
 
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
@@ -225,6 +262,28 @@ export const config = {
     "PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW",
     false,
   ),
+  // Agent-to-agent bus delivery: inject unread-message nudges and recruitment
+  // beacons into hook additionalContext. Default off; the bus tables and MCP
+  // tools work regardless of this flag. Instance presence and room activity
+  // long-polling are always on, independent of this flag.
+  enableBusDelivery: envBool("PANOPTICON_ENABLE_BUS_DELIVERY", false),
+  // Daemon-managed frenemy: when enabled, the server maintains one read-only
+  // reviewer loop for every room with at least one live non-frenemy agent.
+  enableFrenemy: envBool("PANOPTICON_ENABLE_FRENEMY", false),
+  frenemyRunner: FRENEMY_RUNNER,
+  frenemyModel: resolveFrenemyModelConfig(FRENEMY_RUNNER),
+  frenemySettleMs: envInt(
+    "PANOPTICON_FRENEMY_SETTLE_MS",
+    DEFAULT_FRENEMY_SETTLE_MS,
+  ),
+  frenemyReconcileMs: envInt(
+    "PANOPTICON_FRENEMY_RECONCILE_MS",
+    DEFAULT_FRENEMY_RECONCILE_MS,
+  ),
+  frenemyIdleStopMs: envInt(
+    "PANOPTICON_FRENEMY_IDLE_STOP_MS",
+    DEFAULT_FRENEMY_IDLE_STOP_MS,
+  ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,
@@ -240,10 +299,7 @@ export const config = {
     process.env.PANOPTICON_SESSION_SUMMARY_FALLBACK_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,
   ),
-  sessionSummaryRunnerModels: {
-    claude: process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? "sonnet",
-    codex: process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null,
-  },
+  sessionSummaryRunnerModels: SESSION_SUMMARY_RUNNER_MODELS,
   sessionSummaryEnrichLimit: envInt(
     "PANOPTICON_SESSION_SUMMARY_ENRICH_LIMIT",
     5,
