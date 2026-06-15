@@ -178,13 +178,6 @@ function resolveBusRoom(input: {
   return null;
 }
 
-/**
- * How far back a first `busRecv` catches up on broadcast chat. Bounds the
- * one-time replay of unseen room history so a fresh waiter sees recent openers
- * but not ancient chatter. Directed mail ignores this (always delivered).
- */
-const CHAT_CATCHUP_WINDOW_MS = 10 * 60 * 1000;
-
 export function createDirectPanopticonService(): PanopticonService {
   return {
     async listSessions(opts) {
@@ -234,6 +227,7 @@ export function createDirectPanopticonService(): PanopticonService {
         kind: input.kind,
         body: input.body,
         subject: input.subject ?? null,
+        reply_to: input.reply_to ?? null,
         ref_tool: input.ref_tool ?? null,
         ref_path: input.ref_path ?? null,
         source: input.source ?? null,
@@ -289,17 +283,17 @@ export function createDirectPanopticonService(): PanopticonService {
         return { room: null, cursor: input.sinceId ?? 0, messages: [] };
       const sessionId = input.session_id;
       // Catch up on what this session hasn't seen, NOT the room tip — so a
-      // message sent before the caller started waiting isn't skipped as
-      // history (the opener race). Mirrors the hook drain: per-recipient
-      // consume-once via the delivery table. Broadcasts are bounded to the
-      // session's join time (or a recent window) so a first read doesn't
-      // replay ancient history; directed mail is always delivered.
+      // message sent before the caller started reading isn't skipped as history
+      // (the opener race). Mirrors the hook drain / unread nudge EXACTLY:
+      // per-recipient consume-once via the delivery table, scoped to the
+      // session's JOIN time (first_seen), and failing closed to `now` when there
+      // is no presence row — identical to `nudgeUnread` (getInstanceFirstSeen ??
+      // now). Same gate on both sides ⇒ the reader returns and marks exactly the
+      // unread set the nudge counts. Directed mail is always delivered.
       const sinceMs =
         input.sinceMs ??
-        Math.max(
-          sessionId ? (getInstanceFirstSeen(sessionId) ?? 0) : 0,
-          Date.now() - CHAT_CATCHUP_WINDOW_MS,
-        );
+        (sessionId ? getInstanceFirstSeen(sessionId) : null) ??
+        Date.now();
       const messages = readAgentMessages({
         room,
         kinds: input.kinds ?? ["chat"],

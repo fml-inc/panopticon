@@ -889,7 +889,9 @@ server.tool(
     "and sender identity are auto-detected from the calling session — pass " +
     "room/session_id only to override. Omit `to` to broadcast, or set it to a " +
     "specific session id. `kind` is free-form (e.g. challenge, chat); `subject` " +
-    "scopes claims (e.g. 'path:src/auth.ts').",
+    "scopes claims (e.g. 'path:src/auth.ts'). Set `reply_to` to the id of a " +
+    "message you're responding to (e.g. the challenge a resolution addresses) " +
+    "so the thread is navigable.",
   {
     session_id: z
       .string()
@@ -908,12 +910,18 @@ server.tool(
     kind: z.string().describe("Message kind, e.g. 'challenge' or 'chat'."),
     body: z.string().describe("Message text."),
     subject: z.string().optional().describe("Optional scope, e.g. 'path:...'."),
+    reply_to: z
+      .number()
+      .optional()
+      .describe(
+        "Id of the message this replies to, e.g. the challenge a resolution addresses.",
+      ),
     ref_path: z
       .string()
       .optional()
       .describe("Optional file the message is about."),
   },
-  async ({ session_id, room, to, kind, body, subject, ref_path }) => {
+  async ({ session_id, room, to, kind, body, subject, reply_to, ref_path }) => {
     const result = await service.busSend({
       session_id: session_id ?? SELF_SESSION_ID,
       room: room ?? SELF_ROOM,
@@ -921,6 +929,7 @@ server.tool(
       kind,
       body,
       subject,
+      reply_to,
       ref_path,
       source: "mcp",
     });
@@ -930,9 +939,12 @@ server.tool(
 
 server.tool(
   "bus_read",
-  "Read recent messages in your room (workspace). Your room is auto-detected " +
-    "from the calling session; you receive broadcasts plus messages addressed " +
-    "to you (never your own). Use `sinceId` as a cursor to poll only new messages.",
+  "Catch up on your UNREAD messages in your room — frenemy findings and chat " +
+    "broadcast to the room, plus anything addressed to you (never your own). " +
+    "Your room/identity are auto-detected. Reading MARKS THESE SEEN, so the " +
+    "'N unread' nudge clears and a repeat call won't re-return them. This is the " +
+    "right tool to call when you see an unread nudge — do NOT read the " +
+    "agent_messages table directly (that doesn't record that you've seen them).",
   {
     session_id: z
       .string()
@@ -942,22 +954,19 @@ server.tool(
       .string()
       .optional()
       .describe("Explicit room (overrides session_id)."),
-    sinceId: z
-      .number()
-      .optional()
-      .describe("Return only messages with id greater than this cursor."),
     kinds: z
       .array(z.string())
       .optional()
-      .describe("Restrict to these message kinds."),
-    limit: z.number().optional().describe("Max messages (default 200)."),
+      .describe("Restrict to these message kinds (default: challenge + chat)."),
+    limit: z.number().optional().describe("Max messages (default 50)."),
   },
-  async ({ session_id, room, sinceId, kinds, limit }) => {
-    const result = await service.busRead({
+  async ({ session_id, room, kinds, limit }) => {
+    // busRecv: returns only what's UNREAD for this session and marks it seen,
+    // scoped to when the session joined — so this closes the nudge↔read loop.
+    const result = await service.busRecv({
       session_id: session_id ?? SELF_SESSION_ID,
       room: room ?? SELF_ROOM,
-      sinceId,
-      kinds,
+      kinds: kinds ?? ["challenge", "chat"],
       limit,
     });
     return jsonContent(result);

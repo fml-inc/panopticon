@@ -138,6 +138,8 @@ export interface BusSendInput {
   kind: string;
   body: string;
   subject?: string;
+  /** Id of the message this references (e.g. the challenge a resolution resolves). */
+  reply_to?: number | null;
   ref_tool?: string;
   ref_path?: string;
   source?: string;
@@ -178,8 +180,9 @@ export interface BusRecvInput {
   sinceId?: number;
   /**
    * Only surface broadcasts created at/after this time (directed mail is always
-   * delivered). Defaults server-side to the session's join time, bounded to a
-   * recent window so a first read doesn't replay ancient room history.
+   * delivered). Defaults server-side to the session's join time (first_seen),
+   * failing closed to `now` when there is no presence row — matching the unread
+   * nudge exactly so a read returns precisely the set the nudge counts.
    */
   sinceMs?: number;
   limit?: number;

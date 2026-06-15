@@ -247,6 +247,8 @@ interface FrenemyDeps {
     source: string;
     /** Stable region+state key, so a finding can be deduped on re-review. */
     subject?: string;
+    /** Id of the challenge this message resolves (per-finding correlation). */
+    reply_to?: number;
   }) => Promise<unknown>;
   /** Read recent room messages (to see what's already been flagged). */
   busRead: (input: {
@@ -328,6 +330,18 @@ export function subjectFor(paths: string[], diffText: string): string {
 }
 
 /**
+ * The "where" (path list) part of a subject, independent of kind prefix and diff
+ * hash — so a `review:<where>#<a>` finding and a `resolved:<where>#<b>` resolution
+ * for the same files correlate. e.g. "review:bus/chat.ts#ab12" -> "bus/chat.ts".
+ */
+export function subjectWhere(subject: string): string {
+  const hashAt = subject.lastIndexOf("#");
+  const noHash = hashAt === -1 ? subject : subject.slice(0, hashAt);
+  const colon = noHash.indexOf(":");
+  return colon === -1 ? noHash : noHash.slice(colon + 1);
+}
+
+/**
  * One frenemy pass: for each live primary in the room, critique its activity
  * newer than the cursor and post any challenge. Returns the challenges sent.
  * Pure-ish: all I/O goes through `deps`, so it is unit-testable.
@@ -355,6 +369,18 @@ export async function runFrenemyOnce(
   // the frenemy's OWN messages in the result (a session_id would exclude them via
   // excludeFrom — exactly the ones we dedupe against).
   const seenSubjects = new Set<string>();
+  // The LATEST state per path-key (the "where" of a subject), in chronological
+  // (id-ascending) order — so a region that was flagged, resolved, then RE-flagged
+  // reads back as "flagged" (open) again, not permanently resolved. Tracking two
+  // independent sets (flagged/resolved) made a resolution stick forever and
+  // suppressed every later fix on the same file — the lifecycle bug the frenemy
+  // itself caught. (busRead with no sinceId returns oldest-first, so last write
+  // wins.)
+  const whereState = new Map<string, "flagged" | "resolved">();
+  // The message id of the latest OPEN challenge per where, so a resolution can
+  // reference the specific finding it addresses (reply_to) — per-finding
+  // correlation, not just the path-level `resolved:<where>` subject.
+  const openChallengeId = new Map<string, number>();
   try {
     const prior = await deps.busRead({
       room: opts.room,
@@ -362,8 +388,16 @@ export async function runFrenemyOnce(
       limit: 100,
     });
     for (const m of prior.messages) {
-      if (m.from_session === FRENEMY_FROM && m.subject)
-        seenSubjects.add(m.subject);
+      if (m.from_session !== FRENEMY_FROM || !m.subject) continue;
+      seenSubjects.add(m.subject);
+      const where = subjectWhere(m.subject);
+      if (m.subject.startsWith("review:")) {
+        whereState.set(where, "flagged");
+        openChallengeId.set(where, m.id);
+      } else if (m.subject.startsWith("resolved:")) {
+        whereState.set(where, "resolved");
+        openChallengeId.delete(where);
+      }
     }
   } catch {
     // Best-effort: if the read fails, fall through (may re-post, never crash).
@@ -428,7 +462,41 @@ export async function runFrenemyOnce(
     );
 
     const challenge = parseChallenge(raw);
-    if (!challenge) continue;
+    if (!challenge) {
+      // Critic SKIP'd → the change is clean. If this region had an OPEN finding
+      // (flagged earlier, not yet marked addressed), the issue looks fixed — post
+      // a resolution so the thread reflects it. Re-review-on-fix happens for free:
+      // the changed diff produced a new subject, so we got here instead of being
+      // deduped. Append-only — a plain ✅ message, deduped by a `resolved:`
+      // subject so it posts once per fix.
+      if (subject) {
+        const where = subjectWhere(subject);
+        // Resolve only an OPEN region (latest state flagged). The resolution
+        // references the specific challenge it addresses via reply_to (the open
+        // finding's message id), so a thread reads challenge → ✅ rather than
+        // correlating by `where` alone. NB: still triggered by a clean edit to
+        // the same path-set, so an unrelated clean edit to a file with a
+        // still-open finding can mark it addressed — an accepted false-positive
+        // of `where`-level *triggering* (the reply_to just makes the link exact).
+        if (whereState.get(where) === "flagged") {
+          const resolvedSubject = `resolved:${subject.slice("review:".length)}`;
+          await deps.busSend({
+            room: opts.room,
+            from: FRENEMY_FROM,
+            kind: "challenge",
+            body: `✅ Earlier finding on ${where} looks addressed.`,
+            source: "frenemy",
+            subject: resolvedSubject,
+            reply_to: openChallengeId.get(where),
+          });
+          whereState.set(where, "resolved");
+          openChallengeId.delete(where);
+          seenSubjects.add(resolvedSubject);
+          sent.push({ to: primary.session_id, body: `✅ addressed: ${where}` });
+        }
+      }
+      continue;
+    }
     // Broadcast to the ROOM, not the author. A finding is addressed to no one:
     // whoever is active reads the thread and decides to act. Directing it to the
     // session whose timeline triggered it is wrong — that session may be idle,
@@ -441,7 +509,11 @@ export async function runFrenemyOnce(
       source: "frenemy",
       subject: subject ?? undefined,
     });
-    if (subject) seenSubjects.add(subject);
+    if (subject) {
+      seenSubjects.add(subject);
+      // (Re)flag → this region is OPEN again, so a later fix can re-resolve it.
+      whereState.set(subjectWhere(subject), "flagged");
+    }
     // Tracked for the local log line only (which session's activity prompted it).
     sent.push({ to: primary.session_id, body: challenge });
   }

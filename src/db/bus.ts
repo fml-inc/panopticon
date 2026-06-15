@@ -8,7 +8,7 @@
 import { getDb } from "./schema.js";
 
 const MESSAGE_COLUMNS =
-  "id, room, from_session, to_session, kind, body, subject, ref_tool, ref_path, source, created_at_ms, delivered_at_ms";
+  "id, room, from_session, to_session, kind, body, subject, reply_to, ref_tool, ref_path, source, created_at_ms, delivered_at_ms";
 
 export interface AgentMessageInsert {
   room: string;
@@ -17,6 +17,8 @@ export interface AgentMessageInsert {
   kind: string;
   body: string;
   subject?: string | null;
+  /** Id of the message this references (e.g. the challenge a resolution resolves). */
+  reply_to?: number | null;
   ref_tool?: string | null;
   ref_path?: string | null;
   source?: string | null;
@@ -31,6 +33,7 @@ export interface AgentMessageRow {
   kind: string;
   body: string;
   subject: string | null;
+  reply_to: number | null;
   ref_tool: string | null;
   ref_path: string | null;
   source: string | null;
@@ -42,10 +45,10 @@ export function insertAgentMessage(row: AgentMessageInsert): number {
   const result = getDb()
     .prepare(
       `INSERT INTO agent_messages
-         (room, from_session, to_session, kind, body, subject,
+         (room, from_session, to_session, kind, body, subject, reply_to,
           ref_tool, ref_path, source, created_at_ms)
        VALUES
-         (@room, @from_session, @to_session, @kind, @body, @subject,
+         (@room, @from_session, @to_session, @kind, @body, @subject, @reply_to,
           @ref_tool, @ref_path, @source, @created_at_ms)`,
     )
     .run({
@@ -55,6 +58,7 @@ export function insertAgentMessage(row: AgentMessageInsert): number {
       kind: row.kind,
       body: row.body,
       subject: row.subject ?? null,
+      reply_to: row.reply_to ?? null,
       ref_tool: row.ref_tool ?? null,
       ref_path: row.ref_path ?? null,
       source: row.source ?? null,

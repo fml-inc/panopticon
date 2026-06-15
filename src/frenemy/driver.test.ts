@@ -17,6 +17,7 @@ import {
   parseChallenge,
   runFrenemyOnce,
   subjectFor,
+  subjectWhere,
 } from "./driver.js";
 
 function hookEvent(over: Partial<HookEvent>): HookEvent {
@@ -72,6 +73,12 @@ function makeDeps(
   }> = {},
 ) {
   const sends: Array<{ to: string | undefined; body: string }> = [];
+  const sendInputs: Array<{
+    to?: string;
+    body: string;
+    subject?: string;
+    reply_to?: number;
+  }> = [];
   const critiqueCalls: string[] = [];
   const deps = {
     busRoster: vi.fn(
@@ -80,9 +87,17 @@ function makeDeps(
     hookTimeline: vi.fn(async (input: { sessionId: string }) =>
       timeline(over.timelineFor ? over.timelineFor(input.sessionId) : []),
     ),
-    busSend: vi.fn(async (input: { to?: string; body: string }) => {
-      sends.push({ to: input.to, body: input.body });
-    }),
+    busSend: vi.fn(
+      async (input: {
+        to?: string;
+        body: string;
+        subject?: string;
+        reply_to?: number;
+      }) => {
+        sends.push({ to: input.to, body: input.body });
+        sendInputs.push(input);
+      },
+    ),
     busRead: vi.fn(async () => ({ messages: over.priorMessages ?? [] })),
     critique: vi.fn(async (activity: string) => {
       critiqueCalls.push(activity);
@@ -91,7 +106,7 @@ function makeDeps(
         : "CHALLENGE: that looks risky";
     }),
   };
-  return { deps, sends, critiqueCalls };
+  return { deps, sends, sendInputs, critiqueCalls };
 }
 
 const OPTS = { room: "fml-inc/panopticon" };
@@ -324,6 +339,16 @@ describe("subjectFor", () => {
   });
 });
 
+describe("subjectWhere", () => {
+  it("extracts the path part so findings and resolutions correlate", () => {
+    // A `review:` finding and a `resolved:` note for the same files share a where.
+    expect(subjectWhere("review:bus/chat.ts#ab12")).toBe("bus/chat.ts");
+    expect(subjectWhere("resolved:bus/chat.ts#cd34")).toBe("bus/chat.ts");
+    // subjectFor keeps the last two path segments.
+    expect(subjectWhere(subjectFor(["a/b/c.ts"], "d"))).toBe("b/c.ts");
+  });
+});
+
 describe("runFrenemyOnce read-the-room dedup", () => {
   let repo: string;
   const git = (...args: string[]): string =>
@@ -355,6 +380,7 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     kind: "challenge",
     body: "earlier finding",
     subject,
+    reply_to: null,
     ref_tool: null,
     ref_path: null,
     source: "frenemy",
@@ -399,5 +425,68 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     });
     await runFrenemyOnce(OPTS, new Map(), deps);
     expect(sends).toHaveLength(1);
+  });
+
+  // ── Resolution (re-review-on-fix) ──────────────────────────────────────────
+
+  it("posts a ✅ resolution when a previously-flagged region goes clean", async () => {
+    const { deps, sends, sendInputs } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP", // the change reviews clean now
+      // The frenemy flagged this same file earlier, at a different diff state.
+      priorMessages: [
+        priorFinding(subjectFor([join(repo, "f.txt")], "old buggy diff")),
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body).toContain("✅");
+    expect(sends[0].body).toContain("addressed");
+    // The ✅ references the specific open challenge (priorFinding id), not just
+    // the path — per-finding correlation via reply_to.
+    expect(sendInputs[0].reply_to).toBe(1);
+  });
+
+  it("does not resolve a region it never flagged", async () => {
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP",
+      // No prior finding — a clean region that was never flagged stays silent.
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(0);
+  });
+
+  it("does not re-resolve a region already marked addressed", async () => {
+    const where = subjectWhere(currentSubject());
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP",
+      priorMessages: [
+        priorFinding(subjectFor([join(repo, "f.txt")], "old buggy diff")), // flagged
+        priorFinding(`resolved:${where}#deadbeef`), // already resolved once
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(0);
+  });
+
+  it("re-resolves after a region is RE-flagged (latest state wins, not permanent)", async () => {
+    // The lifecycle bug a live frenemy caught: a file used to get only one ✅
+    // ever. A flag→fix→re-flag→fix cycle must resolve the SECOND fix too. Prior
+    // room state, chronological: flagged → resolved → re-flagged (latest = open).
+    const where = subjectWhere(currentSubject());
+    const { deps, sends } = makeDeps({
+      timelineFor: () => [edit()],
+      critiqueImpl: async () => "SKIP", // the second fix is clean
+      priorMessages: [
+        priorFinding(`review:${where}#h1`),
+        priorFinding(`resolved:${where}#h2`),
+        priorFinding(`review:${where}#h3`), // re-flagged after the resolution
+      ],
+    });
+    await runFrenemyOnce(OPTS, new Map(), deps);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body).toContain("addressed");
   });
 });

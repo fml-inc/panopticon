@@ -2114,8 +2114,11 @@ describe("server integration", () => {
     }
     function recv(session: string) {
       return post("/api/exec", {
+        // sinceMs:0 — these test sessions have no presence row, and busRecv now
+        // fails closed to `now` (matching the nudge); 0 keeps the test about
+        // consume-once / per-recipient, not the join-window.
         command: "bus-recv",
-        params: { room: ROOM, session_id: session },
+        params: { room: ROOM, session_id: session, sinceMs: 0 },
       });
     }
     function bodies(res: { body: unknown }): string[] {
@@ -2144,6 +2147,37 @@ describe("server integration", () => {
       expect(bodies(await recv("listener-3"))).toContain("hello room");
       // The sender never drains its own message.
       expect(bodies(await recv("peer-y"))).not.toContain("hello room");
+    });
+
+    it("catches up on frenemy FINDINGS (challenge kind) and marks them seen", async () => {
+      // The agent-facing catch-up (MCP bus_read) reads challenge + chat, so the
+      // 'N unread' nudge — which counts findings — actually clears when read.
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "frenemy",
+          kind: "challenge",
+          body: "eval() on peer input is RCE",
+        },
+      });
+      const recvKinds = (session: string) =>
+        post("/api/exec", {
+          command: "bus-recv",
+          params: {
+            room: ROOM,
+            session_id: session,
+            kinds: ["challenge", "chat"],
+            sinceMs: 0,
+          },
+        });
+      expect(bodies(await recvKinds("reader-f"))).toContain(
+        "eval() on peer input is RCE",
+      );
+      // Consume-once: reading marked it seen.
+      expect(bodies(await recvKinds("reader-f"))).not.toContain(
+        "eval() on peer input is RCE",
+      );
     });
   });
 

@@ -18,6 +18,7 @@ function msg(over: Partial<AgentMessageRow>): AgentMessageRow {
     kind: "chat",
     body: "hi",
     subject: null,
+    reply_to: null,
     ref_tool: null,
     ref_path: null,
     source: "chat",

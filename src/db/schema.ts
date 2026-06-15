@@ -607,6 +607,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   kind TEXT NOT NULL,
   body TEXT NOT NULL,
   subject TEXT,
+  reply_to INTEGER,
   ref_tool TEXT,
   ref_path TEXT,
   source TEXT,
@@ -774,6 +775,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_drain
   ON agent_messages(to_session, delivered_at_ms);
 CREATE INDEX IF NOT EXISTS idx_agent_messages_subject
   ON agent_messages(room, kind, subject);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_reply_to
+  ON agent_messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_amd_session
   ON agent_message_deliveries(session_id, message_id);
 
