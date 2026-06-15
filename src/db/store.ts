@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
+import { withBusyRetry } from "./busy-retry.js";
 import { getDb } from "./schema.js";
 
 const AUTOMATED_MODELS = new Set(["codex-auto-review"]);
@@ -170,39 +171,48 @@ export function upsertSessionRepository(
   headSha?: string | null,
 ): void {
   const db = getDb();
-  const existing = db
-    .prepare(
-      `SELECT 1 FROM session_repositories WHERE session_id = ? AND repository = ?`,
-    )
-    .get(sessionId, repository);
+  // Run the existence check and both writes in one transaction so the
+  // `!existing` decision can't race a concurrent insert (which would
+  // double-bump sync_seq), and so the whole upsert takes a single lock window
+  // instead of three. Retry the transaction on transient SQLITE_BUSY — WAL +
+  // busy_timeout don't cover the read→write upgrade contention seen on the
+  // high-frequency hook write path.
+  const apply = db.transaction(() => {
+    const existing = db
+      .prepare(
+        `SELECT 1 FROM session_repositories WHERE session_id = ? AND repository = ?`,
+      )
+      .get(sessionId, repository);
 
-  db.prepare(
-    `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch, head_sha)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(session_id, repository) DO UPDATE SET
-       git_user_name = COALESCE(session_repositories.git_user_name, excluded.git_user_name),
-       git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email),
-       branch = COALESCE(excluded.branch, session_repositories.branch),
-       -- First write wins: the SHA at session start is the replay anchor;
-       -- later events must not overwrite it as the working tree moves.
-       head_sha = COALESCE(session_repositories.head_sha, excluded.head_sha)`,
-  ).run(
-    sessionId,
-    repository,
-    timestampMs,
-    gitIdentity?.name ?? null,
-    gitIdentity?.email ?? null,
-    branch ?? null,
-    headSha ?? null,
-  );
-
-  // When a NEW repo is associated, bump sync_seq so the session re-syncs
-  // with updated repository info (avoids backend repo-filter rejections)
-  if (!existing) {
     db.prepare(
-      `UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?`,
-    ).run(sessionId);
-  }
+      `INSERT INTO session_repositories (session_id, repository, first_seen_ms, git_user_name, git_user_email, branch, head_sha)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, repository) DO UPDATE SET
+         git_user_name = COALESCE(session_repositories.git_user_name, excluded.git_user_name),
+         git_user_email = COALESCE(session_repositories.git_user_email, excluded.git_user_email),
+         branch = COALESCE(excluded.branch, session_repositories.branch),
+         -- First write wins: the SHA at session start is the replay anchor;
+         -- later events must not overwrite it as the working tree moves.
+         head_sha = COALESCE(session_repositories.head_sha, excluded.head_sha)`,
+    ).run(
+      sessionId,
+      repository,
+      timestampMs,
+      gitIdentity?.name ?? null,
+      gitIdentity?.email ?? null,
+      branch ?? null,
+      headSha ?? null,
+    );
+
+    // When a NEW repo is associated, bump sync_seq so the session re-syncs
+    // with updated repository info (avoids backend repo-filter rejections)
+    if (!existing) {
+      db.prepare(
+        `UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?`,
+      ).run(sessionId);
+    }
+  });
+  withBusyRetry(() => apply());
 }
 
 export function upsertSessionCwd(
@@ -442,8 +452,10 @@ export interface SessionUpsert {
 
 export function upsertSession(row: SessionUpsert): void {
   const db = getDb();
-  db.prepare(
-    `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, first_prompt,
+  withBusyRetry(() =>
+    db
+      .prepare(
+        `INSERT INTO sessions (session_id, target, started_at_ms, ended_at_ms, first_prompt,
        permission_mode, agent_version, model, cli_version, scanner_file_path,
        total_input_tokens, total_output_tokens, total_cache_read_tokens,
        total_cache_creation_tokens, total_reasoning_tokens, turn_count,
@@ -491,35 +503,37 @@ export function upsertSession(row: SessionUpsert): void {
        has_scanner = MAX(COALESCE(sessions.has_scanner, 0), COALESCE(excluded.has_scanner, 0)),
        sync_dirty = 1,
        sync_seq = COALESCE(sessions.sync_seq, 0) + 1`,
-  ).run({
-    session_id: row.session_id,
-    target: row.target ?? null,
-    started_at_ms: row.started_at_ms ?? null,
-    ended_at_ms: row.ended_at_ms ?? null,
-    first_prompt: row.first_prompt ?? null,
-    permission_mode: row.permission_mode ?? null,
-    agent_version: row.agent_version ?? null,
-    model: row.model ?? null,
-    cli_version: row.cli_version ?? null,
-    scanner_file_path: row.scanner_file_path ?? null,
-    total_input_tokens: row.total_input_tokens ?? null,
-    total_output_tokens: row.total_output_tokens ?? null,
-    total_cache_read_tokens: row.total_cache_read_tokens ?? null,
-    total_cache_creation_tokens: row.total_cache_creation_tokens ?? null,
-    total_reasoning_tokens: row.total_reasoning_tokens ?? null,
-    turn_count: row.turn_count ?? null,
-    otel_input_tokens: row.otel_input_tokens ?? null,
-    otel_output_tokens: row.otel_output_tokens ?? null,
-    otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
-    otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
-    project: row.project ?? null,
-    created_at: row.created_at ?? null,
-    parent_session_id: row.parent_session_id ?? null,
-    relationship_type: row.relationship_type ?? null,
-    has_hooks: row.has_hooks ?? null,
-    has_otel: row.has_otel ?? null,
-    has_scanner: row.has_scanner ?? null,
-  });
+      )
+      .run({
+        session_id: row.session_id,
+        target: row.target ?? null,
+        started_at_ms: row.started_at_ms ?? null,
+        ended_at_ms: row.ended_at_ms ?? null,
+        first_prompt: row.first_prompt ?? null,
+        permission_mode: row.permission_mode ?? null,
+        agent_version: row.agent_version ?? null,
+        model: row.model ?? null,
+        cli_version: row.cli_version ?? null,
+        scanner_file_path: row.scanner_file_path ?? null,
+        total_input_tokens: row.total_input_tokens ?? null,
+        total_output_tokens: row.total_output_tokens ?? null,
+        total_cache_read_tokens: row.total_cache_read_tokens ?? null,
+        total_cache_creation_tokens: row.total_cache_creation_tokens ?? null,
+        total_reasoning_tokens: row.total_reasoning_tokens ?? null,
+        turn_count: row.turn_count ?? null,
+        otel_input_tokens: row.otel_input_tokens ?? null,
+        otel_output_tokens: row.otel_output_tokens ?? null,
+        otel_cache_read_tokens: row.otel_cache_read_tokens ?? null,
+        otel_cache_creation_tokens: row.otel_cache_creation_tokens ?? null,
+        project: row.project ?? null,
+        created_at: row.created_at ?? null,
+        parent_session_id: row.parent_session_id ?? null,
+        relationship_type: row.relationship_type ?? null,
+        has_hooks: row.has_hooks ?? null,
+        has_otel: row.has_otel ?? null,
+        has_scanner: row.has_scanner ?? null,
+      }),
+  );
   if (
     row.model !== undefined ||
     row.project !== undefined ||
@@ -743,6 +757,6 @@ export function insertHookEvent(row: HookEventRow): number {
       fullJson,
     );
   });
-  insertWithFts();
+  withBusyRetry(() => insertWithFts());
   return insertedId;
 }
