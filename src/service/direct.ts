@@ -251,6 +251,8 @@ export function createDirectPanopticonService(): PanopticonService {
         room,
         sinceId: input.sinceId,
         kinds: input.kinds,
+        fromSession: input.from,
+        subjectPrefixes: input.subjectPrefixes,
         // A reader sees broadcasts + messages addressed to it, never its own.
         toSession: input.session_id,
         excludeFrom: input.session_id,
@@ -282,6 +284,19 @@ export function createDirectPanopticonService(): PanopticonService {
       if (!room)
         return { room: null, cursor: input.sinceId ?? 0, messages: [] };
       const sessionId = input.session_id;
+      if (!sessionId) {
+        const messages = readAgentMessages({
+          room,
+          kinds: input.kinds ?? ["chat"],
+          sinceMs: input.sinceMs,
+          sinceId: input.sinceId,
+          limit: input.limit ?? 50,
+        });
+        const cursor = messages.length
+          ? messages[messages.length - 1].id
+          : (input.sinceId ?? 0);
+        return { room, cursor, messages };
+      }
       // Catch up on what this session hasn't seen, NOT the room tip — so a
       // message sent before the caller started reading isn't skipped as history
       // (the opener race). Mirrors the hook drain / unread nudge EXACTLY:
@@ -291,9 +306,7 @@ export function createDirectPanopticonService(): PanopticonService {
       // now). Same gate on both sides ⇒ the reader returns and marks exactly the
       // unread set the nudge counts. Directed mail is always delivered.
       const sinceMs =
-        input.sinceMs ??
-        (sessionId ? getInstanceFirstSeen(sessionId) : null) ??
-        Date.now();
+        input.sinceMs ?? getInstanceFirstSeen(sessionId) ?? Date.now();
       const messages = readAgentMessages({
         room,
         kinds: input.kinds ?? ["chat"],

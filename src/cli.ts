@@ -1993,9 +1993,15 @@ chat
   .command("send <message>")
   .description("Send a chat message to the workspace room (or one peer)")
   .option("--room <room>", "Explicit room (default: current workspace repo)")
+  .option(
+    "--session <id>",
+    "Explicit sender session id if auto-detection fails",
+  )
   .option("--to <session>", "Address one peer session; omit to broadcast")
   .action(async (message: string, opts: OptionValues) => {
     const self = resolveSelfIdentity();
+    const selfSession =
+      typeof opts.session === "string" ? opts.session : self.sessionId;
     const room = resolveFrenemyRoom(
       typeof opts.room === "string" ? opts.room : undefined,
     );
@@ -2008,8 +2014,8 @@ chat
     }
     const res = await service.busSend({
       room,
-      session_id: self.sessionId,
-      from: self.sessionId ?? self.name ?? "agent",
+      session_id: selfSession,
+      from: selfSession ?? self.name ?? "agent",
       to: typeof opts.to === "string" ? opts.to : undefined,
       kind: "chat",
       body: message,
@@ -2025,6 +2031,10 @@ chat
   )
   .option("--room <room>", "Explicit room (default: current workspace repo)")
   .option(
+    "--session <id>",
+    "Explicit caller session id if auto-detection fails",
+  )
+  .option(
     "--since <id>",
     "Extra lower bound on message id (the delivery gate already dedups)",
   )
@@ -2036,6 +2046,15 @@ chat
   .option("--json", "Emit the raw message JSON instead of text")
   .action(async (opts: OptionValues) => {
     const self = resolveSelfIdentity();
+    const selfSession =
+      typeof opts.session === "string" ? opts.session : self.sessionId;
+    if (!selfSession) {
+      console.error(
+        "Could not resolve your session id. Run chat wait from an agent Bash tool, or pass --session <id>.",
+      );
+      process.exitCode = 1;
+      return;
+    }
     const room = resolveFrenemyRoom(
       typeof opts.room === "string" ? opts.room : undefined,
     );
@@ -2050,7 +2069,7 @@ chat
     const result = await runChatWait(
       {
         room,
-        selfSession: self.sessionId,
+        selfSession,
         // No tip cursor: the per-recipient delivery gate decides what's unseen,
         // so a message sent before this wait started is still delivered (no
         // opener race). --since is just an optional extra floor.

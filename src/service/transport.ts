@@ -53,7 +53,16 @@ const BASE_TOOL_HANDLERS = {
   status: (service) => service.dbStats(),
   instances: (service, params) =>
     service.instances(asType<InstancesInput>(params)),
-  bus_read: (service, params) => service.busRead(asType<BusReadInput>(params)),
+  bus_read: (service, params) => {
+    const input = asType<BusRecvInput>(params);
+    return service.busRecv({
+      ...input,
+      kinds: input.kinds ?? ["challenge", "chat"],
+      limit: input.limit ?? 50,
+    });
+  },
+  bus_history: (service, params) =>
+    service.busRead(asType<BusReadInput>(params)),
   bus_roster: (service, params) =>
     service.busRoster(asType<BusRosterInput>(params)),
   wait_for_activity: (service, params) =>

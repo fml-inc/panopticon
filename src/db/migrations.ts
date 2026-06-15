@@ -1425,6 +1425,14 @@ export const MIGRATIONS: Migration[] = [
       ensureUserConfigSnapshotTargetIndex(db);
     },
   },
+  {
+    id: 25,
+    name: "add_agent_messages_reply_to",
+    up: (db) => {
+      if (!tableExists(db, "agent_messages")) return;
+      addColumnIfMissing(db, "agent_messages", "reply_to", "reply_to INTEGER");
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

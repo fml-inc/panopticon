@@ -79,6 +79,13 @@ function makeDeps(
     subject?: string;
     reply_to?: number;
   }> = [];
+  const busReadInputs: Array<{
+    room: string;
+    from?: string;
+    kinds?: string[];
+    subjectPrefixes?: string[];
+    limit?: number;
+  }> = [];
   const critiqueCalls: string[] = [];
   const deps = {
     busRoster: vi.fn(
@@ -98,7 +105,18 @@ function makeDeps(
         sendInputs.push(input);
       },
     ),
-    busRead: vi.fn(async () => ({ messages: over.priorMessages ?? [] })),
+    busRead: vi.fn(
+      async (input: {
+        room: string;
+        from?: string;
+        kinds?: string[];
+        subjectPrefixes?: string[];
+        limit?: number;
+      }) => {
+        busReadInputs.push(input);
+        return { messages: over.priorMessages ?? [] };
+      },
+    ),
     critique: vi.fn(async (activity: string) => {
       critiqueCalls.push(activity);
       return over.critiqueImpl
@@ -106,7 +124,7 @@ function makeDeps(
         : "CHALLENGE: that looks risky";
     }),
   };
-  return { deps, sends, sendInputs, critiqueCalls };
+  return { deps, sends, sendInputs, busReadInputs, critiqueCalls };
 }
 
 const OPTS = { room: "fml-inc/panopticon" };
@@ -395,12 +413,19 @@ describe("runFrenemyOnce read-the-room dedup", () => {
     );
 
   it("skips (no critique, no send) when its own finding for this diff is on the bus", async () => {
-    const { deps, sends, critiqueCalls } = makeDeps({
+    const { deps, sends, busReadInputs, critiqueCalls } = makeDeps({
       timelineFor: () => [edit()],
       priorMessages: [priorFinding(currentSubject())],
     });
     const cursors: FrenemyCursors = new Map();
     await runFrenemyOnce(OPTS, cursors, deps);
+    expect(busReadInputs[0]).toMatchObject({
+      room: OPTS.room,
+      from: "frenemy",
+      kinds: ["challenge"],
+      subjectPrefixes: ["review:", "resolved:"],
+      limit: 10_000,
+    });
     expect(critiqueCalls).toHaveLength(0); // the expensive critic isn't even called
     expect(sends).toHaveLength(0); // not re-posted
     expect(cursors.get("p1")).toBe(1000); // cursor still advances past seen activity

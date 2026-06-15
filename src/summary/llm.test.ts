@@ -133,6 +133,7 @@ describe("summary llm wrapper", () => {
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.CLAUDE_CODE_USE_VERTEX;
     delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+    delete process.env.PANOPTICON_FRENEMY_ROLE;
   });
 
   afterEach(() => {
@@ -328,6 +329,27 @@ describe("summary llm wrapper", () => {
     );
     expect(options.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
     expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it("applies async per-invocation env overrides without mutating process env", async () => {
+    process.env.PANOPTICON_FRENEMY_ROLE = "global";
+    const { invokeLlmAsync } = await loadLlm();
+
+    await expect(
+      invokeLlmAsync("Review this", {
+        envOverrides: { PANOPTICON_FRENEMY_ROLE: "frenemy" },
+      }),
+    ).resolves.toBe("OK");
+
+    const [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      {
+        env: Record<string, string>;
+      },
+    ];
+    expect(options.env.PANOPTICON_FRENEMY_ROLE).toBe("frenemy");
+    expect(process.env.PANOPTICON_FRENEMY_ROLE).toBe("global");
   });
 
   it("returns null for structured CLI errors even when stdout is populated", async () => {

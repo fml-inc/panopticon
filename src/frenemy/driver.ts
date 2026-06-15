@@ -253,7 +253,9 @@ interface FrenemyDeps {
   /** Read recent room messages (to see what's already been flagged). */
   busRead: (input: {
     room: string;
+    from?: string;
     kinds?: string[];
+    subjectPrefixes?: string[];
     limit?: number;
   }) => Promise<{ messages: AgentMessageRow[] }>;
   critique: (reviewInput: string, cwd: string | null) => Promise<string | null>;
@@ -297,6 +299,7 @@ function defaultDeps(opts: FrenemyOptions): FrenemyDeps {
         systemPrompt: FRENEMY_PERSONA,
         cwd: cwd ?? undefined,
         allowedTools: cwd ? REVIEW_TOOLS : undefined,
+        envOverrides: { PANOPTICON_FRENEMY_ROLE: "frenemy" },
         // Give the reviewer panopticon's read-only query tools (timeline, query,
         // search, session_summary_detail, …) so it can pull historical context
         // on demand — why a line exists, prior work on a path, related sessions —
@@ -374,8 +377,8 @@ export async function runFrenemyOnce(
   // reads back as "flagged" (open) again, not permanently resolved. Tracking two
   // independent sets (flagged/resolved) made a resolution stick forever and
   // suppressed every later fix on the same file — the lifecycle bug the frenemy
-  // itself caught. (busRead with no sinceId returns oldest-first, so last write
-  // wins.)
+  // itself caught. The history read is id-ascending within the filtered window, so
+  // last write wins.
   const whereState = new Map<string, "flagged" | "resolved">();
   // The message id of the latest OPEN challenge per where, so a resolution can
   // reference the specific finding it addresses (reply_to) — per-finding
@@ -384,8 +387,10 @@ export async function runFrenemyOnce(
   try {
     const prior = await deps.busRead({
       room: opts.room,
+      from: FRENEMY_FROM,
       kinds: ["challenge"],
-      limit: 100,
+      subjectPrefixes: ["review:", "resolved:"],
+      limit: 10_000,
     });
     for (const m of prior.messages) {
       if (m.from_session !== FRENEMY_FROM || !m.subject) continue;

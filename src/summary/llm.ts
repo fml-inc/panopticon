@@ -327,6 +327,8 @@ export async function invokeLlmAsync(
     cwd?: string;
     /** Read-only tools to permit (Claude only). Enables tool use when set. */
     allowedTools?: string[];
+    /** Per-invocation env overrides layered onto the cleaned process env. */
+    envOverrides?: Record<string, string | undefined>;
   } = {},
 ): Promise<string | null> {
   const runner = opts.runner ?? DEFAULT_RUNNER;
@@ -335,6 +337,10 @@ export async function invokeLlmAsync(
 
   const timeoutMs = opts.timeoutMs ?? LLM_TIMEOUT_MS;
   const env = cleanEnv();
+  for (const [key, value] of Object.entries(opts.envOverrides ?? {})) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
   const cwd = opts.cwd ?? getHeadlessCwd(runner);
 
   if (runner === "codex") {

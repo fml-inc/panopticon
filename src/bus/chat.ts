@@ -38,8 +38,8 @@ export interface ChatDeps {
 
 export interface ChatWaitOptions {
   room: string;
-  /** Caller's session id — excludes own messages, addresses directed mail. */
-  selfSession?: string;
+  /** Caller's session id — required for consume-once delivery and own-message exclusion. */
+  selfSession: string;
   /** Optional extra lower bound on id; the delivery gate handles dedup. */
   sinceId: number;
   /** Per server long-poll, ms (clamped server-side). */
@@ -107,6 +107,9 @@ export async function runChatWait(
   opts: ChatWaitOptions,
   deps: ChatDeps,
 ): Promise<ChatWaitResult> {
+  if (!opts.selfSession) {
+    throw new Error("chat wait requires a session id");
+  }
   const longPollMs = opts.longPollMs ?? DEFAULT_LONG_POLL_MS;
   const budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;

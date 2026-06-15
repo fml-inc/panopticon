@@ -146,6 +146,9 @@ const DEFAULT_SERVER_START_BACKOFF_SCHEDULE_MS = [
 ] as const;
 const DEFAULT_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_LOG_ROTATE_FILES = 5;
+const DEFAULT_FRENEMY_SETTLE_MS = 3_000;
+const DEFAULT_FRENEMY_RECONCILE_MS = 5_000;
+const DEFAULT_FRENEMY_IDLE_STOP_MS = 10 * 60_000;
 
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
@@ -225,11 +228,31 @@ export const config = {
     "PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW",
     false,
   ),
-  // Agent-to-agent bus delivery: auto-publish hook activity onto the room and
-  // drain pending messages into hook additionalContext (Layer 2). Default off;
-  // the bus tables and MCP tools work regardless of this flag. Instance presence
-  // is always on, independent of this flag.
+  // Agent-to-agent bus delivery: inject unread-message nudges and recruitment
+  // beacons into hook additionalContext. Default off; the bus tables and MCP
+  // tools work regardless of this flag. Instance presence and room activity
+  // long-polling are always on, independent of this flag.
   enableBusDelivery: envBool("PANOPTICON_ENABLE_BUS_DELIVERY", false),
+  // Daemon-managed frenemy: when enabled, the server maintains one read-only
+  // reviewer loop for every room with at least one live non-frenemy agent.
+  enableFrenemy: envBool("PANOPTICON_ENABLE_FRENEMY", false),
+  frenemyRunner: parseSessionSummaryRunner(
+    process.env.PANOPTICON_FRENEMY_RUNNER,
+    "claude",
+  ),
+  frenemyModel: process.env.PANOPTICON_FRENEMY_MODEL ?? null,
+  frenemySettleMs: envInt(
+    "PANOPTICON_FRENEMY_SETTLE_MS",
+    DEFAULT_FRENEMY_SETTLE_MS,
+  ),
+  frenemyReconcileMs: envInt(
+    "PANOPTICON_FRENEMY_RECONCILE_MS",
+    DEFAULT_FRENEMY_RECONCILE_MS,
+  ),
+  frenemyIdleStopMs: envInt(
+    "PANOPTICON_FRENEMY_IDLE_STOP_MS",
+    DEFAULT_FRENEMY_IDLE_STOP_MS,
+  ),
   sessionSummaryAllowedRunners: parseSessionSummaryRunnerList(
     process.env.PANOPTICON_SESSION_SUMMARY_ALLOWED_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,

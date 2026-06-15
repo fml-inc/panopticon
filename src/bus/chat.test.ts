@@ -111,7 +111,10 @@ describe("runChatWait", () => {
         messages: [msg({ id: 5, body: "ping" })],
       })),
     });
-    const res = await runChatWait({ room: "r", sinceId: 0 }, deps);
+    const res = await runChatWait(
+      { room: "r", selfSession: "me", sinceId: 0 },
+      deps,
+    );
     expect(res.timedOut).toBe(false);
     expect(res.messages.map((m) => m.body)).toEqual(["ping"]);
     expect(res.cursor).toBe(5);
@@ -129,12 +132,27 @@ describe("runChatWait", () => {
     });
     const res = await runChatWait(
       // heartbeatMs: 0 forces a heartbeat each loop
-      { room: "r", sinceId: 0, budgetMs: 250, longPollMs: 10, heartbeatMs: 0 },
+      {
+        room: "r",
+        selfSession: "me",
+        sinceId: 0,
+        budgetMs: 250,
+        longPollMs: 10,
+        heartbeatMs: 0,
+      },
       deps,
     );
     expect(res.timedOut).toBe(true);
     expect(res.messages).toEqual([]);
     expect(deps.waitForActivity).toHaveBeenCalled();
     expect(deps.onHeartbeat).toHaveBeenCalled();
+  });
+
+  it("rejects immediately when no caller session id is available", async () => {
+    const deps = baseDeps({});
+    await expect(
+      runChatWait({ room: "r", selfSession: "", sinceId: 0 }, deps),
+    ).rejects.toThrow("chat wait requires a session id");
+    expect(deps.recv).not.toHaveBeenCalled();
   });
 });

@@ -19,6 +19,12 @@ function createMockService(): PanopticonService {
     print: vi.fn(async (opts) => ({ opts })),
     rawQuery: vi.fn(async (sql) => ({ sql })),
     dbStats: vi.fn(async () => ({ ok: true })),
+    instances: vi.fn(async (opts) => ({ opts })),
+    busSend: vi.fn(async (opts) => ({ opts })),
+    busRead: vi.fn(async (opts) => ({ opts })),
+    busRecv: vi.fn(async (opts) => ({ opts })),
+    busRoster: vi.fn(async (opts) => ({ opts })),
+    waitForActivity: vi.fn(async (opts) => ({ opts })),
     intentForCode: vi.fn(async (opts) => ({ opts })),
     searchIntent: vi.fn(async (opts) => ({ opts })),
     outcomesForIntent: vi.fn(async (opts) => ({ opts })),
@@ -112,6 +118,51 @@ describe("service transport", () => {
         recent_limit: 3,
         related_limit: 4,
       },
+    });
+  });
+
+  it("dispatches bus_read to unread consume-once receive", async () => {
+    const service = createMockService();
+
+    const result = await dispatchTool(service, "bus_read", {
+      room: "r",
+      session_id: "s",
+    });
+
+    expect(service.busRecv).toHaveBeenCalledWith({
+      room: "r",
+      session_id: "s",
+      kinds: ["challenge", "chat"],
+      limit: 50,
+    });
+    expect(service.busRead).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      opts: {
+        room: "r",
+        session_id: "s",
+        kinds: ["challenge", "chat"],
+        limit: 50,
+      },
+    });
+  });
+
+  it("dispatches bus_history to non-consuming message history", async () => {
+    const service = createMockService();
+
+    const result = await dispatchTool(service, "bus_history", {
+      room: "r",
+      kinds: ["challenge"],
+      from: "frenemy",
+    });
+
+    expect(service.busRead).toHaveBeenCalledWith({
+      room: "r",
+      kinds: ["challenge"],
+      from: "frenemy",
+    });
+    expect(service.busRecv).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      opts: { room: "r", kinds: ["challenge"], from: "frenemy" },
     });
   });
 

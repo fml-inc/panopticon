@@ -69,10 +69,14 @@ export function insertAgentMessage(row: AgentMessageInsert): number {
 
 export interface ReadMessagesOptions {
   room: string;
+  /** Restrict to messages from this sender. */
+  fromSession?: string;
   /** Only messages with id greater than this cursor. */
   sinceId?: number;
   /** Restrict to these kinds. */
   kinds?: string[];
+  /** Restrict to subjects beginning with any of these prefixes. */
+  subjectPrefixes?: string[];
   /** Address filter: include broadcasts (to_session NULL) and messages to this session. */
   toSession?: string;
   /** Exclude messages sent by this session (so a reader never sees its own). */
@@ -97,11 +101,24 @@ export function readAgentMessages(
     clauses.push("id > @sinceId");
     params.sinceId = opts.sinceId;
   }
+  if (opts.fromSession) {
+    clauses.push("from_session = @fromSession");
+    params.fromSession = opts.fromSession;
+  }
   if (opts.kinds && opts.kinds.length > 0) {
     const placeholders = opts.kinds.map((_, i) => `@kind${i}`);
     clauses.push(`kind IN (${placeholders.join(", ")})`);
     opts.kinds.forEach((k, i) => {
       params[`kind${i}`] = k;
+    });
+  }
+  if (opts.subjectPrefixes && opts.subjectPrefixes.length > 0) {
+    const prefixClauses = opts.subjectPrefixes.map(
+      (_, i) => `subject LIKE @subjectPrefix${i}`,
+    );
+    clauses.push(`(${prefixClauses.join(" OR ")})`);
+    opts.subjectPrefixes.forEach((prefix, i) => {
+      params[`subjectPrefix${i}`] = `${prefix}%`;
     });
   }
   if (opts.toSession) {
@@ -135,7 +152,7 @@ export function readAgentMessages(
     params.sinceMs = opts.sinceMs;
   }
 
-  params.limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 200)), 1000);
+  params.limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 200)), 10_000);
 
   // Without a cursor, a fresh reader wants the NEWEST N (the present), so tail
   // the log with DESC + LIMIT and flip back to ascending. With a cursor, page

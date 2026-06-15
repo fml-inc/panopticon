@@ -2,7 +2,7 @@
  * Server-side API route handler.
  *
  * Two endpoints:
- *   POST /api/tool  — read-only query dispatch (CLI + MCP)
+ *   POST /api/tool  — tool-style dispatch (mostly reads; some tools record seen state)
  *   POST /api/exec  — write command dispatch (CLI only)
  */
 import type http from "node:http";

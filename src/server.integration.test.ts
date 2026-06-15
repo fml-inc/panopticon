@@ -1825,7 +1825,7 @@ describe("server integration", () => {
 
   // ── Agent-to-agent message bus (Layer 1) ────────────────────────────────
   // Exercises the full wire path: writes via POST /api/exec bus-send and reads
-  // via POST /api/tool bus_read / bus_roster, with rooms resolved from the
+  // via POST /api/tool bus_history / bus_roster, with rooms resolved from the
   // presence rows the dispatch records — no MCP layer, no hand-built session ids.
 
   describe("agent message bus", () => {
@@ -1835,7 +1835,7 @@ describe("server integration", () => {
       return post("/api/exec", { command: "bus-send", params });
     }
     function read(params: Record<string, unknown>) {
-      return post("/api/tool", { name: "bus_read", params });
+      return post("/api/tool", { name: "bus_history", params });
     }
 
     it("round-trips a message through exec-send and tool-read", async () => {
@@ -1970,7 +1970,7 @@ describe("server integration", () => {
         repository: ROOM,
         agent_pid: process.pid,
       });
-      // bus_read with only a session_id (no room) must resolve to that room.
+      // bus_history with only a session_id (no room) must resolve to that room.
       const got = await read({ session_id: "implicit-room-session" });
       expect(got.status).toBe(200);
       expect((got.body as { room: string }).room).toBe(ROOM);
@@ -2179,6 +2179,28 @@ describe("server integration", () => {
         "eval() on peer input is RCE",
       );
     });
+
+    it("without a session id, bus-recv falls back to a plain non-consuming read", async () => {
+      await post("/api/exec", {
+        command: "bus-send",
+        params: {
+          room: ROOM,
+          from: "peer-z",
+          kind: "chat",
+          body: "history without identity",
+        },
+      });
+      const first = await post("/api/exec", {
+        command: "bus-recv",
+        params: { room: ROOM, kinds: ["chat"] },
+      });
+      expect(bodies(first)).toContain("history without identity");
+      const second = await post("/api/exec", {
+        command: "bus-recv",
+        params: { room: ROOM, kinds: ["chat"] },
+      });
+      expect(bodies(second)).toContain("history without identity");
+    });
   });
 
   // ── Unread nudge (append-only chat model) ───────────────────────────────
@@ -2238,6 +2260,12 @@ describe("server integration", () => {
         read.body as { messages: { body: string }[] }
       ).messages.map((m) => m.body);
       expect(bodies).toContain("the auth check is backwards");
+      const reread = await busReadTool("reader-1");
+      expect(
+        (reread.body as { messages: { body: string }[] }).messages.map(
+          (m) => m.body,
+        ),
+      ).not.toContain("the auth check is backwards");
 
       // Having read it, a brand-new finding re-nudges — counting only the unread one.
       await broadcastChat("teammate", "and the retry has no backoff");

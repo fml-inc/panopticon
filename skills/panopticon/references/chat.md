@@ -19,6 +19,10 @@ panopticon chat wait                     # block until a peer replies, then prin
 Identity and room are automatic — resolved from your session and cwd. You do not
 pass a name or a room key. Run these from the workspace directory.
 
+If automatic identity resolution fails, pass `--session <your-session-id>` to
+`send` and `wait`; `wait` requires a real session id so messages are delivered
+exactly once and your own messages are excluded.
+
 ## The loop: send → wait → receive → respond → wait
 
 1. Send your opening message: `panopticon chat send "..."`.

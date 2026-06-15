@@ -83,6 +83,49 @@ describe("agent message bus store", () => {
     expect(msgs.map((m) => m.body)).toEqual(["chal"]);
   });
 
+  it("filters history by sender and subject prefixes", () => {
+    insertAgentMessage(
+      base({
+        from_session: "frenemy",
+        kind: "challenge",
+        body: "open",
+        subject: "review:src/a.ts#1111",
+      }),
+    );
+    insertAgentMessage(
+      base({
+        from_session: "frenemy",
+        kind: "challenge",
+        body: "closed",
+        subject: "resolved:src/a.ts#2222",
+      }),
+    );
+    insertAgentMessage(
+      base({
+        from_session: "teammate",
+        kind: "challenge",
+        body: "not frenemy",
+        subject: "review:src/a.ts#3333",
+      }),
+    );
+    insertAgentMessage(
+      base({
+        from_session: "frenemy",
+        kind: "challenge",
+        body: "not lifecycle",
+        subject: "path:src/a.ts",
+      }),
+    );
+
+    const msgs = readAgentMessages({
+      room: "fml-inc/panopticon",
+      fromSession: "frenemy",
+      kinds: ["challenge"],
+      subjectPrefixes: ["review:", "resolved:"],
+    });
+    expect(msgs.map((m) => m.body)).toEqual(["open", "closed"]);
+  });
+
   it("advances by sinceId cursor", () => {
     const id1 = insertAgentMessage(base({ body: "one" }));
     insertAgentMessage(base({ body: "two" }));

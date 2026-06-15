@@ -153,9 +153,13 @@ export interface BusSendResult {
 export interface BusReadInput {
   room?: string;
   session_id?: string;
+  /** Restrict history to messages from this sender. */
+  from?: string;
   /** Return only messages with id greater than this cursor. */
   sinceId?: number;
   kinds?: string[];
+  /** Restrict history to messages whose subject starts with one of these prefixes. */
+  subjectPrefixes?: string[];
   limit?: number;
 }
 
@@ -172,7 +176,7 @@ export interface BusRecvInput {
    * Caller's session id. Required for the consume-once semantics: messages are
    * filtered to those NOT yet delivered to this session and marked delivered on
    * return (per-recipient, like the hook drain). Without it, falls back to a
-   * plain non-consuming read.
+   * plain non-consuming history read.
    */
   session_id?: string;
   kinds?: string[];
