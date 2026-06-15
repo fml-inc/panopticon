@@ -551,19 +551,28 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       data,
     });
     if (resolvedSubagent) {
-      const subagentFields: Parameters<typeof upsertSession>[0] = {
-        session_id: resolvedSubagent.sessionId,
-        target: targetId,
-        parent_session_id: resolvedSubagent.parentSessionId,
-        relationship_type: resolvedSubagent.relationshipType,
-      };
-      if (eventType === "SubagentStart") {
-        subagentFields.started_at_ms = timestampMs;
-        subagentFields.created_at = timestampMs;
-      } else {
-        subagentFields.ended_at_ms = timestampMs;
+      const childExists =
+        eventType === "SubagentStart" ||
+        Boolean(
+          getDb()
+            .prepare("SELECT 1 FROM sessions WHERE session_id = ?")
+            .get(resolvedSubagent.sessionId),
+        );
+      if (childExists) {
+        const subagentFields: Parameters<typeof upsertSession>[0] = {
+          session_id: resolvedSubagent.sessionId,
+          target: targetId,
+          parent_session_id: resolvedSubagent.parentSessionId,
+          relationship_type: resolvedSubagent.relationshipType,
+        };
+        if (eventType === "SubagentStart") {
+          subagentFields.started_at_ms = timestampMs;
+          subagentFields.created_at = timestampMs;
+        } else {
+          subagentFields.ended_at_ms = timestampMs;
+        }
+        upsertSession(subagentFields);
       }
-      upsertSession(subagentFields);
     }
   }
 

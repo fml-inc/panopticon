@@ -528,6 +528,21 @@ describe("processHookEvent", () => {
     expect(child?.ended_at_ms).toBeGreaterThan(0);
   });
 
+  it("does not create Claude child sessions from stop-only subagent hooks", () => {
+    processHookEvent({
+      session_id: "claude-parent",
+      source: "claude",
+      hook_event_name: "SubagentStop",
+      agent_id: "stop-only-child",
+    });
+
+    expect(getSessionRow("agent-stop-only-child")).toBeUndefined();
+    expect(getSessionRow("claude-parent")).toMatchObject({
+      session_id: "claude-parent",
+      target: "claude",
+    });
+  });
+
   it("links Hermes subagent hooks to real child sessions", () => {
     getDb()
       .prepare(
@@ -568,6 +583,50 @@ describe("processHookEvent", () => {
     expect(child?.has_scanner).toBe(1);
     expect(child?.message_count).toBe(3);
     expect(getSessionRow("agent-20260615_111618_cea025")).toBeUndefined();
+  });
+
+  it("updates existing Hermes child sessions from stop-only subagent hooks", () => {
+    getDb()
+      .prepare(
+        `INSERT INTO sessions (session_id, target, has_scanner, message_count)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run("20260615_111618_e96ef1", "hermes", 1, 5);
+
+    processHookEvent({
+      session_id: "20260615_110533_0a728b",
+      source: "hermes",
+      hook_event_name: "subagent_stop",
+      parent_session_id: "20260615_110533_0a728b",
+      child_session_id: "20260615_111618_e96ef1",
+      child_subagent_id: "sa-0-abc123",
+    });
+
+    const child = getSessionRow("20260615_111618_e96ef1");
+    expect(child).toMatchObject({
+      session_id: "20260615_111618_e96ef1",
+      target: "hermes",
+      parent_session_id: "20260615_110533_0a728b",
+      relationship_type: "subagent",
+      has_scanner: 1,
+      message_count: 5,
+    });
+    expect(child?.started_at_ms).toBeNull();
+    expect(child?.ended_at_ms).toBeGreaterThan(0);
+  });
+
+  it("does not create Hermes child sessions from stop-only subagent hooks", () => {
+    processHookEvent({
+      session_id: "20260615_110533_0a728b",
+      source: "hermes",
+      hook_event_name: "subagent_stop",
+      parent_session_id: "20260615_110533_0a728b",
+      child_session_id: "20260615_111618_d8692f",
+      child_subagent_id: "sa-0-def456",
+    });
+
+    expect(getSessionRow("20260615_111618_d8692f")).toBeUndefined();
+    expect(getSessionRow("agent-20260615_111618_d8692f")).toBeUndefined();
   });
 
   it("keeps read-time file context behind its own flag", () => {
