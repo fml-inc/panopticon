@@ -10,7 +10,7 @@ import { getDb } from "../db/schema.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
 import { buildSyncableSessionIds, repoMatchesFilter } from "./filter.js";
-import { postSync } from "./post.js";
+import { isExpectedSyncError, postSync } from "./post.js";
 import {
   readSessionDerivedState,
   readSessionsByIds,
@@ -752,10 +752,15 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         log.sync.error(
           `Error syncing to ${target.name}: ${err instanceof Error ? err.message : err}`,
         );
-        captureException(err, {
-          component: "sync",
-          target: target.name,
-        });
+        // Unreachable/misconfigured targets and auth rejections are expected
+        // operational failures — already logged and backed off. Only report
+        // genuinely unexpected failures to Sentry.
+        if (!isExpectedSyncError(err)) {
+          captureException(err, {
+            component: "sync",
+            target: target.name,
+          });
+        }
       }
     }
 
