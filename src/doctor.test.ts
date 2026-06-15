@@ -32,7 +32,12 @@ vi.mock("./startup-task.js", () => ({
 }));
 
 import { closeDb, getDb } from "./db/schema.js";
-import { doctor, readSyncTargetLabel, syncStatusCheck } from "./doctor.js";
+import {
+  doctor,
+  readSyncTargetLabel,
+  shellEnvCheck,
+  syncStatusCheck,
+} from "./doctor.js";
 import type { UnifiedConfig } from "./unified-config.js";
 
 function cfg(sync: UnifiedConfig["sync"]): UnifiedConfig {
@@ -55,6 +60,22 @@ function insertSyncedSession(): void {
        derived_synced_seq, wm_messages
      ) VALUES ('session-1', 'fml', 1, 5, 5, 2, 1)`,
   ).run();
+}
+
+const sharedShellEnv = [
+  "export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318",
+  "export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+  "export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20test",
+  "export OTEL_METRICS_EXPORTER=otlp",
+  "export OTEL_LOGS_EXPORTER=otlp",
+  "export PANOPTICON_HOST=127.0.0.1",
+  "export PANOPTICON_PORT=4318",
+].join("\n");
+
+function writeTmpFile(name: string, content: string): string {
+  const filePath = path.join(os.tmpdir(), "panopticon-test-doctor", name);
+  fs.writeFileSync(filePath, content);
+  return filePath;
 }
 
 describe("readSyncTargetLabel", () => {
@@ -97,6 +118,51 @@ describe("readSyncTargetLabel", () => {
     expect(readSyncTargetLabel("fml")).toBe(
       "1 session confirmed, 1 session pending",
     );
+  });
+});
+
+describe("shellEnvCheck", () => {
+  beforeEach(() => {
+    fs.mkdirSync(path.join(os.tmpdir(), "panopticon-test-doctor"), {
+      recursive: true,
+    });
+  });
+
+  afterEach(() => {
+    fs.rmSync(path.join(os.tmpdir(), "panopticon-test-doctor"), {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("accepts shared Panopticon env without Claude-specific telemetry", () => {
+    const shellRc = writeTmpFile(".zshrc", sharedShellEnv);
+
+    expect(shellEnvCheck(shellRc)).toEqual({
+      label: "Shell Env",
+      status: "ok",
+      detail: "Panopticon env configured in .zshrc",
+    });
+  });
+
+  it("falls back to env.sh for non-interactive installs", () => {
+    const shellRc = writeTmpFile(".zshrc", "");
+    const envFile = writeTmpFile("env.sh", sharedShellEnv);
+
+    expect(shellEnvCheck(shellRc, envFile)).toEqual({
+      label: "Shell Env",
+      status: "ok",
+      detail: "Panopticon env available in env.sh",
+    });
+  });
+
+  it("warns on partial shared env config", () => {
+    const shellRc = writeTmpFile(
+      ".zshrc",
+      "export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318",
+    );
+
+    expect(shellEnvCheck(shellRc).status).toBe("warn");
   });
 });
 

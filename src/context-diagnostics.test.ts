@@ -58,10 +58,17 @@ describe("context diagnostics formatting", () => {
         configured: true,
         source: "native",
       },
+      {
+        id: "hermes",
+        name: "Hermes Agent",
+        installed: true,
+        configured: true,
+        source: "native",
+      },
     ];
 
     expect(formatHookTargets(targets)).toBe(
-      "Codex CLI=source=explicit, Claude Code=source=native",
+      "Codex CLI=source=explicit, Claude Code=source=native, Hermes Agent=source=native",
     );
     expect(hookTargetsHealth(targets)).toBe("ok");
     expect(hookTargetsHealth([{ ...targets[0], source: "unknown" }])).toBe(
