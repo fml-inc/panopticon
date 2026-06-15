@@ -15,7 +15,7 @@ type Opts = OptionValues;
 import { getOrCreateAuthToken } from "./auth.js";
 import { formatMessage, runChatWait } from "./bus/chat.js";
 import { resolveSelfIdentity } from "./bus/identity.js";
-import { config, ensureDataDir } from "./config.js";
+import { config, ensureDataDir, resolveFrenemyModelConfig } from "./config.js";
 import {
   formatCodeIntelStatus,
   formatContextActivity,
@@ -1917,11 +1917,18 @@ program
 program
   .command("frenemy")
   .description(
-    "Run a stickler code-review 'frenemy' (Opus, read-only workspace access) that reviews changes as the agents in this workspace make them and posts findings via the bus — so the PR is effectively reviewed by the end",
+    "Run a stickler code-review 'frenemy' (read-only workspace access) that reviews changes as the agents in this workspace make them and posts findings via the bus — so the PR is effectively reviewed by the end",
   )
   .option("--room <room>", "Explicit room (default: current workspace repo)")
-  .option("--runner <runner>", "Critic runner: claude or codex", "claude")
-  .option("--model <model>", "Model override for the critic (default: opus)")
+  .option(
+    "--runner <runner>",
+    "Critic runner: claude or codex",
+    config.frenemyRunner,
+  )
+  .option(
+    "--model <model>",
+    "Model override for the critic (default: frenemy/enrichment config)",
+  )
   .option(
     "--interval <seconds>",
     "Settle window — batch a burst of edits before reviewing",
@@ -1962,7 +1969,10 @@ program
     const frenemyOpts = {
       room,
       runner: opts.runner as "claude" | "codex",
-      model: typeof opts.model === "string" ? opts.model : null,
+      model:
+        typeof opts.model === "string"
+          ? opts.model
+          : resolveFrenemyModelConfig(opts.runner as "claude" | "codex"),
     };
     if (opts.once) {
       const sent = await runFrenemyOnce(frenemyOpts, new Map());

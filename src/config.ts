@@ -150,6 +150,40 @@ const DEFAULT_FRENEMY_SETTLE_MS = 3_000;
 const DEFAULT_FRENEMY_RECONCILE_MS = 5_000;
 const DEFAULT_FRENEMY_IDLE_STOP_MS = 10 * 60_000;
 
+const SESSION_SUMMARY_RUNNER_MODELS: Record<
+  SessionSummaryRunnerName,
+  string | null
+> = {
+  claude: process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? "sonnet",
+  codex: process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null,
+};
+
+const FRENEMY_RUNNER = parseSessionSummaryRunner(
+  process.env.PANOPTICON_FRENEMY_RUNNER,
+  "claude",
+);
+
+function explicitSessionSummaryModelForRunner(
+  runner: SessionSummaryRunnerName,
+): string | null {
+  return runner === "codex"
+    ? (process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null)
+    : (process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? null);
+}
+
+export function resolveFrenemyModelConfig(
+  runner: SessionSummaryRunnerName,
+): string | null {
+  // Frenemy-specific config wins. Otherwise inherit an explicitly configured
+  // enrichment model for the selected runner. When the enrichment model is only
+  // its built-in default, return null so the frenemy driver keeps its own
+  // runner-specific default policy.
+  return (
+    process.env.PANOPTICON_FRENEMY_MODEL ??
+    explicitSessionSummaryModelForRunner(runner)
+  );
+}
+
 // Offset the default port by the user's uid so two users on the same host
 // don't collide on the OTLP/HTTP standard port. PANOPTICON_PORT overrides.
 // Mirrored in src/sdk.ts (kept dependency-free, hence the duplication).
@@ -236,11 +270,8 @@ export const config = {
   // Daemon-managed frenemy: when enabled, the server maintains one read-only
   // reviewer loop for every room with at least one live non-frenemy agent.
   enableFrenemy: envBool("PANOPTICON_ENABLE_FRENEMY", false),
-  frenemyRunner: parseSessionSummaryRunner(
-    process.env.PANOPTICON_FRENEMY_RUNNER,
-    "claude",
-  ),
-  frenemyModel: process.env.PANOPTICON_FRENEMY_MODEL ?? null,
+  frenemyRunner: FRENEMY_RUNNER,
+  frenemyModel: resolveFrenemyModelConfig(FRENEMY_RUNNER),
   frenemySettleMs: envInt(
     "PANOPTICON_FRENEMY_SETTLE_MS",
     DEFAULT_FRENEMY_SETTLE_MS,
@@ -268,10 +299,7 @@ export const config = {
     process.env.PANOPTICON_SESSION_SUMMARY_FALLBACK_RUNNERS,
     DEFAULT_SESSION_SUMMARY_ALLOWED_RUNNERS,
   ),
-  sessionSummaryRunnerModels: {
-    claude: process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL ?? "sonnet",
-    codex: process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL ?? null,
-  },
+  sessionSummaryRunnerModels: SESSION_SUMMARY_RUNNER_MODELS,
   sessionSummaryEnrichLimit: envInt(
     "PANOPTICON_SESSION_SUMMARY_ENRICH_LIMIT",
     5,

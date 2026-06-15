@@ -8,6 +8,10 @@ const ORIGINAL_ENABLE_FRENEMY = process.env.PANOPTICON_ENABLE_FRENEMY;
 const ORIGINAL_FRENEMY_RUNNER = process.env.PANOPTICON_FRENEMY_RUNNER;
 const ORIGINAL_FRENEMY_MODEL = process.env.PANOPTICON_FRENEMY_MODEL;
 const ORIGINAL_FRENEMY_SETTLE_MS = process.env.PANOPTICON_FRENEMY_SETTLE_MS;
+const ORIGINAL_SESSION_SUMMARY_CLAUDE_MODEL =
+  process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL;
+const ORIGINAL_SESSION_SUMMARY_CODEX_MODEL =
+  process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL;
 
 async function loadConfigWithEnrichmentFlag(value: string | undefined) {
   vi.resetModules();
@@ -36,6 +40,8 @@ async function loadConfigWithFrenemyEnv(opts: {
   runner?: string;
   model?: string;
   settleMs?: string;
+  summaryClaudeModel?: string;
+  summaryCodexModel?: string;
 }) {
   vi.resetModules();
   if (opts.enabled === undefined) delete process.env.PANOPTICON_ENABLE_FRENEMY;
@@ -47,6 +53,17 @@ async function loadConfigWithFrenemyEnv(opts: {
   if (opts.settleMs === undefined)
     delete process.env.PANOPTICON_FRENEMY_SETTLE_MS;
   else process.env.PANOPTICON_FRENEMY_SETTLE_MS = opts.settleMs;
+  if (opts.summaryClaudeModel === undefined) {
+    delete process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL;
+  } else {
+    process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL =
+      opts.summaryClaudeModel;
+  }
+  if (opts.summaryCodexModel === undefined) {
+    delete process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL;
+  } else {
+    process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL = opts.summaryCodexModel;
+  }
   return (await import("./config.js")).config;
 }
 
@@ -89,6 +106,18 @@ describe("config", () => {
     } else {
       process.env.PANOPTICON_FRENEMY_SETTLE_MS = ORIGINAL_FRENEMY_SETTLE_MS;
     }
+    if (ORIGINAL_SESSION_SUMMARY_CLAUDE_MODEL === undefined) {
+      delete process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL;
+    } else {
+      process.env.PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL =
+        ORIGINAL_SESSION_SUMMARY_CLAUDE_MODEL;
+    }
+    if (ORIGINAL_SESSION_SUMMARY_CODEX_MODEL === undefined) {
+      delete process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL;
+    } else {
+      process.env.PANOPTICON_SESSION_SUMMARY_CODEX_MODEL =
+        ORIGINAL_SESSION_SUMMARY_CODEX_MODEL;
+    }
   });
 
   it("enables session summary enrichment by default", async () => {
@@ -130,5 +159,37 @@ describe("config", () => {
     expect(config.frenemyRunner).toBe("codex");
     expect(config.frenemyModel).toBe("opus");
     expect(config.frenemySettleMs).toBe(8000);
+  });
+
+  it("lets daemon frenemy inherit an explicit Claude enrichment model", async () => {
+    const config = await loadConfigWithFrenemyEnv({
+      runner: "claude",
+      summaryClaudeModel: "sonnet",
+    });
+
+    expect(config.sessionSummaryRunnerModels.claude).toBe("sonnet");
+    expect(config.frenemyRunner).toBe("claude");
+    expect(config.frenemyModel).toBe("sonnet");
+  });
+
+  it("lets daemon frenemy inherit an explicit Codex enrichment model", async () => {
+    const config = await loadConfigWithFrenemyEnv({
+      runner: "codex",
+      summaryCodexModel: "gpt-5-codex",
+    });
+
+    expect(config.sessionSummaryRunnerModels.codex).toBe("gpt-5-codex");
+    expect(config.frenemyRunner).toBe("codex");
+    expect(config.frenemyModel).toBe("gpt-5-codex");
+  });
+
+  it("keeps the frenemy model override ahead of shared enrichment config", async () => {
+    const config = await loadConfigWithFrenemyEnv({
+      runner: "claude",
+      model: "opus",
+      summaryClaudeModel: "sonnet",
+    });
+
+    expect(config.frenemyModel).toBe("opus");
   });
 });

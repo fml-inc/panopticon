@@ -408,10 +408,12 @@ Target-specific env vars are declared by each target adapter in `src/targets/`.
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_FILE_CONTEXT_INJECTION` | `1` | Enable edit-time file provenance injection for supported `PreToolUse` edit tools |
 | `PANOPTICON_ENABLE_PRE_TOOL_USE_READ_CONTEXT_INJECTION` | `1` | Enable read-time provenance injection for `PreToolUse` `Read` |
 | `PANOPTICON_ENABLE_CODE_INTEL_FILE_OVERVIEW` | `0` | Enable Code Review Graph enrichment inside `file_overview` |
+| `PANOPTICON_SESSION_SUMMARY_CLAUDE_MODEL` | `sonnet` | Claude model alias for session-summary enrichment; daemon frenemy inherits this when explicitly set and no frenemy model override is set |
+| `PANOPTICON_SESSION_SUMMARY_CODEX_MODEL` | unset | Codex model override for session-summary enrichment; daemon frenemy inherits this when explicitly set and no frenemy model override is set |
 | `PANOPTICON_ENABLE_BUS_DELIVERY` | `0` | Enable hook nudges for unread bus messages and frenemy findings |
 | `PANOPTICON_ENABLE_FRENEMY` | `0` | Enable daemon-managed frenemy reviewers: one reviewer loop per room with at least one live non-frenemy agent |
 | `PANOPTICON_FRENEMY_RUNNER` | `claude` | Critic runner for daemon-managed frenemies (`claude` or `codex`) |
-| `PANOPTICON_FRENEMY_MODEL` | unset | Critic model override; unset uses the frenemy default |
+| `PANOPTICON_FRENEMY_MODEL` | unset | Critic model override; unset inherits an explicitly configured session-summary model for the selected runner, then uses the frenemy default |
 | `PANOPTICON_FRENEMY_SETTLE_MS` | `3000` | Settle window before a room's frenemy reviews a burst of activity |
 | `PANOPTICON_FRENEMY_RECONCILE_MS` | `5000` | How often the daemon reconciles active rooms with running frenemy loops |
 | `PANOPTICON_FRENEMY_IDLE_STOP_MS` | `600000` | Grace period before stopping a room's frenemy after its last primary agent leaves |
