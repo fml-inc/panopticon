@@ -88,7 +88,13 @@ export async function postSync(
         throw new Error(`HTTP ${status}: ${text}`);
       }
 
-      lastError = new Error(`HTTP ${status}`);
+      // 5xx (and 429): retryable. Capture the response body in the error so the
+      // server's reason (e.g. `{error: "..."}`) survives to Sentry instead of a
+      // contentless `HTTP 500`. startsWith("HTTP 4") still gates isExpectedSyncError.
+      const text = await response.text().catch(() => "");
+      lastError = new Error(
+        text ? `HTTP ${status}: ${text}` : `HTTP ${status}`,
+      );
     } catch (err) {
       if (
         err instanceof Error &&
