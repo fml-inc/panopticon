@@ -56,12 +56,22 @@ const mockedPostSync = vi.mocked(postSync);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function insertSession(sessionId: string, syncSeq: number): void {
+function insertSession(
+  sessionId: string,
+  syncSeq: number,
+  opts: { parentSessionId?: string | null; relationshipType?: string } = {},
+): void {
   const db = getDb();
   db.prepare(
-    `INSERT OR REPLACE INTO sessions (session_id, sync_seq, machine, relationship_type)
-     VALUES (?, ?, 'test-machine', 'standalone')`,
-  ).run(sessionId, syncSeq);
+    `INSERT OR REPLACE INTO sessions (
+       session_id, sync_seq, machine, parent_session_id, relationship_type
+     ) VALUES (?, ?, 'test-machine', ?, ?)`,
+  ).run(
+    sessionId,
+    syncSeq,
+    opts.parentSessionId ?? null,
+    opts.relationshipType ?? "standalone",
+  );
 }
 
 function insertSessionRepo(sessionId: string, repository = "org/repo"): void {
@@ -391,6 +401,29 @@ describe("createSyncLoop integration", () => {
       expect(getTss("no-repo", "fml")).toBeUndefined();
     });
 
+    it("posts child sessions whose parent has repo attribution", async () => {
+      insertSession("parent", 1);
+      insertSessionRepo("parent");
+      insertSession("child", 1, {
+        parentSessionId: "parent",
+        relationshipType: "subagent",
+      });
+      insertSession("orphan-child", 1, {
+        parentSessionId: "missing-parent",
+        relationshipType: "subagent",
+      });
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      expect(postedSessionIds()).toEqual(
+        expect.arrayContaining(["parent", "child"]),
+      );
+      expect(postedSessionIds()).not.toContain("orphan-child");
+      expect(getTss("child", "fml")).toBeDefined();
+      expect(getTss("orphan-child", "fml")).toBeUndefined();
+    });
+
     it("a backlog of no-repo sessions does not block reaching updated sessions", async () => {
       // pmandia's exact regression: 200 no-repo new sessions piled up,
       // plus one confirmed session whose sync_seq has advanced. The updated
@@ -446,8 +479,16 @@ describe("createSyncLoop integration", () => {
     it("excludeRepos filter is enforced via syncableSessionIds", async () => {
       insertSession("included", 1);
       insertSessionRepo("included", "org/keep");
+      insertSession("included-child", 1, {
+        parentSessionId: "included",
+        relationshipType: "subagent",
+      });
       insertSession("excluded", 1);
       insertSessionRepo("excluded", "org/private");
+      insertSession("excluded-child", 1, {
+        parentSessionId: "excluded",
+        relationshipType: "subagent",
+      });
 
       const handle = createSyncLoop({
         targets: [makeTarget()],
@@ -456,7 +497,9 @@ describe("createSyncLoop integration", () => {
       await handle.runOnce();
 
       expect(postedSessionIds()).toContain("included");
+      expect(postedSessionIds()).toContain("included-child");
       expect(postedSessionIds()).not.toContain("excluded");
+      expect(postedSessionIds()).not.toContain("excluded-child");
     });
 
     it("hasMore is true when either branch hits its batchSize", async () => {

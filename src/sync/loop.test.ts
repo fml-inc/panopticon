@@ -24,6 +24,7 @@ vi.mock("../config.js", () => {
 
 import { closeDb, getDb } from "../db/schema.js";
 import { buildMessageSyncId } from "../db/sync-ids.js";
+import { sessionHasSyncableRepoSql } from "./filter.js";
 import {
   readSessionDerivedState,
   readSessionMessages,
@@ -32,12 +33,22 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function insertSession(sessionId: string, syncSeq: number): void {
+function insertSession(
+  sessionId: string,
+  syncSeq: number,
+  opts: { parentSessionId?: string | null; relationshipType?: string } = {},
+): void {
   const db = getDb();
   db.prepare(
-    `INSERT OR REPLACE INTO sessions (session_id, sync_seq, machine, relationship_type)
-     VALUES (?, ?, 'test-machine', 'standalone')`,
-  ).run(sessionId, syncSeq);
+    `INSERT OR REPLACE INTO sessions (
+       session_id, sync_seq, machine, parent_session_id, relationship_type
+     ) VALUES (?, ?, 'test-machine', ?, ?)`,
+  ).run(
+    sessionId,
+    syncSeq,
+    opts.parentSessionId ?? null,
+    opts.relationshipType ?? "standalone",
+  );
 }
 
 function insertSessionRepo(sessionId: string, repository = "org/repo"): void {
@@ -125,7 +136,7 @@ function getSessionsNeedingSync(
 ) {
   const db = getDb();
   const repoExists = requireRepo
-    ? "AND EXISTS (SELECT 1 FROM session_repositories sr WHERE sr.session_id = s.session_id)"
+    ? `AND (${sessionHasSyncableRepoSql("s")})`
     : "";
   const newRows = db
     .prepare(
@@ -721,6 +732,26 @@ describe("target_session_sync", () => {
       );
       expect(ids).toContain("with-repo");
       expect(ids).not.toContain("no-repo");
+    });
+
+    it("SQL filter includes child sessions when the parent has repo attribution", () => {
+      insertSession("parent", 1);
+      insertSessionRepo("parent");
+      insertSession("child", 1, {
+        parentSessionId: "parent",
+        relationshipType: "subagent",
+      });
+      insertSession("orphan-child", 1, {
+        parentSessionId: "missing-parent",
+        relationshipType: "subagent",
+      });
+
+      const ids = getSessionsNeedingSync("target-a", 100, true).map(
+        (r) => r.session_id,
+      );
+      expect(ids).toContain("parent");
+      expect(ids).toContain("child");
+      expect(ids).not.toContain("orphan-child");
     });
 
     it("a backlog of no-repo sessions does not starve the updated branch", () => {
