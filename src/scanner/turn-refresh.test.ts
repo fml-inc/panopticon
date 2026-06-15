@@ -262,7 +262,9 @@ describe("insertTurns refresh on conflict", () => {
     updateSessionTotals(sessionId);
     const seqAfterFirst = readSeq();
 
-    // Recency revalidation re-snapshots the same session with identical data.
+    // Recency revalidation re-snapshots the same session with identical data,
+    // including the scanner session metadata upsert that scanOnce performs.
+    upsertSession({ sessionId }, "/tmp/state.db", "hermes");
     const secondCount = insertTurns(
       [
         { ...turn(0, "user"), sessionId },

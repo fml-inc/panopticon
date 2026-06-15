@@ -59,6 +59,66 @@ export interface FileWatermarkState {
 
 // ── Session upsert (writes to unified sessions table) ───────────────────────
 
+function scannerSessionNeedsUpsert(
+  meta: ParsedSession,
+  filePath: string,
+  source: string,
+  project: string | undefined,
+  relationshipType: string | undefined,
+): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT target, started_at_ms, first_prompt, model, models, cli_version,
+              scanner_file_path, project, parent_session_id, relationship_type,
+              has_scanner
+         FROM sessions
+        WHERE session_id = ?`,
+    )
+    .get(meta.sessionId) as
+    | {
+        target: string | null;
+        started_at_ms: number | null;
+        first_prompt: string | null;
+        model: string | null;
+        models: string | null;
+        cli_version: string | null;
+        scanner_file_path: string | null;
+        project: string | null;
+        parent_session_id: string | null;
+        relationship_type: string | null;
+        has_scanner: number | null;
+      }
+    | undefined;
+
+  if (!row) return true;
+  if (row.target !== source) return true;
+  if (meta.startedAtMs != null && row.started_at_ms !== meta.startedAtMs) {
+    return true;
+  }
+  if (row.first_prompt == null && meta.firstPrompt != null) return true;
+  if (meta.model != null) {
+    if (row.model !== meta.model) return true;
+    if (row.models == null || !row.models.includes(meta.model)) return true;
+  }
+  if (meta.cliVersion != null && row.cli_version !== meta.cliVersion) {
+    return true;
+  }
+  if (row.scanner_file_path !== filePath) return true;
+  if (row.project == null && project != null) return true;
+  if (
+    meta.parentSessionId != null &&
+    row.parent_session_id !== meta.parentSessionId
+  ) {
+    return true;
+  }
+  if (relationshipType != null && row.relationship_type !== relationshipType) {
+    return true;
+  }
+  if ((row.has_scanner ?? 0) !== 1) return true;
+  return false;
+}
+
 export function upsertSession(
   meta: ParsedSession,
   filePath: string,
@@ -75,21 +135,26 @@ export function upsertSession(
     }
   }
 
-  upsertSessionRow({
-    session_id: meta.sessionId,
-    target: source,
-    started_at_ms: meta.startedAtMs,
-    first_prompt: meta.firstPrompt,
-    model: meta.model,
-    cli_version: meta.cliVersion,
-    scanner_file_path: filePath,
-    has_scanner: 1,
-    project,
-    created_at: meta.startedAtMs ?? Date.now(),
-    parent_session_id: meta.parentSessionId,
-    relationship_type:
-      meta.relationshipType ?? (meta.parentSessionId ? "subagent" : undefined),
-  });
+  const relationshipType =
+    meta.relationshipType ?? (meta.parentSessionId ? "subagent" : undefined);
+  if (
+    scannerSessionNeedsUpsert(meta, filePath, source, project, relationshipType)
+  ) {
+    upsertSessionRow({
+      session_id: meta.sessionId,
+      target: source,
+      started_at_ms: meta.startedAtMs,
+      first_prompt: meta.firstPrompt,
+      model: meta.model,
+      cli_version: meta.cliVersion,
+      scanner_file_path: filePath,
+      has_scanner: 1,
+      project,
+      created_at: meta.startedAtMs ?? Date.now(),
+      parent_session_id: meta.parentSessionId,
+      relationship_type: relationshipType,
+    });
+  }
 
   // Record cwd and repo for scanner-only sessions
   if (meta.cwd) {
