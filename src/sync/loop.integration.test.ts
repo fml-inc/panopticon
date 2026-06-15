@@ -41,7 +41,8 @@ vi.mock("../config.js", () => {
 });
 
 // ── Mock postSync so we can intercept HTTP and decide what the backend "accepts" ──
-vi.mock("./post.js", () => ({
+vi.mock("./post.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./post.js")>()),
   postSync: vi.fn(),
 }));
 
