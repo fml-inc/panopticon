@@ -2,10 +2,10 @@
 
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { resolveSelfIdentity } from "../bus/identity.js";
 import { resolveRoom } from "../bus/room.js";
 import { log, openLogFd } from "../log.js";
 import { readFreshScannerStatus } from "../scanner/status.js";
@@ -18,34 +18,6 @@ import {
 } from "./permissions.js";
 
 const service = httpPanopticonService;
-
-/**
- * Best-effort self-identification for the calling Claude session. Claude Code
- * does not expose the session id to MCP servers, but it writes a per-pid
- * registry file at ~/.claude/sessions/<pid>.json mapping pid -> sessionId + cwd,
- * and a stdio MCP server's parent process IS the launching agent. So we read the
- * file for our ppid to learn which session we belong to — letting the bus tools
- * resolve the caller's room (and sender identity) with zero arguments.
- *
- * This couples to an undocumented Claude Code file, so it is wrapped in a guard:
- * on any failure the bus tools simply fall back to requiring an explicit
- * room/session_id, which is the pre-existing behavior.
- */
-function resolveSelfIdentity(): { sessionId?: string; cwd?: string } {
-  try {
-    const ppid = process.ppid;
-    if (!ppid) return {};
-    const file = path.join(os.homedir(), ".claude", "sessions", `${ppid}.json`);
-    const data = JSON.parse(fs.readFileSync(file, "utf-8"));
-    return {
-      sessionId:
-        typeof data.sessionId === "string" ? data.sessionId : undefined,
-      cwd: typeof data.cwd === "string" ? data.cwd : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
 
 const self = resolveSelfIdentity();
 const SELF_SESSION_ID = self.sessionId;
@@ -961,10 +933,20 @@ server.tool(
     limit: z.number().optional().describe("Max messages (default 50)."),
   },
   async ({ session_id, room, kinds, limit }) => {
+    const resolvedSessionId = session_id ?? SELF_SESSION_ID;
+    if (!resolvedSessionId) {
+      return jsonContent({
+        error:
+          "bus_read requires a resolved session_id so messages can be marked seen; pass session_id explicitly or use bus_history for non-consuming reads.",
+        room: room ?? SELF_ROOM ?? null,
+        cursor: 0,
+        messages: [],
+      });
+    }
     // busRecv: returns only what's UNREAD for this session and marks it seen,
     // scoped to when the session joined — so this closes the nudge↔read loop.
     const result = await service.busRecv({
-      session_id: session_id ?? SELF_SESSION_ID,
+      session_id: resolvedSessionId,
       room: room ?? SELF_ROOM,
       kinds: kinds ?? ["challenge", "chat"],
       limit,

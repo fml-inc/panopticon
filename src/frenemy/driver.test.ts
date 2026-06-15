@@ -11,6 +11,7 @@ import type {
 import type { HookEvent, HookTimelineResult } from "../types.js";
 import {
   createFrenemyLoop,
+  defaultCriticModel,
   type FrenemyCursors,
   formatActivity,
   gitDiff,
@@ -128,6 +129,14 @@ function makeDeps(
 }
 
 const OPTS = { room: "fml-inc/panopticon" };
+
+describe("defaultCriticModel", () => {
+  it("uses Opus for Claude but lets Codex use its own default", () => {
+    expect(defaultCriticModel(undefined)).toBe("opus");
+    expect(defaultCriticModel("claude")).toBe("opus");
+    expect(defaultCriticModel("codex")).toBeNull();
+  });
+});
 
 describe("parseChallenge", () => {
   it("extracts a challenge and ignores SKIP / empty", () => {

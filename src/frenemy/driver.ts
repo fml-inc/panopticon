@@ -35,6 +35,12 @@ export const FRENEMY_FROM = "frenemy";
 /** Default critic model — a strong reviewer; Opus is the point of the frenemy. */
 export const FRENEMY_DEFAULT_MODEL = "opus";
 
+export function defaultCriticModel(
+  runner: FrenemyOptions["runner"] | undefined,
+): string | null {
+  return runner === "codex" ? null : FRENEMY_DEFAULT_MODEL;
+}
+
 export const FRENEMY_PERSONA = `You are a meticulous senior code reviewer embedded in a developer's workspace —
 a "frenemy" who reviews changes AS THEY HAPPEN, so that by the time the work is
 finished it has effectively already been code-reviewed. Be a stickler: hunt for
@@ -290,12 +296,13 @@ function defaultDeps(opts: FrenemyOptions): FrenemyDeps {
     // (Marking-seen would be harmless/accurate; it's the self-exclusion we avoid.)
     busRead: (input) => httpPanopticonService.busRead(input),
     critique: async (reviewInput, cwd) => {
+      const runner = opts.runner ?? "claude";
       // Give the reviewer read-only access to the primary's worktree so it can
       // inspect surrounding code, call sites, and history — a real review, not
       // just a glance at the diff.
       const out = await invokeLlmAsync(reviewInput, {
-        runner: opts.runner ?? "claude",
-        model: opts.model ?? FRENEMY_DEFAULT_MODEL,
+        runner,
+        model: opts.model ?? defaultCriticModel(runner),
         systemPrompt: FRENEMY_PERSONA,
         cwd: cwd ?? undefined,
         allowedTools: cwd ? REVIEW_TOOLS : undefined,

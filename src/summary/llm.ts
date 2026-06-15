@@ -406,9 +406,10 @@ function buildClaudeArgs(opts: {
 
   // Pre-approve the requested workspace tools (e.g. the frenemy reviewer's
   // read-only set) PLUS the panopticon MCP tools when enabled, in ONE list (two
-  // --allowedTools flags clobber). When NO workspace tools are requested, also
-  // disable built-ins with --tools "" so a plain/MCP-only run can't touch the
-  // filesystem — the frenemy passes its read-only set, so it keeps Read/Grep/etc.
+  // --allowedTools flags clobber). Separately restrict Claude's built-ins with
+  // --tools on every run: an empty workspace set disables built-ins entirely,
+  // while patterns like Bash(git diff:*) make only Bash available and rely on
+  // --allowedTools for exact command preapproval.
   const workspaceTools = opts.allowedTools ?? [];
   const allowed = [
     ...workspaceTools,
@@ -417,9 +418,7 @@ function buildClaudeArgs(opts: {
   if (allowed.length > 0) {
     args.push("--allowedTools", allowed.join(" "));
   }
-  if (workspaceTools.length === 0) {
-    args.push("--tools", "");
-  }
+  args.push("--tools", availableClaudeBuiltIns(workspaceTools).join(" "));
 
   if (shouldUseBareMode(opts.env)) {
     args.push("--bare");
@@ -434,6 +433,15 @@ function buildClaudeArgs(opts: {
   }
 
   return args;
+}
+
+function availableClaudeBuiltIns(allowedTools: string[]): string[] {
+  const builtIns = new Set<string>();
+  for (const tool of allowedTools) {
+    const name = tool.split("(")[0]?.trim();
+    if (name && /^[A-Z][A-Za-z0-9_]*$/.test(name)) builtIns.add(name);
+  }
+  return [...builtIns];
 }
 
 function buildCodexArgs(

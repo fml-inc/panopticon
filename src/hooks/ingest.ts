@@ -590,71 +590,61 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
         : undefined;
   const targetId = target?.id ?? providerId ?? "unknown";
 
-  // Check if this event type is enabled in the logging config.
-  // Permission enforcement still runs even for disabled events so that hook
-  // responses are not silently dropped.
-  if (!isEventEnabled(eventType)) {
-    // Skip storage but still handle permission enforcement below
-    if (
-      (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
-      toolName
-    ) {
-      return buildPermissionResponse(eventType, toolName, data, target);
-    }
-    return {};
-  }
+  const eventEnabled = isEventEnabled(eventType);
 
-  const hookEventId = insertHookEvent({
-    session_id: sessionId,
-    event_type: eventType,
-    timestamp_ms: timestampMs,
-    cwd: data.cwd,
-    repository: repo ?? undefined,
-    tool_name: toolName ?? undefined,
-    target: targetId,
-    payload: data,
-  });
-
-  try {
-    recordIntentClaimsFromHookEvent({
-      sessionId,
-      eventType,
-      hookEventId,
-      timestampMs,
-      cwd: typeof data.cwd === "string" ? data.cwd : null,
-      repository: repo ?? null,
-      payload: data as Record<string, unknown>,
+  if (eventEnabled) {
+    const hookEventId = insertHookEvent({
+      session_id: sessionId,
+      event_type: eventType,
+      timestamp_ms: timestampMs,
+      cwd: data.cwd,
+      repository: repo ?? undefined,
+      tool_name: toolName ?? undefined,
+      target: targetId,
+      payload: data,
     });
-  } catch (err) {
-    log.hooks.error("intent claim ingest failed:", err);
-  }
 
-  // Mirror the gate in recordIntentClaimsFromHookEvent — that function uses
-  // EDIT_TOOL_NAMES which includes Codex's edit_file/write_file/create_file/
-  // apply_patch. If we hardcode Claude-only tool names here, Codex
-  // PostToolUse events write claims but never trigger a projection refresh,
-  // so intent-backed MCP tools serve stale data mid-turn until the next
-  // UserPromptSubmit/Stop/SessionEnd event happens to land.
-  const shouldRefreshIntentProjection =
-    eventType === "UserPromptSubmit" ||
-    (eventType === "PostToolUse" &&
-      typeof toolName === "string" &&
-      isEditToolName(toolName));
-
-  if (shouldRefreshIntentProjection) {
     try {
-      rebuildIntentProjection({ sessionId });
+      recordIntentClaimsFromHookEvent({
+        sessionId,
+        eventType,
+        hookEventId,
+        timestampMs,
+        cwd: typeof data.cwd === "string" ? data.cwd : null,
+        repository: repo ?? null,
+        payload: data as Record<string, unknown>,
+      });
     } catch (err) {
-      log.hooks.error("intent projection refresh failed:", err);
+      log.hooks.error("intent claim ingest failed:", err);
     }
-  }
 
-  if (eventType === "Stop" || eventType === "SessionEnd") {
-    try {
-      reconcileLandedClaimsFromDisk({ sessionId });
-      rebuildIntentProjection({ sessionId });
-    } catch (err) {
-      log.hooks.error("intent reconciliation failed:", err);
+    // Mirror the gate in recordIntentClaimsFromHookEvent — that function uses
+    // EDIT_TOOL_NAMES which includes Codex's edit_file/write_file/create_file/
+    // apply_patch. If we hardcode Claude-only tool names here, Codex
+    // PostToolUse events write claims but never trigger a projection refresh,
+    // so intent-backed MCP tools serve stale data mid-turn until the next
+    // UserPromptSubmit/Stop/SessionEnd event happens to land.
+    const shouldRefreshIntentProjection =
+      eventType === "UserPromptSubmit" ||
+      (eventType === "PostToolUse" &&
+        typeof toolName === "string" &&
+        isEditToolName(toolName));
+
+    if (shouldRefreshIntentProjection) {
+      try {
+        rebuildIntentProjection({ sessionId });
+      } catch (err) {
+        log.hooks.error("intent projection refresh failed:", err);
+      }
+    }
+
+    if (eventType === "Stop" || eventType === "SessionEnd") {
+      try {
+        reconcileLandedClaimsFromDisk({ sessionId });
+        rebuildIntentProjection({ sessionId });
+      } catch (err) {
+        log.hooks.error("intent reconciliation failed:", err);
+      }
     }
   }
 
@@ -768,66 +758,77 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
     }
   }
 
-  // Increment event type + tool counts on the session
-  incrementEventTypeCount(sessionId, eventType);
-  if (
-    (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
-    toolName
-  ) {
-    incrementToolCount(sessionId, toolName);
-  }
-
-  // Populate session junction tables — greedily resolve all repos touched
-  // by this event (primary cwd + any paths in tool_input).
-  const allRepos = resolveAllEventRepos(data);
-  for (const { repo: r, dir, branch } of allRepos) {
-    const gitId = resolveGitIdentity(dir);
-    // Capture HEAD only at SessionStart: it is the replay anchor (the code
-    // state the session began from). Resolving it per-event would add a
-    // git call to the hot path; first-write-wins in the upsert preserves
-    // the start value as the working tree moves during the session.
-    const headSha =
-      eventType === "SessionStart" ? resolveGitHeadSha(dir) : null;
-    upsertSessionRepository(sessionId, r, timestampMs, gitId, branch, headSha);
-
-    // Capture repo config on first encounter per session
-    const repoKey = `${sessionId}:${r}`;
-    if (!seenSessionRepos.has(repoKey)) {
-      seenSessionRepos.add(repoKey);
-      try {
-        const cfg = readConfig(dir);
-        const gitRoot = resolveGitRoot(dir);
-        const localSettingsPath = path.join(
-          gitRoot ?? dir,
-          ".claude",
-          "settings.local.json",
-        );
-        insertRepoConfigSnapshot({
-          repository: r,
-          cwd: dir,
-          sessionId,
-          hooks: cfg.project?.hooks ?? [],
-          mcpServers: cfg.project?.mcpServers ?? [],
-          commands: cfg.project?.commands ?? [],
-          agents: cfg.project?.agents ?? [],
-          rules: cfg.project?.rules ?? [],
-          localHooks: cfg.projectLocal?.hooks ?? [],
-          localMcpServers: cfg.projectLocal?.mcpServers ?? [],
-          localPermissions: cfg.projectLocal?.permissions ?? {
-            allow: [],
-            ask: [],
-            deny: [],
-          },
-          localIsGitignored: isGitignored(localSettingsPath, gitRoot ?? dir),
-          instructions: cfg.instructions,
-        });
-      } catch {
-        // Non-fatal — config scan failure shouldn't break hook processing
-      }
+  if (eventEnabled) {
+    // Increment event type + tool counts on the session
+    incrementEventTypeCount(sessionId, eventType);
+    if (
+      (eventType === "PreToolUse" || eventType === "PermissionRequest") &&
+      toolName
+    ) {
+      incrementToolCount(sessionId, toolName);
     }
   }
-  if (data.cwd) {
-    upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+
+  if (eventEnabled) {
+    // Populate session junction tables — greedily resolve all repos touched
+    // by this event (primary cwd + any paths in tool_input).
+    const allRepos = resolveAllEventRepos(data);
+    for (const { repo: r, dir, branch } of allRepos) {
+      const gitId = resolveGitIdentity(dir);
+      // Capture HEAD only at SessionStart: it is the replay anchor (the code
+      // state the session began from). Resolving it per-event would add a
+      // git call to the hot path; first-write-wins in the upsert preserves
+      // the start value as the working tree moves during the session.
+      const headSha =
+        eventType === "SessionStart" ? resolveGitHeadSha(dir) : null;
+      upsertSessionRepository(
+        sessionId,
+        r,
+        timestampMs,
+        gitId,
+        branch,
+        headSha,
+      );
+
+      // Capture repo config on first encounter per session
+      const repoKey = `${sessionId}:${r}`;
+      if (!seenSessionRepos.has(repoKey)) {
+        seenSessionRepos.add(repoKey);
+        try {
+          const cfg = readConfig(dir);
+          const gitRoot = resolveGitRoot(dir);
+          const localSettingsPath = path.join(
+            gitRoot ?? dir,
+            ".claude",
+            "settings.local.json",
+          );
+          insertRepoConfigSnapshot({
+            repository: r,
+            cwd: dir,
+            sessionId,
+            hooks: cfg.project?.hooks ?? [],
+            mcpServers: cfg.project?.mcpServers ?? [],
+            commands: cfg.project?.commands ?? [],
+            agents: cfg.project?.agents ?? [],
+            rules: cfg.project?.rules ?? [],
+            localHooks: cfg.projectLocal?.hooks ?? [],
+            localMcpServers: cfg.projectLocal?.mcpServers ?? [],
+            localPermissions: cfg.projectLocal?.permissions ?? {
+              allow: [],
+              ask: [],
+              deny: [],
+            },
+            localIsGitignored: isGitignored(localSettingsPath, gitRoot ?? dir),
+            instructions: cfg.instructions,
+          });
+        } catch {
+          // Non-fatal — config scan failure shouldn't break hook processing
+        }
+      }
+    }
+    if (data.cwd) {
+      upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+    }
   }
 
   // Capture user config on SessionStart (once per session) — baseline

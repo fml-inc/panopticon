@@ -431,9 +431,26 @@ describe("summary llm wrapper", () => {
     expect(args[args.indexOf("--allowedTools") + 1]).toBe(
       "Read Grep mcp__panopticon__timeline mcp__panopticon__get mcp__panopticon__query mcp__panopticon__search mcp__panopticon__status mcp__panopticon__session_summary_detail",
     );
-    // Built-ins are NOT disabled — the reviewer needs Read/Grep in the worktree.
-    expect(args).not.toContain("--tools");
+    // Built-ins are restricted to the requested workspace set; --allowedTools
+    // pre-approves exact workspace+MCP tools, while --tools limits availability.
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read Grep");
     expect(args).toContain("--mcp-config");
+  });
+
+  it("restricts Claude built-ins while allowing exact Bash command patterns", async () => {
+    const { invokeLlm } = await loadLlm();
+
+    expect(
+      invokeLlm("Review this", {
+        allowedTools: ["Read", "Bash(git diff:*)", "Bash(git show:*)"],
+      }),
+    ).toBe("OK");
+
+    const [, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read Bash");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe(
+      "Read Bash(git diff:*) Bash(git show:*)",
+    );
   });
 
   it("fails fast when the MCP server bundle cannot be found", async () => {
