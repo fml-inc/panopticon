@@ -5,6 +5,7 @@
  * for durable state (claim/release, projected elsewhere).
  */
 
+import { broadcast, hasClients } from "../ui/events.js";
 import { getDb } from "./schema.js";
 
 const MESSAGE_COLUMNS =
@@ -64,7 +65,35 @@ export function insertAgentMessage(row: AgentMessageInsert): number {
       source: row.source ?? null,
       created_at_ms: row.created_at_ms,
     });
-  return Number(result.lastInsertRowid);
+  const id = Number(result.lastInsertRowid);
+
+  // Push to any connected Mission Control dashboard. Cross-room: the dashboard
+  // shows the whole fleet, so we broadcast regardless of room. Never throws into
+  // the caller — a UI listener error must not break a bus write.
+  if (hasClients()) {
+    try {
+      broadcast({
+        type: "message",
+        data: {
+          id,
+          room: row.room,
+          from_session: row.from_session,
+          to_session: row.to_session ?? null,
+          kind: row.kind,
+          body: row.body,
+          subject: row.subject ?? null,
+          ref_tool: row.ref_tool ?? null,
+          ref_path: row.ref_path ?? null,
+          source: row.source ?? null,
+          created_at_ms: row.created_at_ms,
+        },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return id;
 }
 
 export interface ReadMessagesOptions {
@@ -186,10 +215,31 @@ export function markDelivered(
     `INSERT OR IGNORE INTO agent_message_deliveries (message_id, session_id, delivered_at_ms)
      VALUES (?, ?, ?)`,
   );
+  const deliveredIds: number[] = [];
   const tx = db.transaction((rows: number[]) => {
-    let changed = 0;
-    for (const id of rows) changed += stmt.run(id, sessionId, nowMs).changes;
-    return changed;
+    for (const id of rows) {
+      if (stmt.run(id, sessionId, nowMs).changes > 0) deliveredIds.push(id);
+    }
+    return deliveredIds.length;
   });
-  return tx(ids) as number;
+  const changed = tx(ids) as number;
+
+  // Notify Mission Control so the feed can flip these messages to delivered.
+  // Per-recipient now, so carry the session it was delivered to.
+  if (changed > 0 && hasClients()) {
+    try {
+      broadcast({
+        type: "delivery",
+        data: {
+          ids: deliveredIds,
+          session_id: sessionId,
+          delivered_at_ms: nowMs,
+        },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return changed;
 }

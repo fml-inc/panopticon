@@ -31,6 +31,8 @@ import {
   OTEL_SESSION_TABLES,
 } from "./sync/registry.js";
 import type { SyncHandle } from "./sync/types.js";
+import { handleEventStream } from "./ui/sse.js";
+import { handleUiRequest } from "./ui/static.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
 function collectBody(req: http.IncomingMessage): Promise<Buffer> {
@@ -144,6 +146,20 @@ export function createUnifiedServer(): http.Server {
         return;
       }
       await handleApiRequest(req, res);
+      return;
+    }
+
+    // Mission Control — live event stream (SSE). Auth via ?token= because
+    // EventSource cannot set headers; carries presence + bus deltas to the UI.
+    if (url.startsWith("/api/events") && method === "GET") {
+      handleEventStream(req, res, authToken);
+      return;
+    }
+
+    // Mission Control — static web app (GET /ui, /ui/*). The HTML shell is
+    // templated with the token + port so the page can call /api and open SSE.
+    if ((url === "/ui" || url.startsWith("/ui/")) && method === "GET") {
+      handleUiRequest(req, res, authToken);
       return;
     }
 

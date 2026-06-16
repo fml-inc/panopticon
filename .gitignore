@@ -13,3 +13,7 @@ dist/
 .env
 .env.local
 .env.*.local
+.vercel
+
+# Generated DB-backed Vercel app (build artifact)
+apps/site-db/
