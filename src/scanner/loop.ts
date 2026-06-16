@@ -19,9 +19,7 @@ import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
 import { rebuildIntentProjection } from "../intent/project.js";
 // Import targets so they self-register before we iterate the registry
-import "../targets/claude.js";
-import "../targets/codex.js";
-import "../targets/gemini.js";
+import "../targets/index.js";
 import { getArchiveBackend } from "../archive/index.js";
 import { log } from "../log.js";
 import { captureException } from "../sentry.js";
@@ -491,19 +489,29 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
           continue;
         }
 
-        // Wrap all per-file DB writes in a single transaction so that
-        // a crash can't leave messages inserted without watermark advancement
-        // (which would cause tool_call duplication on retry).
+        // Each session's rows commit in their own transaction. The file
+        // watermark is advanced only AFTER the main session and every fork are
+        // durable (below), so a crash mid-file leaves the watermark unmoved and
+        // the next scan reprocesses the whole file. Reprocessing is idempotent:
+        // scanner inserts are INSERT OR IGNORE / deterministic-sync_id upserts,
+        // so re-running cannot duplicate turns, messages, or tool calls. When
+        // the parser returns multiple sessions (state.db holds many), advancing
+        // the watermark inside the first session's transaction would strand the
+        // rest on any later error.
         const sessionId = result.meta.sessionId;
         const fileMeta = result.meta;
         const fileResult = result;
         const db = getDb();
         const writeStartedAt = performance.now();
+        // Count turns that were actually inserted or changed (not just
+        // re-emitted), so an unchanged re-snapshot doesn't keep the loop at its
+        // catch-up cadence or look like work.
+        let changedTurns = 0;
         db.transaction(() => {
           upsertSession(fileMeta, filePath, source);
 
           if (fileResult.turns.length > 0) {
-            insertTurns(fileResult.turns, source);
+            changedTurns = insertTurns(fileResult.turns, source);
             updateSessionTotals(sessionId);
           }
 
@@ -518,12 +526,6 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             insertMessages(fileResult.messages, fileResult.orphanedToolResults);
             updateSessionMessageCounts(sessionId);
           }
-
-          writeFileWatermark(
-            filePath,
-            fileResult.newByteOffset,
-            fileMeta.sessionId,
-          );
         })();
         fileDbWriteMs += performance.now() - writeStartedAt;
         dbWriteMs += fileDbWriteMs;
@@ -531,7 +533,7 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
         touchedSessions.add(sessionId);
         targetTouchedSessions.get(source)?.add(sessionId);
 
-        newTurns += result.turns.length;
+        newTurns += changedTurns;
         targetProfile.turns += result.turns.length;
 
         // Process fork results (additional sessions from DAG analysis)
@@ -544,10 +546,11 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             const forkSessionId = fork.meta.sessionId;
             const forkMeta = fork.meta;
             const forkWriteStartedAt = performance.now();
+            let forkChangedTurns = 0;
             db.transaction(() => {
               upsertSession(forkMeta, filePath, source);
               if (fork.turns.length > 0) {
-                insertTurns(fork.turns, source);
+                forkChangedTurns = insertTurns(fork.turns, source);
                 updateSessionTotals(forkSessionId);
               }
               if (fork.events.length > 0) {
@@ -565,10 +568,15 @@ export function scanOnce(opts?: ScanOnceOptions): ScanOnceResult {
             targetProfile.dbWriteMs += forkWriteMs;
             touchedSessions.add(forkSessionId);
             targetTouchedSessions.get(source)?.add(forkSessionId);
-            newTurns += fork.turns.length;
+            newTurns += forkChangedTurns;
             targetProfile.turns += fork.turns.length;
           }
         }
+
+        // Advance the file watermark only after the main session and all forks
+        // are durable. A crash before this point leaves the watermark unmoved
+        // and the next scan reprocesses the file idempotently.
+        writeFileWatermark(filePath, result.newByteOffset, fileMeta.sessionId);
 
         // Archive raw file for 100% recall
         const archiveStartedAt = performance.now();

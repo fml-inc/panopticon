@@ -59,6 +59,66 @@ export interface FileWatermarkState {
 
 // ── Session upsert (writes to unified sessions table) ───────────────────────
 
+function scannerSessionNeedsUpsert(
+  meta: ParsedSession,
+  filePath: string,
+  source: string,
+  project: string | undefined,
+  relationshipType: string | undefined,
+): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT target, started_at_ms, first_prompt, model, models, cli_version,
+              scanner_file_path, project, parent_session_id, relationship_type,
+              has_scanner
+         FROM sessions
+        WHERE session_id = ?`,
+    )
+    .get(meta.sessionId) as
+    | {
+        target: string | null;
+        started_at_ms: number | null;
+        first_prompt: string | null;
+        model: string | null;
+        models: string | null;
+        cli_version: string | null;
+        scanner_file_path: string | null;
+        project: string | null;
+        parent_session_id: string | null;
+        relationship_type: string | null;
+        has_scanner: number | null;
+      }
+    | undefined;
+
+  if (!row) return true;
+  if (row.target !== source) return true;
+  if (meta.startedAtMs != null && row.started_at_ms !== meta.startedAtMs) {
+    return true;
+  }
+  if (row.first_prompt == null && meta.firstPrompt != null) return true;
+  if (meta.model != null) {
+    if (row.model !== meta.model) return true;
+    if (row.models == null || !row.models.includes(meta.model)) return true;
+  }
+  if (meta.cliVersion != null && row.cli_version !== meta.cliVersion) {
+    return true;
+  }
+  if (row.scanner_file_path !== filePath) return true;
+  if (row.project == null && project != null) return true;
+  if (
+    meta.parentSessionId != null &&
+    row.parent_session_id !== meta.parentSessionId
+  ) {
+    return true;
+  }
+  if (relationshipType != null && row.relationship_type !== relationshipType) {
+    return true;
+  }
+  if ((row.has_scanner ?? 0) !== 1) return true;
+  return false;
+}
+
 export function upsertSession(
   meta: ParsedSession,
   filePath: string,
@@ -75,21 +135,26 @@ export function upsertSession(
     }
   }
 
-  upsertSessionRow({
-    session_id: meta.sessionId,
-    target: source,
-    started_at_ms: meta.startedAtMs,
-    first_prompt: meta.firstPrompt,
-    model: meta.model,
-    cli_version: meta.cliVersion,
-    scanner_file_path: filePath,
-    has_scanner: 1,
-    project,
-    created_at: meta.startedAtMs ?? Date.now(),
-    parent_session_id: meta.parentSessionId,
-    relationship_type:
-      meta.relationshipType ?? (meta.parentSessionId ? "subagent" : undefined),
-  });
+  const relationshipType =
+    meta.relationshipType ?? (meta.parentSessionId ? "subagent" : undefined);
+  if (
+    scannerSessionNeedsUpsert(meta, filePath, source, project, relationshipType)
+  ) {
+    upsertSessionRow({
+      session_id: meta.sessionId,
+      target: source,
+      started_at_ms: meta.startedAtMs,
+      first_prompt: meta.firstPrompt,
+      model: meta.model,
+      cli_version: meta.cliVersion,
+      scanner_file_path: filePath,
+      has_scanner: 1,
+      project,
+      created_at: meta.startedAtMs ?? Date.now(),
+      parent_session_id: meta.parentSessionId,
+      relationship_type: relationshipType,
+    });
+  }
 
   // Record cwd and repo for scanner-only sessions
   if (meta.cwd) {
@@ -152,21 +217,82 @@ export function readKnownScannerFiles(source: string): string[] {
 
 // ── Turn insert ─────────────────────────────────────────────────────────────
 
+// New turns insert verbatim. Re-parses of a full session snapshot are common
+// (the scanner re-emits whole sessions), so a conflicting turn_index is the
+// normal case, handled by UPDATE_TURN_SQL below.
 const INSERT_TURN_SQL = `
-  INSERT OR IGNORE INTO scanner_turns
+  INSERT INTO scanner_turns
     (session_id, source, turn_index, timestamp_ms, model, role,
      content_preview, input_tokens, output_tokens,
      cache_read_tokens, cache_creation_tokens, reasoning_tokens, sync_id)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(session_id, source, turn_index) DO NOTHING
 `;
 
-export function insertTurns(turns: ParsedTurn[], source: string): void {
-  if (turns.length === 0) return;
+// Refresh an existing turn, but only when a token value actually changed.
+// This is last-write-wins for ALL sources: the JSONL scanners
+// (claude/codex/gemini/pi) re-emit identical turns so the guarded WHERE makes
+// the UPDATE a no-op for them, while adapters whose per-turn values move
+// between parses (hermes attaches its session-aggregate to the latest
+// assistant turn) get refreshed. Crucially, changes() then precisely
+// identifies the mutated rows: those already propagated to the sync remote and
+// must be re-sent. sync_id is never rewritten — the remote keys on it, so
+// re-sending the same sync_id patches the existing remote row in place.
+const UPDATE_TURN_SQL = `
+  UPDATE scanner_turns SET
+    timestamp_ms = ?,
+    model = ?,
+    role = ?,
+    content_preview = ?,
+    input_tokens = ?,
+    output_tokens = ?,
+    cache_read_tokens = ?,
+    cache_creation_tokens = ?,
+    reasoning_tokens = ?
+  WHERE session_id = ? AND source = ? AND turn_index = ?
+    AND (
+      input_tokens != ?
+      OR output_tokens != ?
+      OR cache_read_tokens != ?
+      OR cache_creation_tokens != ?
+      OR reasoning_tokens != ?
+    )
+`;
+
+// When an already-synced turn's tokens change, force its session's
+// scanner_turns rows to re-sync. The per-session sync watermark
+// (target_session_sync.wm_scanner_turns) reads rows by `id > watermark`, so a
+// mutated row (same id) would otherwise never be re-read; resetting to 0
+// re-sends the whole session's turns and the remote patches each by sync_id.
+// Bumping sessions.sync_seq guarantees the session is re-selected as pending
+// regardless of whether tool/event counts also changed this pass.
+const RESYNC_TURNS_SQL = `
+  UPDATE target_session_sync SET wm_scanner_turns = 0 WHERE session_id = ?
+`;
+const BUMP_SESSION_SEQ_SQL = `
+  UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?
+`;
+
+/**
+ * Insert/refresh scanner turns. Returns the number of turns that were newly
+ * inserted or had a token value change — i.e. actual work. A full re-snapshot
+ * of an unchanged session (the recently-active revalidation path) returns 0,
+ * so the scanner loop can treat it as idle rather than spinning at its
+ * catch-up cadence.
+ */
+export function insertTurns(turns: ParsedTurn[], source: string): number {
+  if (turns.length === 0) return 0;
   const db = getDb();
-  const stmt = db.prepare(INSERT_TURN_SQL);
+  const insertStmt = db.prepare(INSERT_TURN_SQL);
+  const updateStmt = db.prepare(UPDATE_TURN_SQL);
+  const resyncStmt = db.prepare(RESYNC_TURNS_SQL);
+  const bumpSeqStmt = db.prepare(BUMP_SESSION_SEQ_SQL);
+
+  let changedCount = 0;
   const tx = db.transaction(() => {
+    const mutatedSessions = new Set<string>();
     for (const t of turns) {
-      stmt.run(
+      const inserted = insertStmt.run(
         t.sessionId,
         source,
         t.turnIndex,
@@ -181,9 +307,35 @@ export function insertTurns(turns: ParsedTurn[], source: string): void {
         t.reasoningTokens,
         buildScannerTurnSyncId(t.sessionId, source, t.turnIndex),
       );
+      const updated = updateStmt.run(
+        t.timestampMs,
+        t.model ?? null,
+        t.role,
+        t.contentPreview ?? null,
+        t.inputTokens,
+        t.outputTokens,
+        t.cacheReadTokens,
+        t.cacheCreationTokens,
+        t.reasoningTokens,
+        t.sessionId,
+        source,
+        t.turnIndex,
+        t.inputTokens,
+        t.outputTokens,
+        t.cacheReadTokens,
+        t.cacheCreationTokens,
+        t.reasoningTokens,
+      );
+      if (inserted.changes > 0 || updated.changes > 0) changedCount++;
+      if (updated.changes > 0) mutatedSessions.add(t.sessionId);
+    }
+    for (const sessionId of mutatedSessions) {
+      resyncStmt.run(sessionId);
+      bumpSeqStmt.run(sessionId);
     }
   });
   tx();
+  return changedCount;
 }
 
 // ── Scanner events insert ───────────────────────────────────────────────────
@@ -275,6 +427,31 @@ const UPDATE_TOTALS_SQL = `
 
 export function updateSessionTotals(sessionId: string): void {
   const db = getDb();
+  // Snapshot the synced-relevant columns before recomputing so we only bump
+  // sync_seq when something actually changed. Re-snapshotting an unchanged
+  // session (the recently-active revalidation path) must NOT advance sync_seq,
+  // or it would re-sync the same row to the remote every scan tick.
+  const before = db
+    .prepare(
+      `SELECT total_input_tokens AS i, total_output_tokens AS o,
+              total_cache_read_tokens AS cr, total_cache_creation_tokens AS cc,
+              total_reasoning_tokens AS rt, turn_count AS tc,
+              tool_counts AS tj, event_type_counts AS ej
+         FROM sessions WHERE session_id = ?`,
+    )
+    .get(sessionId) as
+    | {
+        i: number;
+        o: number;
+        cr: number;
+        cc: number;
+        rt: number;
+        tc: number;
+        tj: string | null;
+        ej: string | null;
+      }
+    | undefined;
+
   db.prepare(UPDATE_TOTALS_SQL).run(
     sessionId,
     sessionId,
@@ -310,14 +487,59 @@ export function updateSessionTotals(sessionId: string): void {
     eventCounts[key] = (eventCounts[key] ?? 0) + r.cnt;
   }
 
-  if (toolRows.length > 0 || eventRows.length > 0) {
+  const hasCounts = toolRows.length > 0 || eventRows.length > 0;
+  const newToolCountsJson = hasCounts
+    ? JSON.stringify(toolCounts)
+    : (before?.tj ?? null);
+  const newEventCountsJson = hasCounts
+    ? JSON.stringify(eventCounts)
+    : (before?.ej ?? null);
+
+  const after = db
+    .prepare(
+      `SELECT total_input_tokens AS i, total_output_tokens AS o,
+              total_cache_read_tokens AS cr, total_cache_creation_tokens AS cc,
+              total_reasoning_tokens AS rt, turn_count AS tc
+         FROM sessions WHERE session_id = ?`,
+    )
+    .get(sessionId) as {
+    i: number;
+    o: number;
+    cr: number;
+    cc: number;
+    rt: number;
+    tc: number;
+  };
+
+  const changed =
+    !before ||
+    before.i !== after.i ||
+    before.o !== after.o ||
+    before.cr !== after.cr ||
+    before.cc !== after.cc ||
+    before.rt !== after.rt ||
+    before.tc !== after.tc ||
+    (before.tj ?? null) !== newToolCountsJson ||
+    (before.ej ?? null) !== newEventCountsJson;
+
+  if (hasCounts) {
+    // Persist counts; advance sync_seq only when a synced column changed.
     db.prepare(
-      `UPDATE sessions
-       SET tool_counts = ?,
-           event_type_counts = ?,
-           sync_seq = COALESCE(sync_seq, 0) + 1
-       WHERE session_id = ?`,
-    ).run(JSON.stringify(toolCounts), JSON.stringify(eventCounts), sessionId);
+      changed
+        ? `UPDATE sessions
+             SET tool_counts = ?, event_type_counts = ?,
+                 sync_seq = COALESCE(sync_seq, 0) + 1
+             WHERE session_id = ?`
+        : `UPDATE sessions
+             SET tool_counts = ?, event_type_counts = ?
+             WHERE session_id = ?`,
+    ).run(newToolCountsJson, newEventCountsJson, sessionId);
+  } else if (changed) {
+    // No tool/event rows, but token totals changed (e.g. hermes's late
+    // aggregate update) — still mark the session for re-sync.
+    db.prepare(
+      "UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?",
+    ).run(sessionId);
   }
   // Scanner produces token data that needs pricing for cost queries
   refreshIfStale().catch(() => {});

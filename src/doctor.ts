@@ -65,8 +65,67 @@ export interface DoctorResult {
   recentErrors: RecentError[];
 }
 
+const REQUIRED_SHARED_SHELL_ENV_VARS = [
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_METRICS_EXPORTER",
+  "OTEL_LOGS_EXPORTER",
+  "PANOPTICON_HOST",
+  "PANOPTICON_PORT",
+];
+
 function formatCount(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function readTextIfExists(filePath: string): string {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : "";
+}
+
+function hasAllSharedShellEnv(content: string): boolean {
+  return REQUIRED_SHARED_SHELL_ENV_VARS.every((name) => content.includes(name));
+}
+
+function hasAnySharedShellEnv(content: string): boolean {
+  return REQUIRED_SHARED_SHELL_ENV_VARS.some((name) => content.includes(name));
+}
+
+export function shellEnvCheck(
+  shellRc = path.join(
+    os.homedir(),
+    process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
+  ),
+  envFile = path.join(config.dataDir, "env.sh"),
+): CheckResult {
+  const rcContent = readTextIfExists(shellRc);
+  const envContent = readTextIfExists(envFile);
+  if (hasAllSharedShellEnv(rcContent)) {
+    return {
+      label: "Shell Env",
+      status: "ok",
+      detail: `Panopticon env configured in ${path.basename(shellRc)}`,
+    };
+  }
+  if (hasAllSharedShellEnv(envContent)) {
+    return {
+      label: "Shell Env",
+      status: "ok",
+      detail: `Panopticon env available in ${path.basename(envFile)}`,
+    };
+  }
+  if (hasAnySharedShellEnv(rcContent) || hasAnySharedShellEnv(envContent)) {
+    return {
+      label: "Shell Env",
+      status: "warn",
+      detail: `Partial config in ${path.basename(shellRc)} — re-run install`,
+    };
+  }
+  return {
+    label: "Shell Env",
+    status: "warn",
+    detail: "Not configured. Run install to set up telemetry.",
+  };
 }
 
 export function readSyncTargetLabel(targetName: string): string {
@@ -290,32 +349,7 @@ export async function doctor(): Promise<DoctorResult> {
     os.homedir(),
     process.env.SHELL?.includes("zsh") ? ".zshrc" : ".bashrc",
   );
-  const rcContent = fs.existsSync(shellRc)
-    ? fs.readFileSync(shellRc, "utf-8")
-    : "";
-
-  const hasTelemetry = rcContent.includes("CLAUDE_CODE_ENABLE_TELEMETRY");
-  const hasEndpoint = rcContent.includes("OTEL_EXPORTER_OTLP_ENDPOINT");
-
-  if (hasTelemetry && hasEndpoint) {
-    checks.push({
-      label: "Shell Env",
-      status: "ok",
-      detail: `Telemetry configured in ${path.basename(shellRc)}`,
-    });
-  } else if (hasTelemetry || hasEndpoint) {
-    checks.push({
-      label: "Shell Env",
-      status: "warn",
-      detail: `Partial config in ${path.basename(shellRc)} — re-run install`,
-    });
-  } else {
-    checks.push({
-      label: "Shell Env",
-      status: "warn",
-      detail: `Not configured. Run install to set up telemetry.`,
-    });
-  }
+  checks.push(shellEnvCheck(shellRc));
 
   // 4. Coding tool integration
   const tools: Array<{ name: string; dir: string; configured: boolean }> = [];

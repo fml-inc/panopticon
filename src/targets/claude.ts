@@ -419,6 +419,16 @@ const claude: TargetAdapter = {
   events: {
     // Claude Code already sends canonical event names
     eventMap: {},
+    resolveSubagentSessionFromHook({ sessionId, data }) {
+      if (typeof data.agent_id !== "string" || data.agent_id.length === 0) {
+        return null;
+      }
+      return {
+        sessionId: `agent-${data.agent_id}`,
+        parentSessionId: sessionId,
+        relationshipType: "subagent",
+      };
+    },
     formatPermissionResponse(_eventName, { allow, reason }) {
       return {
         hookSpecificOutput: {

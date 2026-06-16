@@ -1,8 +1,17 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HookInput } from "../hooks/ingest.js";
 import { allTargets, getTarget, targetIds } from "./index.js";
+
+// The hermes adapter shells out to `hermes plugins enable/disable`. Mock
+// child_process so the tests assert the invocation without depending on a
+// real hermes binary (and without mutating a developer's ~/.hermes).
+const { spawnSyncMock } = vi.hoisted(() => ({
+  spawnSyncMock: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+}));
+vi.mock("node:child_process", () => ({ spawnSync: spawnSyncMock }));
 
 function quoteCommandArg(value: string): string {
   return `"${value.replaceAll('"', '\\"')}"`;
@@ -13,6 +22,7 @@ describe("target registry", () => {
     expect(targetIds()).toContain("claude");
     expect(targetIds()).toContain("gemini");
     expect(targetIds()).toContain("codex");
+    expect(targetIds()).toContain("hermes");
   });
 
   it("getTarget returns adapter by id", () => {
@@ -33,6 +43,161 @@ describe("target registry", () => {
     expect(ids).toContain("claude");
     expect(ids).toContain("gemini");
     expect(ids).toContain("codex");
+  });
+});
+
+/** Fake plugin root with a dist/targets/hermes/plugin.py sentinel. */
+function makeHermesPluginRoot(name: string): {
+  pluginRoot: string;
+  sentinel: string;
+} {
+  const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), name));
+  const assetDir = path.join(pluginRoot, "dist", "targets", "hermes");
+  fs.mkdirSync(assetDir, { recursive: true });
+  const sentinel = "# sentinel hermes plugin\n";
+  fs.writeFileSync(path.join(assetDir, "plugin.py"), sentinel);
+  return { pluginRoot, sentinel };
+}
+
+describe("hermes target plugin install", () => {
+  it("throws when the plugin source asset is missing", () => {
+    const hermes = getTarget("hermes")!;
+    expect(() =>
+      hermes.hooks.applyInstallConfig(
+        { foo: "bar" },
+        { pluginRoot: "/nonexistent/path", port: 4318 },
+      ),
+    ).toThrow(/Hermes plugin source not found/);
+  });
+
+  it("copies the observer plugin and enables it via the hermes CLI", () => {
+    const hermes = getTarget("hermes")!;
+    const oldHome = process.env.HERMES_HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-home-"));
+    process.env.HERMES_HOME = home;
+    const { pluginRoot, sentinel } = makeHermesPluginRoot("pano-hermes-root-");
+    spawnSyncMock.mockClear();
+    try {
+      // self-managed: install passes {} and never rewrites config.yaml.
+      const result = hermes.hooks.applyInstallConfig(
+        {},
+        { pluginRoot, port: 4318, proxy: false },
+      );
+      expect(result).toEqual({});
+
+      // Plugin files are dropped under the hermes home...
+      expect(
+        fs.readFileSync(
+          path.join(home, "plugins", "panopticon-observer", "__init__.py"),
+          "utf-8",
+        ),
+      ).toBe(sentinel);
+      expect(
+        fs.readFileSync(
+          path.join(home, "plugins", "panopticon-observer", "plugin.yaml"),
+          "utf-8",
+        ),
+      ).toContain("pre_tool_call");
+      const pluginConfig = JSON.parse(
+        fs.readFileSync(
+          path.join(home, "plugins", "panopticon-observer", "panopticon.json"),
+          "utf-8",
+        ),
+      );
+      expect(pluginConfig).toMatchObject({ host: "127.0.0.1", port: 4318 });
+      expect(pluginConfig.start_command).toEqual([
+        process.execPath,
+        path.join(pluginRoot, "bin", "panopticon"),
+        "start",
+        "--force",
+      ]);
+
+      // ...and the allow-list flip is delegated to hermes's own CLI.
+      expect(spawnSyncMock).toHaveBeenCalledWith(
+        "hermes",
+        ["plugins", "enable", "panopticon-observer"],
+        expect.anything(),
+      );
+    } finally {
+      if (oldHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = oldHome;
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("disables via the hermes CLI and removes owned files on uninstall", () => {
+    const hermes = getTarget("hermes")!;
+    const oldHome = process.env.HERMES_HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "pano-hermes-home-"));
+    process.env.HERMES_HOME = home;
+    const { pluginRoot } = makeHermesPluginRoot("pano-hermes-root-");
+    try {
+      hermes.hooks.applyInstallConfig(
+        {},
+        { pluginRoot, port: 4318, proxy: false },
+      );
+      expect(
+        fs.existsSync(path.join(home, "plugins", "panopticon-observer")),
+      ).toBe(true);
+
+      spawnSyncMock.mockClear();
+      const removed = hermes.hooks.removeInstallConfig({});
+      expect(removed).toEqual({});
+      expect(spawnSyncMock).toHaveBeenCalledWith(
+        "hermes",
+        ["plugins", "disable", "panopticon-observer"],
+        expect.anything(),
+      );
+      expect(
+        fs.existsSync(path.join(home, "plugins", "panopticon-observer")),
+      ).toBe(false);
+    } finally {
+      if (oldHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = oldHome;
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(pluginRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("hermes event normalization", () => {
+  const hermes = getTarget("hermes")!;
+
+  it("maps native pre_llm_call to UserPromptSubmit", () => {
+    expect(hermes.events.eventMap.pre_llm_call).toBe("UserPromptSubmit");
+  });
+
+  it("preserves native correlation fields at top level", () => {
+    const data: HookInput = {
+      session_id: "s1",
+      hook_event_name: "pre_tool_call",
+      tool_name: "terminal",
+      args: { command: "pwd" },
+      turn_id: "turn-1",
+      api_request_id: "api-1",
+      tool_call_id: "tool-1",
+    };
+    const result = hermes.events.normalizePayload!(data);
+    expect(result.tool_input).toEqual({ command: "pwd" });
+    expect((result as Record<string, unknown>).turn_id).toBe("turn-1");
+    expect((result as Record<string, unknown>).api_request_id).toBe("api-1");
+    expect((result as Record<string, unknown>).tool_call_id).toBe("tool-1");
+  });
+
+  it("formats deny responses as Hermes pre_tool_call blocks", () => {
+    expect(
+      hermes.events.formatPermissionResponse("PreToolUse", {
+        allow: false,
+        reason: "not allowed",
+      }),
+    ).toEqual({ action: "block", message: "not allowed" });
+    expect(
+      hermes.events.formatPermissionResponse("PreToolUse", {
+        allow: true,
+        reason: "allowed",
+      }),
+    ).toEqual({});
   });
 });
 

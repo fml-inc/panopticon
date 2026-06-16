@@ -459,6 +459,28 @@ describe("isPanopticonMcpTool", () => {
 });
 
 describe("processHookEvent", () => {
+  type SessionRow = {
+    session_id: string;
+    target: string;
+    parent_session_id: string | null;
+    relationship_type: string | null;
+    started_at_ms: number | null;
+    ended_at_ms: number | null;
+    has_scanner: number;
+    message_count: number;
+  };
+
+  function getSessionRow(sessionId: string): SessionRow | undefined {
+    return getDb()
+      .prepare(
+        `SELECT session_id, target, parent_session_id, relationship_type,
+                started_at_ms, ended_at_ms, has_scanner, message_count
+         FROM sessions
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as SessionRow | undefined;
+  }
+
   function insertIntentEdit(filePath: string): void {
     const db = getDb();
     db.prepare(
@@ -480,6 +502,132 @@ describe("processHookEvent", () => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(1, "edit:read-context", 1, "history-session", 1_100, filePath, 1);
   }
+
+  it("links Claude subagent hooks to agent-prefixed child sessions", () => {
+    processHookEvent({
+      session_id: "claude-parent",
+      source: "claude",
+      hook_event_name: "SubagentStart",
+      agent_id: "claude-child",
+    });
+    processHookEvent({
+      session_id: "claude-parent",
+      source: "claude",
+      hook_event_name: "SubagentStop",
+      agent_id: "claude-child",
+    });
+
+    const child = getSessionRow("agent-claude-child");
+    expect(child).toMatchObject({
+      session_id: "agent-claude-child",
+      target: "claude",
+      parent_session_id: "claude-parent",
+      relationship_type: "subagent",
+    });
+    expect(child?.started_at_ms).toBeGreaterThan(0);
+    expect(child?.ended_at_ms).toBeGreaterThan(0);
+  });
+
+  it("does not create Claude child sessions from stop-only subagent hooks", () => {
+    processHookEvent({
+      session_id: "claude-parent",
+      source: "claude",
+      hook_event_name: "SubagentStop",
+      agent_id: "stop-only-child",
+    });
+
+    expect(getSessionRow("agent-stop-only-child")).toBeUndefined();
+    expect(getSessionRow("claude-parent")).toMatchObject({
+      session_id: "claude-parent",
+      target: "claude",
+    });
+  });
+
+  it("links Hermes subagent hooks to real child sessions", () => {
+    getDb()
+      .prepare(
+        `INSERT INTO sessions (session_id, target, has_scanner, message_count)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run("20260615_111618_cea025", "hermes", 1, 3);
+
+    processHookEvent({
+      session_id: "20260615_110533_0a728b",
+      source: "hermes",
+      hook_event_name: "subagent_start",
+      parent_session_id: "20260615_110533_0a728b",
+      child_session_id: "20260615_111618_cea025",
+      child_subagent_id: "sa-0-e97b370b",
+      child_role: "leaf",
+      child_goal: "review implementation",
+    });
+    processHookEvent({
+      session_id: "20260615_110533_0a728b",
+      source: "hermes",
+      hook_event_name: "subagent_stop",
+      parent_session_id: "20260615_110533_0a728b",
+      child_session_id: "20260615_111618_cea025",
+      child_subagent_id: "sa-0-e97b370b",
+      child_role: "leaf",
+    });
+
+    const child = getSessionRow("20260615_111618_cea025");
+    expect(child).toMatchObject({
+      session_id: "20260615_111618_cea025",
+      target: "hermes",
+      parent_session_id: "20260615_110533_0a728b",
+      relationship_type: "subagent",
+    });
+    expect(child?.started_at_ms).toBeGreaterThan(0);
+    expect(child?.ended_at_ms).toBeGreaterThan(0);
+    expect(child?.has_scanner).toBe(1);
+    expect(child?.message_count).toBe(3);
+    expect(getSessionRow("agent-20260615_111618_cea025")).toBeUndefined();
+  });
+
+  it("updates existing Hermes child sessions from stop-only subagent hooks", () => {
+    getDb()
+      .prepare(
+        `INSERT INTO sessions (session_id, target, has_scanner, message_count)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run("20260615_111618_e96ef1", "hermes", 1, 5);
+
+    processHookEvent({
+      session_id: "20260615_110533_0a728b",
+      source: "hermes",
+      hook_event_name: "subagent_stop",
+      parent_session_id: "20260615_110533_0a728b",
+      child_session_id: "20260615_111618_e96ef1",
+      child_subagent_id: "sa-0-abc123",
+    });
+
+    const child = getSessionRow("20260615_111618_e96ef1");
+    expect(child).toMatchObject({
+      session_id: "20260615_111618_e96ef1",
+      target: "hermes",
+      parent_session_id: "20260615_110533_0a728b",
+      relationship_type: "subagent",
+      has_scanner: 1,
+      message_count: 5,
+    });
+    expect(child?.started_at_ms).toBeNull();
+    expect(child?.ended_at_ms).toBeGreaterThan(0);
+  });
+
+  it("does not create Hermes child sessions from stop-only subagent hooks", () => {
+    processHookEvent({
+      session_id: "20260615_110533_0a728b",
+      source: "hermes",
+      hook_event_name: "subagent_stop",
+      parent_session_id: "20260615_110533_0a728b",
+      child_session_id: "20260615_111618_d8692f",
+      child_subagent_id: "sa-0-def456",
+    });
+
+    expect(getSessionRow("20260615_111618_d8692f")).toBeUndefined();
+    expect(getSessionRow("agent-20260615_111618_d8692f")).toBeUndefined();
+  });
 
   it("keeps read-time file context behind its own flag", () => {
     testConfig.enablePreToolUseReadContextInjection = false;

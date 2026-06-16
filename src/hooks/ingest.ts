@@ -541,27 +541,41 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   }
   upsertSession(sessionFields);
 
-  // Link subagent sessions to their parents in real-time.
-  // SubagentStart fires on the PARENT session with agent_id identifying
-  // the child. The subagent session ID follows the scanner convention:
-  // "agent-{agent_id}" (matches file naming agent-*.jsonl).
+  // Link subagent sessions to their parents in real-time. The child session
+  // identifier is target-specific: Claude uses agent-* JSONL files, while
+  // other targets may expose real child session IDs in the hook payload.
   if (eventType === "SubagentStart" || eventType === "SubagentStop") {
-    const agentId = data.agent_id as string | undefined;
-    if (agentId) {
-      const subagentSessionId = `agent-${agentId}`;
-      const subagentFields: Parameters<typeof upsertSession>[0] = {
-        session_id: subagentSessionId,
-        target: targetId,
-        parent_session_id: sessionId,
-        relationship_type: "subagent",
-      };
-      if (eventType === "SubagentStart") {
-        subagentFields.started_at_ms = timestampMs;
-        subagentFields.created_at = timestampMs;
-      } else {
-        subagentFields.ended_at_ms = timestampMs;
+    const resolvedSubagent = target?.events.resolveSubagentSessionFromHook?.({
+      eventType,
+      sessionId,
+      data,
+    });
+    if (resolvedSubagent) {
+      // Stop hooks can arrive before the scanner has created the child row.
+      // Do not create a marker-only session for those stop-only races; the
+      // scanner will later reconcile Hermes child sessions from parent_session_id.
+      const childExists =
+        eventType === "SubagentStart" ||
+        Boolean(
+          getDb()
+            .prepare("SELECT 1 FROM sessions WHERE session_id = ?")
+            .get(resolvedSubagent.sessionId),
+        );
+      if (childExists) {
+        const subagentFields: Parameters<typeof upsertSession>[0] = {
+          session_id: resolvedSubagent.sessionId,
+          target: targetId,
+          parent_session_id: resolvedSubagent.parentSessionId,
+          relationship_type: resolvedSubagent.relationshipType,
+        };
+        if (eventType === "SubagentStart") {
+          subagentFields.started_at_ms = timestampMs;
+          subagentFields.created_at = timestampMs;
+        } else {
+          subagentFields.ended_at_ms = timestampMs;
+        }
+        upsertSession(subagentFields);
       }
-      upsertSession(subagentFields);
     }
   }
 

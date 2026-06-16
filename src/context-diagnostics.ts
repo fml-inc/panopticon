@@ -228,7 +228,9 @@ function detectHookSourceMode(
   configDir: string,
   configPath: string,
 ): HookTargetStatus["source"] {
-  if (["claude", "openclaw", "pi"].includes(targetId)) return "native";
+  if (["claude", "hermes", "openclaw", "pi"].includes(targetId)) {
+    return "native";
+  }
   const escapedTargetId = targetId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const hookHandlerPattern = new RegExp(
     `hook-handler(?:\\.cmd)?(?:\\\\?")?\\s+${escapedTargetId}\\b`,

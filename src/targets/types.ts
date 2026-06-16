@@ -133,7 +133,15 @@ export interface TargetConfigSpec {
   /** Path to the main config file */
   configPath: string;
   /** Format of the config file */
-  configFormat: "json" | "toml";
+  configFormat: "json" | "toml" | "yaml";
+  /**
+   * When true, the install/uninstall flow does NOT read or rewrite this
+   * target's config file. The target owns every write itself (e.g. via its
+   * own CLI) and applies changes as side effects inside applyInstallConfig /
+   * removeInstallConfig. Used by Hermes, whose own writer rewrites config.yaml
+   * wholesale — panopticon must never be a competing writer of that file.
+   */
+  selfManagedConfig?: boolean;
 }
 
 // ── Hook Registration ───────────────────────────────────────────────────────
@@ -177,6 +185,12 @@ export interface TargetShellEnvSpec {
 
 // ── Event Normalization ─────────────────────────────────────────────────────
 
+export interface ResolvedSubagentSession {
+  sessionId: string;
+  parentSessionId: string;
+  relationshipType: "subagent";
+}
+
 export interface TargetEventSpec {
   /** Map from target's event name to canonical panopticon event name. */
   eventMap: Record<string, CanonicalEvent>;
@@ -185,6 +199,17 @@ export interface TargetEventSpec {
    * Used e.g. by Gemini to extract user_prompt from llm_request.messages.
    */
   normalizePayload?(data: HookInput): HookInput;
+  /**
+   * Resolve the real child session represented by a SubagentStart/Stop hook.
+   * Target adapters own this because different harnesses use different
+   * subagent session identifiers (Claude's agent-* JSONL convention vs.
+   * Hermes-native child_session_id).
+   */
+  resolveSubagentSessionFromHook?(input: {
+    eventType: "SubagentStart" | "SubagentStop";
+    sessionId: string;
+    data: HookInput;
+  }): ResolvedSubagentSession | null;
   /**
    * Format a permission response for this target's expected shape.
    * Return {} when the target cannot represent the given decision for

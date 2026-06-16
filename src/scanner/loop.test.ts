@@ -70,6 +70,11 @@ vi.mock("../session_summaries/pass.js", () => ({
 }));
 
 vi.mock("../targets/registry.js", () => ({
+  // loop.ts imports ../targets/index.js, whose adapters self-register at
+  // module load — the mock must accept those registerTarget calls.
+  registerTarget: () => {},
+  getTarget: () => undefined,
+  targetIds: () => ["fake"],
   allTargets: () => [
     {
       id: "fake",
@@ -82,17 +87,13 @@ vi.mock("../targets/registry.js", () => ({
   ],
 }));
 
-vi.mock("../targets/claude.js", () => ({}));
-vi.mock("../targets/codex.js", () => ({}));
-vi.mock("../targets/gemini.js", () => ({}));
-
 vi.mock("./store.js", () => ({
   getMaxOrdinal: vi.fn(() => 0),
   getTurnCount: vi.fn(() => 0),
   getEventCount: vi.fn(() => 0),
   insertMessages: vi.fn(),
   insertScannerEvents: vi.fn(),
-  insertTurns: vi.fn(),
+  insertTurns: vi.fn(() => 0),
   linkSubagentSessions: vi.fn(() => 0),
   readArchivedSize: vi.fn(() => 0),
   readFileWatermark: vi.fn(() => ({ byteOffset: 0 })),
@@ -333,6 +334,54 @@ describe("scanOnce progress", () => {
       filePath,
       42,
       "session-1",
+    );
+  });
+
+  it("advances the file watermark only after fork sessions are written", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pano-loop-test-"));
+    const filePath = path.join(tempDir, "state.db");
+    fs.writeFileSync(filePath, "fixture");
+
+    discoverMock.mockReturnValue([{ filePath }]);
+    parseFileMock.mockReturnValue({
+      meta: { sessionId: "main" },
+      turns: [],
+      events: [],
+      messages: [],
+      newByteOffset: 99,
+      forks: [
+        {
+          meta: { sessionId: "fork-1" },
+          turns: [],
+          events: [],
+          messages: [],
+          newByteOffset: 99,
+        },
+      ],
+    });
+
+    scanOnce();
+
+    // The fork session is persisted, and the single watermark write happens
+    // strictly after it — a crash mid-forks leaves the watermark unmoved so
+    // the next scan reprocesses the whole file rather than skipping the fork.
+    expect(vi.mocked(upsertSession)).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "fork-1" }),
+      filePath,
+      "fake",
+    );
+    const lastUpsertOrder = Math.max(
+      ...vi.mocked(upsertSession).mock.invocationCallOrder,
+    );
+    const firstWatermarkOrder = Math.min(
+      ...vi.mocked(writeFileWatermark).mock.invocationCallOrder,
+    );
+    expect(firstWatermarkOrder).toBeGreaterThan(lastUpsertOrder);
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(writeFileWatermark)).toHaveBeenCalledWith(
+      filePath,
+      99,
+      "main",
     );
   });
 
