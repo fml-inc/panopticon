@@ -18,6 +18,7 @@ import type { ParsedToolCall, ParseResult, TargetAdapter } from "./types.js";
 
 const PLUGIN_NAME = "panopticon-observer";
 const STRUCTURED_JSON_PREFIX = "\0json:";
+const MAX_STRUCTURED_CONTENT_DEPTH = 16;
 
 const HERMES_OBSERVER_HOOKS = [
   "on_session_start",
@@ -126,23 +127,29 @@ function parseJson(value: unknown): unknown {
   }
 }
 
-function textFromStructuredContent(value: unknown): string {
+function textFromStructuredContent(value: unknown, depth = 0): string {
+  if (depth > MAX_STRUCTURED_CONTENT_DEPTH) {
+    return typeof value === "string" ? value : (stringifyJson(value) ?? "");
+  }
   if (value == null) return "";
   if (typeof value === "string") {
     if (value.startsWith(STRUCTURED_JSON_PREFIX)) {
       return textFromStructuredContent(
         value.slice(STRUCTURED_JSON_PREFIX.length),
+        depth + 1,
       );
     }
     const parsed = parseJson(value);
-    return parsed === value ? value : textFromStructuredContent(parsed);
+    return parsed === value
+      ? value
+      : textFromStructuredContent(parsed, depth + 1);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
   if (Array.isArray(value)) {
     return value
-      .map((item) => textFromStructuredContent(item))
+      .map((item) => textFromStructuredContent(item, depth + 1))
       .filter(Boolean)
       .join("\n");
   }
@@ -150,30 +157,37 @@ function textFromStructuredContent(value: unknown): string {
   if (!record) return "";
   for (const key of ["text", "content", "message", "output", "result"]) {
     if (key in record) {
-      const text = textFromStructuredContent(record[key]);
+      const text = textFromStructuredContent(record[key], depth + 1);
       if (text) return text;
     }
   }
   return stringifyJson(record) ?? "";
 }
 
+function toolWords(toolName: string): Set<string> {
+  return new Set(
+    toolName
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean),
+  );
+}
+
+function hasToolWord(words: Set<string>, ...matches: string[]): boolean {
+  return matches.some((word) => words.has(word));
+}
+
 function hermesToolCategory(toolName: string): string {
-  const lower = toolName.toLowerCase();
-  if (lower.includes("read")) return "Read";
-  if (lower.includes("edit") || lower.includes("patch")) return "Edit";
-  if (lower.includes("write") || lower.includes("create")) return "Write";
-  if (
-    lower.includes("bash") ||
-    lower.includes("shell") ||
-    lower.includes("terminal") ||
-    lower.includes("command")
-  ) {
-    return "Bash";
-  }
-  if (lower.includes("grep") || lower.includes("search")) return "Grep";
-  if (lower.includes("glob") || lower.includes("list")) return "Glob";
-  if (lower.includes("web") || lower.includes("fetch")) return "Web";
-  if (lower.includes("delegate") || lower.includes("subagent")) return "Task";
+  const words = toolWords(toolName);
+  if (hasToolWord(words, "read")) return "Read";
+  if (hasToolWord(words, "edit", "patch")) return "Edit";
+  if (hasToolWord(words, "write", "create")) return "Write";
+  if (hasToolWord(words, "bash", "shell", "terminal", "command")) return "Bash";
+  if (hasToolWord(words, "grep", "search")) return "Grep";
+  if (hasToolWord(words, "glob", "list")) return "Glob";
+  if (hasToolWord(words, "web", "fetch")) return "Web";
+  if (hasToolWord(words, "delegate", "subagent")) return "Task";
   return defaultToolCategory(toolName);
 }
 
@@ -690,7 +704,7 @@ function parseHermesSession(
   const meta: ParseResult["meta"] = {
     sessionId: session.id,
     parentSessionId: session.parent_session_id ?? undefined,
-    relationshipType: session.parent_session_id ? "continuation" : undefined,
+    relationshipType: session.parent_session_id ? "subagent" : undefined,
     model: session.model ?? undefined,
     cwd: session.cwd ?? undefined,
     startedAtMs,

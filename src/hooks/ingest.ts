@@ -551,6 +551,9 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       data,
     });
     if (resolvedSubagent) {
+      // Stop hooks can arrive before the scanner has created the child row.
+      // Do not create a marker-only session for those stop-only races; the
+      // scanner will later reconcile Hermes child sessions from parent_session_id.
       const childExists =
         eventType === "SubagentStart" ||
         Boolean(

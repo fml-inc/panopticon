@@ -161,6 +161,63 @@ describe("hermes scanner", () => {
     }
   });
 
+  it("marks Hermes scanner-discovered child sessions as subagents", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const db = new Database(filePath);
+      db.prepare(
+        `UPDATE sessions
+            SET parent_session_id = ?
+          WHERE id = ?`,
+      ).run("20260611_115900_parent", "20260611_120000_abcd");
+      db.close();
+
+      const result = hermes.scanner!.parseFile(filePath, 0)!;
+      expect(result.meta).toMatchObject({
+        sessionId: "20260611_120000_abcd",
+        parentSessionId: "20260611_115900_parent",
+        relationshipType: "subagent",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not classify tool names by incidental substrings", () => {
+    const hermes = getTarget("hermes")!;
+    const { filePath, cleanup } = makeHermesStateDb();
+    try {
+      const db = new Database(filePath);
+      db.prepare(
+        `UPDATE messages
+            SET tool_calls = ?
+          WHERE session_id = ? AND role = ?`,
+      ).run(
+        JSON.stringify([
+          {
+            id: "call_1",
+            function: {
+              name: "thread",
+              arguments: JSON.stringify({ id: "abc" }),
+            },
+          },
+        ]),
+        "20260611_120000_abcd",
+        "assistant",
+      );
+      db.close();
+
+      const result = hermes.scanner!.parseFile(filePath, 0)!;
+      expect(result.messages[1].toolCalls[0]).toMatchObject({
+        toolName: "thread",
+        category: "",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
   it("returns null when no messages were added since the watermark", () => {
     const hermes = getTarget("hermes")!;
     const { filePath, cleanup } = makeHermesStateDb();
