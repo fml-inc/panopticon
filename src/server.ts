@@ -28,10 +28,26 @@ import {
 import type { SyncHandle } from "./sync/types.js";
 import { loadUnifiedConfig } from "./unified-config.js";
 
-function collectBody(req: http.IncomingMessage): Promise<Buffer> {
+/** Maximum request body size (10 MB). Protects against OOM from malformed or
+ *  malicious clients POSTing unbounded data to /hooks or OTLP endpoints. */
+export const MAX_BODY_BYTES = 10 * 1024 * 1024;
+
+function collectBody(
+  req: http.IncomingMessage,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let totalBytes = 0;
+    req.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        req.destroy();
+        reject(new Error(`Request body exceeds ${maxBytes} byte limit`));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
@@ -88,11 +104,16 @@ export function createUnifiedServer(): http.Server {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       } catch (err) {
-        log.hooks.error("Hook ingest error:", err);
-        captureException(err, { component: "hooks" });
         if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "hook ingest failed" }));
+          if (err instanceof Error && err.message.includes("byte limit")) {
+            res.writeHead(413, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "request body too large" }));
+          } else {
+            log.hooks.error("Hook ingest error:", err);
+            captureException(err, { component: "hooks" });
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "hook ingest failed" }));
+          }
         }
       }
       return;
