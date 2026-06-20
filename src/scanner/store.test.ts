@@ -40,6 +40,7 @@ import {
 function makeAssistantToolMessage(args: {
   sessionId: string;
   inputJson: string;
+  toolName?: string;
   timestampMs?: number;
 }): ParsedMessage {
   return {
@@ -56,8 +57,8 @@ function makeAssistantToolMessage(args: {
     hasOutputTokens: false,
     toolCalls: [
       {
-        toolUseId: "call-workdir",
-        toolName: "exec_command",
+        toolUseId: `call-${args.toolName ?? "exec-command"}`,
+        toolName: args.toolName ?? "exec_command",
         category: "Bash",
         inputJson: args.inputJson,
         timestampMs: args.timestampMs ?? 2,
@@ -170,6 +171,49 @@ describe("scanner tool input attribution", () => {
       .all(sessionId) as Array<{ repository: string }>;
 
     expect(cwds.map((r) => r.cwd)).toEqual([launchCwd, repoRoot]);
+    expect(repos.map((r) => r.repository)).toEqual(["fml-inc/panopticon"]);
+  });
+
+  it("records EnterWorktree path as a session cwd and repository", () => {
+    const sessionId = "scanner-enter-worktree-session";
+    const launchCwd = fs.mkdtempSync(path.join(config.dataDir, "workspace-"));
+    const worktreeRoot = makeGitRepo("fml-inc/panopticon");
+
+    upsertSession(
+      {
+        sessionId,
+        cwd: launchCwd,
+        startedAtMs: 1,
+      },
+      path.join(config.dataDir, "session.jsonl"),
+      "codex",
+    );
+    insertMessages([
+      makeAssistantToolMessage({
+        sessionId,
+        toolName: "EnterWorktree",
+        inputJson: JSON.stringify({
+          path: worktreeRoot,
+        }),
+      }),
+    ]);
+
+    const cwds = getDb()
+      .prepare(
+        `SELECT cwd FROM session_cwds
+         WHERE session_id = ?
+         ORDER BY first_seen_ms ASC, cwd ASC`,
+      )
+      .all(sessionId) as Array<{ cwd: string }>;
+    const repos = getDb()
+      .prepare(
+        `SELECT repository FROM session_repositories
+         WHERE session_id = ?
+         ORDER BY repository ASC`,
+      )
+      .all(sessionId) as Array<{ repository: string }>;
+
+    expect(cwds.map((r) => r.cwd)).toEqual([launchCwd, worktreeRoot]);
     expect(repos.map((r) => r.repository)).toEqual(["fml-inc/panopticon"]);
   });
 });

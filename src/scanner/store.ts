@@ -354,6 +354,7 @@ type ToolInputSessionPath = {
 
 function extractToolInputSessionPaths(
   toolInputJson: string | null | undefined,
+  toolName?: string | null,
 ): ToolInputSessionPath[] {
   if (!toolInputJson) return [];
 
@@ -385,7 +386,16 @@ function extractToolInputSessionPaths(
     }
   }
 
-  for (const key of ["file_path", "path"]) {
+  if (toolName === "EnterWorktree") {
+    const value = record.path;
+    if (typeof value === "string" && isObservedAbsolutePath(value)) {
+      add(value, true);
+    }
+  }
+
+  const pathKeys =
+    toolName === "EnterWorktree" ? ["file_path"] : ["file_path", "path"];
+  for (const key of pathKeys) {
     const value = record[key];
     if (typeof value === "string" && isObservedAbsolutePath(value)) {
       add(dirnameOfObservedPath(value), false);
@@ -399,11 +409,13 @@ function attributeSessionPathsFromToolInput(
   sessionId: string,
   timestampMs: number,
   toolInputJson: string | null | undefined,
+  toolName: string | null | undefined,
   seenCwds: Set<string>,
   seenRepoDirs: Set<string>,
 ): void {
   for (const { dir, isWorkingDirectory } of extractToolInputSessionPaths(
     toolInputJson,
+    toolName,
   )) {
     const sessionCwdKey = `${sessionId}\0${dir}`;
     if (isWorkingDirectory && !seenCwds.has(sessionCwdKey)) {
@@ -478,6 +490,7 @@ export function insertScannerEvents(
       e.sessionId,
       e.timestampMs,
       e.toolInput,
+      e.toolName,
       seenCwds,
       seenRepoDirs,
     );
@@ -842,6 +855,7 @@ export function insertMessages(
   const toolInputAttributions: Array<{
     sessionId: string;
     timestampMs: number;
+    toolName: string | undefined;
     inputJson: string | undefined;
   }> = [];
 
@@ -880,6 +894,7 @@ export function insertMessages(
         toolInputAttributions.push({
           sessionId: msg.sessionId,
           timestampMs: tc.timestampMs ?? msg.timestampMs ?? Date.now(),
+          toolName: tc.toolName,
           inputJson: tc.inputJson,
         });
       }
@@ -960,6 +975,7 @@ export function insertMessages(
       item.sessionId,
       item.timestampMs,
       item.inputJson,
+      item.toolName,
       seenCwds,
       seenRepoDirs,
     );

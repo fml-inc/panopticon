@@ -316,6 +316,7 @@ describe("extractEventPaths", () => {
       cwd: "/workspace/panopticon",
       tool_input: {
         workdir: "/workspace/headroom",
+        cwd: "/workspace/code-review-graph",
         file_path: "/workspace/panopticon/src/index.ts",
       },
     });
@@ -323,6 +324,7 @@ describe("extractEventPaths", () => {
     expect(paths).toEqual([
       { dir: "/workspace/fml", source: "shell_pwd" },
       { dir: "/workspace/headroom", source: "tool_input.workdir" },
+      { dir: "/workspace/code-review-graph", source: "tool_input.cwd" },
       { dir: "/workspace/panopticon/src", source: "tool_input.file_path" },
       { dir: "/workspace/panopticon", source: "cwd" },
     ]);
@@ -580,6 +582,29 @@ describe("processHookEvent", () => {
       "/workspace",
       "/workspace/panopticon",
     ]);
+  });
+
+  it("records tool_input.cwd as a session cwd", () => {
+    processHookEvent({
+      session_id: "tool-input-cwd-session",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      cwd: "/workspace",
+      tool_name: "MCP",
+      tool_input: {
+        cwd: "/workspace/fml",
+      },
+    });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT cwd FROM session_cwds
+         WHERE session_id = ?
+         ORDER BY cwd ASC`,
+      )
+      .all("tool-input-cwd-session") as Array<{ cwd: string }>;
+
+    expect(rows.map((r) => r.cwd)).toEqual(["/workspace", "/workspace/fml"]);
   });
 
   it("links Hermes subagent hooks to real child sessions", () => {

@@ -144,6 +144,7 @@ export function extractShellPwd(data: HookInput): string | null {
 export type PathSource =
   | "shell_pwd"
   | "tool_input.workdir"
+  | "tool_input.cwd"
   | "tool_input.file_path"
   | "tool_input.path"
   | "cwd";
@@ -177,6 +178,10 @@ export function extractEventPaths(data: HookInput): EventPath[] {
     if (typeof workdir === "string" && isObservedAbsolutePath(workdir)) {
       add(workdir, "tool_input.workdir");
     }
+    const cwd = (toolInput as Record<string, unknown>).cwd;
+    if (typeof cwd === "string" && isObservedAbsolutePath(cwd)) {
+      add(cwd, "tool_input.cwd");
+    }
     const fp = (toolInput as Record<string, unknown>).file_path;
     if (typeof fp === "string" && isObservedAbsolutePath(fp)) {
       add(dirnameOfObservedPath(fp), "tool_input.file_path");
@@ -196,6 +201,7 @@ function isCwdPathSource(source: PathSource): boolean {
   return (
     source === "shell_pwd" ||
     source === "tool_input.workdir" ||
+    source === "tool_input.cwd" ||
     source === "cwd"
   );
 }
