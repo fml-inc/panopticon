@@ -1,5 +1,105 @@
-import { describe, expect, it } from "vitest";
-import { shouldResetWatermark } from "./store.js";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+vi.mock("../config.js", () => {
+  const _fs = require("node:fs");
+  const _os = require("node:os");
+  const _path = require("node:path");
+  const tmpDir = _path.join(_os.tmpdir(), "pano-scanner-store-test");
+  return {
+    config: {
+      dataDir: tmpDir,
+      dbPath: _path.join(tmpDir, "panopticon.db"),
+      port: 4318,
+      host: "127.0.0.1",
+      serverPidFile: _path.join(tmpDir, "panopticon.pid"),
+    },
+    ensureDataDir: () => _fs.mkdirSync(tmpDir, { recursive: true }),
+  };
+});
+
+import { config } from "../config.js";
+import { closeDb, getDb } from "../db/schema.js";
+import type { ParsedMessage } from "../targets/types.js";
+import {
+  insertMessages,
+  shouldResetWatermark,
+  upsertSession,
+} from "./store.js";
+
+function makeAssistantToolMessage(args: {
+  sessionId: string;
+  inputJson: string;
+  timestampMs?: number;
+}): ParsedMessage {
+  return {
+    sessionId: args.sessionId,
+    ordinal: 0,
+    role: "assistant",
+    content: "",
+    timestampMs: args.timestampMs ?? 2,
+    hasThinking: false,
+    hasToolUse: true,
+    isSystem: false,
+    contentLength: 0,
+    hasContextTokens: false,
+    hasOutputTokens: false,
+    toolCalls: [
+      {
+        toolUseId: "call-workdir",
+        toolName: "exec_command",
+        category: "Bash",
+        inputJson: args.inputJson,
+        timestampMs: args.timestampMs ?? 2,
+      },
+    ],
+    toolResults: new Map(),
+  };
+}
+
+function makeGitRepo(slug: string): string {
+  const repoRoot = fs.mkdtempSync(path.join(config.dataDir, "repo-"));
+  execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+  execFileSync(
+    "git",
+    ["remote", "add", "origin", `git@github.com:${slug}.git`],
+    {
+      cwd: repoRoot,
+      stdio: "ignore",
+    },
+  );
+  return repoRoot;
+}
+
+beforeAll(() => {
+  fs.rmSync(config.dataDir, { recursive: true, force: true });
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  getDb();
+});
+
+afterAll(() => {
+  closeDb();
+  fs.rmSync(config.dataDir, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  const db = getDb();
+  db.prepare("DELETE FROM tool_calls").run();
+  db.prepare("DELETE FROM messages").run();
+  db.prepare("DELETE FROM session_repositories").run();
+  db.prepare("DELETE FROM session_cwds").run();
+  db.prepare("DELETE FROM sessions").run();
+});
 
 describe("shouldResetWatermark", () => {
   it("returns false when the watermark is at byte 0 (fresh file)", () => {
@@ -26,5 +126,50 @@ describe("shouldResetWatermark", () => {
     // size alone. Documented in the function comment; would need an
     // inode/mtime check to catch.
     expect(shouldResetWatermark(100, 100)).toBe(false);
+  });
+});
+
+describe("scanner tool input attribution", () => {
+  it("records exec_command workdir as a session cwd and repository", () => {
+    const sessionId = "scanner-workdir-session";
+    const launchCwd = fs.mkdtempSync(path.join(config.dataDir, "workspace-"));
+    const repoRoot = makeGitRepo("fml-inc/panopticon");
+
+    upsertSession(
+      {
+        sessionId,
+        cwd: launchCwd,
+        startedAtMs: 1,
+      },
+      path.join(config.dataDir, "session.jsonl"),
+      "codex",
+    );
+    insertMessages([
+      makeAssistantToolMessage({
+        sessionId,
+        inputJson: JSON.stringify({
+          cmd: "sed -n '1,240p' README.md",
+          workdir: repoRoot,
+        }),
+      }),
+    ]);
+
+    const cwds = getDb()
+      .prepare(
+        `SELECT cwd FROM session_cwds
+         WHERE session_id = ?
+         ORDER BY first_seen_ms ASC, cwd ASC`,
+      )
+      .all(sessionId) as Array<{ cwd: string }>;
+    const repos = getDb()
+      .prepare(
+        `SELECT repository FROM session_repositories
+         WHERE session_id = ?
+         ORDER BY repository ASC`,
+      )
+      .all(sessionId) as Array<{ repository: string }>;
+
+    expect(cwds.map((r) => r.cwd)).toEqual([launchCwd, repoRoot]);
+    expect(repos.map((r) => r.repository)).toEqual(["fml-inc/panopticon"]);
   });
 });

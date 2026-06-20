@@ -175,6 +175,14 @@ describe("resolveEventRepo", () => {
     expect(resolveEventRepo(data, stubResolve)).toBe("fml-inc/panopticon");
   });
 
+  it("uses tool_input.workdir before cwd", () => {
+    const data = makeInput({
+      cwd: "/workspace/fml",
+      tool_input: { workdir: "/workspace/panopticon" },
+    });
+    expect(resolveEventRepo(data, stubResolve)).toBe("fml-inc/panopticon");
+  });
+
   it("uses cwd as last resort", () => {
     const data = makeInput({ cwd: "/workspace/fml" });
     expect(resolveEventRepo(data, stubResolve)).toBe("fml-inc/fml");
@@ -306,11 +314,15 @@ describe("extractEventPaths", () => {
     const data = makeInput({
       shell_pwd: "/workspace/fml",
       cwd: "/workspace/panopticon",
-      tool_input: { file_path: "/workspace/panopticon/src/index.ts" },
+      tool_input: {
+        workdir: "/workspace/headroom",
+        file_path: "/workspace/panopticon/src/index.ts",
+      },
     });
     const paths = extractEventPaths(data);
     expect(paths).toEqual([
       { dir: "/workspace/fml", source: "shell_pwd" },
+      { dir: "/workspace/headroom", source: "tool_input.workdir" },
       { dir: "/workspace/panopticon/src", source: "tool_input.file_path" },
       { dir: "/workspace/panopticon", source: "cwd" },
     ]);
@@ -541,6 +553,33 @@ describe("processHookEvent", () => {
       session_id: "claude-parent",
       target: "claude",
     });
+  });
+
+  it("records tool_input.workdir as a session cwd", () => {
+    processHookEvent({
+      session_id: "workdir-session",
+      source: "codex",
+      hook_event_name: "PreToolUse",
+      cwd: "/workspace",
+      tool_name: "Bash",
+      tool_input: {
+        command: "pwd",
+        workdir: "/workspace/panopticon",
+      },
+    });
+
+    const rows = getDb()
+      .prepare(
+        `SELECT cwd FROM session_cwds
+         WHERE session_id = ?
+         ORDER BY cwd ASC`,
+      )
+      .all("workdir-session") as Array<{ cwd: string }>;
+
+    expect(rows.map((r) => r.cwd)).toEqual([
+      "/workspace",
+      "/workspace/panopticon",
+    ]);
   });
 
   it("links Hermes subagent hooks to real child sessions", () => {

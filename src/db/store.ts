@@ -221,14 +221,20 @@ export function upsertSessionCwd(
   timestampMs: number,
 ): void {
   const db = getDb();
-  const result = db
-    .prepare(
-      "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-    )
-    .run(sessionId, cwd, timestampMs);
-  if (result.changes > 0) {
-    refreshSessionAutomation(sessionId);
-  }
+  const apply = db.transaction(() => {
+    const result = db
+      .prepare(
+        "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+      )
+      .run(sessionId, cwd, timestampMs);
+    if (result.changes > 0) {
+      refreshSessionAutomation(sessionId);
+      db.prepare(
+        `UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?`,
+      ).run(sessionId);
+    }
+  });
+  withBusyRetry(() => apply());
 }
 
 /**

@@ -143,6 +143,7 @@ export function extractShellPwd(data: HookInput): string | null {
 
 export type PathSource =
   | "shell_pwd"
+  | "tool_input.workdir"
   | "tool_input.file_path"
   | "tool_input.path"
   | "cwd";
@@ -172,6 +173,10 @@ export function extractEventPaths(data: HookInput): EventPath[] {
 
   const toolInput = data.tool_input;
   if (toolInput && typeof toolInput === "object") {
+    const workdir = (toolInput as Record<string, unknown>).workdir;
+    if (typeof workdir === "string" && isObservedAbsolutePath(workdir)) {
+      add(workdir, "tool_input.workdir");
+    }
     const fp = (toolInput as Record<string, unknown>).file_path;
     if (typeof fp === "string" && isObservedAbsolutePath(fp)) {
       add(dirnameOfObservedPath(fp), "tool_input.file_path");
@@ -185,6 +190,14 @@ export function extractEventPaths(data: HookInput): EventPath[] {
   if (typeof data.cwd === "string") add(data.cwd, "cwd");
 
   return paths;
+}
+
+function isCwdPathSource(source: PathSource): boolean {
+  return (
+    source === "shell_pwd" ||
+    source === "tool_input.workdir" ||
+    source === "cwd"
+  );
 }
 
 export type ResolveFn = (dir: string) => RepoInfo | string | null;
@@ -637,8 +650,11 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
       }
     }
   }
-  if (data.cwd) {
-    upsertSessionCwd(sessionId, data.cwd as string, timestampMs);
+  const seenCwds = new Set<string>();
+  for (const { dir, source } of extractEventPaths(data)) {
+    if (!isCwdPathSource(source) || seenCwds.has(dir)) continue;
+    seenCwds.add(dir);
+    upsertSessionCwd(sessionId, dir, timestampMs);
   }
 
   // Capture user config on SessionStart (once per session) — baseline

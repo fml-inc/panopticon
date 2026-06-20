@@ -12,6 +12,7 @@ import {
   buildScannerTurnSyncId,
   buildToolCallSyncId,
 } from "../db/sync-ids.js";
+import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
 import { resolveGitIdentity, resolveRepoFromCwd } from "../repo.js";
 import type {
   ParsedEvent,
@@ -346,6 +347,88 @@ const INSERT_EVENT_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
+type ToolInputSessionPath = {
+  dir: string;
+  isWorkingDirectory: boolean;
+};
+
+function extractToolInputSessionPaths(
+  toolInputJson: string | null | undefined,
+): ToolInputSessionPath[] {
+  if (!toolInputJson) return [];
+
+  let input: unknown;
+  try {
+    input = JSON.parse(toolInputJson);
+  } catch {
+    return [];
+  }
+  if (!input || typeof input !== "object") return [];
+
+  const record = input as Record<string, unknown>;
+  const paths: ToolInputSessionPath[] = [];
+  const seen = new Set<string>();
+  const add = (dir: string, isWorkingDirectory: boolean) => {
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      paths.push({ dir, isWorkingDirectory });
+    } else if (isWorkingDirectory) {
+      const existing = paths.find((p) => p.dir === dir);
+      if (existing) existing.isWorkingDirectory = true;
+    }
+  };
+
+  for (const key of ["shell_pwd", "workdir", "cwd"]) {
+    const value = record[key];
+    if (typeof value === "string" && isObservedAbsolutePath(value)) {
+      add(value, true);
+    }
+  }
+
+  for (const key of ["file_path", "path"]) {
+    const value = record[key];
+    if (typeof value === "string" && isObservedAbsolutePath(value)) {
+      add(dirnameOfObservedPath(value), false);
+    }
+  }
+
+  return paths;
+}
+
+function attributeSessionPathsFromToolInput(
+  sessionId: string,
+  timestampMs: number,
+  toolInputJson: string | null | undefined,
+  seenCwds: Set<string>,
+  seenRepoDirs: Set<string>,
+): void {
+  for (const { dir, isWorkingDirectory } of extractToolInputSessionPaths(
+    toolInputJson,
+  )) {
+    const sessionCwdKey = `${sessionId}\0${dir}`;
+    if (isWorkingDirectory && !seenCwds.has(sessionCwdKey)) {
+      seenCwds.add(sessionCwdKey);
+      upsertSessionCwd(sessionId, dir, timestampMs);
+    }
+
+    const repoDirKey = `${sessionId}\0${dir}`;
+    if (seenRepoDirs.has(repoDirKey)) continue;
+    seenRepoDirs.add(repoDirKey);
+
+    const info = resolveRepoFromCwd(dir);
+    if (info) {
+      const gitId = resolveGitIdentity(dir);
+      upsertSessionRepository(
+        sessionId,
+        info.repo,
+        timestampMs,
+        gitId,
+        info.branch,
+      );
+    }
+  }
+}
+
 export function insertScannerEvents(
   events: ParsedEvent[],
   source: string,
@@ -384,31 +467,20 @@ export function insertScannerEvents(
   });
   tx();
 
-  // Resolve repos from file paths in tool_call events (greedy attribution)
-  const seen = new Set<string>();
+  // Resolve repos and actual working directories from tool_call inputs
+  // (greedy attribution). Codex hook payloads may only expose the launch cwd,
+  // while scanner tool inputs retain per-command workdir.
+  const seenCwds = new Set<string>();
+  const seenRepoDirs = new Set<string>();
   for (const e of events) {
     if (e.eventType !== "tool_call" || !e.toolInput) continue;
-    try {
-      const input = JSON.parse(e.toolInput);
-      const fp = input.file_path ?? input.path;
-      if (typeof fp !== "string" || !path.isAbsolute(fp)) continue;
-      const dir = path.dirname(fp);
-      if (seen.has(dir)) continue;
-      seen.add(dir);
-      const info = resolveRepoFromCwd(dir);
-      if (info) {
-        const gitId = resolveGitIdentity(dir);
-        upsertSessionRepository(
-          e.sessionId,
-          info.repo,
-          e.timestampMs,
-          gitId,
-          info.branch,
-        );
-      }
-    } catch {
-      // malformed tool_input JSON
-    }
+    attributeSessionPathsFromToolInput(
+      e.sessionId,
+      e.timestampMs,
+      e.toolInput,
+      seenCwds,
+      seenRepoDirs,
+    );
   }
 }
 
@@ -765,6 +837,13 @@ export function insertMessages(
 ): void {
   if (messages.length === 0 && !orphanedToolResults?.size) return;
   const db = getDb();
+  const seenCwds = new Set<string>();
+  const seenRepoDirs = new Set<string>();
+  const toolInputAttributions: Array<{
+    sessionId: string;
+    timestampMs: number;
+    inputJson: string | undefined;
+  }> = [];
 
   // Collect all tool results across user messages for backfilling
   const toolResultMap = new Map<
@@ -795,6 +874,14 @@ export function insertMessages(
       let content = msg.content;
       if (!content && msg.role === "assistant" && msg.toolCalls.length > 0) {
         content = toolUseSummary(msg.toolCalls);
+      }
+
+      for (const tc of msg.toolCalls) {
+        toolInputAttributions.push({
+          sessionId: msg.sessionId,
+          timestampMs: tc.timestampMs ?? msg.timestampMs ?? Date.now(),
+          inputJson: tc.inputJson,
+        });
       }
 
       const result = msgStmt.run(
@@ -867,6 +954,16 @@ export function insertMessages(
     }
   });
   tx();
+
+  for (const item of toolInputAttributions) {
+    attributeSessionPathsFromToolInput(
+      item.sessionId,
+      item.timestampMs,
+      item.inputJson,
+      seenCwds,
+      seenRepoDirs,
+    );
+  }
 }
 
 /**
