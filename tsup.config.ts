@@ -18,6 +18,8 @@ function getPanopticonVersion(): string {
 export default defineConfig({
   entry: {
     cli: "src/cli.ts",
+    "fml/cli": "src/fml/cli.ts",
+    "fml/mcp/server": "src/fml/mcp/server.ts",
     server: "src/server.ts",
     sdk: "src/sdk.ts",
     db: "src/db.ts",
@@ -49,6 +51,7 @@ export default defineConfig({
   platform: "node",
   define: {
     __PANOPTICON_VERSION__: JSON.stringify(getPanopticonVersion()),
+    __FML_PLUGIN_VERSION__: JSON.stringify(getPanopticonVersion()),
     __SENTRY_DSN__: JSON.stringify(
       "https://dcf9fb5ae8ac18803d98c3ee577faf39@o4510167429873664.ingest.us.sentry.io/4511107500343296",
     ),

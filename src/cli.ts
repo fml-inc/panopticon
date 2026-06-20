@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { Command, type OptionValues } from "commander";
+import { Command, Option, type OptionValues } from "commander";
 
 type Opts = OptionValues;
 
@@ -527,6 +527,12 @@ program
     "Install a per-user Windows logon task that runs panopticon start",
   )
   .option("--force", "Overwrite customized env vars with defaults")
+  .addOption(
+    new Option(
+      "--collection-only",
+      "Configure local collection without registering the Panopticon plugin",
+    ).hideHelp(),
+  )
   .action(async (opts: Opts) => {
     const validTargets = [...targetIds(), "all"];
     if (!validTargets.includes(opts.target)) {
@@ -741,13 +747,19 @@ async function install(
     proxy?: boolean;
     disableSync?: boolean;
     startupTask?: boolean;
+    collectionOnly?: boolean;
   },
 ) {
   const force = opts.force ?? false;
   const target = opts.target ?? "claude";
   const syncEnabled = !opts.disableSync;
+  const collectionOnly = opts.collectionOnly ?? false;
 
-  console.log("Installing panopticon...\n");
+  console.log(
+    collectionOnly
+      ? "Setting up panopticon local collection...\n"
+      : "Installing panopticon...\n",
+  );
 
   const pkgJson = readJsonFile(path.join(pluginRoot, "package.json"));
   const version = pkgJson?.version ?? "0.0.0-dev";
@@ -769,32 +781,38 @@ async function install(
     console.log("      Remote sync disabled (--disable-sync)");
   }
 
-  // Ensure the Claude Code plugin manifest exists and has the current
-  // version. Claude Code's local-plugins loader reads `version` from
-  // .claude-plugin/plugin.json (not package.json) to pick the cache
-  // directory name — without it, every install reuses the same stale
-  // `unknown/` directory forever. The prepack hook generates this file
-  // for published tarballs; this block handles local dev where the
-  // source tree's `.claude-plugin/` is gitignored and may not exist or
-  // may be stale from a long-ago build.
-  const pluginManifestPath = path.join(
-    pluginRoot,
-    ".claude-plugin",
-    "plugin.json",
-  );
-  fs.mkdirSync(path.dirname(pluginManifestPath), { recursive: true });
-  writeJsonFile(pluginManifestPath, {
-    name: "panopticon",
-    version,
-    description: pkgJson?.description ?? "Observability for Claude Code",
-    mcpServers: {
-      panopticon: {
-        command: "node",
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
-        args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
+  if (collectionOnly) {
+    console.log(
+      "[2/5] Skipping Panopticon plugin registration (managed by FML)\n",
+    );
+  } else {
+    // Ensure the Claude Code plugin manifest exists and has the current
+    // version. Claude Code's local-plugins loader reads `version` from
+    // .claude-plugin/plugin.json (not package.json) to pick the cache
+    // directory name — without it, every install reuses the same stale
+    // `unknown/` directory forever. The prepack hook generates this file
+    // for published tarballs; this block handles local dev where the
+    // source tree's `.claude-plugin/` is gitignored and may not exist or
+    // may be stale from a long-ago build.
+    const pluginManifestPath = path.join(
+      pluginRoot,
+      ".claude-plugin",
+      "plugin.json",
+    );
+    fs.mkdirSync(path.dirname(pluginManifestPath), { recursive: true });
+    writeJsonFile(pluginManifestPath, {
+      name: "panopticon",
+      version,
+      description: pkgJson?.description ?? "Observability for Claude Code",
+      mcpServers: {
+        panopticon: {
+          command: "node",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude plugin variable syntax
+          args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
+        },
       },
-    },
-  });
+    });
+  }
 
   const hooksJsonPath = path.join(pluginRoot, "hooks", "hooks.json");
   const hooksJson = readJsonFile(hooksJsonPath);
@@ -830,67 +848,73 @@ async function install(
       : "      Could not fetch pricing (will use defaults)\n",
   );
 
-  console.log("[2/5] Setting up local marketplace...");
-  fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
-    recursive: true,
-  });
-  const manifest = readJsonFile(config.marketplaceManifest) ?? {
-    name: "local-plugins",
-    owner: { name: os.userInfo().username },
-    plugins: [],
-  };
-  const plugins = (manifest.plugins as Array<Record<string, unknown>>) ?? [];
-  const existing = plugins.findIndex((p) => p.name === "panopticon");
-  const entry = {
-    name: "panopticon",
-    source: "./panopticon",
-    description: pkgJson?.description ?? "Observability for Claude Code",
-  };
-  if (existing >= 0) {
-    plugins[existing] = entry;
-  } else {
-    plugins.push(entry);
-  }
-  manifest.plugins = plugins;
-  writeJsonFile(config.marketplaceManifest, manifest);
-
-  const symlinkType = process.platform === "win32" ? "junction" : "dir";
-  const marketplaceLink = path.join(config.marketplaceDir, "panopticon");
-  try {
-    fs.unlinkSync(marketplaceLink);
-  } catch {}
-  fs.symlinkSync(pluginRoot, marketplaceLink, symlinkType);
-
-  console.log(`      Marketplace: ${config.marketplaceDir}`);
-
-  // Register plugin with Claude Code (install if new, update if existing)
-  // Claude Code keys the cache by plugin version, so dev reinstalls with the
-  // same version can otherwise keep an old manifest forever.
-  try {
-    fs.rmSync(path.join(config.pluginCacheDir, version), {
+  if (!collectionOnly) {
+    console.log("[2/5] Setting up local marketplace...");
+    fs.mkdirSync(path.join(config.marketplaceDir, ".claude-plugin"), {
       recursive: true,
-      force: true,
     });
-  } catch {}
-  try {
-    try {
-      execFileSync(
-        "claude",
-        ["plugin", "install", "panopticon@local-plugins"],
-        { stdio: "pipe", timeout: 15_000, windowsHide: true },
-      );
-    } catch {
-      execFileSync("claude", ["plugin", "update", "panopticon@local-plugins"], {
-        stdio: "pipe",
-        timeout: 15_000,
-        windowsHide: true,
-      });
+    const manifest = readJsonFile(config.marketplaceManifest) ?? {
+      name: "local-plugins",
+      owner: { name: os.userInfo().username },
+      plugins: [],
+    };
+    const plugins = (manifest.plugins as Array<Record<string, unknown>>) ?? [];
+    const existing = plugins.findIndex((p) => p.name === "panopticon");
+    const entry = {
+      name: "panopticon",
+      source: "./panopticon",
+      description: pkgJson?.description ?? "Observability for Claude Code",
+    };
+    if (existing >= 0) {
+      plugins[existing] = entry;
+    } else {
+      plugins.push(entry);
     }
-    console.log("      Plugin cache updated via Claude Code CLI\n");
-  } catch {
-    console.log(
-      "      warn: claude CLI not found, run 'claude plugin install panopticon@local-plugins' manually\n",
-    );
+    manifest.plugins = plugins;
+    writeJsonFile(config.marketplaceManifest, manifest);
+
+    const symlinkType = process.platform === "win32" ? "junction" : "dir";
+    const marketplaceLink = path.join(config.marketplaceDir, "panopticon");
+    try {
+      fs.unlinkSync(marketplaceLink);
+    } catch {}
+    fs.symlinkSync(pluginRoot, marketplaceLink, symlinkType);
+
+    console.log(`      Marketplace: ${config.marketplaceDir}`);
+
+    // Register plugin with Claude Code (install if new, update if existing)
+    // Claude Code keys the cache by plugin version, so dev reinstalls with the
+    // same version can otherwise keep an old manifest forever.
+    try {
+      fs.rmSync(path.join(config.pluginCacheDir, version), {
+        recursive: true,
+        force: true,
+      });
+    } catch {}
+    try {
+      try {
+        execFileSync(
+          "claude",
+          ["plugin", "install", "panopticon@local-plugins"],
+          { stdio: "pipe", timeout: 15_000, windowsHide: true },
+        );
+      } catch {
+        execFileSync(
+          "claude",
+          ["plugin", "update", "panopticon@local-plugins"],
+          {
+            stdio: "pipe",
+            timeout: 15_000,
+            windowsHide: true,
+          },
+        );
+      }
+      console.log("      Plugin cache updated via Claude Code CLI\n");
+    } catch {
+      console.log(
+        "      warn: claude CLI not found, run 'claude plugin install panopticon@local-plugins' manually\n",
+      );
+    }
   }
 
   // Register hooks/config for each selected target
