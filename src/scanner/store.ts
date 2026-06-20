@@ -352,11 +352,14 @@ type ToolInputSessionPath = {
   isWorkingDirectory: boolean;
 };
 
+const TOOL_INPUT_PATH_KEY_RE = /"(?:shell_pwd|workdir|cwd|file_path|path)"\s*:/;
+
 function extractToolInputSessionPaths(
   toolInputJson: string | null | undefined,
   toolName?: string | null,
 ): ToolInputSessionPath[] {
   if (!toolInputJson) return [];
+  if (!TOOL_INPUT_PATH_KEY_RE.test(toolInputJson)) return [];
 
   let input: unknown;
   try {
