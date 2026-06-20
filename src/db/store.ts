@@ -221,14 +221,22 @@ export function upsertSessionCwd(
   timestampMs: number,
 ): void {
   const db = getDb();
-  const result = db
-    .prepare(
-      "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-    )
-    .run(sessionId, cwd, timestampMs);
-  if (result.changes > 0) {
-    refreshSessionAutomation(sessionId);
-  }
+  const apply = db.transaction(() => {
+    const result = db
+      .prepare(
+        "INSERT INTO session_cwds (session_id, cwd, first_seen_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+      )
+      .run(sessionId, cwd, timestampMs);
+    if (result.changes > 0) {
+      refreshSessionAutomation(sessionId);
+      // refreshSessionAutomation may bump sync_seq too if the derived
+      // automation flag changes; this bump covers the cwd metadata itself.
+      db.prepare(
+        `UPDATE sessions SET sync_seq = COALESCE(sync_seq, 0) + 1 WHERE session_id = ?`,
+      ).run(sessionId);
+    }
+  });
+  withBusyRetry(() => apply());
 }
 
 /**
@@ -590,7 +598,7 @@ export function refreshSessionAutomation(sessionId: string): boolean {
                 SELECT scw.cwd
                 FROM session_cwds scw
                 WHERE scw.session_id = s.session_id
-                ORDER BY scw.first_seen_ms ASC
+                ORDER BY scw.first_seen_ms ASC, scw.cwd ASC
                 LIMIT 1
               ) AS cwd
        FROM sessions s

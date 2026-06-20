@@ -246,6 +246,23 @@ describe("scanner only", () => {
     expect(getSession("replay-cwd")!.is_automated).toBe(1);
   });
 
+  it("uses cwd as the primary-cwd tiebreak for automation", () => {
+    const sessionId = "same-timestamp-cwd";
+    const timestampMs = 1_700_000_000_000;
+    upsertSession({
+      session_id: sessionId,
+      target: "codex",
+    });
+    upsertSessionCwd(
+      sessionId,
+      "/private/var/folders/x/T/pano-replay-25735fa6-panop",
+      timestampMs,
+    );
+    upsertSessionCwd(sessionId, "/private/normal", timestampMs);
+
+    expect(getSession(sessionId)!.is_automated).toBe(0);
+  });
+
   it("marks subagent sessions automated", () => {
     upsertSession({
       session_id: "agent-123",
