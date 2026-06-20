@@ -98,6 +98,8 @@ beforeEach(() => {
 function stubResolve(dir: string): string | null {
   if (dir.includes("/workspace/fml")) return "fml-inc/fml";
   if (dir.includes("/workspace/panopticon")) return "fml-inc/panopticon";
+  if (dir.includes("/workspace/headroom")) return "fml-inc/headroom";
+  if (dir.includes("/workspace/observe")) return "fml-inc/observe";
   if (dir.includes("/worktrees/district")) return "isoapp/district";
   return null;
 }
@@ -151,6 +153,14 @@ describe("resolveEventRepo", () => {
     expect(resolveEventRepo(data, stubResolve)).toBe("explicit/repo");
   });
 
+  it("resolves explicit repository paths", () => {
+    const data = makeInput({
+      repository: "/workspace/panopticon",
+      cwd: "/workspace/fml",
+    });
+    expect(resolveEventRepo(data, stubResolve)).toBe("fml-inc/panopticon");
+  });
+
   it("uses shell_pwd when no explicit repository", () => {
     const data = makeInput({
       shell_pwd: "/workspace/panopticon/src",
@@ -179,6 +189,14 @@ describe("resolveEventRepo", () => {
     const data = makeInput({
       cwd: "/workspace/fml",
       tool_input: { workdir: "/workspace/panopticon" },
+    });
+    expect(resolveEventRepo(data, stubResolve)).toBe("fml-inc/panopticon");
+  });
+
+  it("uses tool_input.repository slug before path resolution", () => {
+    const data = makeInput({
+      cwd: "/workspace/fml",
+      tool_input: { repository: "fml-inc/panopticon" },
     });
     expect(resolveEventRepo(data, stubResolve)).toBe("fml-inc/panopticon");
   });
@@ -350,6 +368,36 @@ describe("extractEventPaths", () => {
     expect(paths.map((p) => p.source)).toEqual([
       "tool_input.file_path",
       "tool_input.path",
+      "tool_input.path",
+    ]);
+    expect(paths.map((p) => p.dir)).toEqual([
+      "/workspace/fml/src",
+      "/workspace/panopticon/src",
+      "/workspace/panopticon",
+    ]);
+  });
+
+  it("extracts repo-only path signals without making them cwd sources", () => {
+    const data = makeInput({
+      cwd: "/workspace/fml",
+      file_path: "/workspace/panopticon/src/index.ts",
+      trigger_file_path: "/workspace/observe/src/server.ts",
+      tool_input: {
+        dir_path: "/workspace/headroom/packages",
+        repo_root: "/workspace/observe",
+        repository: "/workspace/panopticon",
+      },
+    });
+
+    const paths = extractEventPaths(data);
+
+    expect(paths).toEqual([
+      { dir: "/workspace/panopticon/src", source: "file_path" },
+      { dir: "/workspace/observe/src", source: "trigger_file_path" },
+      { dir: "/workspace/headroom/packages", source: "tool_input.dir_path" },
+      { dir: "/workspace/observe", source: "tool_input.repo_root" },
+      { dir: "/workspace/panopticon", source: "tool_input.repository" },
+      { dir: "/workspace/fml", source: "cwd" },
     ]);
   });
 
@@ -431,6 +479,28 @@ describe("resolveAllEventRepos", () => {
     // appears as a second entry
     expect(repos).toHaveLength(2);
     expect(repos[1]).toEqual({ repo: "fml-inc/fml", dir: "/workspace/fml" });
+  });
+
+  it("uses top-level and tool-input repo path signals", () => {
+    const data = makeInput({
+      cwd: "/workspace/fml",
+      file_path: "/workspace/panopticon/src/index.ts",
+      trigger_file_path: "/workspace/observe/src/server.ts",
+      tool_input: {
+        repository: "fml-inc/direct",
+        dir_path: "/workspace/headroom/packages",
+      },
+    });
+
+    const repos = resolveAllEventRepos(data, stubResolve);
+
+    expect(repos).toEqual([
+      { repo: "fml-inc/direct", dir: null },
+      { repo: "fml-inc/panopticon", dir: "/workspace/panopticon/src" },
+      { repo: "fml-inc/observe", dir: "/workspace/observe/src" },
+      { repo: "fml-inc/headroom", dir: "/workspace/headroom/packages" },
+      { repo: "fml-inc/fml", dir: "/workspace/fml" },
+    ]);
   });
 });
 

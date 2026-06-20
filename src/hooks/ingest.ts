@@ -30,6 +30,7 @@ import {
 } from "../paths.js";
 import { getProvider } from "../providers/index.js";
 import {
+  isRepositorySlug,
   type RepoInfo,
   resolveGitHeadSha,
   resolveGitIdentity,
@@ -143,8 +144,13 @@ export function extractShellPwd(data: HookInput): string | null {
 
 export type PathSource =
   | "shell_pwd"
+  | "file_path"
+  | "trigger_file_path"
   | "tool_input.workdir"
   | "tool_input.cwd"
+  | "tool_input.dir_path"
+  | "tool_input.repo_root"
+  | "tool_input.repository"
   | "tool_input.file_path"
   | "tool_input.path"
   | "cwd";
@@ -161,16 +167,41 @@ export interface EventPath {
  */
 export function extractEventPaths(data: HookInput): EventPath[] {
   const paths: EventPath[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const add = (dir: string, source: PathSource) => {
-    if (!seen.has(dir)) {
-      seen.add(dir);
+    const existingIndex = seen.get(dir);
+    if (existingIndex == null) {
+      seen.set(dir, paths.length);
       paths.push({ dir, source });
+    } else {
+      const existing = paths[existingIndex];
+      if (
+        existing &&
+        isCwdPathSource(source) &&
+        !isCwdPathSource(existing.source)
+      ) {
+        paths[existingIndex] = { dir, source };
+      }
     }
   };
 
   const shellPwd = extractShellPwd(data);
   if (shellPwd) add(shellPwd, "shell_pwd");
+
+  const topLevelFilePath = data.file_path;
+  if (
+    typeof topLevelFilePath === "string" &&
+    isObservedAbsolutePath(topLevelFilePath)
+  ) {
+    add(dirnameOfObservedPath(topLevelFilePath), "file_path");
+  }
+  const triggerFilePath = data.trigger_file_path;
+  if (
+    typeof triggerFilePath === "string" &&
+    isObservedAbsolutePath(triggerFilePath)
+  ) {
+    add(dirnameOfObservedPath(triggerFilePath), "trigger_file_path");
+  }
 
   const toolInput = data.tool_input;
   if (toolInput && typeof toolInput === "object") {
@@ -182,12 +213,27 @@ export function extractEventPaths(data: HookInput): EventPath[] {
     if (typeof cwd === "string" && isObservedAbsolutePath(cwd)) {
       add(cwd, "tool_input.cwd");
     }
+    const dirPath = (toolInput as Record<string, unknown>).dir_path;
+    if (typeof dirPath === "string" && isObservedAbsolutePath(dirPath)) {
+      add(dirPath, "tool_input.dir_path");
+    }
+    const repoRoot = (toolInput as Record<string, unknown>).repo_root;
+    if (typeof repoRoot === "string" && isObservedAbsolutePath(repoRoot)) {
+      add(repoRoot, "tool_input.repo_root");
+    }
+    const repository = (toolInput as Record<string, unknown>).repository;
+    if (typeof repository === "string" && isObservedAbsolutePath(repository)) {
+      add(repository, "tool_input.repository");
+    }
     const fp = (toolInput as Record<string, unknown>).file_path;
     if (typeof fp === "string" && isObservedAbsolutePath(fp)) {
       add(dirnameOfObservedPath(fp), "tool_input.file_path");
     }
     const p = (toolInput as Record<string, unknown>).path;
     if (typeof p === "string" && isObservedAbsolutePath(p)) {
+      // Tool-specific `path` values can be either directories or files. Try
+      // the value itself for directory-shaped paths, then dirname fallback.
+      add(p, "tool_input.path");
       add(dirnameOfObservedPath(p), "tool_input.path");
     }
   }
@@ -219,12 +265,46 @@ function normalizeResolveFn(
   };
 }
 
+function eventFallbackRepoDir(data: HookInput): string {
+  const shellPwd = extractShellPwd(data);
+  if (shellPwd) return shellPwd;
+  if (typeof data.cwd === "string") return data.cwd;
+  return ".";
+}
+
+function toolInputRepositoryValue(data: HookInput): string | null {
+  const value = data.tool_input?.repository;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function resolveRepositoryValue(
+  value: string | undefined | null,
+  resolve: (dir: string) => RepoInfo | null,
+  fallbackDir: string,
+  useFallbackDirForSlug: boolean,
+): { repo: string; dir: string | null; branch?: string | null } | null {
+  if (!value) return null;
+  // Only accept repository fields as local paths we can resolve or trusted
+  // owner/repo slugs. Arbitrary strings are intentionally not persisted.
+  if (isObservedAbsolutePath(value)) {
+    const info = resolve(value);
+    return info ? { repo: info.repo, dir: value, branch: info.branch } : null;
+  }
+  if (isRepositorySlug(value)) {
+    return {
+      repo: value,
+      dir: useFallbackDirForSlug ? fallbackDir : null,
+    };
+  }
+  return null;
+}
+
 /**
  * Resolve the repository for an event, trying multiple sources in priority order:
  * 1. Explicit repository field
- * 2. shell_pwd (actual cwd at event time)
- * 3. tool_input.file_path / path
- * 4. Session cwd
+ * 2. Explicit tool_input.repository field
+ * 3. shell_pwd / cwd-like fields
+ * 4. file, directory, and repo-root path fields
  * 5. Last resolved repo for this session (cumulative cache)
  */
 export function resolveEventRepo(
@@ -232,11 +312,24 @@ export function resolveEventRepo(
   resolveFn: ResolveFn = resolveRepoFromCwd,
 ): string | null {
   const sessionId = data.session_id ?? "unknown";
+  const resolve = normalizeResolveFn(resolveFn);
+  const fallbackDir = eventFallbackRepoDir(data);
 
-  let repo = data.repository ?? null;
+  let repo =
+    resolveRepositoryValue(data.repository, resolve, fallbackDir, true)?.repo ??
+    null;
 
   if (!repo) {
-    const resolve = normalizeResolveFn(resolveFn);
+    repo =
+      resolveRepositoryValue(
+        toolInputRepositoryValue(data),
+        resolve,
+        fallbackDir,
+        false,
+      )?.repo ?? null;
+  }
+
+  if (!repo) {
     for (const { dir } of extractEventPaths(data)) {
       const info = resolve(dir);
       if (info) {
@@ -261,30 +354,45 @@ export function resolveEventRepo(
 
 /**
  * Resolve ALL repos touched by this event — the primary repo plus any
- * additional repos referenced via tool_input paths.
- * Returns deduplicated { repo, dir, branch } tuples.
+ * additional repos referenced via file, directory, and repo-root paths.
+ * Returns deduplicated { repo, dir, branch } tuples. dir is null for direct
+ * repository slugs that were not resolved from a local path.
  */
 export function resolveAllEventRepos(
   data: HookInput,
   resolveFn: ResolveFn = resolveRepoFromCwd,
-): Array<{ repo: string; dir: string; branch?: string | null }> {
+): Array<{ repo: string; dir: string | null; branch?: string | null }> {
   const results: Array<{
     repo: string;
-    dir: string;
+    dir: string | null;
     branch?: string | null;
   }> = [];
   const seen = new Set<string>();
   const resolve = normalizeResolveFn(resolveFn);
+  const fallbackDir = eventFallbackRepoDir(data);
+
+  const addRepo = (
+    resolved: {
+      repo: string;
+      dir: string | null;
+      branch?: string | null;
+    } | null,
+  ) => {
+    if (!resolved || seen.has(resolved.repo)) return;
+    seen.add(resolved.repo);
+    results.push(resolved);
+  };
 
   // Explicit repository field first
-  if (data.repository) {
-    seen.add(data.repository);
-    const shellPwd = extractShellPwd(data);
-    results.push({
-      repo: data.repository,
-      dir: shellPwd ?? (data.cwd as string) ?? ".",
-    });
-  }
+  addRepo(resolveRepositoryValue(data.repository, resolve, fallbackDir, true));
+  addRepo(
+    resolveRepositoryValue(
+      toolInputRepositoryValue(data),
+      resolve,
+      fallbackDir,
+      false,
+    ),
+  );
 
   for (const { dir } of extractEventPaths(data)) {
     const info = resolve(dir);
@@ -611,14 +719,15 @@ export function processHookEvent(data: HookInput): Record<string, unknown> {
   // by this event (primary cwd + any paths in tool_input).
   const allRepos = resolveAllEventRepos(data);
   for (const { repo: r, dir, branch } of allRepos) {
-    const gitId = resolveGitIdentity(dir);
+    const gitId = dir ? resolveGitIdentity(dir) : undefined;
     // Capture HEAD only at SessionStart: it is the replay anchor (the code
     // state the session began from). Resolving it per-event would add a
     // git call to the hot path; first-write-wins in the upsert preserves
     // the start value as the working tree moves during the session.
     const headSha =
-      eventType === "SessionStart" ? resolveGitHeadSha(dir) : null;
+      eventType === "SessionStart" && dir ? resolveGitHeadSha(dir) : null;
     upsertSessionRepository(sessionId, r, timestampMs, gitId, branch, headSha);
+    if (!dir) continue;
 
     // Capture repo config on first encounter per session
     const repoKey = `${sessionId}:${r}`;

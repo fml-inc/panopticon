@@ -8,6 +8,12 @@ export interface RepoInfo {
   branch?: string | null;
 }
 
+// Repository fields that already look like owner/repo are trusted as remote
+// identifiers. Other non-path strings are ignored rather than written verbatim.
+export function isRepositorySlug(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+}
+
 // Cache: cwd → RepoInfo | null
 const repoCache = new Map<string, RepoInfo | null>();
 
