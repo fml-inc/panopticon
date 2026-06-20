@@ -13,7 +13,11 @@ import {
   buildToolCallSyncId,
 } from "../db/sync-ids.js";
 import { dirnameOfObservedPath, isObservedAbsolutePath } from "../paths.js";
-import { resolveGitIdentity, resolveRepoFromCwd } from "../repo.js";
+import {
+  isRepositorySlug,
+  resolveGitIdentity,
+  resolveRepoFromCwd,
+} from "../repo.js";
 import type {
   ParsedEvent,
   ParsedMessage,
@@ -352,25 +356,33 @@ type ToolInputSessionPath = {
   isWorkingDirectory: boolean;
 };
 
-const TOOL_INPUT_PATH_KEY_RE = /"(?:shell_pwd|workdir|cwd|file_path|path)"\s*:/;
+type ToolInputSessionAttribution = {
+  paths: ToolInputSessionPath[];
+  repositories: string[];
+};
 
-function extractToolInputSessionPaths(
+const TOOL_INPUT_PATH_KEY_RE =
+  /"(?:shell_pwd|workdir|cwd|file_path|path|dir_path|repo_root|repository)"\s*:/;
+
+function extractToolInputSessionAttributions(
   toolInputJson: string | null | undefined,
   toolName?: string | null,
-): ToolInputSessionPath[] {
-  if (!toolInputJson) return [];
-  if (!TOOL_INPUT_PATH_KEY_RE.test(toolInputJson)) return [];
+): ToolInputSessionAttribution {
+  const empty = { paths: [], repositories: [] };
+  if (!toolInputJson) return empty;
+  if (!TOOL_INPUT_PATH_KEY_RE.test(toolInputJson)) return empty;
 
   let input: unknown;
   try {
     input = JSON.parse(toolInputJson);
   } catch {
-    return [];
+    return empty;
   }
-  if (!input || typeof input !== "object") return [];
+  if (!input || typeof input !== "object") return empty;
 
   const record = input as Record<string, unknown>;
   const paths: ToolInputSessionPath[] = [];
+  const repositories: string[] = [];
   const seen = new Set<string>();
   const add = (dir: string, isWorkingDirectory: boolean) => {
     if (!seen.has(dir)) {
@@ -381,11 +393,30 @@ function extractToolInputSessionPaths(
       if (existing) existing.isWorkingDirectory = true;
     }
   };
+  const addRepository = (repository: string) => {
+    if (!repositories.includes(repository)) repositories.push(repository);
+  };
 
   for (const key of ["shell_pwd", "workdir", "cwd"]) {
     const value = record[key];
     if (typeof value === "string" && isObservedAbsolutePath(value)) {
       add(value, true);
+    }
+  }
+
+  for (const key of ["dir_path", "repo_root"]) {
+    const value = record[key];
+    if (typeof value === "string" && isObservedAbsolutePath(value)) {
+      add(value, false);
+    }
+  }
+
+  const repository = record.repository;
+  if (typeof repository === "string") {
+    if (isObservedAbsolutePath(repository)) {
+      add(repository, false);
+    } else if (isRepositorySlug(repository)) {
+      addRepository(repository);
     }
   }
 
@@ -401,11 +432,12 @@ function extractToolInputSessionPaths(
   for (const key of pathKeys) {
     const value = record[key];
     if (typeof value === "string" && isObservedAbsolutePath(value)) {
+      if (key === "path") add(value, false);
       add(dirnameOfObservedPath(value), false);
     }
   }
 
-  return paths;
+  return { paths, repositories };
 }
 
 function attributeSessionPathsFromToolInput(
@@ -416,10 +448,19 @@ function attributeSessionPathsFromToolInput(
   seenCwds: Set<string>,
   seenRepoDirs: Set<string>,
 ): void {
-  for (const { dir, isWorkingDirectory } of extractToolInputSessionPaths(
+  const { paths, repositories } = extractToolInputSessionAttributions(
     toolInputJson,
     toolName,
-  )) {
+  );
+
+  for (const repository of repositories) {
+    const repoKey = `${sessionId}\0repo:${repository}`;
+    if (seenRepoDirs.has(repoKey)) continue;
+    seenRepoDirs.add(repoKey);
+    upsertSessionRepository(sessionId, repository, timestampMs);
+  }
+
+  for (const { dir, isWorkingDirectory } of paths) {
     const sessionCwdKey = `${sessionId}\0${dir}`;
     if (isWorkingDirectory && !seenCwds.has(sessionCwdKey)) {
       seenCwds.add(sessionCwdKey);

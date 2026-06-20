@@ -8,6 +8,10 @@ export interface RepoInfo {
   branch?: string | null;
 }
 
+export function isRepositorySlug(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+}
+
 // Cache: cwd → RepoInfo | null
 const repoCache = new Map<string, RepoInfo | null>();
 

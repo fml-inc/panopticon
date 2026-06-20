@@ -216,4 +216,94 @@ describe("scanner tool input attribution", () => {
     expect(cwds.map((r) => r.cwd)).toEqual([launchCwd, worktreeRoot]);
     expect(repos.map((r) => r.repository)).toEqual(["fml-inc/panopticon"]);
   });
+
+  it("records repo-only path fields as repositories without adding cwds", () => {
+    const sessionId = "scanner-repo-path-session";
+    const launchCwd = fs.mkdtempSync(path.join(config.dataDir, "workspace-"));
+    const repoRoot = makeGitRepo("fml-inc/panopticon");
+    const srcDir = path.join(repoRoot, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    const filePath = path.join(srcDir, "index.ts");
+    fs.writeFileSync(filePath, "export {};\n");
+
+    upsertSession(
+      {
+        sessionId,
+        cwd: launchCwd,
+        startedAtMs: 1,
+      },
+      path.join(config.dataDir, "session.jsonl"),
+      "codex",
+    );
+    insertMessages([
+      makeAssistantToolMessage({
+        sessionId,
+        inputJson: JSON.stringify({
+          repo_root: repoRoot,
+          dir_path: srcDir,
+          file_path: filePath,
+          path: srcDir,
+        }),
+      }),
+    ]);
+
+    const cwds = getDb()
+      .prepare(
+        `SELECT cwd FROM session_cwds
+         WHERE session_id = ?
+         ORDER BY first_seen_ms ASC, cwd ASC`,
+      )
+      .all(sessionId) as Array<{ cwd: string }>;
+    const repos = getDb()
+      .prepare(
+        `SELECT repository FROM session_repositories
+         WHERE session_id = ?
+         ORDER BY repository ASC`,
+      )
+      .all(sessionId) as Array<{ repository: string }>;
+
+    expect(cwds.map((r) => r.cwd)).toEqual([launchCwd]);
+    expect(repos.map((r) => r.repository)).toEqual(["fml-inc/panopticon"]);
+  });
+
+  it("records tool input repository slugs directly", () => {
+    const sessionId = "scanner-repository-slug-session";
+    const launchCwd = fs.mkdtempSync(path.join(config.dataDir, "workspace-"));
+
+    upsertSession(
+      {
+        sessionId,
+        cwd: launchCwd,
+        startedAtMs: 1,
+      },
+      path.join(config.dataDir, "session.jsonl"),
+      "codex",
+    );
+    insertMessages([
+      makeAssistantToolMessage({
+        sessionId,
+        inputJson: JSON.stringify({
+          repository: "fml-inc/panopticon",
+        }),
+      }),
+    ]);
+
+    const cwds = getDb()
+      .prepare(
+        `SELECT cwd FROM session_cwds
+         WHERE session_id = ?
+         ORDER BY first_seen_ms ASC, cwd ASC`,
+      )
+      .all(sessionId) as Array<{ cwd: string }>;
+    const repos = getDb()
+      .prepare(
+        `SELECT repository FROM session_repositories
+         WHERE session_id = ?
+         ORDER BY repository ASC`,
+      )
+      .all(sessionId) as Array<{ repository: string }>;
+
+    expect(cwds.map((r) => r.cwd)).toEqual([launchCwd]);
+    expect(repos.map((r) => r.repository)).toEqual(["fml-inc/panopticon"]);
+  });
 });
