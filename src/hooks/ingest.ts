@@ -231,6 +231,8 @@ export function extractEventPaths(data: HookInput): EventPath[] {
     }
     const p = (toolInput as Record<string, unknown>).path;
     if (typeof p === "string" && isObservedAbsolutePath(p)) {
+      // Tool-specific `path` values can be either directories or files. Try
+      // the value itself for directory-shaped paths, then dirname fallback.
       add(p, "tool_input.path");
       add(dirnameOfObservedPath(p), "tool_input.path");
     }
@@ -282,6 +284,8 @@ function resolveRepositoryValue(
   useFallbackDirForSlug: boolean,
 ): { repo: string; dir: string | null; branch?: string | null } | null {
   if (!value) return null;
+  // Only accept repository fields as local paths we can resolve or trusted
+  // owner/repo slugs. Arbitrary strings are intentionally not persisted.
   if (isObservedAbsolutePath(value)) {
     const info = resolve(value);
     return info ? { repo: info.repo, dir: value, branch: info.branch } : null;

@@ -432,6 +432,8 @@ function extractToolInputSessionAttributions(
   for (const key of pathKeys) {
     const value = record[key];
     if (typeof value === "string" && isObservedAbsolutePath(value)) {
+      // Tool-specific `path` values can be either directories or files. Try
+      // the value itself for directory-shaped paths, then dirname fallback.
       if (key === "path") add(value, false);
       add(dirnameOfObservedPath(value), false);
     }
