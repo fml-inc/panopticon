@@ -21,6 +21,7 @@ const {
   listTargetsMock,
   loadSyncConfigMock,
   removeTargetMock,
+  storageDiagnosticsMock,
 } = vi.hoisted(() => ({
   needsResyncMock: vi.fn(),
   needsRawDataResyncMock: vi.fn(),
@@ -51,6 +52,7 @@ const {
   listTargetsMock: vi.fn(),
   loadSyncConfigMock: vi.fn(() => ({ enabled: true, targets: [] })),
   removeTargetMock: vi.fn(),
+  storageDiagnosticsMock: vi.fn(() => ({ dataDir: "/tmp/panopticon" })),
 }));
 
 vi.mock("../claims/canonicalize.js", () => ({
@@ -93,6 +95,10 @@ vi.mock("../db/schema.js", () => ({
   needsRawDataResync: needsRawDataResyncMock,
   needsResync: needsResyncMock,
   staleDataComponents: staleDataComponentsMock,
+}));
+
+vi.mock("../db/storage-diagnostics.js", () => ({
+  storageDiagnostics: storageDiagnosticsMock,
 }));
 
 vi.mock("../intent/asserters/from_hooks.js", () => ({
@@ -286,6 +292,15 @@ describe("direct service scan", () => {
       newTurns: 3,
       summariesUpdated: 0,
     });
+  });
+
+  it("returns storage diagnostics from the diagnostics module", async () => {
+    const service = createDirectPanopticonService();
+
+    const result = await service.storageDiagnostics();
+
+    expect(storageDiagnosticsMock).toHaveBeenCalled();
+    expect(result).toEqual({ dataDir: "/tmp/panopticon" });
   });
 
   it("marks full raw-claims rebuild components current", async () => {

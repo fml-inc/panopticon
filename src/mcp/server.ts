@@ -821,6 +821,13 @@ server.tool(
   },
 );
 
+server.tool(
+  "storage",
+  "Read-only storage diagnostics: data-dir file sizes, SQLite page stats, table row counts, dbstat object sizes, and aggregate payload byte counts. Does not return row contents.",
+  {},
+  async () => jsonContent(await service.storageDiagnostics()),
+);
+
 // ───────────────────────────────────────────────────────────────────────────
 // Intent index — maps engineer prompts to the file edits they produced.
 // ───────────────────────────────────────────────────────────────────────────

@@ -54,6 +54,53 @@ export async function postSync(
   body: { table: string; rows: unknown[] },
   headers: Record<string, string>,
 ): Promise<Record<string, unknown>> {
+  return postWithRetries(url, {
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export interface SessionFileUploadMetadata {
+  sessionId: string;
+  source: string;
+  fileName: string;
+  contentType: string;
+  contentEncoding: string;
+  sizeBytes: number;
+  contentHash: string;
+}
+
+export async function postSessionFile(
+  url: string,
+  metadata: SessionFileUploadMetadata,
+  content: Buffer,
+  headers: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  const form = new FormData();
+  form.append(
+    "metadata",
+    new Blob([JSON.stringify(metadata)], { type: "application/json" }),
+    "metadata.json",
+  );
+  form.append(
+    "file",
+    new Blob([new Uint8Array(content)], { type: metadata.contentType }),
+    metadata.fileName,
+  );
+
+  return postWithRetries(url, {
+    headers,
+    body: form,
+  });
+}
+
+async function postWithRetries(
+  url: string,
+  init: {
+    headers: Record<string, string>;
+    body: BodyInit;
+  },
+): Promise<Record<string, unknown>> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -65,8 +112,8 @@ export async function postSync(
       );
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...headers },
-        body: JSON.stringify(body),
+        headers: init.headers,
+        body: init.body,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);

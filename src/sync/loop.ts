@@ -25,6 +25,7 @@ import {
   DEFAULT_SESSION_TABLES,
   TABLE_SYNC_REGISTRY,
 } from "./registry.js";
+import { syncArchivedSessionFiles } from "./session-files.js";
 import type { SyncHandle, SyncOptions, SyncTarget } from "./types.js";
 import { readWatermark, watermarkKey, writeWatermark } from "./watermark.js";
 
@@ -143,6 +144,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const sessionRowBudget = Math.max(1, opts.sessionRowBudget ?? batchSize);
   const sessionPendingMode = opts.sessionPendingMode ?? "sync-seq";
   const syncSessionsEnabled = opts.syncSessions ?? true;
+  const syncSessionFilesEnabled = opts.syncSessionFiles ?? false;
   const sessionTables = (
     opts.sessionTables ?? [...DEFAULT_SESSION_TABLES]
   ).filter(isSessionTableName);
@@ -744,7 +746,17 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         // Phase 3: Sync dependent raw session data for confirmed sessions
         if (await syncSessionData(target)) hasMore = true;
 
-        // Phase 4: Sync non-session tables
+        // Phase 4: Multipart-upload archived raw session files for confirmed sessions
+        if (
+          syncSessionFilesEnabled &&
+          (await syncArchivedSessionFiles(target, resolveHeaders(target), {
+            limit: maxSessionsPerTick,
+          }))
+        ) {
+          hasMore = true;
+        }
+
+        // Phase 5: Sync non-session tables
         if (await syncNonSessionTables(target)) hasMore = true;
         clearAttemptBackoff(backoffScopeKind, target.name);
       } catch (err) {

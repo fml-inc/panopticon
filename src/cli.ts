@@ -26,6 +26,7 @@ import {
 } from "./context-diagnostics.js";
 import { refreshPricing as refreshPricingDirect } from "./db/pricing.js";
 import { closeDb, getDb } from "./db/schema.js";
+import { storageDiagnostics } from "./db/storage-diagnostics.js";
 import { DAEMON_NAMES, type DaemonName, LOG_DIR, logPaths } from "./log.js";
 import {
   permissionsApply,
@@ -246,6 +247,24 @@ function formatElapsedMs(ms: number): string {
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`;
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms)}ms`;
+}
+
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes)) return "unknown";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return unit === 0
+    ? `${bytes} ${units[unit]}`
+    : `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+function formatStorageLabel(label: string): string {
+  return label.replaceAll("_", " ");
 }
 
 function describeScannerPhase(phase: string): string {
@@ -1333,6 +1352,108 @@ program
       `  recent activity: ${formatContextActivity(readContextActivity())}`,
     );
     console.log(`  code intel: ${formatCodeIntelStatus(getCodeIntelStatus())}`);
+  });
+
+program
+  .command("storage")
+  .description("Show read-only storage diagnostics for support")
+  .option("--json", "Output as JSON")
+  .option("--limit <n>", "Max largest files and DB objects to show", "40")
+  .action((opts: { json?: boolean; limit?: string }) => {
+    const limit = Math.max(1, parseInt(opts.limit ?? "40", 10) || 40);
+    const result = storageDiagnostics({
+      largestFilesLimit: limit,
+      dbObjectLimit: limit,
+    });
+
+    if (opts.json) {
+      output(result);
+      return;
+    }
+
+    console.log("Panopticon Storage");
+    console.log("==================");
+    console.log();
+    console.log(`Data dir: ${result.dataDir}`);
+    console.log(`Database: ${result.databasePath}`);
+    console.log(`Generated: ${result.generatedAt}`);
+    console.log();
+
+    console.log("Storage paths:");
+    for (const item of result.paths) {
+      const exists = item.exists ? "" : " (missing)";
+      console.log(
+        `  ${formatStorageLabel(item.label).padEnd(10)} ${formatBytes(item.bytes).padStart(10)}  ${item.path}${exists}`,
+      );
+    }
+
+    if (result.pageStats) {
+      console.log();
+      console.log("SQLite page stats:");
+      console.log(
+        `  page size:      ${result.pageStats.pageSize ?? "unknown"}`,
+      );
+      console.log(
+        `  page count:     ${result.pageStats.pageCount ?? "unknown"}`,
+      );
+      console.log(
+        `  freelist count: ${result.pageStats.freelistCount ?? "unknown"}`,
+      );
+      console.log(
+        `  journal mode:   ${result.pageStats.journalMode ?? "unknown"}`,
+      );
+      console.log(
+        `  database bytes: ${formatBytes(result.pageStats.databaseBytes)}`,
+      );
+      console.log(
+        `  free bytes:     ${formatBytes(result.pageStats.freeBytes)}`,
+      );
+      console.log(
+        `  used bytes:     ${formatBytes(result.pageStats.usedBytes)}`,
+      );
+    }
+
+    console.log();
+    console.log(`Largest files (top ${result.largestFiles.length}):`);
+    for (const file of result.largestFiles) {
+      console.log(`  ${formatBytes(file.bytes).padStart(10)}  ${file.path}`);
+    }
+
+    console.log();
+    console.log(
+      `Database objects by size (top ${result.dbObjectSizes.length}):`,
+    );
+    for (const object of result.dbObjectSizes) {
+      console.log(
+        `  ${formatBytes(object.bytes).padStart(10)}  ${object.name}`,
+      );
+    }
+
+    console.log();
+    console.log("Aggregate payload/text categories:");
+    for (const category of result.payloadCategories) {
+      const detail = category.error ? ` (${category.error})` : "";
+      console.log(
+        `  ${formatBytes(category.bytes).padStart(10)}  ${String(category.rows ?? "?").padStart(10)} rows  ${category.name}${detail}`,
+      );
+    }
+
+    console.log();
+    console.log("Table row counts:");
+    for (const table of result.tableRowCounts) {
+      const detail = table.error ? ` (${table.error})` : "";
+      console.log(
+        `  ${String(table.rows ?? "?").padStart(10)}  ${table.table}${detail}`,
+      );
+    }
+
+    if (result.errors.length > 0) {
+      console.log();
+      console.log("Errors:");
+      for (const err of result.errors) {
+        console.log(`  ${err}`);
+      }
+    }
   });
 
 program

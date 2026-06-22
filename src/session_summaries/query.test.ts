@@ -95,6 +95,7 @@ beforeEach(() => {
   db.prepare("DELETE FROM hook_events").run();
   db.prepare("DELETE FROM tool_calls").run();
   db.prepare("DELETE FROM messages").run();
+  db.prepare("DELETE FROM scanner_events").run();
   db.prepare("DELETE FROM session_repositories").run();
   db.prepare("DELETE FROM session_cwds").run();
   db.prepare("DELETE FROM sessions").run();
@@ -259,6 +260,136 @@ describe("session_summaries", () => {
     expect(rows[0].summary_text).toContain(
       "Read-only: 1 intent, no edits recorded",
     );
+  });
+
+  it("uses captured away summaries in deterministic session summaries", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const awaySummary = `Reviewed flaky tests and approved the session outcome. ${"full recap context ".repeat(120)}tail-marker (disable recaps in /config)`;
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "investigate flaky tests", session_id: SESSION },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+    getDb()
+      .prepare(
+        `INSERT INTO scanner_events
+         (session_id, source, event_index, event_type, timestamp_ms, content, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        SESSION,
+        "claude",
+        0,
+        "away_summary",
+        2500,
+        awaySummary,
+        "away-summary-sync",
+      );
+
+    rebuildLocalReadModels();
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary_text).toContain(
+      "Latest recap: Reviewed flaky tests",
+    );
+    expect(rows[0].summary_text).toContain("tail-marker");
+    expect(rows[0].summary_text).not.toContain("disable recaps");
+
+    const searchRow = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM session_summary_search_index
+         WHERE session_id = ?
+           AND search_text LIKE ?`,
+      )
+      .get(SESSION, "%tail-marker%") as { count: number };
+    expect(searchRow.count).toBeGreaterThan(0);
+  });
+
+  it("uses captured Codex reasoning summaries in deterministic session summaries", () => {
+    const repo = scratchDir;
+    const cwd = scratchDir;
+    const reasoningSummary = `**Reviewing sync storage**\n\nCaptured Codex recap summary evidence. ${"reasoning recap detail ".repeat(80)}tail-marker`;
+
+    upsertSessionRepository(
+      SESSION,
+      repo,
+      900,
+      { name: "gus", email: null },
+      "main",
+    );
+    upsertSessionCwd(SESSION, cwd, 900);
+
+    ingest({
+      event_type: "UserPromptSubmit",
+      ts: 1000,
+      cwd,
+      repository: repo,
+      payload: { prompt: "investigate sync storage", session_id: SESSION },
+    });
+    ingest({
+      event_type: "Stop",
+      ts: 2000,
+      cwd,
+      repository: repo,
+      payload: { session_id: SESSION },
+    });
+    getDb()
+      .prepare(
+        `INSERT INTO scanner_events
+         (session_id, source, event_index, event_type, timestamp_ms, content, metadata, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        SESSION,
+        "codex",
+        0,
+        "reasoning",
+        2500,
+        reasoningSummary,
+        JSON.stringify({ summary_count: 1, has_encrypted_content: true }),
+        "codex-reasoning-summary-sync",
+      );
+
+    rebuildLocalReadModels();
+
+    const rows = listSessionSummaries({ repository: repo });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary_text).toContain(
+      "Latest recap: **Reviewing sync storage**",
+    );
+    expect(rows[0].summary_text).toContain("tail-marker");
+
+    const searchRow = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM session_summary_search_index
+         WHERE session_id = ?
+           AND search_text LIKE ?`,
+      )
+      .get(SESSION, "%tail-marker%") as { count: number };
+    expect(searchRow.count).toBeGreaterThan(0);
   });
 
   it("marks sessions with only non-landed edits as unlanded", () => {

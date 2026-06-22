@@ -27,6 +27,7 @@ function createMockService(): PanopticonService {
     whyCode: vi.fn(async (opts) => ({ opts })),
     recentWorkOnPath: vi.fn(async (opts) => ({ opts })),
     fileOverview: vi.fn(async (opts) => ({ opts })),
+    storageDiagnostics: vi.fn(async () => ({ ok: true })),
     pruneEstimate: vi.fn(async (cutoffMs) => ({ cutoffMs, dryRun: true })),
     pruneExecute: vi.fn(async (cutoffMs, opts) => ({ cutoffMs, opts })),
     refreshPricing: vi.fn(async () => ({ ok: true })),
@@ -113,6 +114,15 @@ describe("service transport", () => {
         related_limit: 4,
       },
     });
+  });
+
+  it("dispatches storage diagnostics through the shared service boundary", async () => {
+    const service = createMockService();
+
+    const result = await dispatchTool(service, "storage");
+
+    expect(service.storageDiagnostics).toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
   });
 
   it("dispatches prune dry-run through pruneEstimate", async () => {

@@ -32,6 +32,7 @@ import {
   SESSION_SUMMARY_SEARCH_PRIORITY,
 } from "./search-index.js";
 import {
+  loadSessionSummaryAwaySummaryRows,
   loadSessionSummaryEditRows,
   loadSessionSummaryIntentRows,
   summarizeFiles,
@@ -674,6 +675,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   priorSummarySource: string | null;
   priorEnrichedMessageCount: number | null;
   intents: string[];
+  awaySummaries: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
   recentMessages: Array<{ role: string; content: string }>;
   deterministicSearchCorpus: string | null;
@@ -730,6 +732,9 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   const files = summarizeFiles(
     loadSessionSummaryEditRows(summary.session_id),
   ).slice(0, 6);
+  const awaySummaries = loadSessionSummaryAwaySummaryRows(
+    summary.session_id,
+  ).map((row) => row.content);
   const recentMessages = loadRecentMessageSnippets(summary.session_id);
   const deterministicSearchCorpus =
     loadDeterministicSearchCorpus(sessionSummaryKey);
@@ -749,6 +754,7 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
     priorSummarySource: summary.prior_summary_source,
     priorEnrichedMessageCount: summary.prior_enriched_message_count,
     intents,
+    awaySummaries,
     files,
     recentMessages,
     deterministicSearchCorpus,
@@ -769,6 +775,7 @@ function buildLlmPrompt(context: {
   priorSummarySource: string | null;
   priorEnrichedMessageCount: number | null;
   intents: string[];
+  awaySummaries: string[];
   files: Array<{ filePath: string; editCount: number; landedCount: number }>;
   recentMessages: Array<{ role: string; content: string }>;
   deterministicSearchCorpus: string | null;
@@ -794,6 +801,9 @@ function buildLlmPrompt(context: {
       : null,
     context.intents.length > 0
       ? `Intent prompts:\n${context.intents.map((prompt) => `- ${prompt}`).join("\n")}`
+      : null,
+    context.awaySummaries.length > 0
+      ? `Agent recap summaries:\n${context.awaySummaries.map((summary) => `- ${summary}`).join("\n")}`
       : null,
     context.recentMessages.length > 0
       ? `Recent messages:\n${context.recentMessages
@@ -835,6 +845,7 @@ function buildLlmMcpPrompt(
     "Use Panopticon MCP tools to load this exact session.",
     "Start with session_summary_detail to get the existing summary, counts, files, and enrichment timestamp as a cheap foundation.",
     "Then inspect raw timeline evidence, especially messages/tool calls after the existing enrichment was generated; inspect earlier timeline pages too when the session is complex, mixed, contains pivots/reverts/deferred work, or the raw evidence changes the story.",
+    "Also query scanner_events for event_type='away_summary' and Codex event_type='reasoning' rows with metadata.summary_count > 0; use those captured recap records as session evidence when present.",
     "Use query, search, or get only if needed to resolve ambiguity or avoid paging through irrelevant timeline data.",
     "Do not simply rewrite the existing summary.",
     "Write the per-session summary.",

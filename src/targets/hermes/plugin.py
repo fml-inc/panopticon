@@ -163,31 +163,32 @@ def _url(path: str) -> str:
     return f"http://{_host()}:{_port()}{path}"
 
 
-def _jsonable(value: Any, *, depth: int = 0) -> Any:
-    if depth > 6:
+def _jsonable(value: Any, *, depth: int = 0, seen: set[int] | None = None) -> Any:
+    if depth > 64:
         return "<max-depth>"
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return value if len(value) <= 20000 else value[:20000] + "...<truncated>"
+        return value
     if isinstance(value, bytes):
-        text = value.decode("utf-8", errors="replace")
-        return text if len(text) <= 20000 else text[:20000] + "...<truncated>"
-    if isinstance(value, (list, tuple, set)):
-        items = list(value)
-        converted = [_jsonable(item, depth=depth + 1) for item in items[:100]]
-        if len(items) > 100:
-            converted.append(f"...<{len(items) - 100} more>")
-        return converted
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for index, (key, item) in enumerate(value.items()):
-            if index >= 100:
-                out["..."] = f"<{len(value) - 100} more>"
-                break
-            out[str(key)] = _jsonable(item, depth=depth + 1)
-        return out
-    return repr(value)
+        return value.decode("utf-8", errors="replace")
+    if seen is None:
+        seen = set()
+    value_id = id(value)
+    if value_id in seen:
+        return "<cycle>"
+    seen.add(value_id)
+    try:
+        if isinstance(value, (list, tuple, set)):
+            return [_jsonable(item, depth=depth + 1, seen=seen) for item in value]
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for key, item in value.items():
+                out[str(key)] = _jsonable(item, depth=depth + 1, seen=seen)
+            return out
+        return repr(value)
+    finally:
+        seen.remove(value_id)
 
 
 def _session_id(kwargs: dict[str, Any]) -> str:

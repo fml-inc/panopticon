@@ -23,6 +23,13 @@ export interface SessionSummaryEditRow {
   new_string_snippet: string | null;
 }
 
+export interface SessionSummaryAwaySummaryRow {
+  id: number;
+  session_id: string;
+  timestamp_ms: number | null;
+  content: string;
+}
+
 export function loadSessionSummaryIntentRows(
   sessionId: string,
 ): SessionSummaryIntentRow[] {
@@ -52,6 +59,36 @@ export function loadSessionSummaryEditRows(
        ORDER BY COALESCE(timestamp_ms, 0) ASC, id ASC`,
     )
     .all(sessionId) as SessionSummaryEditRow[];
+}
+
+export function loadSessionSummaryAwaySummaryRows(
+  sessionId: string,
+): SessionSummaryAwaySummaryRow[] {
+  const db = getDb();
+  const tableExists = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_events'",
+    )
+    .get();
+  if (!tableExists) return [];
+
+  return db
+    .prepare(
+      `SELECT id, session_id, timestamp_ms, content
+       FROM scanner_events
+       WHERE session_id = ?
+         AND (
+           event_type = 'away_summary'
+           OR (
+             source = 'codex'
+             AND event_type = 'reasoning'
+             AND COALESCE(json_extract(metadata, '$.summary_count'), 0) > 0
+           )
+         )
+         AND TRIM(COALESCE(content, '')) <> ''
+       ORDER BY COALESCE(timestamp_ms, 0) DESC, id DESC`,
+    )
+    .all(sessionId) as SessionSummaryAwaySummaryRow[];
 }
 
 export function summarizeFiles(

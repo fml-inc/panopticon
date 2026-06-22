@@ -600,7 +600,7 @@ function parseHermesSession(
           timestampMs: tsMs,
           eventIndex: events.length,
           toolName: toolCall.toolName,
-          toolInput: toolCall.inputJson?.slice(0, 10_000),
+          toolInput: toolCall.inputJson,
           metadata: { tool_call_id: toolCall.toolUseId },
         });
       }
@@ -674,7 +674,7 @@ function parseHermesSession(
         timestampMs: tsMs,
         eventIndex: events.length,
         toolName: message.tool_name ?? undefined,
-        toolOutput: content.slice(0, 10_000),
+        toolOutput: content,
         metadata: { tool_call_id: toolCallId },
       });
     }

@@ -23,6 +23,10 @@ export {
 } from "./db/query.js";
 // ── Database ──────────────────────────────────────────────────────────────────
 export { closeDb, getDb } from "./db/schema.js";
+export {
+  type StorageDiagnostics,
+  storageDiagnostics,
+} from "./db/storage-diagnostics.js";
 export type { HookEventRow, OtelLogRow, OtelMetricRow } from "./db/store.js";
 export { syncAwarePrune } from "./db/sync-prune.js";
 // ── Doctor ────────────────────────────────────────────────────────────────────

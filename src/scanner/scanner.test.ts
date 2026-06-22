@@ -870,6 +870,7 @@ describe("claude event capture", () => {
   });
 
   it("captures additional Claude system subtypes", () => {
+    const longAwaySummary = `Reviewed the claims stack and paused there. ${"full recap evidence ".repeat(180)}tail-marker`;
     const lines = [
       JSON.stringify({
         type: "system",
@@ -905,7 +906,7 @@ describe("claude event capture", () => {
         sessionId: "sys-1",
         timestamp: "2026-01-01T00:00:03Z",
         subtype: "away_summary",
-        content: "Reviewed the claims stack and paused there.",
+        content: longAwaySummary,
         parentUuid: "parent-c",
       }),
     ];
@@ -937,6 +938,8 @@ describe("claude event capture", () => {
       (e) => e.eventType === "away_summary",
     )!;
     expect(awaySummary.content).toContain("Reviewed the claims stack");
+    expect(awaySummary.content).toBe(longAwaySummary);
+    expect(awaySummary.content).toContain("tail-marker");
   });
 
   it("captures Claude progress query and task updates", () => {
@@ -1010,6 +1013,8 @@ describe("codex event capture", () => {
   });
 
   it("captures function_call tool events", () => {
+    const longCommand = `node ${"very-long-arg ".repeat(120)}tail-marker`;
+    const longOutput = `file1.ts\n${"output detail ".repeat(120)}tail-marker`;
     const lines = [
       JSON.stringify({
         type: "session_meta",
@@ -1022,7 +1027,7 @@ describe("codex event capture", () => {
         payload: {
           type: "function_call",
           name: "exec_command",
-          arguments: '{"cmd":"ls -la"}',
+          arguments: JSON.stringify({ cmd: longCommand }),
           call_id: "call-1",
         },
       }),
@@ -1031,7 +1036,7 @@ describe("codex event capture", () => {
         timestamp: "2026-01-01T00:00:02Z",
         payload: {
           type: "function_call_output",
-          output: "file1.ts\nfile2.ts",
+          output: longOutput,
           call_id: "call-1",
         },
       }),
@@ -1043,11 +1048,11 @@ describe("codex event capture", () => {
 
     const call = result!.events.find((e) => e.eventType === "tool_call")!;
     expect(call.toolName).toBe("exec_command");
-    expect(call.toolInput).toContain("ls -la");
+    expect(call.toolInput).toContain(longCommand);
 
     const out = result!.events.find((e) => e.eventType === "tool_result")!;
     expect(out.toolName).toBe("exec_command");
-    expect(out.toolOutput).toContain("file1.ts");
+    expect(out.toolOutput).toBe(longOutput);
   });
 
   it("captures custom_tool_call edits into assistant tool calls", () => {

@@ -144,6 +144,8 @@ export const httpPanopticonService: PanopticonService = {
   whyCode: (opts) => callTool("why_code", toParams(opts)),
   recentWorkOnPath: (opts) => callTool("recent_work_on_path", toParams(opts)),
   fileOverview: (opts) => callTool("file_overview", toParams(opts)),
+  storageDiagnostics: () =>
+    callTool("storage") as ReturnType<PanopticonService["storageDiagnostics"]>,
   pruneEstimate: (cutoffMs) => callExec("prune", { cutoffMs, dryRun: true }),
   pruneExecute: (cutoffMs, opts) => callExec("prune", { cutoffMs, ...opts }),
   refreshPricing: () => callExec("refresh-pricing"),
@@ -190,6 +192,7 @@ export const sessionSummaryDetail = httpPanopticonService.sessionSummaryDetail;
 export const whyCode = httpPanopticonService.whyCode;
 export const recentWorkOnPath = httpPanopticonService.recentWorkOnPath;
 export const fileOverview = httpPanopticonService.fileOverview;
+export const storageDiagnostics = httpPanopticonService.storageDiagnostics;
 export const pruneEstimate = httpPanopticonService.pruneEstimate;
 export const pruneExecute = httpPanopticonService.pruneExecute;
 export const refreshPricing = httpPanopticonService.refreshPricing;

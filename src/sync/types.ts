@@ -27,6 +27,8 @@ export interface SyncOptions {
   loopName?: string;
   /** Whether this loop should sync/confirm session rows. Default: true. */
   syncSessions?: boolean;
+  /** Whether this loop should multipart-upload archived raw session files. Default: false. */
+  syncSessionFiles?: boolean;
   /** Session-linked tables handled by this loop. Default: all session-linked tables. */
   sessionTables?: string[];
   /** Non-session tables handled by this loop. Default: all non-session tables. */

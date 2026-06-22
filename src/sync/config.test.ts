@@ -139,4 +139,13 @@ describe("sync config", () => {
     expect(cfg.filter?.includeRepos).toEqual(["org/*"]);
     expect(cfg.filter?.excludeRepos).toEqual(["org/private"]);
   });
+
+  it("saves raw session file sync opt-in", () => {
+    saveSyncConfig({
+      targets: [{ name: "t", url: "http://t" }],
+      sessionFiles: true,
+    });
+    const cfg = loadSyncConfig();
+    expect(cfg.sessionFiles).toBe(true);
+  });
 });
