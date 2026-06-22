@@ -212,8 +212,15 @@ export function createFmlClient(token: string) {
             error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
           };
         }
-        if (!res.ok && !data.error) {
-          return { ok: false, error: `HTTP ${res.status}` };
+        // A non-2xx response is always a failure, even if the parsed body
+        // omits `ok: false` (or sets a truthy `ok`). Surface the backend's
+        // error message when present, otherwise the HTTP status.
+        if (!res.ok) {
+          return normalizeToolResult({
+            ok: false,
+            error: data.error ?? `HTTP ${res.status}`,
+            code: data.code,
+          });
         }
         return normalizeToolResult(data);
       } catch (err) {

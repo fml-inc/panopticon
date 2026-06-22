@@ -44,6 +44,21 @@ function ensureDir(envName?: string): void {
   }
 }
 
+/**
+ * Write a secret to disk locked to 0600. The `mode` option on writeFileSync
+ * only applies when the file is *created* — an existing file (older version,
+ * restored backup, different umask) keeps its prior, possibly looser,
+ * permissions. The explicit chmod re-restricts it on every write.
+ */
+function writeSecretFile(filePath: string, data: string): void {
+  fs.writeFileSync(filePath, data, { mode: 0o600 });
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // Best effort — POSIX modes are a no-op on Windows.
+  }
+}
+
 export function readTokens(envName?: string): StoredAuth | null {
   try {
     const data = fs.readFileSync(storePathFor(envName), "utf-8");
@@ -55,9 +70,7 @@ export function readTokens(envName?: string): StoredAuth | null {
 
 export function writeTokens(auth: StoredAuth, envName?: string): void {
   ensureDir(envName);
-  fs.writeFileSync(storePathFor(envName), JSON.stringify(auth, null, 2), {
-    mode: 0o600,
-  });
+  writeSecretFile(storePathFor(envName), JSON.stringify(auth, null, 2));
 }
 
 export function getSelectedOrg(envName?: string): string | null {
@@ -149,9 +162,7 @@ async function refreshServiceToken(
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
-      fs.writeFileSync(SERVICE_ACCESS_TOKEN_PATH, data.accessToken, {
-        mode: 0o600,
-      });
+      writeSecretFile(SERVICE_ACCESS_TOKEN_PATH, data.accessToken);
     } catch {
       // Non-fatal — in-memory cache still works for the plugin itself
     }
@@ -162,6 +173,28 @@ async function refreshServiceToken(
     console.error(`[fml] Service token refresh error: ${err}`);
     return null;
   }
+}
+
+/**
+ * Remove stored credentials for an env: the on-disk auth store, the cached
+ * service access token written for panopticon's tokenCommand, and the
+ * in-memory caches/refresh promises for that env. Used by `fml logout`.
+ */
+export function clearStoredCredentials(envName?: string): void {
+  try {
+    fs.unlinkSync(storePathFor(envName));
+  } catch {
+    // Already absent.
+  }
+  try {
+    fs.unlinkSync(SERVICE_ACCESS_TOKEN_PATH);
+  } catch {
+    // Already absent.
+  }
+  const key = cacheKey(envName);
+  serviceTokenCaches.delete(key);
+  serviceRefreshPromises.delete(key);
+  oauthRefreshPromises.delete(key);
 }
 
 export async function storeServiceRefreshToken(

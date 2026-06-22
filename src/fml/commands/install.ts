@@ -61,6 +61,88 @@ function writeJsonFile(filePath: string, data: Record<string, unknown>): void {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+/**
+ * Best-effort migration for installs upgrading from the old `panopticon`
+ * plugin surface. The fml plugin now owns the single `.claude-plugin/plugin.json`
+ * at the package root (named "fml"), and both the legacy `panopticon` and the
+ * new `fml` marketplace symlinks resolve to that same root. Leaving the old
+ * `panopticon@local-plugins` registration in place points Claude Code at a
+ * manifest whose name no longer matches, which surfaces as a load warning or a
+ * stale entry. Deregister it. The deprecated `panopticon` slash command still
+ * ships inside the fml plugin, so this does not remove that compatibility path.
+ */
+function migrateLegacyPanopticonPlugin(claudeBin: string | null): void {
+  let removedSomething = false;
+
+  // 1. Ask Claude Code to uninstall the user-scoped registration (best effort).
+  if (claudeBin) {
+    try {
+      execBinSync(
+        claudeBin,
+        ["plugin", "uninstall", "panopticon@local-plugins", "--scope", "user"],
+        { timeout: 10_000 },
+      );
+      removedSomething = true;
+    } catch {
+      // Not installed at this scope — nothing to do.
+    }
+  }
+
+  // 2. Drop the entry from installed_plugins.json directly (covers scopes the
+  //    CLI won't touch from outside their project dir).
+  const installedPluginsPath = path.join(
+    CLAUDE_DIR,
+    "plugins",
+    "installed_plugins.json",
+  );
+  const installed = readJsonFile(installedPluginsPath) as {
+    plugins?: Record<string, unknown[]>;
+  } | null;
+  if (installed?.plugins?.["panopticon@local-plugins"]) {
+    delete installed.plugins["panopticon@local-plugins"];
+    writeJsonFile(installedPluginsPath, installed as Record<string, unknown>);
+    removedSomething = true;
+  }
+
+  // 3. Remove the legacy enabledPlugins flag from user settings.
+  const settings = readJsonFile(CLAUDE_SETTINGS_PATH) as Record<
+    string,
+    Record<string, unknown>
+  > | null;
+  if (settings?.enabledPlugins?.["panopticon@local-plugins"] != null) {
+    delete settings.enabledPlugins["panopticon@local-plugins"];
+    writeJsonFile(CLAUDE_SETTINGS_PATH, settings);
+    removedSomething = true;
+  }
+
+  // 4. Remove the stale marketplace entry + symlink.
+  const manifestPath = path.join(
+    MARKETPLACE_DIR,
+    ".claude-plugin",
+    "marketplace.json",
+  );
+  const manifest = readJsonFile(manifestPath);
+  if (manifest && Array.isArray(manifest.plugins)) {
+    const plugins = manifest.plugins as Array<Record<string, unknown>>;
+    const kept = plugins.filter((p) => p.name !== "panopticon");
+    if (kept.length !== plugins.length) {
+      manifest.plugins = kept;
+      writeJsonFile(manifestPath, manifest);
+      removedSomething = true;
+    }
+  }
+  try {
+    fs.rmSync(path.join(MARKETPLACE_DIR, "panopticon"), {
+      recursive: true,
+      force: true,
+    });
+  } catch {}
+
+  if (removedSomething) {
+    console.log("      Migrated legacy panopticon plugin registration");
+  }
+}
+
 export async function handleInstall(
   opts: { force?: boolean } = {},
 ): Promise<void> {
@@ -152,7 +234,10 @@ export async function handleInstall(
     fs.unlinkSync(marketplaceLink);
   } catch {}
   fs.rmSync(marketplaceLink, { recursive: true, force: true });
-  fs.symlinkSync(pluginRoot, marketplaceLink, "dir");
+  // Junctions on Windows don't require admin/Developer Mode the way directory
+  // symlinks do; everywhere else use a plain dir symlink.
+  const symlinkType = process.platform === "win32" ? "junction" : "dir";
+  fs.symlinkSync(pluginRoot, marketplaceLink, symlinkType);
   console.log(`      Marketplace: ${MARKETPLACE_DIR}`);
   console.log(`      Plugin: ${pluginRoot}`);
 
@@ -195,6 +280,13 @@ export async function handleInstall(
         "      Run 'claude plugin install fml@local-plugins' manually",
       );
     }
+  }
+
+  // Migrate away from the old panopticon plugin registration (best-effort).
+  try {
+    migrateLegacyPanopticonPlugin(claudeBin);
+  } catch {
+    // Never let migration cleanup fail the install.
   }
   console.log();
 

@@ -1,8 +1,16 @@
-import fs from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const clearStoredCredentials = vi.fn();
+
+vi.mock("../../auth/token-store.js", () => ({
+  clearStoredCredentials: () => clearStoredCredentials(),
+}));
+
 vi.mock("../../config.js", () => ({
-  authStorePath: () => "/tmp/fml-test-logout-auth.json",
+  getActiveEnv: () => ({
+    name: "fml",
+    convexUrl: "https://example.convex.cloud",
+  }),
 }));
 
 import { handleLogout } from "../../commands/logout.js";
@@ -12,31 +20,19 @@ describe("logout command", () => {
     vi.clearAllMocks();
   });
 
-  it("deletes the auth file", () => {
-    const unlinkSpy = vi.spyOn(fs, "unlinkSync").mockImplementation(() => {});
+  it("clears stored credentials", () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     handleLogout();
-    expect(unlinkSpy).toHaveBeenCalledWith("/tmp/fml-test-logout-auth.json");
+    expect(clearStoredCredentials).toHaveBeenCalledTimes(1);
     consoleSpy.mockRestore();
-    unlinkSpy.mockRestore();
   });
 
-  it("prints confirmation message", () => {
-    vi.spyOn(fs, "unlinkSync").mockImplementation(() => {});
+  it("prints confirmation message naming the active env", () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     handleLogout();
     expect(consoleSpy).toHaveBeenCalledWith(
-      "Logged out. Stored credentials cleared.",
+      'Logged out of "fml". Stored credentials cleared.',
     );
-    consoleSpy.mockRestore();
-  });
-
-  it("does not throw when auth file does not exist", () => {
-    vi.spyOn(fs, "unlinkSync").mockImplementation(() => {
-      throw new Error("ENOENT");
-    });
-    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    expect(() => handleLogout()).not.toThrow();
     consoleSpy.mockRestore();
   });
 });

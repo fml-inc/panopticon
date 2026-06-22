@@ -1,11 +1,8 @@
-import fs from "node:fs";
-import { authStorePath } from "../config.js";
+import { clearStoredCredentials } from "../auth/token-store.js";
+import { getActiveEnv } from "../config.js";
 
 export function handleLogout(): void {
-  try {
-    fs.unlinkSync(authStorePath());
-  } catch {
-    // File doesn't exist, that's fine
-  }
-  console.log("Logged out. Stored credentials cleared.");
+  const { name } = getActiveEnv();
+  clearStoredCredentials();
+  console.log(`Logged out of "${name}". Stored credentials cleared.`);
 }

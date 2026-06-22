@@ -227,8 +227,8 @@ program
   .description("Show or switch FML backend environment")
   .argument("[target]", "Environment name or backend URL")
   .action((target?: string) => {
-    if (target) handleEnvSwitch(target);
-    else handleEnvShow();
+    if (target) return handleEnvSwitch(target);
+    handleEnvShow();
   });
 
 // ── Panopticon server lifecycle ─────────────────────────────────────────────
