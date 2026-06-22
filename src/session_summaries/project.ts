@@ -17,6 +17,7 @@ import {
   SESSION_SUMMARY_SEARCH_PRIORITY,
 } from "./search-index.js";
 import {
+  loadSessionSummaryAwaySummaryRows,
   loadSessionSummaryEditRows,
   loadSessionSummaryIntentRows,
   type SessionSummaryEditRow,
@@ -299,6 +300,9 @@ export function rebuildSessionSummaryProjections(opts?: {
       if (intents.length === 0) continue;
 
       const edits = loadSessionSummaryEditRows(session.session_id);
+      const awaySummaries = loadSessionSummaryAwaySummaryRows(
+        session.session_id,
+      );
 
       const sessionMeta = db
         .prepare(
@@ -386,6 +390,10 @@ export function rebuildSessionSummaryProjections(opts?: {
         lastIntentTs,
         ...edits.map((edit) => edit.timestamp_ms),
       ]);
+      const sourceLastSeenMs = maxTs([
+        lastActivityMs,
+        ...awaySummaries.map((summary) => summary.timestamp_ms),
+      ]);
       const status = deriveSessionSummaryStatus({
         editCount: edits.length,
         landedEditCount,
@@ -408,6 +416,7 @@ export function rebuildSessionSummaryProjections(opts?: {
         messageCount: sessionMeta?.message_count ?? 0,
         lastActivityMs,
         intents: intents.map((intent) => intent.prompt_text),
+        awaySummaries: awaySummaries.map((summary) => summary.content),
         files,
         tools,
       });
@@ -453,7 +462,7 @@ export function rebuildSessionSummaryProjections(opts?: {
         summary_text: docs.summaryText,
         projection_hash: docs.projectionHash,
         projected_at_ms: nowMs,
-        source_last_seen_at_ms: lastActivityMs,
+        source_last_seen_at_ms: sourceLastSeenMs,
         reason_json: JSON.stringify({ strategy: "session_id" }),
       };
       const projectionValues =
@@ -533,6 +542,7 @@ export function rebuildSessionSummaryProjections(opts?: {
           messageCount: sessionMeta?.message_count ?? 0,
           lastActivityMs,
           intents: intents.map((intent) => intent.prompt_text),
+          awaySummaries: awaySummaries.map((summary) => summary.content),
           files,
           tools,
         },

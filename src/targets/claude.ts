@@ -981,7 +981,8 @@ const claude: TargetAdapter = {
               sessionId: sid,
               eventType: "away_summary",
               timestampMs: tsMs,
-              content: excerpt(obj.content, 2_000),
+              content:
+                typeof obj.content === "string" ? obj.content : undefined,
               metadata: {
                 parentUuid,
               },
