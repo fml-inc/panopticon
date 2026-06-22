@@ -870,6 +870,7 @@ describe("claude event capture", () => {
   });
 
   it("captures additional Claude system subtypes", () => {
+    const longAwaySummary = `Reviewed the claims stack and paused there. ${"full recap evidence ".repeat(180)}tail-marker`;
     const lines = [
       JSON.stringify({
         type: "system",
@@ -905,7 +906,7 @@ describe("claude event capture", () => {
         sessionId: "sys-1",
         timestamp: "2026-01-01T00:00:03Z",
         subtype: "away_summary",
-        content: "Reviewed the claims stack and paused there.",
+        content: longAwaySummary,
         parentUuid: "parent-c",
       }),
     ];
@@ -937,6 +938,8 @@ describe("claude event capture", () => {
       (e) => e.eventType === "away_summary",
     )!;
     expect(awaySummary.content).toContain("Reviewed the claims stack");
+    expect(awaySummary.content).toBe(longAwaySummary);
+    expect(awaySummary.content).toContain("tail-marker");
   });
 
   it("captures Claude progress query and task updates", () => {
