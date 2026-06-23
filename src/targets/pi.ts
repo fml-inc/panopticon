@@ -430,7 +430,7 @@ const pi: TargetAdapter = {
               timestampMs: tsMs,
               eventIndex: lineIndex,
               toolName,
-              toolInput: inputJson?.slice(0, 10_000),
+              toolInput: inputJson,
               metadata: { tool_call_id: toolUseId },
             });
           }
@@ -506,7 +506,7 @@ const pi: TargetAdapter = {
             eventIndex: lineIndex,
             toolName:
               typeof msg.toolName === "string" ? msg.toolName : undefined,
-            toolOutput: text.slice(0, 500),
+            toolOutput: text,
             metadata: {
               tool_call_id: toolCallId,
               is_error: msg.isError === true,

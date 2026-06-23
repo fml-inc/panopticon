@@ -818,7 +818,7 @@ const codex: TargetAdapter = {
             sessionId: sid,
             eventType: "compacted",
             timestampMs: tsMs,
-            content: message?.slice(0, 500),
+            content: message,
             metadata: {
               replacement_history_length: replacementHistory.length,
             },
@@ -936,7 +936,10 @@ const codex: TargetAdapter = {
               sessionId: sid,
               eventType: "agent_message",
               timestampMs: tsMs,
-              content: (payload.message as string)?.slice(0, 500),
+              content:
+                typeof payload.message === "string"
+                  ? payload.message
+                  : undefined,
               metadata: { phase: payload.phase },
             });
           }
@@ -962,7 +965,7 @@ const codex: TargetAdapter = {
               timestampMs: tsMs,
               content:
                 typeof payload.last_agent_message === "string"
-                  ? payload.last_agent_message.slice(0, 500)
+                  ? payload.last_agent_message
                   : undefined,
               metadata: {
                 turn_id: payload.turn_id,
@@ -978,9 +981,7 @@ const codex: TargetAdapter = {
               eventType: "turn_aborted",
               timestampMs: tsMs,
               content:
-                typeof payload.reason === "string"
-                  ? payload.reason.slice(0, 500)
-                  : undefined,
+                typeof payload.reason === "string" ? payload.reason : undefined,
               metadata: {
                 turn_id: payload.turn_id,
                 reason: payload.reason,
@@ -1013,8 +1014,8 @@ const codex: TargetAdapter = {
               eventType: "web_search_end",
               timestampMs: tsMs,
               toolName: "web_search",
-              toolInput: stringifyValue(action)?.slice(0, 1000),
-              content: query?.slice(0, 500),
+              toolInput: stringifyValue(action),
+              content: query,
               metadata: {
                 call_id: payload.call_id,
                 action,
@@ -1049,9 +1050,7 @@ const codex: TargetAdapter = {
               timestampMs: tsMs,
               toolName,
               toolOutput:
-                typeof payload.stdout === "string"
-                  ? payload.stdout.slice(0, 1000)
-                  : undefined,
+                typeof payload.stdout === "string" ? payload.stdout : undefined,
               metadata: {
                 call_id: payload.call_id,
                 turn_id: payload.turn_id,
@@ -1092,8 +1091,8 @@ const codex: TargetAdapter = {
               eventType: "exec_command_end",
               timestampMs: tsMs,
               toolName,
-              toolInput: stringifyValue(payload.command)?.slice(0, 1000),
-              toolOutput: toolOutput?.slice(0, 1000),
+              toolInput: stringifyValue(payload.command),
+              toolOutput,
               metadata: {
                 call_id: payload.call_id,
                 process_id: payload.process_id,
@@ -1130,8 +1129,8 @@ const codex: TargetAdapter = {
               eventType: "mcp_tool_call_end",
               timestampMs: tsMs,
               toolName,
-              toolInput: stringifyValue(invocation?.arguments)?.slice(0, 1000),
-              toolOutput: toolOutput?.slice(0, 1000),
+              toolInput: stringifyValue(invocation?.arguments),
+              toolOutput,
               metadata: {
                 call_id: payload.call_id,
                 server: invocation?.server,
@@ -1175,7 +1174,7 @@ const codex: TargetAdapter = {
                 sessionId: sid,
                 eventType: "reasoning",
                 timestampMs: tsMs,
-                content: reasoning.content?.slice(0, 500),
+                content: reasoning.content,
                 metadata: {
                   has_encrypted_content: reasoning.hasEncryptedContent,
                   summary_count: reasoning.summaryCount,
@@ -1212,7 +1211,7 @@ const codex: TargetAdapter = {
               eventType: "tool_call",
               timestampMs: tsMs,
               toolName,
-              toolInput: inputJson?.slice(0, 1000),
+              toolInput: inputJson,
               metadata: {
                 call_id: callId,
                 namespace: p?.namespace,
@@ -1251,7 +1250,7 @@ const codex: TargetAdapter = {
               eventType: "tool_call",
               timestampMs: tsMs,
               toolName: "web_search",
-              toolInput: inputJson?.slice(0, 1000),
+              toolInput: inputJson,
               metadata: {
                 call_id: pendingWebSearch?.callId,
                 query,
@@ -1280,7 +1279,7 @@ const codex: TargetAdapter = {
               eventType: "tool_result",
               timestampMs: tsMs,
               toolName: toolNamesByCallId.get(callId),
-              toolOutput: output?.slice(0, 1000),
+              toolOutput: output,
               metadata: {
                 call_id: callId,
                 name: p?.name,

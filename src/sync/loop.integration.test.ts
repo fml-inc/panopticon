@@ -815,6 +815,35 @@ describe("createSyncLoop integration", () => {
       expect(getTss("s1", "fml")?.wm_messages).toBe(secondMessage);
     });
 
+    it("skips a single oversized row and advances past it", async () => {
+      insertSession("s1", 1);
+      const firstMessage = insertMessage("s1", 0, "small-before");
+      const oversizedMessage = insertMessage("s1", 1, "x".repeat(2_000));
+      const lastMessage = insertMessage("s1", 2, "small-after");
+      insertTargetSessionSync("s1", "fml", { syncSeq: 1 });
+
+      const handle = createSyncLoop({
+        targets: [makeTarget()],
+        syncSessions: false,
+        sessionTables: ["messages"],
+        nonSessionTables: [],
+        batchSize: 10,
+        postRowMaxBytes: 1_200,
+      });
+      await handle.runOnce();
+
+      const messageCalls = mockedPostSync.mock.calls.filter(
+        ([, body]) => body.table === "messages",
+      );
+      const postedMessageIds = messageCalls.flatMap(([, body]) =>
+        body.rows.map((r) => (r as { id: number }).id),
+      );
+      expect(postedMessageIds).toEqual([firstMessage, lastMessage]);
+      expect(postedMessageIds).not.toContain(oversizedMessage);
+      expect(getTss("s1", "fml")?.wm_messages).toBe(lastMessage);
+      expect(getTss("s1", "fml")?.synced_seq).toBe(1);
+    });
+
     it("revives stuck per-table watermarks on the next runOnce after the fix", async () => {
       // Simulate the pmandia state for a single session: tss is confirmed
       // with a stale sync_seq, per-table watermarks lag, and there's a huge

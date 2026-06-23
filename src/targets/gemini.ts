@@ -457,8 +457,8 @@ const gemini: TargetAdapter = {
                 eventType: "tool_call",
                 timestampMs,
                 toolName,
-                toolInput: inputJson?.slice(0, 1000),
-                toolOutput: output?.slice(0, 1000),
+                toolInput: inputJson,
+                toolOutput: output,
               });
             }
           }
@@ -477,7 +477,7 @@ const gemini: TargetAdapter = {
                 sessionId,
                 eventType: "reasoning",
                 timestampMs,
-                content: text?.slice(0, 500),
+                content: text,
               });
             }
           }
@@ -512,10 +512,7 @@ const gemini: TargetAdapter = {
             sessionId,
             eventType: "info",
             timestampMs,
-            content:
-              typeof msg.content === "string"
-                ? msg.content.slice(0, 500)
-                : undefined,
+            content: typeof msg.content === "string" ? msg.content : undefined,
           });
         }
       }

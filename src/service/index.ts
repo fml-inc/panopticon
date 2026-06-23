@@ -14,6 +14,7 @@ export {
 export type {
   PanopticonService,
   ScanResult,
+  StorageDiagnostics,
   SyncPendingResult,
   SyncTargetAddInput,
 } from "./types.js";

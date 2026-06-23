@@ -31,6 +31,7 @@ import {
   needsResync,
   staleDataComponents,
 } from "../db/schema.js";
+import { storageDiagnostics } from "../db/storage-diagnostics.js";
 import { rebuildIntentClaimsFromHooks } from "../intent/asserters/from_hooks.js";
 import { rebuildIntentClaimsFromScanner } from "../intent/asserters/from_scanner.js";
 import { reconcileLandedClaimsFromDisk } from "../intent/asserters/landed_from_disk.js";
@@ -212,6 +213,9 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async fileOverview(opts) {
       return fileOverview(opts);
+    },
+    async storageDiagnostics() {
+      return storageDiagnostics();
     },
     async pruneEstimate(cutoffMs) {
       return pruneEstimate(cutoffMs);

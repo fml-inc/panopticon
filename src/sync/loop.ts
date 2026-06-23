@@ -25,12 +25,14 @@ import {
   DEFAULT_SESSION_TABLES,
   TABLE_SYNC_REGISTRY,
 } from "./registry.js";
+import { syncArchivedSessionFiles } from "./session-files.js";
 import type { SyncHandle, SyncOptions, SyncTarget } from "./types.js";
 import { readWatermark, watermarkKey, writeWatermark } from "./watermark.js";
 
 const DEFAULT_BATCH_SIZE = 2000;
 const DEFAULT_POST_BATCH_SIZE = 100;
 const DEFAULT_POST_BATCH_MAX_BYTES = 900 * 1024;
+const DEFAULT_POST_ROW_MAX_BYTES = 9 * 1024 * 1024;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_CATCHUP_MS = 100;
 const DEFAULT_MAX_SESSIONS_PER_TICK = 10;
@@ -67,6 +69,41 @@ type PendingDerivedSessionRow = {
 
 function syncPostBodyBytes(table: string, rows: unknown[]): number {
   return Buffer.byteLength(JSON.stringify({ table, rows }));
+}
+
+function describeSyncRow(row: unknown): string {
+  if (!row || typeof row !== "object") return "unknown";
+  const record = row as Record<string, unknown>;
+  for (const key of ["id", "hookId", "sessionId", "syncId"]) {
+    const value = record[key];
+    if (typeof value === "string" || typeof value === "number") {
+      return `${key}=${value}`;
+    }
+  }
+  return "unknown";
+}
+
+function selectRowsForPost(
+  table: string,
+  rows: unknown[],
+  maxRowBytes: number,
+): {
+  postable: unknown[];
+  skipped: Array<{ row: unknown; bodyBytes: number }>;
+} {
+  const postable: unknown[] = [];
+  const skipped: Array<{ row: unknown; bodyBytes: number }> = [];
+
+  for (const row of rows) {
+    const bodyBytes = syncPostBodyBytes(table, [row]);
+    if (bodyBytes > maxRowBytes) {
+      skipped.push({ row, bodyBytes });
+    } else {
+      postable.push(row);
+    }
+  }
+
+  return { postable, skipped };
 }
 
 function splitRowsForPost(
@@ -136,6 +173,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
   const postBatchSize = opts.postBatchSize ?? DEFAULT_POST_BATCH_SIZE;
   const postBatchMaxBytes = DEFAULT_POST_BATCH_MAX_BYTES;
+  const postRowMaxBytes = opts.postRowMaxBytes ?? DEFAULT_POST_ROW_MAX_BYTES;
   const idleMs = opts.idleIntervalMs ?? DEFAULT_IDLE_MS;
   const catchUpMs = opts.catchUpIntervalMs ?? DEFAULT_CATCHUP_MS;
   const maxSessionsPerTick =
@@ -143,6 +181,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   const sessionRowBudget = Math.max(1, opts.sessionRowBudget ?? batchSize);
   const sessionPendingMode = opts.sessionPendingMode ?? "sync-seq";
   const syncSessionsEnabled = opts.syncSessions ?? true;
+  const syncSessionFilesEnabled = opts.syncSessionFiles ?? false;
   const sessionTables = (
     opts.sessionTables ?? [...DEFAULT_SESSION_TABLES]
   ).filter(isSessionTableName);
@@ -185,18 +224,36 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
   async function postRowsInBatches(
     url: string,
+    targetName: string,
     table: string,
     rows: unknown[],
     headers: Record<string, string>,
-  ): Promise<void> {
-    for (const batch of splitRowsForPost(
+  ): Promise<{ posted: number; skipped: number }> {
+    const { postable, skipped } = selectRowsForPost(
       table,
       rows,
+      postRowMaxBytes,
+    );
+    for (const { row, bodyBytes } of skipped) {
+      log.sync.warn(
+        formatLog(
+          `skipping ${table} row for ${targetName}: ${describeSyncRow(row)} serializes to ${bodyBytes} bytes, above ${postRowMaxBytes} byte single-row sync limit`,
+        ),
+      );
+    }
+
+    let posted = 0;
+    for (const batch of splitRowsForPost(
+      table,
+      postable,
       postBatchSize,
       postBatchMaxBytes,
     )) {
       await postSync(url, { table, rows: batch }, headers);
+      posted += batch.length;
     }
+
+    return { posted, skipped: skipped.length };
   }
 
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -285,10 +342,22 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
     const rows = readSessionsByIds(sessionIds);
     if (rows.length > 0) {
       log.sync.debug(formatLog(`sessions: ${rows.length} sessions to sync`));
+      const { postable, skipped } = selectRowsForPost(
+        "sessions",
+        rows,
+        postRowMaxBytes,
+      );
+      for (const { row, bodyBytes } of skipped) {
+        log.sync.warn(
+          formatLog(
+            `skipping sessions row for ${target.name}: ${describeSyncRow(row)} serializes to ${bodyBytes} bytes, above ${postRowMaxBytes} byte single-row sync limit`,
+          ),
+        );
+      }
 
       for (const batch of splitRowsForPost(
         "sessions",
-        rows,
+        postable,
         postBatchSize,
         postBatchMaxBytes,
       )) {
@@ -478,7 +547,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           anyData = true;
           progressedInPass = true;
 
-          await postRowsInBatches(url, table, rows, headers);
+          await postRowsInBatches(url, target.name, table, rows, headers);
 
           watermarks[table] = maxId;
           remainingBudget -= rows.length;
@@ -631,14 +700,14 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
     for (const entry of pending) {
       const row = readSessionDerivedState(entry.session_id);
-      await postSync(
+      const result = await postRowsInBatches(
         url,
-        {
-          table: DERIVED_STATE_TABLE,
-          rows: [row],
-        },
+        target.name,
+        DERIVED_STATE_TABLE,
+        [row],
         headers,
       );
+      if (result.posted === 0 && result.skipped === 0) continue;
       writeDerivedSessionProgress(
         entry.session_id,
         target.name,
@@ -685,6 +754,7 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
 
         await postRowsInBatches(
           `${target.url}/v1/sync`,
+          target.name,
           desc.table,
           filtered,
           resolveHeaders(target),
@@ -744,7 +814,17 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
         // Phase 3: Sync dependent raw session data for confirmed sessions
         if (await syncSessionData(target)) hasMore = true;
 
-        // Phase 4: Sync non-session tables
+        // Phase 4: Multipart-upload archived raw session files for confirmed sessions
+        if (
+          syncSessionFilesEnabled &&
+          (await syncArchivedSessionFiles(target, resolveHeaders(target), {
+            limit: maxSessionsPerTick,
+          }))
+        ) {
+          hasMore = true;
+        }
+
+        // Phase 5: Sync non-session tables
         if (await syncNonSessionTables(target)) hasMore = true;
         clearAttemptBackoff(backoffScopeKind, target.name);
       } catch (err) {

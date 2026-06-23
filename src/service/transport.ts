@@ -56,6 +56,7 @@ const BASE_TOOL_HANDLERS = {
     service.recentWorkOnPath(asType<RecentWorkOnPathInput>(params)),
   file_overview: (service, params) =>
     service.fileOverview(asType<FileOverviewInput>(params)),
+  storage: (service) => service.storageDiagnostics(),
 } satisfies Record<string, TransportHandler>;
 
 const SESSION_SUMMARY_TOOL_HANDLERS = {

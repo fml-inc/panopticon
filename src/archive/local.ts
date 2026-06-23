@@ -1,7 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import type { ArchiveBackend } from "./backend.js";
+import type {
+  ArchiveBackend,
+  ArchivedSessionFile,
+  ArchivedSessionFileContent,
+} from "./backend.js";
+
+const ARCHIVE_CONTENT_TYPE = "application/gzip";
+const ARCHIVE_CONTENT_ENCODING = "gzip";
 
 export class LocalArchiveBackend implements ArchiveBackend {
   constructor(private baseDir: string) {}
@@ -21,17 +28,32 @@ export class LocalArchiveBackend implements ArchiveBackend {
     return gunzipSync(compressed);
   }
 
+  getStoredFileSync(
+    sessionId: string,
+    source: string,
+  ): ArchivedSessionFileContent | null {
+    const fileName = `${source}.jsonl.gz`;
+    const filePath = path.join(this.baseDir, sessionId, fileName);
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath);
+    return {
+      sessionId,
+      source,
+      sizeBytes: content.length,
+      fileName,
+      contentType: ARCHIVE_CONTENT_TYPE,
+      contentEncoding: ARCHIVE_CONTENT_ENCODING,
+      content,
+    };
+  }
+
   hasSync(sessionId: string, source: string): boolean {
     const filePath = path.join(this.baseDir, sessionId, `${source}.jsonl.gz`);
     return fs.existsSync(filePath);
   }
 
-  list(): Array<{ sessionId: string; source: string; sizeBytes: number }> {
-    const results: Array<{
-      sessionId: string;
-      source: string;
-      sizeBytes: number;
-    }> = [];
+  list(): ArchivedSessionFile[] {
+    const results: ArchivedSessionFile[] = [];
 
     if (!fs.existsSync(this.baseDir)) return results;
 
@@ -48,6 +70,10 @@ export class LocalArchiveBackend implements ArchiveBackend {
           sessionId,
           source,
           sizeBytes: fileStat.size,
+          mtimeMs: Math.floor(fileStat.mtimeMs),
+          fileName: file,
+          contentType: ARCHIVE_CONTENT_TYPE,
+          contentEncoding: ARCHIVE_CONTENT_ENCODING,
         });
       }
     }

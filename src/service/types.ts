@@ -1,3 +1,4 @@
+import type { StorageDiagnostics } from "../db/storage-diagnostics.js";
 import type { SyncPendingResult } from "../sync/pending.js";
 import type {
   ActivitySummaryResult,
@@ -8,6 +9,7 @@ import type {
   SpendingResult,
 } from "../types.js";
 
+export type { StorageDiagnostics } from "../db/storage-diagnostics.js";
 export type { SyncPendingResult } from "../sync/pending.js";
 
 export interface ListSessionsInput {
@@ -179,6 +181,7 @@ export interface PanopticonService {
   whyCode(opts: WhyCodeInput): Promise<unknown>;
   recentWorkOnPath(opts: RecentWorkOnPathInput): Promise<unknown>;
   fileOverview(opts: FileOverviewInput): Promise<unknown>;
+  storageDiagnostics(): Promise<StorageDiagnostics>;
   pruneEstimate(cutoffMs: number): Promise<unknown>;
   pruneExecute(cutoffMs: number, opts?: PruneExecuteInput): Promise<unknown>;
   refreshPricing(): Promise<unknown>;

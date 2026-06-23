@@ -8,6 +8,7 @@ import {
   SESSION_SUMMARY_SEARCH_CORPUS,
   SESSION_SUMMARY_SEARCH_PRIORITY,
 } from "./search-index.js";
+import { cleanSessionSummaryAwaySummary } from "./session-data.js";
 
 export const SESSION_SUMMARY_ENRICHMENT_VERSION = 2;
 const SESSION_SUMMARY_PROJECTION_DATA_VERSION = targetDataVersion(
@@ -35,6 +36,7 @@ export interface SessionSummaryDeterministicInput {
   messageCount: number;
   lastActivityMs: number | null;
   intents: string[];
+  awaySummaries?: string[];
   files: Array<{
     filePath: string;
     editCount: number;
@@ -124,6 +126,10 @@ export function buildDeterministicSessionSummaryDocs(
   }));
   const prompts = normalizeItems(input.intents, 4);
   const tools = normalizeItems(input.tools, 6);
+  const awaySummaries = normalizeItems(
+    (input.awaySummaries ?? []).map(cleanSessionSummaryAwaySummary),
+    3,
+  );
   const repositoryLabel = displayRepositoryLabel(input.repository);
 
   const statusLabel = `${input.status[0]?.toUpperCase() ?? ""}${input.status.slice(1)}`;
@@ -135,6 +141,9 @@ export function buildDeterministicSessionSummaryDocs(
     summaryTextParts.push(
       `Top files: ${displayTopFiles.map((file) => file.displayPath).join(", ")}`,
     );
+  }
+  if (awaySummaries.length > 0) {
+    summaryTextParts.push(`Latest recap: ${awaySummaries[0]}`);
   }
   const summaryText = `${summaryTextParts.join(". ")}.`;
 
@@ -154,6 +163,7 @@ export function buildDeterministicSessionSummaryDocs(
       : null,
     tools.length > 0 ? `Tools: ${tools.join("; ")}` : null,
     prompts.length > 0 ? `Prompts: ${prompts.join(" | ")}` : null,
+    awaySummaries.length > 0 ? `Recaps: ${awaySummaries.join(" | ")}` : null,
   ].filter((value): value is string => Boolean(value));
 
   const deterministicSearchText = searchFields.join("\n");
@@ -188,6 +198,7 @@ export function buildDeterministicSessionSummaryDocs(
     summaryText,
     searchCorpusRows,
     topFiles,
+    awaySummaries,
   };
 
   const summaryInputEnvelope = {
@@ -200,6 +211,7 @@ export function buildDeterministicSessionSummaryDocs(
     landedEditCount: input.landedEditCount,
     openEditCount: input.openEditCount,
     prompts,
+    awaySummaries,
     topFiles,
     tools,
     searchCorpusRows,

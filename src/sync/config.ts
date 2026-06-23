@@ -3,6 +3,7 @@ import type { SyncFilter, SyncTarget } from "./types.js";
 
 export interface SyncConfig {
   enabled?: boolean;
+  sessionFiles?: boolean;
   targets: SyncTarget[];
   filter?: SyncFilter;
 }
@@ -11,6 +12,7 @@ export function loadSyncConfig(): SyncConfig {
   const cfg = loadUnifiedConfig();
   return {
     enabled: cfg.sync.enabled,
+    sessionFiles: cfg.sync.sessionFiles,
     targets: cfg.sync.targets,
     filter: cfg.sync.filter,
   };
@@ -19,6 +21,7 @@ export function loadSyncConfig(): SyncConfig {
 export function saveSyncConfig(syncCfg: SyncConfig): void {
   const cfg = loadUnifiedConfig();
   cfg.sync.enabled = syncCfg.enabled ?? cfg.sync.enabled ?? true;
+  cfg.sync.sessionFiles = syncCfg.sessionFiles ?? cfg.sync.sessionFiles;
   cfg.sync.targets = syncCfg.targets;
   cfg.sync.filter = syncCfg.filter;
   saveUnifiedConfig(cfg);
@@ -30,6 +33,7 @@ export function setSyncEnabled(enabled: boolean): SyncConfig {
   saveUnifiedConfig(cfg);
   return {
     enabled: cfg.sync.enabled,
+    sessionFiles: cfg.sync.sessionFiles,
     targets: cfg.sync.targets,
     filter: cfg.sync.filter,
   };

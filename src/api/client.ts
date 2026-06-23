@@ -30,6 +30,7 @@ export {
   search,
   searchIntent,
   sessionTimeline,
+  storageDiagnostics,
   syncPending,
   syncReset,
   syncTargetAdd,

@@ -27,6 +27,8 @@ export interface SyncOptions {
   loopName?: string;
   /** Whether this loop should sync/confirm session rows. Default: true. */
   syncSessions?: boolean;
+  /** Whether this loop should multipart-upload archived raw session files. Default: false. */
+  syncSessionFiles?: boolean;
   /** Session-linked tables handled by this loop. Default: all session-linked tables. */
   sessionTables?: string[];
   /** Non-session tables handled by this loop. Default: all non-session tables. */
@@ -52,6 +54,12 @@ export interface SyncOptions {
   batchSize?: number;
   /** Max records per HTTP POST (default 25) */
   postBatchSize?: number;
+  /**
+   * Max serialized bytes for a single row POST body. Rows above this are
+   * skipped for the target with a warning so one unsyncable row cannot wedge
+   * the queue. Default leaves headroom under the 10 MiB server body limit.
+   */
+  postRowMaxBytes?: number;
   /** If true, timer keeps Node alive (default false) */
   keepAlive?: boolean;
   /** Idle poll interval in ms (default 30000) */

@@ -318,6 +318,9 @@ panopticon search <query>   Full-text search across events and messages
 panopticon print <src> <id> Get full details for a record by source and ID
 panopticon query <sql>      Raw read-only SQL query
 panopticon db-stats         Show database row counts
+panopticon storage          Read-only storage diagnostics
+  --json                    Output as JSON
+  --limit <n>               Max largest files and DB objects to show
 
 panopticon sync enable            Enable remote sync
 panopticon sync disable           Disable remote sync

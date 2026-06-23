@@ -231,6 +231,7 @@ if (entryScript.endsWith("/server.js") || entryScript.endsWith("/server.ts")) {
       syncHandle = createSyncLoop({
         targets: cfg.sync.targets,
         filter: cfg.sync.filter,
+        syncSessionFiles: cfg.sync.sessionFiles === true,
         sessionTables: [...CORE_SESSION_TABLES],
         nonSessionTables: [...DEFAULT_NON_SESSION_TABLES],
       });

@@ -22,6 +22,8 @@ export interface UnifiedConfig {
   sync: {
     /** Whether remote sync loops should run. Defaults to true. */
     enabled?: boolean;
+    /** Whether archived raw session files should be multipart-uploaded. Defaults to false. */
+    sessionFiles?: boolean;
     targets: SyncTarget[];
     filter?: SyncFilter;
   };

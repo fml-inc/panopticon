@@ -123,10 +123,8 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function excerpt(value: unknown, max = 500): string | undefined {
-  return typeof value === "string" && value.length > 0
-    ? value.slice(0, max)
-    : undefined;
+function textValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function stringArray(value: unknown): string[] | undefined {
@@ -163,9 +161,9 @@ function summarizeAttachment(attachment: Record<string, unknown> | undefined): {
   }
 
   const content =
-    excerpt(attachment?.message) ??
-    excerpt(attachment?.content) ??
-    excerpt(attachment?.text) ??
+    textValue(attachment?.message) ??
+    textValue(attachment?.content) ??
+    textValue(attachment?.text) ??
     (attachmentType === "deferred_tools_delta"
       ? `Deferred tools updated (+${addedNames?.length ?? 0}/-${removedNames?.length ?? 0})`
       : attachmentType);
@@ -774,9 +772,7 @@ const claude: TargetAdapter = {
                   eventType: "thinking",
                   timestampMs: tsMs,
                   content:
-                    typeof b.thinking === "string"
-                      ? b.thinking.slice(0, 2_000)
-                      : undefined,
+                    typeof b.thinking === "string" ? b.thinking : undefined,
                   metadata: {
                     has_signature: !!b.signature,
                   },
@@ -809,7 +805,7 @@ const claude: TargetAdapter = {
                   eventType: "tool_call",
                   timestampMs: tsMs,
                   toolName,
-                  toolInput: inputJson?.slice(0, 10_000),
+                  toolInput: inputJson,
                   metadata: { tool_use_id: b.id },
                 });
               }
@@ -880,7 +876,7 @@ const claude: TargetAdapter = {
                   timestampMs: tsMs,
                   toolOutput:
                     typeof resultContent === "string"
-                      ? resultContent.slice(0, 500)
+                      ? resultContent
                       : undefined,
                   metadata: {
                     tool_use_id: b.tool_use_id,
@@ -958,7 +954,7 @@ const claude: TargetAdapter = {
               sessionId: sid,
               eventType: "local_command",
               timestampMs: tsMs,
-              content: excerpt(obj.content, 2_000),
+              content: textValue(obj.content),
               metadata: {
                 level,
                 parentUuid,
@@ -969,7 +965,7 @@ const claude: TargetAdapter = {
               sessionId: sid,
               eventType: "compact_boundary",
               timestampMs: tsMs,
-              content: excerpt(obj.content),
+              content: textValue(obj.content),
               metadata: {
                 level,
                 compactMetadata: obj.compactMetadata,
@@ -981,7 +977,8 @@ const claude: TargetAdapter = {
               sessionId: sid,
               eventType: "away_summary",
               timestampMs: tsMs,
-              content: excerpt(obj.content, 2_000),
+              content:
+                typeof obj.content === "string" ? obj.content : undefined,
               metadata: {
                 parentUuid,
               },
@@ -1051,9 +1048,9 @@ const claude: TargetAdapter = {
               eventType: `progress:${progressType}`,
               timestampMs: tsMs,
               content:
-                excerpt(data?.query) ??
-                excerpt(data?.taskDescription) ??
-                excerpt(obj.content),
+                textValue(data?.query) ??
+                textValue(data?.taskDescription) ??
+                textValue(obj.content),
               metadata: {
                 parentToolUseID: obj.parentToolUseID,
                 toolUseID: obj.toolUseID,
@@ -1094,10 +1091,7 @@ const claude: TargetAdapter = {
             sessionId: sid,
             eventType: `queue:${operation ?? "unknown"}`,
             timestampMs: tsMs,
-            content:
-              typeof obj.content === "string"
-                ? obj.content.slice(0, 500)
-                : undefined,
+            content: typeof obj.content === "string" ? obj.content : undefined,
           });
         }
 
@@ -1108,9 +1102,7 @@ const claude: TargetAdapter = {
             eventType: "last_prompt",
             timestampMs: tsMs,
             content:
-              typeof obj.lastPrompt === "string"
-                ? obj.lastPrompt.slice(0, 500)
-                : undefined,
+              typeof obj.lastPrompt === "string" ? obj.lastPrompt : undefined,
           });
         }
 
@@ -1143,7 +1135,7 @@ const claude: TargetAdapter = {
             content:
               prRepository && prNumber
                 ? `${prRepository}#${prNumber}`
-                : excerpt(obj.prUrl),
+                : textValue(obj.prUrl),
             metadata: {
               prNumber,
               prUrl: obj.prUrl,
@@ -1157,7 +1149,7 @@ const claude: TargetAdapter = {
             sessionId: sid,
             eventType: "permission_mode",
             timestampMs: tsMs,
-            content: excerpt(obj.permissionMode),
+            content: textValue(obj.permissionMode),
             metadata: {
               permissionMode: obj.permissionMode,
             },
@@ -1169,7 +1161,7 @@ const claude: TargetAdapter = {
             sessionId: sid,
             eventType: "custom_title",
             timestampMs: tsMs,
-            content: excerpt(obj.customTitle),
+            content: textValue(obj.customTitle),
           });
         }
 
@@ -1178,7 +1170,7 @@ const claude: TargetAdapter = {
             sessionId: sid,
             eventType: "agent_name",
             timestampMs: tsMs,
-            content: excerpt(obj.agentName),
+            content: textValue(obj.agentName),
           });
         }
 
@@ -1188,7 +1180,7 @@ const claude: TargetAdapter = {
             sessionId: sid,
             eventType: "worktree_state",
             timestampMs: tsMs,
-            content: excerpt(worktree?.worktreePath),
+            content: textValue(worktree?.worktreePath),
             metadata: {
               originalCwd: worktree?.originalCwd,
               worktreePath: worktree?.worktreePath,

@@ -91,6 +91,28 @@ describe("session summary enrichment merge", () => {
     );
   });
 
+  it("uses captured away summaries in deterministic docs without truncating them", () => {
+    const longRecap = `Reviewed PR #299 and approved it after 110 tests passed. ${"recap detail ".repeat(120)}tail-marker (disable recaps in /config)`;
+    const docs = buildDeterministicSessionSummaryDocs({
+      ...BASE_INPUT,
+      awaySummaries: [longRecap],
+    });
+    const deterministicSearch = docs.searchCorpusRows.find(
+      (row) => row.corpusKey === "deterministic_search",
+    );
+    const withoutRecap = buildDeterministicSessionSummaryDocs(BASE_INPUT);
+
+    expect(docs.summaryText).toContain("Latest recap: Reviewed PR #299");
+    expect(docs.summaryText).toContain("tail-marker");
+    expect(docs.summaryText).not.toContain("disable recaps");
+    expect(deterministicSearch?.searchText).toContain(
+      "Recaps: Reviewed PR #299",
+    );
+    expect(deterministicSearch?.searchText).toContain("tail-marker");
+    expect(deterministicSearch?.searchText).not.toContain("disable recaps");
+    expect(docs.summaryInputHash).not.toBe(withoutRecap.summaryInputHash);
+  });
+
   it("marks a hot session stale without making it immediately refreshable", () => {
     const merged = mergeSessionSummaryEnrichment(
       null,
