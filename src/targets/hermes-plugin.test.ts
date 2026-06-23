@@ -90,4 +90,38 @@ print("ok")
       expect(out.trim()).toBe("ok");
     },
   );
+
+  it.skipIf(!python3Available())(
+    "_jsonable preserves full strings but caps collection breadth",
+    () => {
+      const script = `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("panopticon_observer", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+long_text = "x" * 25000
+assert mod._jsonable(long_text) == long_text
+
+limit = mod._MAX_JSONABLE_COLLECTION_ITEMS
+wide_list = mod._jsonable(list(range(limit + 5)))
+assert len(wide_list) == limit + 1, len(wide_list)
+assert wide_list[-1] == "<truncated 5 items>", wide_list[-1]
+
+wide_dict = mod._jsonable({str(i): i for i in range(limit + 5)})
+assert len(wide_dict) == limit + 1, len(wide_dict)
+assert wide_dict["<truncated>"] == "5 items omitted", wide_dict["<truncated>"]
+
+cyclic = []
+cyclic.append(cyclic)
+assert mod._jsonable(cyclic)[0] == "<cycle>"
+print("ok")
+`;
+      const out = execFileSync("python3", ["-B", "-c", script, pluginPath], {
+        stdio: "pipe",
+        encoding: "utf-8",
+      });
+      expect(out.trim()).toBe("ok");
+    },
+  );
 });

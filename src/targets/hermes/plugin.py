@@ -21,6 +21,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_MAX_JSONABLE_DEPTH = 64
+_MAX_JSONABLE_COLLECTION_ITEMS = 2000
+
 _EVENT_MAP = {
     "on_session_start": "SessionStart",
     "on_session_finalize": "SessionEnd",
@@ -164,7 +167,7 @@ def _url(path: str) -> str:
 
 
 def _jsonable(value: Any, *, depth: int = 0, seen: set[int] | None = None) -> Any:
-    if depth > 64:
+    if depth > _MAX_JSONABLE_DEPTH:
         return "<max-depth>"
     if value is None or isinstance(value, (bool, int, float)):
         return value
@@ -180,10 +183,23 @@ def _jsonable(value: Any, *, depth: int = 0, seen: set[int] | None = None) -> An
     seen.add(value_id)
     try:
         if isinstance(value, (list, tuple, set)):
-            return [_jsonable(item, depth=depth + 1, seen=seen) for item in value]
+            out: list[Any] = []
+            total = len(value)
+            for index, item in enumerate(value):
+                if index >= _MAX_JSONABLE_COLLECTION_ITEMS:
+                    omitted = total - _MAX_JSONABLE_COLLECTION_ITEMS
+                    out.append(f"<truncated {omitted} items>")
+                    break
+                out.append(_jsonable(item, depth=depth + 1, seen=seen))
+            return out
         if isinstance(value, dict):
             out: dict[str, Any] = {}
-            for key, item in value.items():
+            total = len(value)
+            for index, (key, item) in enumerate(value.items()):
+                if index >= _MAX_JSONABLE_COLLECTION_ITEMS:
+                    omitted = total - _MAX_JSONABLE_COLLECTION_ITEMS
+                    out["<truncated>"] = f"{omitted} items omitted"
+                    break
                 out[str(key)] = _jsonable(item, depth=depth + 1, seen=seen)
             return out
         return repr(value)

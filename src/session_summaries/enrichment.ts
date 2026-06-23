@@ -32,6 +32,7 @@ import {
   SESSION_SUMMARY_SEARCH_PRIORITY,
 } from "./search-index.js";
 import {
+  cleanSessionSummaryAwaySummary,
   loadSessionSummaryAwaySummaryRows,
   loadSessionSummaryEditRows,
   loadSessionSummaryIntentRows,
@@ -732,9 +733,9 @@ function loadSummaryPromptContext(sessionSummaryKey: string): {
   const files = summarizeFiles(
     loadSessionSummaryEditRows(summary.session_id),
   ).slice(0, 6);
-  const awaySummaries = loadSessionSummaryAwaySummaryRows(
-    summary.session_id,
-  ).map((row) => row.content);
+  const awaySummaries = loadSessionSummaryAwaySummaryRows(summary.session_id)
+    .map((row) => cleanSessionSummaryAwaySummary(row.content))
+    .filter((content) => content.length > 0);
   const recentMessages = loadRecentMessageSnippets(summary.session_id);
   const deterministicSearchCorpus =
     loadDeterministicSearchCorpus(sessionSummaryKey);

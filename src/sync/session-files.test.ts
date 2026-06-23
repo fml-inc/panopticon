@@ -105,6 +105,68 @@ describe("syncArchivedSessionFiles", () => {
     expect(gunzipSync(post.mock.calls[1][2]).toString("utf-8")).toBe(
       "second transcript",
     );
+
+    const watermarkRows = getDb()
+      .prepare(
+        `SELECT key FROM watermarks
+         WHERE key LIKE 'session-file-upload:remote:session-1:codex:%'
+           AND instr(key, ':meta:') = 0
+         ORDER BY key`,
+      )
+      .all() as Array<{ key: string }>;
+    expect(watermarkRows).toHaveLength(1);
+  });
+
+  it("short-circuits unchanged archive files using metadata before reading content", async () => {
+    const archive = new LocalArchiveBackend(
+      path.join(testPaths.dataDir, "archive"),
+    );
+    archive.putSync("session-1", "codex", Buffer.from("raw transcript"));
+    confirmSessionForTarget("session-1");
+
+    const post = vi.fn<PostSessionFile>(async () => ({}));
+    const target = { name: "remote", url: "https://sync.example" };
+
+    await syncArchivedSessionFiles(target, {}, { archive, post });
+    const readSpy = vi.spyOn(archive, "getStoredFileSync");
+    await syncArchivedSessionFiles(target, {}, { archive, post });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  it("continues uploading later files after one file upload fails", async () => {
+    const archive = new LocalArchiveBackend(
+      path.join(testPaths.dataDir, "archive"),
+    );
+    archive.putSync("session-1", "codex", Buffer.from("first transcript"));
+    archive.putSync("session-2", "claude", Buffer.from("second transcript"));
+    confirmSessionForTarget("session-1");
+    confirmSessionForTarget("session-2");
+
+    const post = vi
+      .fn<PostSessionFile>()
+      .mockRejectedValueOnce(new Error("first upload failed"))
+      .mockResolvedValue({});
+
+    await syncArchivedSessionFiles(
+      { name: "remote", url: "https://sync.example" },
+      {},
+      { archive, post, limit: 10 },
+    );
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[0][1].sessionId).toBe("session-1");
+    expect(post.mock.calls[1][1].sessionId).toBe("session-2");
+
+    const uploadedSecond = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS count FROM watermarks
+         WHERE key LIKE 'session-file-upload:remote:session-2:claude:%'
+           AND instr(key, ':meta:') = 0`,
+      )
+      .get() as { count: number };
+    expect(uploadedSecond.count).toBe(1);
   });
 
   it("re-uploads archived session files after resetting the target watermarks", async () => {

@@ -2,6 +2,7 @@ export interface ArchivedSessionFile {
   sessionId: string;
   source: string;
   sizeBytes: number;
+  mtimeMs?: number;
   fileName: string;
   contentType: string;
   contentEncoding: string;

@@ -70,6 +70,7 @@ export class LocalArchiveBackend implements ArchiveBackend {
           sessionId,
           source,
           sizeBytes: fileStat.size,
+          mtimeMs: Math.floor(fileStat.mtimeMs),
           fileName: file,
           contentType: ARCHIVE_CONTENT_TYPE,
           contentEncoding: ARCHIVE_CONTENT_ENCODING,

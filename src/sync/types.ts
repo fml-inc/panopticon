@@ -54,6 +54,12 @@ export interface SyncOptions {
   batchSize?: number;
   /** Max records per HTTP POST (default 25) */
   postBatchSize?: number;
+  /**
+   * Max serialized bytes for a single row POST body. Rows above this are
+   * skipped for the target with a warning so one unsyncable row cannot wedge
+   * the queue. Default leaves headroom under the 10 MiB server body limit.
+   */
+  postRowMaxBytes?: number;
   /** If true, timer keeps Node alive (default false) */
   keepAlive?: boolean;
   /** Idle poll interval in ms (default 30000) */

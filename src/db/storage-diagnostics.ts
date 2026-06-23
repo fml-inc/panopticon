@@ -107,7 +107,12 @@ function walkFiles(root: string, maxDepth: number): FileWalkResult {
       return stat.size;
     }
     if (!stat.isDirectory()) return stat.size;
-    if (depth >= maxDepth) return 0;
+    if (depth >= maxDepth) {
+      errors.push(
+        `Skipped descendants below ${entryPath}: max file depth ${maxDepth} reached`,
+      );
+      return 0;
+    }
 
     let total = 0;
     let children: string[];
@@ -363,6 +368,8 @@ export function storageDiagnostics(
   const maxFileDepth = opts.maxFileDepth ?? DEFAULT_MAX_FILE_DEPTH;
   const fileWalk = walkFiles(dataDir, maxFileDepth);
   errors.push(...fileWalk.errors);
+  // data_dir intentionally includes archive bytes; archive is reported again
+  // as a sub-breakdown so callers can see raw-session storage separately.
   const archiveWalk = walkFiles(path.join(dataDir, "archive"), maxFileDepth);
   errors.push(...archiveWalk.errors);
 

@@ -30,6 +30,13 @@ export interface SessionSummaryAwaySummaryRow {
   content: string;
 }
 
+export function cleanSessionSummaryAwaySummary(value: string): string {
+  return value
+    .replace(/\s*\(disable recaps in \/config\)\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function loadSessionSummaryIntentRows(
   sessionId: string,
 ): SessionSummaryIntentRow[] {
