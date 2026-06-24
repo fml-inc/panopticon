@@ -29,14 +29,20 @@ const claudeDesktop: TargetAdapter = {
     events: [],
     applyInstallConfig(existing, opts) {
       const cfg = { ...existing };
-      const serverBin = path.join(opts.pluginRoot, "bin", "mcp-server");
       cfg.mcpServers = (cfg.mcpServers as Record<string, unknown>) ?? {};
-      (cfg.mcpServers as Record<string, unknown>).panopticon = {
-        // Claude Desktop can be launched by Finder/Dock on macOS with a
-        // restricted PATH, so keep an absolute Node path for this GUI target.
-        command: process.execPath,
-        args: [serverBin],
-      };
+      if (opts.registerMcp === false) {
+        delete (cfg.mcpServers as Record<string, unknown>).panopticon;
+        if (Object.keys(cfg.mcpServers as Record<string, unknown>).length === 0)
+          delete cfg.mcpServers;
+      } else {
+        const serverBin = path.join(opts.pluginRoot, "bin", "mcp-server");
+        (cfg.mcpServers as Record<string, unknown>).panopticon = {
+          // Claude Desktop can be launched by Finder/Dock on macOS with a
+          // restricted PATH, so keep an absolute Node path for this GUI target.
+          command: process.execPath,
+          args: [serverBin],
+        };
+      }
       return cfg;
     },
     removeInstallConfig(existing) {

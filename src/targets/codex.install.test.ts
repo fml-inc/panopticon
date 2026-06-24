@@ -91,6 +91,43 @@ describe("codex install config", () => {
     }
   });
 
+  it("removes panopticon MCP when MCP registration is disabled", async () => {
+    tmpCodexDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "panopticon-codex-install-"),
+    );
+    process.env.PANOPTICON_CODEX_DIR = tmpCodexDir;
+    vi.resetModules();
+
+    const { getTarget } = await import("./index.js");
+    const codex = getTarget("codex")!;
+
+    const result = codex.hooks.applyInstallConfig(
+      {
+        mcp_servers: {
+          panopticon: {
+            command: "node",
+            args: ["/old/panopticon/bin/mcp-server"],
+          },
+          github: {
+            command: "github-mcp",
+          },
+        },
+      },
+      {
+        pluginRoot: "/tmp/panopticon",
+        port: 4318,
+        proxy: false,
+        registerMcp: false,
+      },
+    ) as Record<string, unknown>;
+
+    expect(result.mcp_servers).toEqual({
+      github: {
+        command: "github-mcp",
+      },
+    });
+  });
+
   it("uses the current hooks feature flag and trusts installed hooks", async () => {
     tmpCodexDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "panopticon-codex-install-"),

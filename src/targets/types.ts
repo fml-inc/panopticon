@@ -150,6 +150,11 @@ export interface TargetInstallOpts {
   pluginRoot: string;
   port: number;
   proxy?: boolean;
+  /**
+   * Register this target's Panopticon MCP server. FML's installer uses the
+   * same collection hooks but owns MCP registration under the `fml` name.
+   */
+  registerMcp?: boolean;
 }
 
 export interface TargetHookSpec {

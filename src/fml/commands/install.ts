@@ -14,6 +14,7 @@ import {
 import { panopticonExec } from "../daemon-utils.js";
 import { FML_DATA_DIR, FML_LOG_DIR } from "../dirs.js";
 import { resolveSyncTokenCommand } from "../sync/client.js";
+import { configureFmlDirectMcp } from "./mcp-config.js";
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
@@ -254,6 +255,11 @@ export async function handleInstall(
   settings.enabledPlugins["fml@local-plugins"] = true;
   writeJsonFile(CLAUDE_SETTINGS_PATH, settings);
   console.log(`      Claude settings: ${CLAUDE_SETTINGS_PATH}`);
+
+  const directMcpTargets = configureFmlDirectMcp(pluginRoot);
+  for (const target of directMcpTargets) {
+    console.log(`      MCP: ${target.displayName} -> fml`);
+  }
 
   // Register plugin with Claude Code (install if new, update if existing)
   const claudeBin = resolveBin("claude");

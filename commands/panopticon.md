@@ -1,11 +1,13 @@
-Deprecated compatibility command. Prefer `/fml` for new workflows.
+Deprecated compatibility command. Route through `/fml` for all new workflows.
 
-Use the Panopticon command router for these arguments:
+Translate these arguments to the FML command surface:
 
 ```
 $ARGUMENTS
 ```
 
-Route the request through the `panopticon` skill (its `SKILL.md`). If the first argument is `review`, read the skill's `references/review.md` and follow that PR review workflow. The skill is installed alongside this command in the harness skills directory (e.g. `~/.claude/skills/panopticon/` for Claude, `~/.pi/agent/skills/panopticon/` for Pi).
+Use the `fml` skill and FML MCP tools. Treat `/panopticon <args>` as `/fml <args>` when the subcommand exists on FML, and prefer FML local MCP tools or `fml <command> --local` for local data.
 
-Do not use the legacy `panopticon-review` or `pr-review` command/skill names; they have been migrated to `/panopticon review`.
+Only use the `panopticon` CLI as an explicit compatibility fallback for local collection internals that FML has not exposed yet. Do not route through Panopticon MCP.
+
+For `panopticon review`, run the `fml review` workflow. Do not use the legacy `panopticon-review` or `pr-review` command/skill names.

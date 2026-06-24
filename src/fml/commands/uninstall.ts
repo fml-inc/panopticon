@@ -4,6 +4,7 @@ import path from "node:path";
 import { execBinSync, resolveBin } from "../bin-utils.js";
 import { panopticonExec } from "../daemon-utils.js";
 import { FML_DATA_DIR, FML_LOG_DIR } from "../dirs.js";
+import { removeFmlDirectMcp } from "./mcp-config.js";
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
@@ -171,6 +172,9 @@ export function handleUninstall(opts: {
     for (const line of result.stdout.trim().split("\n")) {
       console.error(`      ${line}`);
     }
+  }
+  for (const target of removeFmlDirectMcp(opts.target ?? "all")) {
+    console.log(`      Removed FML MCP from ${target.displayName}`);
   }
 
   // 5. Remove fml data, logs, and plugin cache

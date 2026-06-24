@@ -953,7 +953,12 @@ async function install(
       // the file. We never read or write the config here.
       t.hooks.applyInstallConfig(
         {},
-        { pluginRoot, port: config.port, proxy: !!opts.proxy },
+        {
+          pluginRoot,
+          port: config.port,
+          proxy: !!opts.proxy,
+          registerMcp: !collectionOnly,
+        },
       );
     } else {
       // Read existing config
@@ -964,6 +969,7 @@ async function install(
         pluginRoot,
         port: config.port,
         proxy: !!opts.proxy,
+        registerMcp: !collectionOnly,
       });
 
       // Write back

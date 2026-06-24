@@ -46,6 +46,29 @@ describe("target registry", () => {
   });
 });
 
+describe("claude install config", () => {
+  it("removes the legacy Panopticon plugin when MCP registration is disabled", () => {
+    const claude = getTarget("claude")!;
+    const result = claude.hooks.applyInstallConfig(
+      {
+        enabledPlugins: {
+          "panopticon@local-plugins": true,
+          "fml@local-plugins": true,
+        },
+      },
+      {
+        pluginRoot: "/tmp/panopticon",
+        port: 4318,
+        registerMcp: false,
+      },
+    ) as Record<string, unknown>;
+
+    expect(result.enabledPlugins).toEqual({
+      "fml@local-plugins": true,
+    });
+  });
+});
+
 /** Fake plugin root with a dist/targets/hermes/plugin.py sentinel. */
 function makeHermesPluginRoot(name: string): {
   pluginRoot: string;
@@ -333,6 +356,34 @@ describe("gemini event normalization", () => {
       },
     });
   });
+
+  it("removes panopticon MCP when MCP registration is disabled", () => {
+    const result = gemini.hooks.applyInstallConfig(
+      {
+        mcpServers: {
+          panopticon: {
+            command: "node",
+            args: ["/old/bin/mcp-server"],
+          },
+          github: {
+            command: "github-mcp",
+          },
+        },
+      },
+      {
+        pluginRoot: "/tmp/panopticon",
+        port: 4318,
+        proxy: false,
+        registerMcp: false,
+      },
+    ) as Record<string, unknown>;
+
+    expect(result.mcpServers).toEqual({
+      github: {
+        command: "github-mcp",
+      },
+    });
+  });
 });
 
 describe("claude desktop install config", () => {
@@ -348,6 +399,35 @@ describe("claude desktop install config", () => {
       panopticon: {
         command: process.execPath,
         args: [path.join(pluginRoot, "bin", "mcp-server")],
+      },
+    });
+  });
+
+  it("removes panopticon MCP when MCP registration is disabled", () => {
+    const claudeDesktop = getTarget("claude-desktop")!;
+    const result = claudeDesktop.hooks.applyInstallConfig(
+      {
+        mcpServers: {
+          panopticon: {
+            command: "node",
+            args: ["/old/bin/mcp-server"],
+          },
+          github: {
+            command: "github-mcp",
+          },
+        },
+      },
+      {
+        pluginRoot: "/tmp/panopticon",
+        port: 4318,
+        proxy: false,
+        registerMcp: false,
+      },
+    ) as Record<string, unknown>;
+
+    expect(result.mcpServers).toEqual({
+      github: {
+        command: "github-mcp",
       },
     });
   });
