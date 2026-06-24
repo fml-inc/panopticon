@@ -1,7 +1,5 @@
 import ora from "ora";
 import pc from "picocolors";
-import { syncPending } from "../../api/client.js";
-import { loadSyncConfig } from "../../sync/index.js";
 import {
   getValidToken,
   readTokens,
@@ -128,81 +126,7 @@ export async function handleDoctor(opts: { json?: boolean }): Promise<void> {
     }
   }
 
-  // 3. Sync status (only if authenticated)
-  if (token) {
-    const spinner = startSpinner("sync");
-    try {
-      const syncConfig = loadSyncConfig();
-      const targets = syncConfig.targets;
-      if (targets.length === 0) {
-        pushAndReport(
-          {
-            label: "Sync",
-            status: "warn",
-            detail: "No sync targets configured",
-          },
-          spinner,
-        );
-      } else {
-        // Close the spinner before reporting per-target
-        if (spinner) spinner.stop();
-
-        for (const target of targets) {
-          try {
-            const result = await syncPending(target.name);
-            if (result.totalPending === 0) {
-              pushAndReport(
-                {
-                  label: `Sync → ${target.name}`,
-                  status: "ok",
-                  detail: "Up to date",
-                },
-                null,
-              );
-            } else {
-              const parts = Object.entries(result.tables)
-                .sort(([, a], [, b]) => b.pending - a.pending)
-                .slice(0, 3)
-                .map(([t, v]) => `${v.pending} ${t}`);
-              const detail =
-                parts.length < Object.keys(result.tables).length
-                  ? `${result.totalPending} pending (${parts.join(", ")}, ...)`
-                  : `${result.totalPending} pending (${parts.join(", ")})`;
-              pushAndReport(
-                {
-                  label: `Sync → ${target.name}`,
-                  status: result.totalPending > 1000 ? "warn" : "ok",
-                  detail,
-                },
-                null,
-              );
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            pushAndReport(
-              {
-                label: `Sync → ${target.name}`,
-                status: "warn",
-                detail: `Could not query watermarks (${msg})`,
-              },
-              null,
-            );
-          }
-        }
-      }
-    } catch (err) {
-      pushAndReport(
-        {
-          label: "Sync",
-          status: "warn",
-          detail: err instanceof Error ? err.message : "Check failed",
-        },
-        spinner,
-      );
-    }
-  }
-
-  // 4. Daemon checks
+  // 3. Daemon checks
   {
     const spinner = startSpinner("panopticon daemon");
     const isRunning = parsePanopticonRunning();
@@ -227,7 +151,7 @@ export async function handleDoctor(opts: { json?: boolean }): Promise<void> {
     }
   }
 
-  // 5. API reachability
+  // 4. API reachability
   {
     const spinner = startSpinner("API");
     if (token) {
