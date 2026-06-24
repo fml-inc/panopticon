@@ -370,7 +370,7 @@ program
   .argument("<session-id>", "Session ID from `fml sessions`")
   .option("--limit <n>", "Max events to return")
   .option("--offset <n>", "Events to skip")
-  .option("--full", "Return full local content instead of truncated")
+  .option("--full", "Local only: return full content instead of truncated")
   .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((sessionId, opts) => handleTimeline(sessionId, opts));
 
@@ -388,8 +388,8 @@ program
   .argument("<query>", "Text to search for")
   .option("--since <duration>", 'Time filter, e.g. "24h", "7d"')
   .option("--limit <n>", "Max results")
-  .option("--offset <n>", "Events to skip")
-  .option("--full", "Return full local payloads instead of truncated")
+  .option("--offset <n>", "Local only: events to skip")
+  .option("--full", "Local only: return full payloads instead of truncated")
   .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((query, opts) => handleSearch(query, opts));
 

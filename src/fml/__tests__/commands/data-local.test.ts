@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockPanopticonExec = vi.fn();
+const mockCallBackend = vi.fn();
+const mockGetAuthenticatedClient = vi.fn();
 
 vi.mock("../../daemon-utils.js", () => ({
   panopticonExec: (...args: unknown[]) => mockPanopticonExec(...args),
+}));
+
+vi.mock("../../fml-client.js", () => ({
+  getAuthenticatedClient: (...args: unknown[]) =>
+    mockGetAuthenticatedClient(...args),
 }));
 
 import {
@@ -16,10 +23,23 @@ import {
 import { handleLocal } from "../../commands/local.js";
 
 describe("local data command forwarding", () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(
+      (_code?: number | string | null) => {
+        throw new Error(`process.exit(${_code})`);
+      },
+    );
     mockPanopticonExec.mockReturnValue({ ok: true, stdout: "ok\n" });
+    mockGetAuthenticatedClient.mockResolvedValue({
+      callBackend: mockCallBackend,
+    });
+    mockCallBackend.mockResolvedValue({ ok: true, result: { ok: true } });
   });
 
   afterEach(() => {
@@ -161,5 +181,55 @@ describe("local data command forwarding", () => {
       "src/cli.ts",
       { timeout: 120_000 },
     );
+  });
+
+  it("passes timeline cloud offset through to the backend", async () => {
+    await handleTimeline("session-1", {
+      limit: "20",
+      offset: "2",
+    });
+
+    expect(mockCallBackend).toHaveBeenCalledWith("get-session-timeline", {
+      sessionId: "session-1",
+      limit: 20,
+      offset: 2,
+    });
+  });
+
+  it("rejects timeline --full without --local", async () => {
+    await expect(handleTimeline("session-1", { full: true })).rejects.toThrow(
+      "process.exit(1)",
+    );
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("--full is only supported with --local"),
+    );
+    expect(mockCallBackend).not.toHaveBeenCalled();
+  });
+
+  it("passes search cloud query options through to the backend", async () => {
+    await handleSearch("auth flow", { since: "30d", limit: "10" });
+
+    expect(mockCallBackend).toHaveBeenCalledWith(
+      "search-engineering-sessions",
+      {
+        query: "auth flow",
+        timeRange: "30d",
+        limit: 10,
+      },
+    );
+  });
+
+  it("rejects search local-only flags without --local", async () => {
+    await expect(
+      handleSearch("auth flow", { offset: "20", full: true }),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "--offset, --full are only supported with --local",
+      ),
+    );
+    expect(mockCallBackend).not.toHaveBeenCalled();
   });
 });

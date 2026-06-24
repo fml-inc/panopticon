@@ -29,6 +29,13 @@ function addOptionalArg(args: string[], flag: string, value?: string): void {
   if (value) args.push(flag, value);
 }
 
+function failLocalOnlyOption(command: string, flags: string[]): never {
+  console.error(
+    `${flags.join(", ")} ${flags.length === 1 ? "is" : "are"} only supported with --local for \`fml ${command}\`. Re-run with --local or omit ${flags.length === 1 ? "it" : "them"}.`,
+  );
+  process.exit(1);
+}
+
 export function runLocalPanopticon(args: string[]): void {
   const result = panopticonExec(...args, { timeout: 120_000 });
   if (!result.ok) {
@@ -85,6 +92,7 @@ export async function handleTimeline(
     runLocalPanopticon(args);
     return;
   }
+  if (opts.full) failLocalOnlyOption("timeline", ["--full"]);
   await queryBackend("get-session-timeline", {
     sessionId,
     limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
@@ -128,6 +136,13 @@ export async function handleSearch(
     if (opts.full) args.push("--full");
     runLocalPanopticon(args);
     return;
+  }
+  const localOnlyFlags = [
+    opts.offset ? "--offset" : null,
+    opts.full ? "--full" : null,
+  ].filter((flag): flag is string => flag !== null);
+  if (localOnlyFlags.length > 0) {
+    failLocalOnlyOption("search", localOnlyFlags);
   }
   await queryBackend("search-engineering-sessions", {
     query,
