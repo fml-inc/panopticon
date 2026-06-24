@@ -9,14 +9,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
 
 const manifest = {
-  name: "panopticon",
+  name: "fml",
   version: pkg.version,
-  description:
-    "Observability for Claude Code — captures OTel signals and hook events, queryable via MCP",
+  description: "FML agent tools for Claude Code",
   mcpServers: {
-    panopticon: {
+    fml: {
       command: "node",
-      args: ["${CLAUDE_PLUGIN_ROOT}/bin/mcp-server"],
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude expands this plugin placeholder.
+      args: ["${CLAUDE_PLUGIN_ROOT}/bin/fml-mcp-server"],
     },
   },
 };

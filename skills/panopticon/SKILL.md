@@ -5,6 +5,8 @@ description: Route Panopticon command-style requests to the right Panopticon MCP
 
 # Panopticon Command Router
 
+This is a deprecated compatibility surface. Prefer the `fml` command and skill for new workflows.
+
 Route command-shaped Panopticon requests to either Panopticon MCP tools or the `panopticon` CLI. Treat `/panopticon <args>` and `$panopticon <args>` as the same command surface.
 
 ## Routing Rules

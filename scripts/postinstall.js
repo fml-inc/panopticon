@@ -32,15 +32,12 @@ export function runPostinstall({
   const gitResult = runCommand("git", ["--version"], { stdio: "ignore" });
   if (gitResult.status !== 0) {
     warn(
-      "warn: git not found; skipping automatic panopticon install. Install Git and run panopticon install, or run panopticon install --disable-sync.",
+      "warn: git not found; skipping automatic fml install. Install Git and run fml install.",
     );
     return 0;
   }
 
-  const installResult = runCommand(process.execPath, [
-    "./bin/panopticon",
-    "install",
-  ]);
+  const installResult = runCommand(process.execPath, ["./bin/fml", "install"]);
   if (installResult.status !== 0) {
     return installResult.status ?? 1;
   }

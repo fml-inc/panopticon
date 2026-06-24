@@ -1,3 +1,5 @@
+Deprecated compatibility command. Prefer `/fml` for new workflows.
+
 Use the Panopticon command router for these arguments:
 
 ```

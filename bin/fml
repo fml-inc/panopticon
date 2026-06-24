@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+
+// Suppress Node's experimental SQLite warning (emitted by node:sqlite, pulled in
+// transitively via @fml-inc/panopticon) before the dynamic import below loads it.
+// Scoped to the SQLite warning so other ExperimentalWarnings still surface.
+const originalEmit = process.emit;
+process.emit = function (name, data, ...args) {
+  if (
+    name === "warning" &&
+    data &&
+    data.name === "ExperimentalWarning" &&
+    typeof data.message === "string" &&
+    data.message.includes("SQLite")
+  ) {
+    return false;
+  }
+  return originalEmit.call(this, name, data, ...args);
+};
+
+import("../dist/fml/cli.js");

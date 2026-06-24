@@ -54,7 +54,7 @@ describe("runPostinstall", () => {
       stdio: "ignore",
     });
     expect(runCommand).toHaveBeenNthCalledWith(2, process.execPath, [
-      "./bin/panopticon",
+      "./bin/fml",
       "install",
     ]);
     expect(warn).not.toHaveBeenCalled();
@@ -76,7 +76,7 @@ describe("runPostinstall", () => {
     expect(runCommand).toHaveBeenCalledTimes(2);
   });
 
-  it("returns the panopticon install failure code", () => {
+  it("returns the fml install failure code", () => {
     const runCommand = vi
       .fn()
       .mockReturnValueOnce({ status: 0 })
