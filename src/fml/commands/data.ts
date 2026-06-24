@@ -3,7 +3,10 @@
  * Each command queries the FML backend via the authenticated API client.
  */
 
+import { panopticonExec } from "../daemon-utils.js";
 import { getAuthenticatedClient } from "../fml-client.js";
+
+type LocalOpts = { local?: boolean };
 
 async function queryBackend(
   toolName: string,
@@ -22,16 +25,55 @@ async function queryBackend(
   console.log(JSON.stringify(result.result, null, 2));
 }
 
-export async function handleActivity(opts: { since?: string }): Promise<void> {
+function addOptionalArg(args: string[], flag: string, value?: string): void {
+  if (value) args.push(flag, value);
+}
+
+function failLocalOnlyOption(command: string, flags: string[]): never {
+  console.error(
+    `${flags.join(", ")} ${flags.length === 1 ? "is" : "are"} only supported with --local for \`fml ${command}\`. Re-run with --local or omit ${flags.length === 1 ? "it" : "them"}.`,
+  );
+  process.exit(1);
+}
+
+export function runLocalPanopticon(args: string[]): void {
+  const result = panopticonExec(...args, { timeout: 120_000 });
+  if (!result.ok) {
+    console.error(result.stdout.trim() || "panopticon command failed");
+    process.exit(1);
+  }
+  process.stdout.write(
+    result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`,
+  );
+}
+
+export async function handleActivity(
+  opts: { since?: string } & LocalOpts,
+): Promise<void> {
+  if (opts.local) {
+    const args = ["summary"];
+    addOptionalArg(args, "--since", opts.since ?? "24h");
+    runLocalPanopticon(args);
+    return;
+  }
   await queryBackend("get-engineering-activity", {
     timeRange: opts.since ?? "24h",
   });
 }
 
-export async function handleSessions(opts: {
-  since?: string;
-  limit?: string;
-}): Promise<void> {
+export async function handleSessions(
+  opts: {
+    since?: string;
+    limit?: string;
+  } & LocalOpts,
+): Promise<void> {
+  if (opts.local) {
+    const args = ["sessions"];
+    addOptionalArg(args, "--since", opts.since ?? "24h");
+    addOptionalArg(args, "--limit", opts.limit);
+    runLocalPanopticon(args);
+    return;
+  }
   await queryBackend("list-engineering-sessions", {
     timeRange: opts.since ?? "24h",
     limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
@@ -40,8 +82,17 @@ export async function handleSessions(opts: {
 
 export async function handleTimeline(
   sessionId: string,
-  opts: { limit?: string; offset?: string },
+  opts: { limit?: string; offset?: string; full?: boolean } & LocalOpts,
 ): Promise<void> {
+  if (opts.local) {
+    const args = ["timeline", sessionId];
+    addOptionalArg(args, "--limit", opts.limit);
+    addOptionalArg(args, "--offset", opts.offset);
+    if (opts.full) args.push("--full");
+    runLocalPanopticon(args);
+    return;
+  }
+  if (opts.full) failLocalOnlyOption("timeline", ["--full"]);
   await queryBackend("get-session-timeline", {
     sessionId,
     limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
@@ -49,10 +100,19 @@ export async function handleTimeline(
   });
 }
 
-export async function handleSpending(opts: {
-  since?: string;
-  groupBy?: string;
-}): Promise<void> {
+export async function handleSpending(
+  opts: {
+    since?: string;
+    groupBy?: string;
+  } & LocalOpts,
+): Promise<void> {
+  if (opts.local) {
+    const args = ["costs"];
+    addOptionalArg(args, "--since", opts.since ?? "7d");
+    addOptionalArg(args, "--group-by", opts.groupBy);
+    runLocalPanopticon(args);
+    return;
+  }
   await queryBackend("get-ai-spending", {
     timeRange: opts.since ?? "7d",
     groupBy: opts.groupBy,
@@ -61,8 +121,29 @@ export async function handleSpending(opts: {
 
 export async function handleSearch(
   query: string,
-  opts: { since?: string; limit?: string },
+  opts: {
+    since?: string;
+    limit?: string;
+    offset?: string;
+    full?: boolean;
+  } & LocalOpts,
 ): Promise<void> {
+  if (opts.local) {
+    const args = ["search", query];
+    addOptionalArg(args, "--since", opts.since ?? "7d");
+    addOptionalArg(args, "--limit", opts.limit);
+    addOptionalArg(args, "--offset", opts.offset);
+    if (opts.full) args.push("--full");
+    runLocalPanopticon(args);
+    return;
+  }
+  const localOnlyFlags = [
+    opts.offset ? "--offset" : null,
+    opts.full ? "--full" : null,
+  ].filter((flag): flag is string => flag !== null);
+  if (localOnlyFlags.length > 0) {
+    failLocalOnlyOption("search", localOnlyFlags);
+  }
   await queryBackend("search-engineering-sessions", {
     query,
     timeRange: opts.since ?? "7d",

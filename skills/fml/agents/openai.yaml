@@ -1,0 +1,4 @@
+interface:
+  display_name: "FML"
+  short_description: "Route FML commands to MCP tools or the fml CLI"
+  default_prompt: "Use $fml status to inspect FML setup."

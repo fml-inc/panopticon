@@ -84,6 +84,8 @@ describe("CLI integration", () => {
     it("lists hidden/internal CLI commands via commands", () => {
       const { stdout, exitCode } = run("commands");
       expect(exitCode).toBe(0);
+      expect(stdout).toContain("local [args...]");
+      expect(stdout).toContain("[--local]");
       expect(stdout).toContain("tools list");
       expect(stdout).toContain("tools describe");
       expect(stdout).toContain("sync-token");
@@ -95,6 +97,23 @@ describe("CLI integration", () => {
       const { stdout, exitCode } = run("install", "--help");
       expect(exitCode).toBe(0);
       expect(stdout).toContain("Set up FML for local agent use");
+    });
+  });
+
+  describe("local data commands", () => {
+    it("shows local passthrough help", () => {
+      const { stdout, exitCode } = run("local", "--help");
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("Run a local Panopticon command through FML");
+    });
+
+    it("shows --local on data command help", () => {
+      const { stdout, exitCode } = run("sessions", "--help");
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("--local");
+      expect(stdout).toContain(
+        "Query local Panopticon data instead of FML cloud",
+      );
     });
   });
 
