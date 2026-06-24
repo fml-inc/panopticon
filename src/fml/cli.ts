@@ -44,6 +44,7 @@ import {
   handleIntegrations,
   handleResolveIdentity,
 } from "./commands/integrations.js";
+import { handleLocal } from "./commands/local.js";
 import { handleLogin } from "./commands/login.js";
 import { handleLogout } from "./commands/logout.js";
 import {
@@ -104,7 +105,10 @@ const program = new Command()
 function formatCommandInventory(cmd: typeof program, prefix = "") {
   const name = prefix ? `${prefix} ${cmd.name()}` : cmd.name();
   const args = cmd.registeredArguments
-    .map((a) => (a.required ? `<${a.name()}>` : `[${a.name()}]`))
+    .map((a) => {
+      const argName = a.variadic ? `${a.name()}...` : a.name();
+      return a.required ? `<${argName}>` : `[${argName}]`;
+    })
     .join(" ");
   const opts = cmd.options
     .filter((o) => !o.hidden && o.long !== "--help" && o.long !== "--version")
@@ -209,6 +213,14 @@ program
   .command("status")
   .description("Show auth and local service status")
   .action(() => handleStatus());
+
+program
+  .command("local")
+  .description("Run a local Panopticon command through FML")
+  .argument("[args...]", "Panopticon command and arguments")
+  .allowUnknownOption(true)
+  .allowExcessArguments(true)
+  .action((args: string[]) => handleLocal(args));
 
 program
   .command("doctor")
@@ -341,6 +353,7 @@ program
   .command("activity")
   .description("Activity summary — sessions, prompts, tools, costs")
   .option("--since <duration>", 'Time window, e.g. "24h", "7d"')
+  .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((opts) => handleActivity(opts));
 
 program
@@ -348,6 +361,7 @@ program
   .description("List recent sessions")
   .option("--since <duration>", 'Time filter, e.g. "24h", "7d"')
   .option("--limit <n>", "Max sessions to return")
+  .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((opts) => handleSessions(opts));
 
 program
@@ -356,6 +370,8 @@ program
   .argument("<session-id>", "Session ID from `fml sessions`")
   .option("--limit <n>", "Max events to return")
   .option("--offset <n>", "Events to skip")
+  .option("--full", "Return full local content instead of truncated")
+  .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((sessionId, opts) => handleTimeline(sessionId, opts));
 
 program
@@ -363,6 +379,7 @@ program
   .description("AI token usage and cost breakdown")
   .option("--since <duration>", 'Time filter, e.g. "24h", "7d"')
   .option("--group-by <key>", "Group by: session, model, or day")
+  .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((opts) => handleSpending(opts));
 
 program
@@ -371,6 +388,9 @@ program
   .argument("<query>", "Text to search for")
   .option("--since <duration>", 'Time filter, e.g. "24h", "7d"')
   .option("--limit <n>", "Max results")
+  .option("--offset <n>", "Events to skip")
+  .option("--full", "Return full local payloads instead of truncated")
+  .option("--local", "Query local Panopticon data instead of FML cloud")
   .action((query, opts) => handleSearch(query, opts));
 
 // ── Query command (unified integration queries) ────────────────────────────
