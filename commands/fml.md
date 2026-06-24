@@ -12,7 +12,7 @@ $ARGUMENTS
 
 Route the request through the `fml` skill installed alongside this command. Treat `/fml <args>`, `$fml <args>`, and natural-language requests to run FML commands as the same command surface.
 
-If the user asks for local/unsynced data or includes `--local`, keep them on FML vocabulary: use `fml <command> --local` for common read commands or `fml local <args...>` for local passthrough.
+If the user asks for local/unsynced data or includes `--local`, keep them on FML vocabulary: prefer FML local MCP tools such as `fml_local_sessions`, `fml_local_timeline`, `fml_local_spending`, and `fml_local_search` for structured reads. Use `fml <command> --local` when MCP is unavailable or the user asked to run a CLI command, and `fml local <args...>` for local passthrough.
 
 If the first argument is `review`, read the skill's `references/review.md` and follow that PR review workflow.
 

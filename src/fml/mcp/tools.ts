@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { resolveRepoFromCwd } from "../../repo.js";
+import { createDirectPanopticonService } from "../../service/direct.js";
+import type { PanopticonService } from "../../service/types.js";
 import {
   getSelectedOrg,
   getValidToken,
@@ -28,8 +30,12 @@ function errorResult(message: string) {
   };
 }
 
-const PANOPTICON_HINT =
-  "\n\nFor local data, use the panopticon MCP tools instead (e.g. panopticon__sessions, panopticon__costs, panopticon__search, panopticon__timeline).";
+const LOCAL_DATA_HINT =
+  "\n\nFor local or unsynced data, use FML local MCP tools instead (e.g. fml_local_sessions, fml_local_spending, fml_local_search, fml_local_timeline).";
+
+function localService(): PanopticonService {
+  return createDirectPanopticonService();
+}
 
 async function toolHandler(toolName: string, args: Record<string, unknown>) {
   try {
@@ -37,20 +43,32 @@ async function toolHandler(toolName: string, args: Record<string, unknown>) {
     if (!api) {
       return errorResult(
         "Not authenticated. Run `fml login` to sign in, then restart Claude Code." +
-          PANOPTICON_HINT,
+          LOCAL_DATA_HINT,
       );
     }
     const result = await api.callBackend(toolName, args);
     if (!result.ok) {
       return errorResult(
-        `${result.error ?? "Unknown error"}${PANOPTICON_HINT}`,
+        `${result.error ?? "Unknown error"}${LOCAL_DATA_HINT}`,
       );
     }
     return textResult(result.result);
   } catch (err) {
     Sentry.captureException(err);
     const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`Unexpected error: ${msg}${PANOPTICON_HINT}`);
+    return errorResult(`Unexpected error: ${msg}${LOCAL_DATA_HINT}`);
+  }
+}
+
+async function localToolHandler(
+  action: (service: PanopticonService) => Promise<unknown> | unknown,
+) {
+  try {
+    return textResult(await action(localService()));
+  } catch (err) {
+    Sentry.captureException(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return errorResult(`Local FML data error: ${msg}`);
   }
 }
 
@@ -76,6 +94,371 @@ export function registerTools(server: McpServer): void {
         orgs,
       });
     },
+  );
+
+  // ── Local Data ──────────────────────────────────────────────────────────────
+
+  server.tool(
+    "fml_local_activity",
+    "Get local, unsynced agent activity from this machine. Defaults to the last 24 hours.",
+    {
+      since: z
+        .string()
+        .optional()
+        .describe('Time window: ISO date or relative like "24h", "7d"'),
+    },
+    async ({ since }) =>
+      localToolHandler((service) => service.activitySummary({ since })),
+  );
+
+  server.tool(
+    "fml_local_sessions",
+    "List local, unsynced agent sessions from this machine with stats, costs, model, and project.",
+    {
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d", "30m"'),
+      limit: z
+        .number()
+        .optional()
+        .describe("Max sessions to return (default 20)"),
+    },
+    async ({ since, limit }) =>
+      localToolHandler((service) => service.listSessions({ since, limit })),
+  );
+
+  server.tool(
+    "fml_local_timeline",
+    "Get local messages and tool calls for a session. Use for unsynced sessions or before cloud sync catches up.",
+    {
+      sessionId: z.string().describe("The session ID to query"),
+      limit: z
+        .number()
+        .optional()
+        .describe("Max messages to return (default 50)"),
+      offset: z
+        .number()
+        .optional()
+        .describe("Number of messages to skip (for pagination)"),
+      fullPayloads: z
+        .boolean()
+        .optional()
+        .describe("Return full content instead of truncated payloads"),
+    },
+    async ({ sessionId, limit, offset, fullPayloads }) =>
+      localToolHandler((service) =>
+        service.sessionTimeline({ sessionId, limit, offset, fullPayloads }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_hook_timeline",
+    "Query local hook events across sessions or for one session: prompts, plans, tool commands, file paths, and permission payloads.",
+    {
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Filter to one session. Omit for cross-session audit queries.",
+        ),
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d"'),
+      eventTypes: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Restrict to specific hook event types, e.g. ["UserPromptSubmit", "ExitPlanMode", "PreToolUse"]',
+        ),
+      limit: z
+        .number()
+        .optional()
+        .describe("Max events to return (default 100)"),
+      offset: z
+        .number()
+        .optional()
+        .describe("Number of events to skip (for pagination)"),
+    },
+    async ({ sessionId, since, eventTypes, limit, offset }) =>
+      localToolHandler((service) =>
+        service.hookTimeline({ sessionId, since, eventTypes, limit, offset }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_spending",
+    "Get local token usage and cost breakdowns from this machine, grouped by session, model, or day.",
+    {
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d"'),
+      groupBy: z
+        .enum(["session", "model", "day"])
+        .optional()
+        .describe("Group results by session, model, or day (default: session)"),
+    },
+    async ({ since, groupBy }) =>
+      localToolHandler((service) => service.costBreakdown({ since, groupBy })),
+  );
+
+  server.tool(
+    "fml_local_plans",
+    "List local plans created by Claude Code from ExitPlanMode hook events.",
+    {
+      session_id: z
+        .string()
+        .optional()
+        .describe("Filter to a specific session"),
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d"'),
+      limit: z.number().optional().describe("Max plans to return (default 20)"),
+    },
+    async ({ session_id, since, limit }) =>
+      localToolHandler((service) =>
+        service.listPlans({ session_id, since, limit }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_search",
+    "Search local sessions, messages, hook events, OTel logs, and session summaries before or after sync.",
+    {
+      query: z.string().describe("Text to search for"),
+      eventTypes: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Filter to specific event types (applies to hook events only)",
+        ),
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d"'),
+      limit: z.number().optional().describe("Max results (default 20)"),
+      offset: z
+        .number()
+        .optional()
+        .describe("Number of results to skip (for pagination)"),
+      fullPayloads: z
+        .boolean()
+        .optional()
+        .describe("Return full payloads instead of truncated snippets"),
+    },
+    async ({ query, eventTypes, since, limit, offset, fullPayloads }) =>
+      localToolHandler((service) =>
+        service.search({
+          query,
+          eventTypes,
+          since,
+          limit,
+          offset,
+          fullPayloads,
+        }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_get",
+    "Get full local details for a hook, OTel, or message record by source and ID.",
+    {
+      source: z
+        .enum(["hook", "otel", "message"])
+        .describe(
+          "Record source: 'hook' for hook events, 'otel' for OTel logs, 'message' for parsed messages",
+        ),
+      id: z.number().describe("Record ID from search or timeline results"),
+    },
+    async ({ source, id }) =>
+      localToolHandler(async (service) => {
+        const result = await service.print({ source, id });
+        if (!result) throw new Error(`No ${source} record found with id ${id}`);
+        return result;
+      }),
+  );
+
+  server.tool(
+    "fml_local_query",
+    "Execute a read-only SQL query against the local agent database. Only SELECT, WITH, and PRAGMA statements are allowed.",
+    {
+      sql: z.string().describe("SQL query (SELECT/WITH/PRAGMA only)"),
+    },
+    async ({ sql }) => localToolHandler((service) => service.rawQuery(sql)),
+  );
+
+  server.tool(
+    "fml_local_intent_for_code",
+    "Given a local file path, return the chronological intent history at that location.",
+    {
+      file_path: z.string().describe("Absolute path to the file"),
+      limit: z
+        .number()
+        .optional()
+        .describe("Max intent edits to return (default 50)"),
+    },
+    async ({ file_path, limit }) =>
+      localToolHandler((service) =>
+        service.intentForCode({ file_path, limit }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_search_intent",
+    "Search local intent history for prompts whose edits matched the query.",
+    {
+      query: z.string().describe("Text to search for in prompt text (FTS5)"),
+      only_landed: z
+        .boolean()
+        .optional()
+        .describe(
+          "If true (default), only return intents with at least one surviving edit",
+        ),
+      repository: z
+        .string()
+        .optional()
+        .describe("Filter to intents recorded in this repository"),
+      limit: z.number().optional().describe("Max results (default 20)"),
+      offset: z.number().optional().describe("Skip N results for pagination"),
+    },
+    async ({ query, only_landed, repository, limit, offset }) =>
+      localToolHandler((service) =>
+        service.searchIntent({ query, only_landed, repository, limit, offset }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_outcomes_for_intent",
+    "Get the t0 session-end outcome view for a local intent.",
+    {
+      intent_unit_id: z.number().describe("ID of the intent unit"),
+    },
+    async ({ intent_unit_id }) =>
+      localToolHandler(async (service) => {
+        const result = await service.outcomesForIntent({ intent_unit_id });
+        if (!result) {
+          throw new Error(`No intent unit found with id ${intent_unit_id}`);
+        }
+        return result;
+      }),
+  );
+
+  server.tool(
+    "fml_local_session_summaries",
+    "List local session-derived summaries with provenance metadata.",
+    {
+      repository: z
+        .string()
+        .optional()
+        .describe("Filter to a repository path or identifier"),
+      cwd: z.string().optional().describe("Filter to a working directory"),
+      status: z
+        .enum(["active", "landed", "mixed", "read-only", "unlanded"])
+        .optional()
+        .describe("Filter by derived session-summary status"),
+      path: z
+        .string()
+        .optional()
+        .describe("Only return session summaries touching this file path"),
+      since: z
+        .string()
+        .optional()
+        .describe('Time filter: ISO date or relative like "24h", "7d"'),
+      limit: z.number().optional().describe("Max results (default 20)"),
+      offset: z.number().optional().describe("Skip N results for pagination"),
+    },
+    async ({ repository, cwd, status, path, since, limit, offset }) =>
+      localToolHandler((service) =>
+        service.listSessionSummaries({
+          repository,
+          cwd,
+          status,
+          path,
+          since,
+          limit,
+          offset,
+        }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_session_summary_detail",
+    "Get the compact preview and explicit local session-derived summary for a single session.",
+    {
+      session_id: z.string().describe("ID of the session"),
+    },
+    async ({ session_id }) =>
+      localToolHandler(async (service) => {
+        const result = await service.sessionSummaryDetail({ session_id });
+        if (!result) {
+          throw new Error(`No session summary found for session ${session_id}`);
+        }
+        return result;
+      }),
+  );
+
+  server.tool(
+    "fml_local_why_code",
+    "Explain the best current local provenance for a file path and optional line.",
+    {
+      path: z.string().describe("File path to explain"),
+      line: z
+        .number()
+        .optional()
+        .describe("Optional 1-based line number for a more specific answer"),
+      repository: z
+        .string()
+        .optional()
+        .describe("Optional repository root used to resolve relative paths"),
+    },
+    async ({ path, line, repository }) =>
+      localToolHandler((service) =>
+        service.whyCode({ path, line, repository }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_recent_work_on_path",
+    "Show recent local intents, edits, and session summaries that touched a file path.",
+    {
+      path: z.string().describe("File path to inspect"),
+      repository: z
+        .string()
+        .optional()
+        .describe("Optional repository root used to resolve relative paths"),
+      limit: z.number().optional().describe("Max results (default 20)"),
+    },
+    async ({ path, repository, limit }) =>
+      localToolHandler((service) =>
+        service.recentWorkOnPath({ path, repository, limit }),
+      ),
+  );
+
+  server.tool(
+    "fml_local_file_overview",
+    "Return a local file-centric overview: aggregate edit/session counts, best explanation, recent work, and related files.",
+    {
+      path: z.string().describe("File path to inspect"),
+      repository: z
+        .string()
+        .optional()
+        .describe("Optional repository root used to resolve relative paths"),
+      recent_limit: z
+        .number()
+        .optional()
+        .describe("Max recent history rows to include (default 5)"),
+      related_limit: z
+        .number()
+        .optional()
+        .describe("Max related files to include (default 10)"),
+    },
+    async ({ path, repository, recent_limit, related_limit }) =>
+      localToolHandler((service) =>
+        service.fileOverview({ path, repository, recent_limit, related_limit }),
+      ),
   );
 
   // ── Messages ───────────────────────────────────────────────────────────────
@@ -392,7 +775,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "get_engineering_activity",
-    "Get agent activity summary (Claude Code, Codex, Gemini CLI, Mastra). SCOPES: 'org' (default), 'project', or 'user' (by githubUsername).",
+    "Get synced FML cloud agent activity summary (Claude Code, Codex, Gemini CLI, Mastra). SCOPES: 'org' (default), 'project', or 'user' (by githubUsername).",
     {
       timeRange: z
         .enum(["1h", "6h", "24h", "7d", "30d"])
@@ -421,7 +804,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "list_engineering_sessions",
-    "List agent sessions (Claude Code, Codex, Gemini CLI, Mastra). Each session includes first prompt preview and event counts.",
+    "List synced FML cloud agent sessions (Claude Code, Codex, Gemini CLI, Mastra). Each session includes first prompt preview and event counts.",
     {
       scope: z
         .enum(["org", "project"])
@@ -448,7 +831,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "get_session_timeline",
-    'Get chronological timeline for a coding agent session. Returns messages and/or hook events interleaved by timestamp. Use source="hooks" to see permission requests, tool approvals, etc. REQUIRES: sessionId from list_engineering_sessions.',
+    'Get synced FML cloud timeline for a coding agent session. Returns messages and/or hook events interleaved by timestamp. Use source="hooks" to see permission requests, tool approvals, etc. REQUIRES: sessionId from list_engineering_sessions.',
     {
       sessionId: z.string().describe("The session ID to get details for."),
       includeSystemMessages: z
@@ -481,7 +864,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "get_session_turns",
-    "Get per-turn token accounting for a coding agent session. USE FOR: understanding cost per turn, model used at each step, cache hit analysis. REQUIRES: sessionId from list_engineering_sessions.",
+    "Get synced FML cloud per-turn token accounting for a coding agent session. USE FOR: understanding cost per turn, model used at each step, cache hit analysis. REQUIRES: sessionId from list_engineering_sessions.",
     {
       sessionId: z.string().describe("The session ID to get turns for."),
       limit: z
@@ -498,7 +881,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "get_ai_spending",
-    "Get AI spending and token usage data. Groups by 'session' (default), 'model', or 'day'.",
+    "Get synced FML cloud AI spending and token usage data. Groups by 'session' (default), 'model', or 'day'.",
     {
       timeRange: z
         .enum(["1h", "6h", "24h", "7d", "30d"])
@@ -520,7 +903,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "search_engineering_sessions",
-    "Search across agent sessions by text. Searches prompts, tool names, and event payloads.",
+    "Search synced FML cloud agent sessions by text. Searches prompts, tool names, and event payloads.",
     {
       query: z.string().describe("Text to search for. Case-insensitive."),
       timeRange: z.enum(["1h", "6h", "24h", "7d", "30d"]).optional(),
