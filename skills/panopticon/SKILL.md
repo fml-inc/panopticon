@@ -1,59 +1,32 @@
 ---
 name: panopticon
-description: Route Panopticon command-style requests to the right Panopticon MCP tool or CLI command. Use when the user invokes /panopticon, $panopticon, asks to run a Panopticon subcommand, wants recent sessions, timelines, costs, summaries, plans, search, SQL, file provenance, permissions, lifecycle status, sync/prune/scan operations, or asks for `panopticon review` to review the current branch.
+description: Deprecated compatibility shim for Panopticon command-style requests. Use the FML skill, FML MCP tools, and the `fml` CLI for /panopticon, $panopticon, local session data, timelines, costs, summaries, plans, search, SQL, file provenance, permissions, lifecycle status, sync operations, and review workflows.
 ---
 
-# Panopticon Command Router
+# Panopticon Compatibility Shim
 
-This is a deprecated compatibility surface. Prefer the `fml` command and skill for new workflows.
+Panopticon is now the local collection engine behind FML. Do not route new work through Panopticon MCP. Translate `/panopticon <args>` and `$panopticon <args>` to the FML command surface.
 
-Route command-shaped Panopticon requests to either Panopticon MCP tools or the `panopticon` CLI. Treat `/panopticon <args>` and `$panopticon <args>` as the same command surface.
+## Routing
 
-## Routing Rules
+1. Use the `fml` skill for command parsing, safety rules, MCP selection, local data reads, synced data reads, lifecycle operations, and review workflows.
+2. Prefer FML MCP tools, including `fml_local_*` tools for local/unsynced data.
+3. Use the `fml` CLI for lifecycle, install/uninstall/update, login/logout, doctor, sync setup, and commands not exposed as FML MCP tools.
+4. Use the `panopticon` CLI only as an explicit compatibility fallback for local collection internals that FML has not exposed yet.
+5. Do not use or recommend Panopticon MCP tools.
 
-1. Parse the first token as the subcommand. If there is no subcommand, show concise help and prefer a lightweight `summary` or `status` lookup only if the user asked for current state.
-2. Prefer MCP for read-only data queries because it returns structured, compact results.
-3. Prefer the CLI for lifecycle, log, sync, prune, scan, install, uninstall, update, and doctor operations.
-4. Use normal tool-approval and safety rules for write or destructive operations. Do not silently run `prune`, `sync reset`, `permissions apply`, `uninstall --purge`, or equivalent commands.
-5. Keep output concise. Summarize large JSON/tool results instead of dumping everything unless the user asks for raw output.
+## Common Translations
 
-## Subcommands
-
-Use these mappings for common requests:
-
-| User command | Preferred route |
+| Panopticon request | Route |
 | --- | --- |
-| `review` | Read `references/review.md` and perform that PR review workflow. |
-| `sessions [--since X] [--limit N]` | MCP `sessions`. |
-| `timeline <session-id> [--limit N] [--offset N] [--full]` | MCP `timeline`. |
-| `summary [--since X]` | MCP `summary`. |
-| `costs [--group-by session|model|day] [--since X]` | MCP `costs`. |
-| `plans [--since X] [--limit N]` | MCP `plans`. |
-| `search <query>` | MCP `search`. |
-| `query <sql>` | MCP `query`; only read-only SQL is allowed. |
-| `get <source> <id>` or `print <source> <id>` | MCP `get`. |
-| `hook-timeline [filters]` | MCP `hook_timeline`. |
-| `session-summaries [filters]` | MCP `session_summaries`. |
-| `session-summary-detail <session-id>` | MCP `session_summary_detail`. |
-| `intent-for-code <path>` | MCP `intent_for_code`. |
-| `search-intent <query>` | MCP `search_intent`. |
-| `outcomes-for-intent <id>` | MCP `outcomes_for_intent`. |
-| `file overview <path>` | MCP `file_overview`. |
-| `file why <path> [line]` | MCP `why_code`. |
-| `file recent <path>` | MCP `recent_work_on_path`. |
-| `permissions show|preview|apply` | MCP permissions tools when available; otherwise CLI. |
-| `status`, `doctor`, `logs`, `start`, `stop`, `install`, `uninstall`, `update` | CLI. |
-| `scan`, `refresh-pricing`, `prune`, `sync ...` | CLI, with approval/safety checks for writes. |
+| `panopticon sessions` | `fml sessions --local` or MCP `fml_local_sessions` |
+| `panopticon timeline <id>` | `fml timeline <id> --local` or MCP `fml_local_timeline` |
+| `panopticon search <query>` | `fml search <query> --local` or MCP `fml_local_search` |
+| `panopticon costs` | `fml spending --local` or MCP `fml_local_spending` |
+| `panopticon plans` | MCP `fml_local_plans` |
+| `panopticon query <sql>` | MCP `fml_local_query`; only read-only SQL is allowed |
+| `panopticon file why|recent|overview ...` | FML local provenance MCP tools |
+| `panopticon status|doctor|start|stop|install|uninstall|update|sync ...` | `fml` CLI when available; Panopticon CLI only for missing internals |
+| `panopticon review` | Run the `fml review` workflow |
 
-If a route is unavailable, fall back to the other interface and say which fallback was used.
-
-## Argument Notes
-
-- Convert hyphenated aliases to MCP tool names when needed: `session-summary-detail` -> `session_summary_detail`, `file-overview` -> `file_overview`.
-- For `file why`, pass a numeric trailing argument as `line`.
-- For `timeline --full`, set `fullPayloads: true`.
-- For compact list commands, honor explicit `--limit`, `--offset`, `--since`, `--group-by`, and repository/path filters when present.
-
-## Review
-
-For `panopticon review`, load `references/review.md` and follow it. This replaces the old `panopticon-review` and `pr-review` skill/command names; do not invoke or recommend the legacy names.
+If a direct translation is unavailable, fall back to `fml local <args...>` and say that the local Panopticon engine is being used through FML compatibility.

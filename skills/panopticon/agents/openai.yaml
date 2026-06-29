@@ -1,4 +1,4 @@
 interface:
   display_name: "Panopticon"
-  short_description: "Route Panopticon commands to MCP or CLI"
-  default_prompt: "Use $panopticon to inspect recent Panopticon activity."
+  short_description: "Deprecated Panopticon shim that routes to FML"
+  default_prompt: "Use $fml for session activity, local data, and lifecycle commands."

@@ -97,7 +97,6 @@ const gemini: TargetAdapter = {
     applyInstallConfig(existing, opts) {
       const settings = { ...existing };
       const hookBin = path.join(opts.pluginRoot, "bin", "hook-handler");
-      const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Deep-copy hooks to avoid mutating the input
       const hooks = structuredClone(
@@ -132,13 +131,24 @@ const gemini: TargetAdapter = {
       }
       settings.hooks = hooks;
 
-      // Register MCP server
+      // Register MCP server, unless another front-end such as FML owns MCP.
       settings.mcpServers =
         (settings.mcpServers as Record<string, unknown>) || {};
-      (settings.mcpServers as Record<string, unknown>).panopticon = {
-        command: "node",
-        args: [mcpBin],
-      };
+      if (opts.registerMcp === false) {
+        delete (settings.mcpServers as Record<string, unknown>).panopticon;
+        if (
+          Object.keys(settings.mcpServers as Record<string, unknown>).length ===
+          0
+        ) {
+          delete settings.mcpServers;
+        }
+      } else {
+        const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
+        (settings.mcpServers as Record<string, unknown>).panopticon = {
+          command: "node",
+          args: [mcpBin],
+        };
+      }
 
       // Configure telemetry
       settings.telemetry =

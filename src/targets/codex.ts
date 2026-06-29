@@ -472,7 +472,6 @@ const codex: TargetAdapter = {
     events: HOOK_EVENTS,
     applyInstallConfig(existing, opts) {
       const codexConfig = { ...existing };
-      const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
 
       // Enable the current hooks feature flag and remove the deprecated alias.
       codexConfig.features = asRecord(codexConfig.features) ?? {};
@@ -537,18 +536,26 @@ const codex: TargetAdapter = {
         metrics_exporter: { "otlp-http": exporterConfig },
       };
 
-      // Register MCP server
-      const mcpServers = (codexConfig.mcp_servers ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const existingPanopticonServer = asRecord(mcpServers.panopticon) ?? {};
-      mcpServers.panopticon = {
-        ...existingPanopticonServer,
-        command: "node",
-        args: [mcpBin],
-      };
-      codexConfig.mcp_servers = mcpServers;
+      // Register MCP server, unless another front-end such as FML owns MCP.
+      const mcpServers =
+        asRecord(codexConfig.mcp_servers) ?? ({} as Record<string, unknown>);
+      if (opts.registerMcp === false) {
+        delete mcpServers.panopticon;
+        if (Object.keys(mcpServers).length === 0) {
+          delete codexConfig.mcp_servers;
+        } else {
+          codexConfig.mcp_servers = mcpServers;
+        }
+      } else {
+        const mcpBin = path.join(opts.pluginRoot, "bin", "mcp-server");
+        const existingPanopticonServer = asRecord(mcpServers.panopticon) ?? {};
+        mcpServers.panopticon = {
+          ...existingPanopticonServer,
+          command: "node",
+          args: [mcpBin],
+        };
+        codexConfig.mcp_servers = mcpServers;
+      }
 
       return codexConfig;
     },

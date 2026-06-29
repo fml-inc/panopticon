@@ -326,20 +326,30 @@ const claude: TargetAdapter = {
     // Marketplace setup is handled separately in the install command;
     // this method handles the settings.json portion only.
     events: [],
-    applyInstallConfig(existing, _opts) {
+    applyInstallConfig(existing, opts) {
       const settings = { ...existing };
-      settings.extraKnownMarketplaces =
-        (settings.extraKnownMarketplaces as Record<string, unknown>) ?? {};
-      (settings.extraKnownMarketplaces as Record<string, unknown>)[
-        "local-plugins"
-      ] = {
-        source: { source: "directory", path: config.marketplaceDir },
-      };
-      settings.enabledPlugins =
-        (settings.enabledPlugins as Record<string, unknown>) ?? {};
-      (settings.enabledPlugins as Record<string, unknown>)[
-        "panopticon@local-plugins"
-      ] = true;
+      if (opts.registerMcp === false) {
+        const plugins = settings.enabledPlugins as
+          | Record<string, unknown>
+          | undefined;
+        if (plugins) {
+          delete plugins["panopticon@local-plugins"];
+          if (Object.keys(plugins).length === 0) delete settings.enabledPlugins;
+        }
+      } else {
+        settings.extraKnownMarketplaces =
+          (settings.extraKnownMarketplaces as Record<string, unknown>) ?? {};
+        (settings.extraKnownMarketplaces as Record<string, unknown>)[
+          "local-plugins"
+        ] = {
+          source: { source: "directory", path: config.marketplaceDir },
+        };
+        settings.enabledPlugins =
+          (settings.enabledPlugins as Record<string, unknown>) ?? {};
+        (settings.enabledPlugins as Record<string, unknown>)[
+          "panopticon@local-plugins"
+        ] = true;
+      }
 
       // Clean up stale hooks from older panopticon/fml installs that wrote
       // hook entries directly into settings.json.  The plugin system now
