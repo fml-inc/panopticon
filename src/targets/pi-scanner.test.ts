@@ -153,6 +153,45 @@ describe("pi scanner", () => {
     ]);
   });
 
+  it("does not emit empty Pi thinking stubs", () => {
+    const filePath = writePiSession([
+      {
+        type: "session",
+        version: 3,
+        id: "pi-empty-thinking-session",
+        timestamp: "2026-05-18T10:00:00.000Z",
+        cwd: "/workspace/example",
+      },
+      {
+        type: "message",
+        id: "a1",
+        parentId: null,
+        timestamp: "2026-05-18T10:00:02.000Z",
+        message: {
+          role: "assistant",
+          model: "claude-sonnet-4-5",
+          content: [
+            { type: "thinking", thinking: "" },
+            { type: "text", text: "No visible thinking." },
+          ],
+          usage: {
+            input_tokens: 12,
+            output_tokens: 7,
+          },
+        },
+      },
+    ]);
+
+    const result = pi.scanner!.parseFile(filePath, 0)!;
+
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      hasThinking: true,
+      content: "No visible thinking.",
+    });
+    expect(result.messages[0].content).not.toContain("[Thinking]");
+  });
+
   it("parses appended messages with chunk-relative ordinals on incremental reads", () => {
     const filePath = writePiSession([
       {

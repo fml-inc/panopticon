@@ -24,6 +24,126 @@ function writeCodexSession(lines: unknown[]): string {
 }
 
 describe("codex scanner", () => {
+  it("captures persisted agent reasoning events as assistant thinking", () => {
+    const filePath = writeCodexSession([
+      {
+        timestamp: "2026-05-24T15:45:59.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-reasoning-event-session",
+          cwd: "/workspace/panopticon",
+          timestamp: "2026-05-24T15:45:59.000Z",
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "agent_reasoning_raw_content",
+          text: "Raw reasoning from the legacy event",
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "reasoning",
+          summary: [],
+          content: null,
+          encrypted_content: "opaque",
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 10,
+              output_tokens: 2,
+              cached_input_tokens: 0,
+              reasoning_output_tokens: 3,
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = codex.scanner!.parseFile(filePath, 0)!;
+
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      hasThinking: true,
+    });
+    expect(result.messages[0].content).toBe(
+      "[Thinking]\nRaw reasoning from the legacy event\n[/Thinking]",
+    );
+    const rawReasoning = result.events.find(
+      (event) => event.eventType === "reasoning_raw_content",
+    );
+    expect(rawReasoning?.content).toBe("Raw reasoning from the legacy event");
+  });
+
+  it("prefers raw reasoning item content over reasoning summaries", () => {
+    const filePath = writeCodexSession([
+      {
+        timestamp: "2026-05-24T15:45:59.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-raw-reasoning-session",
+          cwd: "/workspace/panopticon",
+          timestamp: "2026-05-24T15:45:59.000Z",
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "Summary reasoning" }],
+          content: [
+            {
+              type: "reasoning_text",
+              text: "Raw reasoning from the response item",
+            },
+          ],
+          encrypted_content: null,
+        },
+      },
+      {
+        timestamp: "2026-05-24T15:46:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 10,
+              output_tokens: 2,
+              cached_input_tokens: 0,
+              reasoning_output_tokens: 3,
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = codex.scanner!.parseFile(filePath, 0)!;
+
+    expect(result.messages[0].content).toBe(
+      "[Thinking]\nRaw reasoning from the response item\n[/Thinking]",
+    );
+    expect(
+      result.events.find((event) => event.eventType === "reasoning"),
+    ).toMatchObject({
+      content: "Raw reasoning from the response item",
+      metadata: {
+        content_count: 1,
+        summary_count: 1,
+      },
+    });
+  });
+
   it("captures skill usage when Codex opens a SKILL.md file", () => {
     const skillPath = path.join(
       os.homedir(),

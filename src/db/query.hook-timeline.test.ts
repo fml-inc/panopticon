@@ -153,6 +153,70 @@ describe("hookTimeline", () => {
     expect(edit?.filePath).toBe("/workspace/a/src/foo.ts");
   });
 
+  it("projects raw tool result fields without deriving failure", () => {
+    insertHookEvent({
+      session_id: SESSION_A,
+      event_type: "PostToolUse",
+      timestamp_ms: 6_000,
+      cwd: "/workspace/a",
+      repository: "org/a",
+      tool_name: "Bash",
+      payload: {
+        tool_name: "Bash",
+        tool_response: {
+          stdout: "stdout text",
+          stderr: "stderr text",
+          interrupted: true,
+          exit_code: 2,
+          status: "done",
+          is_error: false,
+          error: { message: "raw error object" },
+        },
+      },
+    });
+
+    const result = hookTimeline({
+      sessionId: SESSION_A,
+      eventTypes: ["PostToolUse"],
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]).toMatchObject({
+      toolResultStdout: "stdout text",
+      toolResultStderr: "stderr text",
+      toolResultInterrupted: true,
+      toolResultExitCode: 2,
+      toolResultStatus: "done",
+      toolResultIsError: false,
+      toolResultError: '{"message":"raw error object"}',
+    });
+  });
+
+  it("does not treat top-level hook payload fields as tool result fields", () => {
+    insertHookEvent({
+      session_id: SESSION_A,
+      event_type: "UserPromptSubmit",
+      timestamp_ms: 6_500,
+      cwd: "/workspace/a",
+      repository: "org/a",
+      payload: {
+        prompt: "do work",
+        stdout: "claude",
+        stderr: "sync-id-looking-value",
+      },
+    });
+
+    const result = hookTimeline({
+      sessionId: SESSION_A,
+      eventTypes: ["UserPromptSubmit"],
+    });
+    const ev = result.events.find((event) => event.timestampMs === 6_500);
+    expect(ev).toMatchObject({
+      toolResultStdout: null,
+      toolResultStderr: null,
+    });
+  });
+
   it("paginates via limit + offset and reports hasMore", () => {
     const first = hookTimeline({ limit: 2, offset: 0 });
     expect(first.events).toHaveLength(2);

@@ -139,6 +139,59 @@ describe("readHookEvents", () => {
     const { rows } = readHookEvents(0, 100);
     expect(rows[0].toolName).toBe("mcp__plugin_fml_fml__fml_whoami");
   });
+
+  it("includes raw tool result fields", () => {
+    const db = getDb();
+    const payload = gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          tool_response: {
+            stdout: "sync stdout",
+            stderr: "sync stderr",
+            interrupted: false,
+            exitCode: 7,
+            status: 500,
+            isError: true,
+            errorMessage: "raw error message",
+          },
+        }),
+      ),
+    );
+    db.prepare(
+      `INSERT INTO hook_events (
+         id, session_id, event_type, timestamp_ms, tool_name, cwd, payload,
+         tool_result_stdout, tool_result_stderr, tool_result_interrupted,
+         tool_result_exit_code, tool_result_status, tool_result_is_error,
+         tool_result_error
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      2,
+      SESSION,
+      "PostToolUse",
+      BASE_MS + 1000,
+      "Bash",
+      "/workspace",
+      payload,
+      "sync stdout",
+      "sync stderr",
+      0,
+      7,
+      "500",
+      1,
+      "raw error message",
+    );
+
+    const { rows } = readHookEvents(0, 100);
+    expect(rows[0]).toMatchObject({
+      toolResultStdout: "sync stdout",
+      toolResultStderr: "sync stderr",
+      toolResultInterrupted: false,
+      toolResultExitCode: 7,
+      toolResultStatus: "500",
+      toolResultIsError: true,
+      toolResultError: "raw error message",
+    });
+  });
 });
 
 describe("readOtelLogs", () => {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
 import { withBusyRetry } from "./busy-retry.js";
+import { projectToolResultFields } from "./hook-result-fields.js";
 import { getDb } from "./schema.js";
 
 const AUTOMATED_MODELS = new Set(["codex-auto-review"]);
@@ -80,9 +81,15 @@ const INSERT_SPAN_SQL = `
 
 const INSERT_HOOK_SQL = `
   INSERT INTO hook_events (session_id, event_type, timestamp_ms, cwd, repository, tool_name,
-                           target, user_prompt, file_path, command, tool_result, plan, allowed_prompts, payload)
+                           target, user_prompt, file_path, command, tool_result,
+                           tool_result_stdout, tool_result_stderr, tool_result_interrupted,
+                           tool_result_exit_code, tool_result_status, tool_result_is_error,
+                           tool_result_error, plan, allowed_prompts, payload)
   VALUES (@session_id, @event_type, @timestamp_ms, @cwd, @repository, @tool_name,
-          @target, @user_prompt, @file_path, @command, @tool_result, @plan, @allowed_prompts, @payload)
+          @target, @user_prompt, @file_path, @command, @tool_result,
+          @tool_result_stdout, @tool_result_stderr, @tool_result_interrupted,
+          @tool_result_exit_code, @tool_result_status, @tool_result_is_error,
+          @tool_result_error, @plan, @allowed_prompts, @payload)
 `;
 
 export function insertOtelLogs(rows: OtelLogRow[]): void {
@@ -735,6 +742,7 @@ export function insertHookEvent(row: HookEventRow): number {
   const allowedPrompts = toolInput?.allowedPrompts
     ? JSON.stringify(toolInput.allowedPrompts)
     : undefined;
+  const toolResultFields = projectToolResultFields(data);
 
   const fullJson = JSON.stringify(data);
 
@@ -752,6 +760,7 @@ export function insertHookEvent(row: HookEventRow): number {
       file_path: filePath ?? null,
       command: command ?? null,
       tool_result: toolResult ?? null,
+      ...toolResultFields,
       plan: plan ?? null,
       allowed_prompts: allowedPrompts ?? null,
       payload: gzipSync(Buffer.from(fullJson)),

@@ -389,6 +389,115 @@ describe("claude scanner parseFile", () => {
     expect(result!.messages[1].parentUuid).toBe("aaa");
   });
 
+  it("captures Claude thinking text as assistant content", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "claude-thinking-text",
+        timestamp: "2026-01-01T00:00:00Z",
+        message: {
+          model: "claude-opus-4-6",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Need to inspect the failure first.",
+              signature: "sig",
+            },
+            { type: "text", text: "I will check the logs." },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+    ];
+
+    const result = writeAndParse(lines);
+
+    expect(result!.messages[0]).toMatchObject({
+      role: "assistant",
+      hasThinking: true,
+      content:
+        "[Thinking]\nNeed to inspect the failure first.\n[/Thinking]\nI will check the logs.",
+    });
+    expect(
+      result!.events.find((event) => event.eventType === "thinking"),
+    ).toMatchObject({
+      content: "Need to inspect the failure first.",
+      metadata: {
+        has_signature: true,
+      },
+    });
+  });
+
+  it("does not emit empty Claude thinking stubs for signature-only blocks", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "claude-signature-only-thinking",
+        timestamp: "2026-01-01T00:00:00Z",
+        message: {
+          model: "claude-opus-4-6",
+          content: [
+            { type: "thinking", thinking: "", signature: "opaque-signature" },
+            { type: "text", text: "The tool call is next." },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+    ];
+
+    const result = writeAndParse(lines);
+
+    expect(result!.messages[0]).toMatchObject({
+      role: "assistant",
+      hasThinking: true,
+      content: "The tool call is next.",
+    });
+    expect(result!.messages[0].content).not.toContain("[Thinking]");
+    expect(
+      result!.events.find((event) => event.eventType === "thinking"),
+    ).toMatchObject({
+      content: undefined,
+      metadata: {
+        has_signature: true,
+      },
+    });
+  });
+
+  it("records Claude redacted thinking metadata without fabricating content", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "claude-redacted-thinking",
+        timestamp: "2026-01-01T00:00:00Z",
+        message: {
+          model: "claude-opus-4-6",
+          content: [
+            { type: "redacted_thinking", data: "opaque-redacted-data" },
+            { type: "text", text: "Done." },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+    ];
+
+    const result = writeAndParse(lines);
+
+    expect(result!.messages[0]).toMatchObject({
+      role: "assistant",
+      hasThinking: true,
+      content: "Done.",
+    });
+    expect(
+      result!.events.find((event) => event.eventType === "redacted_thinking"),
+    ).toMatchObject({
+      content: undefined,
+      metadata: {
+        has_redacted_content: true,
+        redacted_content_length: 20,
+      },
+    });
+  });
+
   it("stores timestampMs on tool calls and tool results", () => {
     const lines = [
       JSON.stringify({
@@ -463,6 +572,52 @@ describe("codex scanner parseFile", () => {
     expect(result!.meta!.sessionId).toBe("019d-codex-session");
     expect(result!.meta!.cwd).toBe("/workspace");
     expect(result!.meta!.cliVersion).toBe("0.117.0");
+  });
+
+  it("extracts Codex subagent parent metadata from session_meta", () => {
+    const result = writeAndParse([
+      JSON.stringify({
+        timestamp: "2026-06-29T15:34:59.255Z",
+        type: "session_meta",
+        payload: {
+          id: "019f1404-fd99-73e1-a04b-cf4a70a9ff20",
+          parent_thread_id: "019f1404-fd4a-7032-aea7-1060205fd385",
+          cwd: "/workspace",
+          source: { subagent: { other: "guardian" } },
+          thread_source: "subagent",
+          cli_version: "0.142.4",
+          timestamp: "2026-06-29T15:34:59.255Z",
+        },
+      }),
+    ]);
+
+    expect(result!.meta).toMatchObject({
+      sessionId: "019f1404-fd99-73e1-a04b-cf4a70a9ff20",
+      parentSessionId: "019f1404-fd4a-7032-aea7-1060205fd385",
+      relationshipType: "subagent",
+    });
+  });
+
+  it("marks older Codex source subagent sessions without parent metadata", () => {
+    const result = writeAndParse([
+      JSON.stringify({
+        timestamp: "2026-05-04T17:37:05.009Z",
+        type: "session_meta",
+        payload: {
+          id: "019df410-a5f1-7b31-9390-ed41bb7a7332",
+          cwd: "/workspace",
+          source: { subagent: { other: "guardian" } },
+          cli_version: "0.128.0",
+          timestamp: "2026-05-04T17:37:05.009Z",
+        },
+      }),
+    ]);
+
+    expect(result!.meta).toMatchObject({
+      sessionId: "019df410-a5f1-7b31-9390-ed41bb7a7332",
+      relationshipType: "subagent",
+    });
+    expect(result!.meta!.parentSessionId).toBeUndefined();
   });
 
   it("extracts model from turn_context", () => {

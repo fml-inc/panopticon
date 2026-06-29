@@ -181,6 +181,20 @@ export interface HookEvent {
   command: string | null;
   /** PostToolUse tool_result or tool_response text. */
   toolResult: string | null;
+  /** Raw stdout field from tool_result/tool_response, when present. */
+  toolResultStdout: string | null;
+  /** Raw stderr field from tool_result/tool_response, when present. */
+  toolResultStderr: string | null;
+  /** Raw interrupted field from tool_result/tool_response, when present. */
+  toolResultInterrupted: boolean | null;
+  /** Raw exit_code/exitCode field from tool_result/tool_response, when present. */
+  toolResultExitCode: number | null;
+  /** Raw status field from tool_result/tool_response, when present. */
+  toolResultStatus: string | null;
+  /** Raw is_error/isError field from tool_result/tool_response, when present. */
+  toolResultIsError: boolean | null;
+  /** Raw error/error_message/errorMessage field from tool_result/tool_response, when present. */
+  toolResultError: string | null;
   /** Permission-request allowed_prompts payload. */
   allowedPrompts: string | null;
 }

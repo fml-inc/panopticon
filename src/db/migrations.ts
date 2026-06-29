@@ -34,6 +34,7 @@
  *    upgrade forward. Rolling back means reinstalling.
  */
 
+import { gunzipSync } from "node:zlib";
 import {
   ALL_DATA_COMPONENTS,
   CLAIM_DERIVED_COMPONENTS,
@@ -42,6 +43,7 @@ import {
   SESSION_SUMMARY_PROJECTION_COMPONENT,
 } from "./data-versions.js";
 import type { Database } from "./driver.js";
+import { projectToolResultFields } from "./hook-result-fields.js";
 import {
   buildMessageSyncId,
   buildScannerEventSyncId,
@@ -279,6 +281,50 @@ function ensureEvidenceRefSchema(db: Database): void {
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_evidence_ref_paths_file ON evidence_ref_paths(file_path)",
   );
+}
+
+function parseCompressedJsonPayload(blob: unknown): unknown {
+  if (!blob) return null;
+  try {
+    return JSON.parse(gunzipSync(blob as Uint8Array).toString());
+  } catch {
+    return null;
+  }
+}
+
+function backfillHookToolResultRawFields(
+  db: Database,
+  opts: { clearMissing?: boolean } = {},
+): void {
+  if (!tableHasColumn(db, "hook_events", "payload")) return;
+  const rows = db
+    .prepare("SELECT id, payload FROM hook_events")
+    .all() as Array<{ id: number; payload: unknown }>;
+
+  const update = db.prepare(
+    `UPDATE hook_events
+     SET tool_result_stdout = @tool_result_stdout,
+         tool_result_stderr = @tool_result_stderr,
+         tool_result_interrupted = @tool_result_interrupted,
+         tool_result_exit_code = @tool_result_exit_code,
+         tool_result_status = @tool_result_status,
+         tool_result_is_error = @tool_result_is_error,
+         tool_result_error = @tool_result_error
+     WHERE id = @id`,
+  );
+
+  for (const row of rows) {
+    const fields = projectToolResultFields(
+      parseCompressedJsonPayload(row.payload),
+    );
+    if (
+      !opts.clearMissing &&
+      Object.values(fields).every((value) => value === null)
+    ) {
+      continue;
+    }
+    update.run({ id: row.id, ...fields });
+  }
 }
 
 function rebuildClaimEvidenceWithRefsOnly(db: Database): void {
@@ -1454,6 +1500,65 @@ export const MIGRATIONS: Migration[] = [
         "rejected_at_ms",
         "rejected_at_ms INTEGER",
       );
+    },
+  },
+  {
+    id: 27,
+    name: "add_hook_tool_result_raw_fields",
+    up: (db) => {
+      if (!tableExists(db, "hook_events")) return;
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_stdout",
+        "tool_result_stdout TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_stderr",
+        "tool_result_stderr TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_interrupted",
+        "tool_result_interrupted INTEGER",
+      );
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_exit_code",
+        "tool_result_exit_code INTEGER",
+      );
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_status",
+        "tool_result_status TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_is_error",
+        "tool_result_is_error INTEGER",
+      );
+      addColumnIfMissing(
+        db,
+        "hook_events",
+        "tool_result_error",
+        "tool_result_error TEXT",
+      );
+      backfillHookToolResultRawFields(db);
+    },
+  },
+  {
+    id: 28,
+    name: "recompute_hook_tool_result_raw_fields",
+    up: (db) => {
+      if (!tableExists(db, "hook_events")) return;
+      if (!tableHasColumn(db, "hook_events", "tool_result_stdout")) return;
+      backfillHookToolResultRawFields(db, { clearMissing: true });
     },
   },
 ];
