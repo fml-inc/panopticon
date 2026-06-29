@@ -1,4 +1,4 @@
-import { syncPending, syncReset } from "../../api/client.js";
+import { syncPending, syncRejected, syncReset } from "../../api/client.js";
 import {
   addTarget,
   listTargets,
@@ -8,6 +8,54 @@ import {
 } from "../../sync/index.js";
 import { DEFAULT_SYNC_URL, DEFAULT_TARGET_NAME } from "../config.js";
 import { resolveSyncTokenCommand } from "../sync/client.js";
+
+type SyncRejectedCliResult = {
+  target: string;
+  total: number;
+  limit: number;
+  offset: number;
+  sessions: Array<{
+    sessionId: string;
+    code: string;
+    reason: string;
+    rejectedAtMs: number | null;
+    syncSeq: number;
+  }>;
+};
+
+function formatTimestampMs(ms: number | null): string {
+  return ms == null ? "unknown" : new Date(ms).toISOString();
+}
+
+function printSyncRejectedSessions(
+  result: SyncRejectedCliResult,
+  retryCommand: string,
+): void {
+  if (result.total === 0) {
+    console.log(`No rejected sessions for "${result.target}".`);
+    return;
+  }
+
+  console.log(
+    `Rejected sessions for "${result.target}" (${result.total} total):`,
+  );
+  for (const session of result.sessions) {
+    console.log(`  ${session.sessionId}`);
+    console.log(`    code: ${session.code}`);
+    console.log(`    reason: ${session.reason}`);
+    console.log(`    rejected_at: ${formatTimestampMs(session.rejectedAtMs)}`);
+    console.log(`    sync_seq: ${session.syncSeq}`);
+  }
+
+  const shownStart = result.offset + 1;
+  const shownEnd = result.offset + result.sessions.length;
+  console.log();
+  console.log(`Showing ${shownStart}-${shownEnd} of ${result.total}.`);
+  if (shownEnd < result.total) {
+    console.log(`Next page: --offset ${shownEnd} --limit ${result.limit}`);
+  }
+  console.log(`Retry after fixing the cause: ${retryCommand}`);
+}
 
 // ── Setup (convenience shortcut) ────────────────────────────────────────────
 
@@ -163,7 +211,11 @@ export async function handleSyncStatus(): Promise<void> {
     try {
       const result = await syncPending(target.name);
       if (result.totalPending === 0) {
-        console.log("  Status: up to date");
+        console.log(
+          result.rejectedSessions > 0
+            ? "  Status: no pending rows"
+            : "  Status: up to date",
+        );
       } else {
         console.log(`  Pending: ${result.totalPending} total`);
         for (const [table, info] of Object.entries(result.tables)) {
@@ -171,6 +223,11 @@ export async function handleSyncStatus(): Promise<void> {
             `    ${table}: ${info.pending} pending (${info.synced} / ${info.total})`,
           );
         }
+      }
+      if (result.rejectedSessions > 0) {
+        console.log(
+          `  Rejected: ${result.rejectedSessions} session${result.rejectedSessions === 1 ? "" : "s"} (run "fml sync reset ${target.name}" to retry)`,
+        );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -187,4 +244,22 @@ export async function handleSyncReset(targetName?: string): Promise<void> {
   console.log(
     `Sync watermarks for "${targetName ?? DEFAULT_TARGET_NAME}" reset to 0.`,
   );
+}
+
+export async function handleSyncRejected(
+  targetName?: string,
+  opts: { limit?: number; offset?: number; json?: boolean } = {},
+): Promise<void> {
+  const target = targetName ?? DEFAULT_TARGET_NAME;
+  const result = (await syncRejected(target, {
+    limit: opts.limit,
+    offset: opts.offset,
+  })) as SyncRejectedCliResult;
+
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  printSyncRejectedSessions(result, `fml sync reset ${target}`);
 }

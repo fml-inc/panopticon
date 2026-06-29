@@ -66,7 +66,7 @@ import {
   loadSyncConfig,
   removeTarget,
 } from "../sync/config.js";
-import { readSyncPending } from "../sync/pending.js";
+import { readSyncPending, readSyncRejectedSessions } from "../sync/pending.js";
 import { TABLE_SYNC_REGISTRY } from "../sync/registry.js";
 import type { SyncTarget } from "../sync/types.js";
 import {
@@ -360,6 +360,9 @@ export function createDirectPanopticonService(): PanopticonService {
     },
     async syncPending(target: string) {
       return readSyncPending(target);
+    },
+    async syncRejected(target: string, opts) {
+      return readSyncRejectedSessions(target, opts);
     },
     async syncTargetList() {
       return { targets: listTargets() };

@@ -15,7 +15,7 @@ vi.mock("../config.js", () => {
 });
 
 import { closeDb, getDb } from "../db/schema.js";
-import { readSyncPending } from "./pending.js";
+import { readSyncPending, readSyncRejectedSessions } from "./pending.js";
 import { watermarkKey, writeWatermark } from "./watermark.js";
 
 function insertConfirmedSession(
@@ -146,6 +146,92 @@ describe("readSyncPending", () => {
 
     expect(result.tables.sessions).toBeUndefined();
     expect(result.totalPending).toBe(0);
+  });
+
+  it("reports rejected session rows separately from pending", () => {
+    const db = getDb();
+    insertConfirmedSession("fml", {
+      sessionId: "rejected-session",
+      syncSeq: 2,
+      targetSyncSeq: 2,
+      syncedSeq: 0,
+      wmMessages: 2,
+    });
+    db.prepare(
+      `UPDATE target_session_sync
+       SET confirmed = 0,
+           rejected = 1,
+           rejection_code = 'repo_not_allowed',
+           rejection_reason = 'repository is not enabled for target',
+           rejected_at_ms = 123
+       WHERE session_id = ? AND target = ?`,
+    ).run("rejected-session", "fml");
+
+    const result = readSyncPending("fml");
+
+    expect(result.tables.sessions).toBeUndefined();
+    expect(result.totalPending).toBe(0);
+    expect(result.rejectedSessions).toBe(1);
+  });
+
+  it("lists rejected session details with sync filtering and pagination", () => {
+    const db = getDb();
+    insertConfirmedSession("fml", {
+      sessionId: "newer-rejected",
+      syncSeq: 4,
+      targetSyncSeq: 4,
+    });
+    insertConfirmedSession("fml", {
+      sessionId: "older-rejected",
+      syncSeq: 2,
+      targetSyncSeq: 2,
+    });
+    insertConfirmedSession("fml", {
+      sessionId: "filtered-rejected",
+      repository: null,
+    });
+    db.prepare(
+      `UPDATE target_session_sync
+       SET confirmed = 0,
+           rejected = 1,
+           rejection_code = ?,
+           rejection_reason = ?,
+           rejected_at_ms = ?
+       WHERE session_id = ? AND target = 'fml'`,
+    ).run(
+      "repo_not_allowed",
+      "repository is not enabled for target",
+      200,
+      "newer-rejected",
+    );
+    db.prepare(
+      `UPDATE target_session_sync
+       SET confirmed = 0,
+           rejected = 1,
+           rejection_code = NULL,
+           rejection_reason = NULL,
+           rejected_at_ms = 100
+       WHERE session_id IN ('older-rejected', 'filtered-rejected')
+         AND target = 'fml'`,
+    ).run();
+
+    const result = readSyncRejectedSessions("fml", { limit: 1, offset: 1 });
+
+    expect(result).toEqual({
+      target: "fml",
+      total: 2,
+      limit: 1,
+      offset: 1,
+      sessions: [
+        {
+          sessionId: "older-rejected",
+          code: "rejected",
+          reason: "session rejected by sync target",
+          rejectedAtMs: 100,
+          syncSeq: 2,
+        },
+      ],
+    });
   });
 
   it("counts child session rows when the parent has repo attribution", () => {

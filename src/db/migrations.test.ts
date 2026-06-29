@@ -1968,6 +1968,37 @@ describe("runMigrations — existing DB", () => {
     ]);
   });
 
+  it("adds target session sync rejection state columns", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE target_session_sync (
+        session_id TEXT NOT NULL,
+        target TEXT NOT NULL,
+        confirmed INTEGER DEFAULT 0,
+        sync_seq INTEGER DEFAULT 0,
+        synced_seq INTEGER DEFAULT 0,
+        PRIMARY KEY (session_id, target)
+      )
+    `);
+
+    const migration = MIGRATIONS.find((entry) => entry.id === 26);
+    expect(migration).toBeDefined();
+    runMigrations(db, [migration!]);
+
+    const columns = db
+      .prepare("PRAGMA table_info(target_session_sync)")
+      .all() as Array<{ name: string }>;
+    const columnNames = columns.map((column) => column.name);
+    expect(columnNames).toEqual(
+      expect.arrayContaining([
+        "rejected",
+        "rejection_code",
+        "rejection_reason",
+        "rejected_at_ms",
+      ]),
+    );
+  });
+
   it("runs up() function migration", () => {
     const db = createExistingDb();
     db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)");

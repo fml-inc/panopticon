@@ -7,7 +7,29 @@ import { readWatermark, watermarkKey } from "./watermark.js";
 export interface SyncPendingResult {
   target: string;
   totalPending: number;
+  rejectedSessions: number;
   tables: Record<string, { total: number; synced: number; pending: number }>;
+}
+
+export interface SyncRejectedSession {
+  sessionId: string;
+  code: string;
+  reason: string;
+  rejectedAtMs: number | null;
+  syncSeq: number;
+}
+
+export interface SyncRejectedOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface SyncRejectedResult {
+  target: string;
+  total: number;
+  limit: number;
+  offset: number;
+  sessions: SyncRejectedSession[];
 }
 
 const SESSION_WATERMARK_COLUMNS: Record<string, string> = {
@@ -29,6 +51,18 @@ type SessionPendingRow = {
   target_sync_seq: number;
 };
 
+type RejectedSessionRow = {
+  session_id: string;
+};
+
+type RejectedSessionDetailRow = {
+  session_id: string;
+  rejection_code: string | null;
+  rejection_reason: string | null;
+  rejected_at_ms: number | null;
+  sync_seq: number | null;
+};
+
 function addPendingTable(
   pending: SyncPendingResult["tables"],
   table: string,
@@ -43,12 +77,24 @@ function addPendingTable(
   };
 }
 
+function syncableSessionIdsForConfiguredFilter(): Set<string> | null {
+  return buildSyncableSessionIds(loadUnifiedConfig().sync.filter);
+}
+
+function boundedInteger(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
 export function readSyncPending(target: string): SyncPendingResult {
   const db = getDb();
   const pending: SyncPendingResult["tables"] = {};
-  const syncableSessionIds = buildSyncableSessionIds(
-    loadUnifiedConfig().sync.filter,
-  );
+  const syncableSessionIds = syncableSessionIdsForConfiguredFilter();
 
   const sessionRows = db
     .prepare(
@@ -80,6 +126,23 @@ export function readSyncPending(target: string): SyncPendingResult {
     }
   }
   addPendingTable(pending, "sessions", sessionTotal, pendingSessionRows);
+
+  const rejectedRows = db
+    .prepare(
+      `SELECT target_session_sync.session_id
+       FROM target_session_sync
+       INNER JOIN sessions ON sessions.session_id = target_session_sync.session_id
+       WHERE target_session_sync.target = ?
+         AND target_session_sync.rejected = 1`,
+    )
+    .all(target) as RejectedSessionRow[];
+  let rejectedSessions = 0;
+  for (const row of rejectedRows) {
+    if (syncableSessionIds && !syncableSessionIds.has(row.session_id)) {
+      continue;
+    }
+    rejectedSessions++;
+  }
 
   const derivedRows = db
     .prepare(
@@ -162,6 +225,53 @@ export function readSyncPending(target: string): SyncPendingResult {
       (sum, value) => sum + value.pending,
       0,
     ),
+    rejectedSessions,
     tables: pending,
+  };
+}
+
+export function readSyncRejectedSessions(
+  target: string,
+  opts: SyncRejectedOptions = {},
+): SyncRejectedResult {
+  const db = getDb();
+  const syncableSessionIds = syncableSessionIdsForConfiguredFilter();
+  const limit = boundedInteger(opts.limit, 50, 1, 500);
+  const offset = boundedInteger(opts.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+
+  const rows = db
+    .prepare(
+      `SELECT target_session_sync.session_id,
+              target_session_sync.rejection_code,
+              target_session_sync.rejection_reason,
+              target_session_sync.rejected_at_ms,
+              COALESCE(target_session_sync.sync_seq, 0) AS sync_seq
+       FROM target_session_sync
+       INNER JOIN sessions ON sessions.session_id = target_session_sync.session_id
+       WHERE target_session_sync.target = ?
+         AND target_session_sync.rejected = 1
+       ORDER BY COALESCE(target_session_sync.rejected_at_ms, 0) DESC,
+                target_session_sync.session_id ASC`,
+    )
+    .all(target) as RejectedSessionDetailRow[];
+
+  const sessions = rows
+    .filter(
+      (row) => !syncableSessionIds || syncableSessionIds.has(row.session_id),
+    )
+    .map((row) => ({
+      sessionId: row.session_id,
+      code: row.rejection_code ?? "rejected",
+      reason: row.rejection_reason ?? "session rejected by sync target",
+      rejectedAtMs: row.rejected_at_ms,
+      syncSeq: row.sync_seq ?? 0,
+    }));
+
+  return {
+    target,
+    total: sessions.length,
+    limit,
+    offset,
+    sessions: sessions.slice(offset, offset + limit),
   };
 }

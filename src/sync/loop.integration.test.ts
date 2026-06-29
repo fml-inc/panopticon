@@ -517,7 +517,7 @@ describe("createSyncLoop integration", () => {
       expect(hasMore).toBe(true);
     });
 
-    it("backend rejection (session not in `accepted`) leaves tss unset for retry", async () => {
+    it("backend rejection (session not in `accepted`) records rejected tss and stops retrying", async () => {
       insertSession("good", 1);
       insertSessionRepo("good");
       insertSession("bad", 1);
@@ -537,8 +537,52 @@ describe("createSyncLoop integration", () => {
       const handle = createSyncLoop({ targets: [makeTarget()] });
       await handle.runOnce();
 
-      expect(getTss("good", "fml")).toBeDefined();
-      expect(getTss("bad", "fml")).toBeUndefined();
+      expect(getTss("good", "fml")).toMatchObject({
+        confirmed: 1,
+        rejected: 0,
+      });
+      expect(getTss("bad", "fml")).toMatchObject({
+        confirmed: 0,
+        rejected: 1,
+        rejection_code: "not_accepted",
+        rejection_reason: "sync target omitted session from accepted response",
+      });
+
+      mockedPostSync.mockClear();
+      await handle.runOnce();
+
+      expect(postedSessionIds()).not.toContain("bad");
+    });
+
+    it("records explicit backend rejection reasons", async () => {
+      insertSession("bad", 1);
+      insertSessionRepo("bad");
+
+      mockedPostSync.mockImplementation(async (_url, body) => {
+        if (body.table === "sessions") {
+          return {
+            accepted: [],
+            rejected: [
+              {
+                sessionId: "bad",
+                code: "repo_not_allowed",
+                reason: "repository is not enabled for this sync target",
+              },
+            ],
+          };
+        }
+        return {};
+      });
+
+      const handle = createSyncLoop({ targets: [makeTarget()] });
+      await handle.runOnce();
+
+      expect(getTss("bad", "fml")).toMatchObject({
+        confirmed: 0,
+        rejected: 1,
+        rejection_code: "repo_not_allowed",
+        rejection_reason: "repository is not enabled for this sync target",
+      });
     });
 
     it("backs off target retries after a sync failure instead of hammering every run", async () => {

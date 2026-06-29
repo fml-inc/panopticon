@@ -154,6 +154,7 @@ export function readSyncTargetLabel(targetName: string): string {
   const confirmed = row?.confirmed ?? 0;
   const pendingSessions = row?.pending ?? 0;
   const pendingState = readSyncPending(targetName);
+  const rejectedSessions = pendingState.rejectedSessions;
   const pendingRows = Object.entries(pendingState.tables).reduce(
     (sum, [table, value]) =>
       table === "sessions" || table === "session_derived_state"
@@ -162,8 +163,14 @@ export function readSyncTargetLabel(targetName: string): string {
     0,
   );
   if (confirmed === 0) {
-    return pendingRows > 0
-      ? `not synced yet, ${formatCount(pendingRows, "row")} pending`
+    const parts: string[] = [];
+    if (pendingRows > 0)
+      parts.push(`${formatCount(pendingRows, "row")} pending`);
+    if (rejectedSessions > 0) {
+      parts.push(`${formatCount(rejectedSessions, "session")} rejected`);
+    }
+    return parts.length > 0
+      ? `not synced yet, ${parts.join(", ")}`
       : "not synced yet";
   }
 
@@ -175,13 +182,25 @@ export function readSyncTargetLabel(targetName: string): string {
     pendingParts.push(formatCount(pendingRows, "row"));
   }
   if (pendingParts.length > 0) {
-    return `${formatCount(confirmed, "session")} confirmed, ${pendingParts.join(" and ")} pending`;
+    return [
+      `${formatCount(confirmed, "session")} confirmed`,
+      `${pendingParts.join(" and ")} pending`,
+      rejectedSessions > 0
+        ? `${formatCount(rejectedSessions, "session")} rejected`
+        : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(", ");
   }
 
   const maxSyncedSeq = row?.max_synced_seq ?? 0;
-  return maxSyncedSeq > 0
-    ? `${formatCount(confirmed, "session")} synced to #${maxSyncedSeq}`
-    : `${formatCount(confirmed, "session")} synced`;
+  const syncedLabel =
+    maxSyncedSeq > 0
+      ? `${formatCount(confirmed, "session")} synced to #${maxSyncedSeq}`
+      : `${formatCount(confirmed, "session")} synced`;
+  return rejectedSessions > 0
+    ? `${syncedLabel}, ${formatCount(rejectedSessions, "session")} rejected`
+    : syncedLabel;
 }
 
 /**

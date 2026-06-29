@@ -45,6 +45,7 @@ function createMockService(): PanopticonService {
     reconcileLandedStatusFromDisk: vi.fn(async (opts) => ({ opts })),
     claimEvidenceIntegrity: vi.fn(async () => ({ ok: true })),
     syncPending: vi.fn(async (target) => ({ target })),
+    syncRejected: vi.fn(async (target, opts) => ({ target, opts })),
     syncTargetList: vi.fn(async () => ({ ok: true })),
     syncTargetAdd: vi.fn(async (target) => ({ target })),
     syncTargetRemove: vi.fn(async (name) => ({ name })),
@@ -166,6 +167,25 @@ describe("service transport", () => {
         by: "activity",
         dryRun: false,
       },
+    });
+  });
+
+  it("dispatches sync rejection diagnostics through exec transport", async () => {
+    const service = createMockService();
+
+    const result = await dispatchExec(service, "sync-rejected", {
+      target: "fml",
+      limit: 10,
+      offset: 5,
+    });
+
+    expect(service.syncRejected).toHaveBeenCalledWith("fml", {
+      limit: 10,
+      offset: 5,
+    });
+    expect(result).toEqual({
+      target: "fml",
+      opts: { limit: 10, offset: 5 },
     });
   });
 

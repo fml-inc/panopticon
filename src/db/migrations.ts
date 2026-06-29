@@ -1425,6 +1425,37 @@ export const MIGRATIONS: Migration[] = [
       ensureUserConfigSnapshotTargetIndex(db);
     },
   },
+  {
+    id: 26,
+    name: "add_target_session_sync_rejection_state",
+    up: (db) => {
+      if (!tableExists(db, "target_session_sync")) return;
+      addColumnIfMissing(
+        db,
+        "target_session_sync",
+        "rejected",
+        "rejected INTEGER DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "target_session_sync",
+        "rejection_code",
+        "rejection_code TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "target_session_sync",
+        "rejection_reason",
+        "rejection_reason TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "target_session_sync",
+        "rejected_at_ms",
+        "rejected_at_ms INTEGER",
+      );
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

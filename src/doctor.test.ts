@@ -119,6 +119,28 @@ describe("readSyncTargetLabel", () => {
       "1 session confirmed, 1 session pending",
     );
   });
+
+  it("reports rejected sessions separately from pending work", () => {
+    const db = getDb();
+    insertSyncedSession();
+    db.prepare(
+      `INSERT INTO session_repositories (session_id, repository, first_seen_ms)
+       VALUES ('session-1', 'org/repo', 0)`,
+    ).run();
+    db.prepare(
+      `UPDATE target_session_sync
+       SET confirmed = 0,
+           rejected = 1,
+           rejection_code = 'repo_not_allowed',
+           rejection_reason = 'repository is not enabled for target',
+           rejected_at_ms = 123
+       WHERE session_id = 'session-1' AND target = 'fml'`,
+    ).run();
+
+    expect(readSyncTargetLabel("fml")).toBe(
+      "not synced yet, 1 session rejected",
+    );
+  });
 });
 
 describe("shellEnvCheck", () => {

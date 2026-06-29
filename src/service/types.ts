@@ -1,5 +1,9 @@
 import type { StorageDiagnostics } from "../db/storage-diagnostics.js";
-import type { SyncPendingResult } from "../sync/pending.js";
+import type {
+  SyncPendingResult,
+  SyncRejectedOptions,
+  SyncRejectedResult,
+} from "../sync/pending.js";
 import type {
   ActivitySummaryResult,
   HookTimelineResult,
@@ -10,7 +14,11 @@ import type {
 } from "../types.js";
 
 export type { StorageDiagnostics } from "../db/storage-diagnostics.js";
-export type { SyncPendingResult } from "../sync/pending.js";
+export type {
+  SyncPendingResult,
+  SyncRejectedOptions,
+  SyncRejectedResult,
+} from "../sync/pending.js";
 
 export interface ListSessionsInput {
   limit?: number;
@@ -205,6 +213,10 @@ export interface PanopticonService {
   ): Promise<unknown>;
   claimEvidenceIntegrity(): Promise<unknown>;
   syncPending(target: string): Promise<SyncPendingResult>;
+  syncRejected(
+    target: string,
+    opts?: SyncRejectedOptions,
+  ): Promise<SyncRejectedResult>;
   syncTargetList(): Promise<unknown>;
   syncTargetAdd(target: SyncTargetAddInput): Promise<unknown>;
   syncTargetRemove(name: string): Promise<unknown>;
