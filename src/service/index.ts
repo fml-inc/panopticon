@@ -16,5 +16,7 @@ export type {
   ScanResult,
   StorageDiagnostics,
   SyncPendingResult,
+  SyncRejectedOptions,
+  SyncRejectedResult,
   SyncTargetAddInput,
 } from "./types.js";

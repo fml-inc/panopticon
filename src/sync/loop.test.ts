@@ -96,10 +96,17 @@ function getTargetSync(sessionId: string, target: string) {
 function recordConfirmed(sessionIds: string[], targetName: string): void {
   const db = getDb();
   const upsert = db.prepare(
-    `INSERT INTO target_session_sync (session_id, target, confirmed, sync_seq)
-     VALUES (?, ?, 1, (SELECT sync_seq FROM sessions WHERE session_id = ?))
+    `INSERT INTO target_session_sync (
+       session_id, target, confirmed, rejected, rejection_code,
+       rejection_reason, rejected_at_ms, sync_seq
+     )
+     VALUES (?, ?, 1, 0, NULL, NULL, NULL, (SELECT sync_seq FROM sessions WHERE session_id = ?))
      ON CONFLICT(session_id, target) DO UPDATE SET
        confirmed = 1,
+       rejected = 0,
+       rejection_code = NULL,
+       rejection_reason = NULL,
+       rejected_at_ms = NULL,
        sync_seq = MAX(target_session_sync.sync_seq,
                       (SELECT sync_seq FROM sessions WHERE session_id = excluded.session_id))`,
   );
@@ -252,6 +259,28 @@ describe("target_session_sync", () => {
       expect(row!.sync_seq).toBe(7);
       // watermarks should NOT be reset
       expect(row!.synced_seq).toBe(0);
+    });
+
+    it("confirmation clears previous rejection state", () => {
+      insertSession("sess-1", 3);
+      const db = getDb();
+      db.prepare(
+        `INSERT INTO target_session_sync (
+           session_id, target, confirmed, rejected, rejection_code,
+           rejection_reason, rejected_at_ms, sync_seq
+         ) VALUES (?, ?, 0, 1, 'repo_not_allowed', 'blocked', 123, 3)`,
+      ).run("sess-1", "target-a");
+
+      recordConfirmed(["sess-1"], "target-a");
+
+      const row = getTargetSync("sess-1", "target-a");
+      expect(row).toMatchObject({
+        confirmed: 1,
+        rejected: 0,
+        rejection_code: null,
+        rejection_reason: null,
+        rejected_at_ms: null,
+      });
     });
 
     it("sync_seq never moves backward (MAX guard)", () => {
@@ -428,6 +457,10 @@ describe("target_session_sync", () => {
       expect(colNames).toContain("session_id");
       expect(colNames).toContain("target");
       expect(colNames).toContain("confirmed");
+      expect(colNames).toContain("rejected");
+      expect(colNames).toContain("rejection_code");
+      expect(colNames).toContain("rejection_reason");
+      expect(colNames).toContain("rejected_at_ms");
       expect(colNames).toContain("sync_seq");
       expect(colNames).toContain("synced_seq");
       expect(colNames).toContain("derived_synced_seq");

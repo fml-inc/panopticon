@@ -29,6 +29,18 @@ function asType<T>(params: Record<string, unknown>): T {
   return params as unknown as T;
 }
 
+function optionalIntegerParam(
+  params: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${key} must be a number`);
+  }
+  return value;
+}
+
 const BASE_TOOL_HANDLERS = {
   sessions: (service, params) =>
     service.listSessions(asType<ListSessionsInput>(params)),
@@ -149,6 +161,16 @@ export const EXEC_HANDLERS = {
       throw new Error("target is required");
     }
     return service.syncPending(target);
+  },
+  "sync-rejected": (service, params) => {
+    const target = params.target;
+    if (typeof target !== "string" || target.length === 0) {
+      throw new Error("target is required");
+    }
+    return service.syncRejected(target, {
+      limit: optionalIntegerParam(params, "limit"),
+      offset: optionalIntegerParam(params, "offset"),
+    });
   },
   "sync-target-list": (service) => service.syncTargetList(),
   "sync-target-add": (service, params) =>

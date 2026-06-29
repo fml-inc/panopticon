@@ -15,6 +15,8 @@ import type {
   RegenerateSessionSummariesInput,
   ScanResult,
   SyncPendingResult,
+  SyncRejectedOptions,
+  SyncRejectedResult,
 } from "./types.js";
 
 function toParams(value: unknown): Record<string, unknown> | undefined {
@@ -169,6 +171,11 @@ export const httpPanopticonService: PanopticonService = {
   claimEvidenceIntegrity: () => callExec("claim-evidence-integrity"),
   syncPending: (target) =>
     callExec("sync-pending", { target }) as Promise<SyncPendingResult>,
+  syncRejected: (target, opts) =>
+    callExec("sync-rejected", {
+      target,
+      ...opts,
+    }) as Promise<SyncRejectedResult>,
   syncTargetList: () => callExec("sync-target-list"),
   syncTargetAdd: (target) => callExec("sync-target-add", toParams(target)),
   syncTargetRemove: (name) => callExec("sync-target-remove", { name }),
@@ -212,6 +219,10 @@ export const reconcileLandedStatusFromDisk =
 export const claimEvidenceIntegrity =
   httpPanopticonService.claimEvidenceIntegrity;
 export const syncPending = httpPanopticonService.syncPending;
+export const syncRejected = httpPanopticonService.syncRejected as (
+  target: string,
+  opts?: SyncRejectedOptions,
+) => Promise<SyncRejectedResult>;
 export const syncTargetList = httpPanopticonService.syncTargetList;
 export const syncTargetAdd = httpPanopticonService.syncTargetAdd;
 export const syncTargetRemove = httpPanopticonService.syncTargetRemove;

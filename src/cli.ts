@@ -267,6 +267,54 @@ function formatStorageLabel(label: string): string {
   return label.replaceAll("_", " ");
 }
 
+type SyncRejectedCliResult = {
+  target: string;
+  total: number;
+  limit: number;
+  offset: number;
+  sessions: Array<{
+    sessionId: string;
+    code: string;
+    reason: string;
+    rejectedAtMs: number | null;
+    syncSeq: number;
+  }>;
+};
+
+function formatTimestampMs(ms: number | null): string {
+  return ms == null ? "unknown" : new Date(ms).toISOString();
+}
+
+function printSyncRejectedSessions(
+  result: SyncRejectedCliResult,
+  retryCommand: string,
+): void {
+  if (result.total === 0) {
+    console.log(`No rejected sessions for "${result.target}".`);
+    return;
+  }
+
+  console.log(
+    `Rejected sessions for "${result.target}" (${result.total} total):`,
+  );
+  for (const session of result.sessions) {
+    console.log(`  ${session.sessionId}`);
+    console.log(`    code: ${session.code}`);
+    console.log(`    reason: ${session.reason}`);
+    console.log(`    rejected_at: ${formatTimestampMs(session.rejectedAtMs)}`);
+    console.log(`    sync_seq: ${session.syncSeq}`);
+  }
+
+  const shownStart = result.offset + 1;
+  const shownEnd = result.offset + result.sessions.length;
+  console.log();
+  console.log(`Showing ${shownStart}-${shownEnd} of ${result.total}.`);
+  if (shownEnd < result.total) {
+    console.log(`Next page: --offset ${shownEnd} --limit ${result.limit}`);
+  }
+  console.log(`Retry after fixing the cause: ${retryCommand}`);
+}
+
 function describeScannerPhase(phase: string): string {
   switch (phase) {
     case "startup_scan":
@@ -1352,7 +1400,11 @@ program
             try {
               const result = await service.syncPending(t.name);
               if (result.totalPending === 0) {
-                console.log("    status: up to date");
+                console.log(
+                  result.rejectedSessions > 0
+                    ? "    status: no pending rows"
+                    : "    status: up to date",
+                );
               } else {
                 console.log(`    pending: ${result.totalPending} total`);
                 for (const [table, info] of Object.entries(result.tables)) {
@@ -1360,6 +1412,11 @@ program
                     `      ${table}: ${info.pending} (${info.synced} / ${info.total})`,
                   );
                 }
+              }
+              if (result.rejectedSessions > 0) {
+                console.log(
+                  `    rejected: ${result.rejectedSessions} session${result.rejectedSessions === 1 ? "" : "s"} (run "panopticon sync reset ${t.name}" to retry)`,
+                );
               }
             } catch {}
           } else if (activeScannerStatus) {
@@ -1692,6 +1749,31 @@ program
             : "Reset all sync watermarks",
         );
         console.log("Restart panopticon to re-sync.");
+      }),
+  )
+  .addCommand(
+    new Command("rejected")
+      .description("List sessions rejected by a sync target")
+      .argument("<target>", "Sync target name")
+      .option("--limit <n>", "Max rejected sessions to show", parseInt, 50)
+      .option("--offset <n>", "Rejected sessions to skip", parseInt, 0)
+      .option("--json", "Output JSON")
+      .action(async (targetName: string, opts: Opts) => {
+        const limit = typeof opts.limit === "number" ? opts.limit : undefined;
+        const offset =
+          typeof opts.offset === "number" ? opts.offset : undefined;
+        const result = (await service.syncRejected(targetName, {
+          limit,
+          offset,
+        })) as SyncRejectedCliResult;
+        if (opts.json) {
+          output(result);
+          return;
+        }
+        printSyncRejectedSessions(
+          result,
+          `panopticon sync reset ${targetName}`,
+        );
       }),
   )
   .addCommand(

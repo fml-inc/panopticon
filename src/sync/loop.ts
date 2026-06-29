@@ -67,6 +67,12 @@ type PendingDerivedSessionRow = {
   derived_synced_seq: number;
 };
 
+type SessionRejection = {
+  sessionId: string;
+  code: string;
+  reason: string;
+};
+
 function syncPostBodyBytes(table: string, rows: unknown[]): number {
   return Buffer.byteLength(JSON.stringify({ table, rows }));
 }
@@ -135,6 +141,49 @@ function splitRowsForPost(
 
 function isSessionTableName(table: string): table is SessionTableName {
   return table in WM_COLUMNS && table in SESSION_READERS;
+}
+
+function sessionIdFromSyncRow(row: unknown): string | null {
+  if (!row || typeof row !== "object") return null;
+  const record = row as Record<string, unknown>;
+  const value = record.sessionId ?? record.session_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeAcceptedSessionIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (id): id is string => typeof id === "string" && id !== "",
+  );
+}
+
+function normalizeRejectedSessions(value: unknown): SessionRejection[] {
+  if (!Array.isArray(value)) return [];
+  const rejected: SessionRejection[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string" && entry.length > 0) {
+      rejected.push({
+        sessionId: entry,
+        code: "rejected",
+        reason: "session rejected by sync target",
+      });
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const id = record.sessionId ?? record.session_id;
+    if (typeof id !== "string" || id.length === 0) continue;
+    const code =
+      typeof record.code === "string" && record.code.length > 0
+        ? record.code
+        : "rejected";
+    const reason =
+      typeof record.reason === "string" && record.reason.length > 0
+        ? record.reason
+        : "session rejected by sync target";
+    rejected.push({ sessionId: id, code, reason });
+  }
+  return rejected;
 }
 
 const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -367,9 +416,45 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
           resolveHeaders(target),
         );
 
-        const accepted = response.accepted;
-        if (Array.isArray(accepted)) {
-          recordConfirmedSessions(accepted as string[], target.name);
+        const explicitRejected = normalizeRejectedSessions(response.rejected);
+        if (explicitRejected.length > 0) {
+          recordRejectedSessions(explicitRejected, target.name);
+        }
+
+        if (Array.isArray(response.accepted)) {
+          const accepted = normalizeAcceptedSessionIds(response.accepted);
+          const acceptedSet = new Set(accepted);
+          const explicitRejectedSet = new Set(
+            explicitRejected.map((entry) => entry.sessionId),
+          );
+          const omitted = batch
+            .map(sessionIdFromSyncRow)
+            .filter((id): id is string => id !== null)
+            .filter(
+              (id) => !acceptedSet.has(id) && !explicitRejectedSet.has(id),
+            )
+            .map((sessionId) => ({
+              sessionId,
+              code: "not_accepted",
+              reason: "sync target omitted session from accepted response",
+            }));
+
+          if (omitted.length > 0) {
+            recordRejectedSessions(omitted, target.name);
+          }
+
+          if (accepted.length > 0) {
+            recordConfirmedSessions(accepted, target.name);
+          }
+
+          const rejectedCount = explicitRejected.length + omitted.length;
+          if (rejectedCount > 0) {
+            log.sync.warn(
+              formatLog(
+                `sessions: ${rejectedCount} session${rejectedCount === 1 ? "" : "s"} rejected by ${target.name}; reset sync for the target to retry`,
+              ),
+            );
+          }
         }
       }
     }
@@ -776,15 +861,59 @@ export function createSyncLoop(opts: SyncOptions): SyncHandle {
   ): void {
     const db = getDb();
     const upsert = db.prepare(
-      `INSERT INTO target_session_sync (session_id, target, confirmed, sync_seq)
-       VALUES (?, ?, 1, (SELECT sync_seq FROM sessions WHERE session_id = ?))
+      `INSERT INTO target_session_sync (
+         session_id, target, confirmed, rejected, rejection_code,
+         rejection_reason, rejected_at_ms, sync_seq
+       )
+       VALUES (?, ?, 1, 0, NULL, NULL, NULL, (SELECT sync_seq FROM sessions WHERE session_id = ?))
        ON CONFLICT(session_id, target) DO UPDATE SET
          confirmed = 1,
+         rejected = 0,
+         rejection_code = NULL,
+         rejection_reason = NULL,
+         rejected_at_ms = NULL,
          sync_seq = MAX(target_session_sync.sync_seq,
                         (SELECT sync_seq FROM sessions WHERE session_id = excluded.session_id))`,
     );
     for (const sessionId of sessionIds) {
       upsert.run(sessionId, targetName, sessionId);
+    }
+  }
+
+  function recordRejectedSessions(
+    rejections: SessionRejection[],
+    targetName: string,
+  ): void {
+    if (rejections.length === 0) return;
+
+    const db = getDb();
+    const nowMs = Date.now();
+    const upsert = db.prepare(
+      `INSERT INTO target_session_sync (
+         session_id, target, confirmed, rejected, rejection_code,
+         rejection_reason, rejected_at_ms, sync_seq
+       )
+       VALUES (
+         ?, ?, 0, 1, ?, ?, ?,
+         COALESCE((SELECT sync_seq FROM sessions WHERE session_id = ?), 0)
+       )
+       ON CONFLICT(session_id, target) DO UPDATE SET
+         confirmed = 0,
+         rejected = 1,
+         rejection_code = excluded.rejection_code,
+         rejection_reason = excluded.rejection_reason,
+         rejected_at_ms = excluded.rejected_at_ms,
+         sync_seq = MAX(target_session_sync.sync_seq, excluded.sync_seq)`,
+    );
+    for (const rejection of rejections) {
+      upsert.run(
+        rejection.sessionId,
+        targetName,
+        rejection.code,
+        rejection.reason,
+        nowMs,
+        rejection.sessionId,
+      );
     }
   }
 

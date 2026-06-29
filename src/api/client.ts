@@ -32,6 +32,7 @@ export {
   sessionTimeline,
   storageDiagnostics,
   syncPending,
+  syncRejected,
   syncReset,
   syncTargetAdd,
   syncTargetList,

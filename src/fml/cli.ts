@@ -67,6 +67,7 @@ import {
   handleSyncAdd,
   handleSyncEdit,
   handleSyncList,
+  handleSyncRejected,
   handleSyncRemove,
   handleSyncReset,
   handleSyncSetup,
@@ -335,6 +336,20 @@ sync
   .description("Reset sync watermarks")
   .argument("[name]", "Target name (resets all if omitted)")
   .action((name?: string) => handleSyncReset(name));
+
+sync
+  .command("rejected")
+  .description("List sessions rejected by a sync target")
+  .argument("[name]", "Target name (default: fml)")
+  .option("--limit <n>", "Max rejected sessions to show", parseInt, 50)
+  .option("--offset <n>", "Rejected sessions to skip", parseInt, 0)
+  .option("--json", "Output JSON")
+  .action(
+    (
+      name: string | undefined,
+      opts: { limit?: number; offset?: number; json?: boolean },
+    ) => handleSyncRejected(name, opts),
+  );
 
 program
   .command("sync-token", { hidden: true })
