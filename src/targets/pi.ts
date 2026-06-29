@@ -54,7 +54,7 @@ function textFromContent(content: unknown): {
     if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
     if (b.type === "thinking") {
       hasThinking = true;
-      if (typeof b.thinking === "string") {
+      if (typeof b.thinking === "string" && b.thinking.trim().length > 0) {
         parts.push(`[Thinking]\n${b.thinking}\n[/Thinking]`);
       }
     }

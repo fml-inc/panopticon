@@ -34,6 +34,9 @@ const HOOK_EVENTS_SQL = `
   SELECT h.id, h.session_id, h.sync_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
          h.tool_name, decompress(h.payload) as payload,
          h.user_prompt, h.file_path, h.command, h.tool_result,
+         h.tool_result_stdout, h.tool_result_stderr, h.tool_result_interrupted,
+         h.tool_result_exit_code, h.tool_result_status, h.tool_result_is_error,
+         h.tool_result_error,
          s.target
   FROM hook_events h
   LEFT JOIN sessions s ON s.session_id = h.session_id
@@ -61,6 +64,13 @@ export function readHookEvents(
     file_path: string | null;
     command: string | null;
     tool_result: string | null;
+    tool_result_stdout: string | null;
+    tool_result_stderr: string | null;
+    tool_result_interrupted: number | null;
+    tool_result_exit_code: number | null;
+    tool_result_status: string | null;
+    tool_result_is_error: number | null;
+    tool_result_error: string | null;
     target: string | null;
   }>;
 
@@ -78,6 +88,17 @@ export function readHookEvents(
     filePath: r.file_path,
     command: r.command,
     toolResult: r.tool_result,
+    toolResultStdout: r.tool_result_stdout,
+    toolResultStderr: r.tool_result_stderr,
+    toolResultInterrupted:
+      r.tool_result_interrupted === null
+        ? null
+        : r.tool_result_interrupted !== 0,
+    toolResultExitCode: r.tool_result_exit_code,
+    toolResultStatus: r.tool_result_status,
+    toolResultIsError:
+      r.tool_result_is_error === null ? null : r.tool_result_is_error !== 0,
+    toolResultError: r.tool_result_error,
     target: r.target,
   }));
 
@@ -1326,6 +1347,10 @@ export function readSessionHookEvents(
       `SELECT h.id, h.session_id, h.sync_id, h.event_type, h.timestamp_ms, h.cwd, h.repository,
               h.tool_name, decompress(h.payload) as payload,
               h.user_prompt, h.file_path, h.command, h.tool_result,
+              h.tool_result_stdout, h.tool_result_stderr,
+              h.tool_result_interrupted, h.tool_result_exit_code,
+              h.tool_result_status, h.tool_result_is_error,
+              h.tool_result_error,
               s.target
        FROM hook_events h
        LEFT JOIN sessions s ON s.session_id = h.session_id
@@ -1347,6 +1372,13 @@ export function readSessionHookEvents(
     file_path: string | null;
     command: string | null;
     tool_result: string | null;
+    tool_result_stdout: string | null;
+    tool_result_stderr: string | null;
+    tool_result_interrupted: number | null;
+    tool_result_exit_code: number | null;
+    tool_result_status: string | null;
+    tool_result_is_error: number | null;
+    tool_result_error: string | null;
     target: string | null;
   }>;
 
@@ -1364,6 +1396,17 @@ export function readSessionHookEvents(
     filePath: r.file_path,
     command: r.command,
     toolResult: r.tool_result,
+    toolResultStdout: r.tool_result_stdout,
+    toolResultStderr: r.tool_result_stderr,
+    toolResultInterrupted:
+      r.tool_result_interrupted === null
+        ? null
+        : r.tool_result_interrupted !== 0,
+    toolResultExitCode: r.tool_result_exit_code,
+    toolResultStatus: r.tool_result_status,
+    toolResultIsError:
+      r.tool_result_is_error === null ? null : r.tool_result_is_error !== 0,
+    toolResultError: r.tool_result_error,
     target: r.target,
   }));
 

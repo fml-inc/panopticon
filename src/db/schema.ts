@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS hook_events (
   plan TEXT,
   allowed_prompts TEXT,
   tool_result TEXT,
+  tool_result_stdout TEXT,
+  tool_result_stderr TEXT,
+  tool_result_interrupted INTEGER,
+  tool_result_exit_code INTEGER,
+  tool_result_status TEXT,
+  tool_result_is_error INTEGER,
+  tool_result_error TEXT,
   target TEXT,
   sync_id TEXT DEFAULT (hex(randomblob(8)))
 );

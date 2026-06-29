@@ -127,6 +127,16 @@ function textValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function nonBlankTextValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function appendThinkingBlock(content: string): string {
+  return `[Thinking]\n${content}\n[/Thinking]`;
+}
+
 function stringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const values = value.filter(
@@ -771,20 +781,26 @@ const claude: TargetAdapter = {
                 textParts.push(b.text);
               }
 
-              if (b.type === "thinking") {
+              if (b.type === "thinking" || b.type === "redacted_thinking") {
                 hasThinking = true;
-                if (typeof b.thinking === "string") {
-                  textParts.push(`[Thinking]\n${b.thinking}\n[/Thinking]`);
+                const thinking = nonBlankTextValue(b.thinking);
+                if (thinking) {
+                  textParts.push(appendThinkingBlock(thinking));
                 }
+                const redactedContent = nonBlankTextValue(b.data);
 
                 events.push({
                   sessionId: sid,
-                  eventType: "thinking",
+                  eventType:
+                    b.type === "redacted_thinking"
+                      ? "redacted_thinking"
+                      : "thinking",
                   timestampMs: tsMs,
-                  content:
-                    typeof b.thinking === "string" ? b.thinking : undefined,
+                  content: thinking,
                   metadata: {
                     has_signature: !!b.signature,
+                    has_redacted_content: !!redactedContent,
+                    redacted_content_length: redactedContent?.length ?? 0,
                   },
                 });
               }

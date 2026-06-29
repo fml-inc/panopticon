@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ALL_DATA_COMPONENTS,
@@ -1997,6 +1998,168 @@ describe("runMigrations — existing DB", () => {
         "rejected_at_ms",
       ]),
     );
+  });
+
+  it("adds and backfills raw hook tool result fields", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE hook_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        payload BLOB NOT NULL
+      )
+    `);
+    const payload = gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          tool_response: {
+            stdout: "backfill stdout",
+            stderr: "backfill stderr",
+            interrupted: true,
+            exitCode: 3,
+            status: "raw-status",
+            isError: false,
+            error: { message: "raw error" },
+          },
+        }),
+      ),
+    );
+    db.prepare(
+      `INSERT INTO hook_events
+       (id, session_id, event_type, timestamp_ms, payload)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(1, "sess-1", "PostToolUse", 1000, payload);
+
+    const migration = MIGRATIONS.find((entry) => entry.id === 27);
+    expect(migration).toBeDefined();
+    runMigrations(db, [migration!]);
+
+    const columns = db
+      .prepare("PRAGMA table_info(hook_events)")
+      .all() as Array<{ name: string }>;
+    const columnNames = columns.map((column) => column.name);
+    expect(columnNames).toEqual(
+      expect.arrayContaining([
+        "tool_result_stdout",
+        "tool_result_stderr",
+        "tool_result_interrupted",
+        "tool_result_exit_code",
+        "tool_result_status",
+        "tool_result_is_error",
+        "tool_result_error",
+      ]),
+    );
+
+    const row = db
+      .prepare(
+        `SELECT tool_result_stdout, tool_result_stderr,
+                tool_result_interrupted, tool_result_exit_code,
+                tool_result_status, tool_result_is_error, tool_result_error
+         FROM hook_events
+         WHERE id = ?`,
+      )
+      .get(1) as {
+      tool_result_stdout: string | null;
+      tool_result_stderr: string | null;
+      tool_result_interrupted: number | null;
+      tool_result_exit_code: number | null;
+      tool_result_status: string | null;
+      tool_result_is_error: number | null;
+      tool_result_error: string | null;
+    };
+    expect(row).toEqual({
+      tool_result_stdout: "backfill stdout",
+      tool_result_stderr: "backfill stderr",
+      tool_result_interrupted: 1,
+      tool_result_exit_code: 3,
+      tool_result_status: "raw-status",
+      tool_result_is_error: 0,
+      tool_result_error: '{"message":"raw error"}',
+    });
+  });
+
+  it("recomputes raw hook tool result fields and clears top-level hook metadata", () => {
+    const db = createExistingDb();
+    db.exec(`
+      CREATE TABLE hook_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        payload BLOB NOT NULL,
+        tool_result_stdout TEXT,
+        tool_result_stderr TEXT,
+        tool_result_interrupted INTEGER,
+        tool_result_exit_code INTEGER,
+        tool_result_status TEXT,
+        tool_result_is_error INTEGER,
+        tool_result_error TEXT
+      )
+    `);
+    const promptPayload = gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          prompt: "do work",
+          stdout: "claude",
+          stderr: "sync-id-looking-value",
+        }),
+      ),
+    );
+    const resultPayload = gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          tool_response: {
+            stdout: "actual stdout",
+            stderr: "actual stderr",
+          },
+        }),
+      ),
+    );
+    db.prepare(
+      `INSERT INTO hook_events
+       (id, session_id, event_type, timestamp_ms, payload,
+        tool_result_stdout, tool_result_stderr)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      1,
+      "sess-1",
+      "UserPromptSubmit",
+      1000,
+      promptPayload,
+      "claude",
+      "sync-id-looking-value",
+    );
+    db.prepare(
+      `INSERT INTO hook_events
+       (id, session_id, event_type, timestamp_ms, payload)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(2, "sess-1", "PostToolUse", 1001, resultPayload);
+
+    const migration = MIGRATIONS.find((entry) => entry.id === 28);
+    expect(migration).toBeDefined();
+    runMigrations(db, [migration!]);
+
+    const rows = db
+      .prepare(
+        `SELECT id, tool_result_stdout, tool_result_stderr
+         FROM hook_events
+         ORDER BY id`,
+      )
+      .all() as Array<{
+      id: number;
+      tool_result_stdout: string | null;
+      tool_result_stderr: string | null;
+    }>;
+    expect(rows).toEqual([
+      { id: 1, tool_result_stdout: null, tool_result_stderr: null },
+      {
+        id: 2,
+        tool_result_stdout: "actual stdout",
+        tool_result_stderr: "actual stderr",
+      },
+    ]);
   });
 
   it("runs up() function migration", () => {

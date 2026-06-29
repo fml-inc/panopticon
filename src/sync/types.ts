@@ -93,6 +93,13 @@ export interface HookEventRecord {
   filePath: string | null;
   command: string | null;
   toolResult: string | null;
+  toolResultStdout: string | null;
+  toolResultStderr: string | null;
+  toolResultInterrupted: boolean | null;
+  toolResultExitCode: number | null;
+  toolResultStatus: string | null;
+  toolResultIsError: boolean | null;
+  toolResultError: string | null;
   target: string | null;
 }
 

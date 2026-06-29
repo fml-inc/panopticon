@@ -471,7 +471,9 @@ function parseEnrichmentSource(
 
 const HOOK_EVENT_COLUMNS_SQL = `
   session_id, event_type, timestamp_ms, cwd, repository, tool_name, target,
-  user_prompt, plan, file_path, command, tool_result, allowed_prompts
+  user_prompt, plan, file_path, command, tool_result, tool_result_stdout,
+  tool_result_stderr, tool_result_interrupted, tool_result_exit_code,
+  tool_result_status, tool_result_is_error, tool_result_error, allowed_prompts
 `;
 
 interface RawHookEventRow {
@@ -487,6 +489,13 @@ interface RawHookEventRow {
   file_path: string | null;
   command: string | null;
   tool_result: string | null;
+  tool_result_stdout: string | null;
+  tool_result_stderr: string | null;
+  tool_result_interrupted: number | null;
+  tool_result_exit_code: number | null;
+  tool_result_status: string | null;
+  tool_result_is_error: number | null;
+  tool_result_error: string | null;
   allowed_prompts: string | null;
 }
 
@@ -504,6 +513,17 @@ function projectHookEvent(row: RawHookEventRow): HookEvent {
     filePath: row.file_path,
     command: row.command,
     toolResult: row.tool_result,
+    toolResultStdout: row.tool_result_stdout,
+    toolResultStderr: row.tool_result_stderr,
+    toolResultInterrupted:
+      row.tool_result_interrupted === null
+        ? null
+        : row.tool_result_interrupted !== 0,
+    toolResultExitCode: row.tool_result_exit_code,
+    toolResultStatus: row.tool_result_status,
+    toolResultIsError:
+      row.tool_result_is_error === null ? null : row.tool_result_is_error !== 0,
+    toolResultError: row.tool_result_error,
     allowedPrompts: row.allowed_prompts,
   };
 }
@@ -1335,7 +1355,10 @@ export function print(opts: {
     const sql = `
       SELECT 'hook' as source, id, session_id, event_type, timestamp_ms,
              tool_name, cwd, user_prompt, file_path, command, plan,
-             tool_result, allowed_prompts, decompress(payload) as payload
+             tool_result, tool_result_stdout, tool_result_stderr,
+             tool_result_interrupted, tool_result_exit_code, tool_result_status,
+             tool_result_is_error, tool_result_error, allowed_prompts,
+             decompress(payload) as payload
       FROM hook_events
       WHERE id = ?
     `;

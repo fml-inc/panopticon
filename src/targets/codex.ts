@@ -182,6 +182,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function hasCodexSubagentSource(payload: Record<string, unknown>): boolean {
+  const source = asRecord(payload.source);
+  return source?.subagent != null;
+}
+
 function codexHookStateKey(
   sourcePath: string,
   event: string,
@@ -335,13 +340,13 @@ function stringifyValue(value: unknown): string | undefined {
 }
 
 function extractTextParts(value: unknown): string[] {
-  if (typeof value === "string") return [value];
+  if (typeof value === "string") return value.trim() ? [value] : [];
   if (!Array.isArray(value)) return [];
 
   const parts: string[] = [];
   for (const item of value) {
     if (typeof item === "string") {
-      parts.push(item);
+      if (item.trim()) parts.push(item);
       continue;
     }
     const record = asRecord(item);
@@ -349,6 +354,7 @@ function extractTextParts(value: unknown): string[] {
     if (typeof record.text === "string" && record.text.length > 0) {
       parts.push(record.text);
     }
+    parts.push(...extractTextParts(record.content));
   }
   return parts;
 }
@@ -407,6 +413,14 @@ function extractReasoningDetails(
     summaryCount: summaryParts.length,
     contentCount: contentParts.length,
   };
+}
+
+function appendThinkingBlock(content: string): string {
+  return `[Thinking]\n${content}\n[/Thinking]`;
+}
+
+function appendDelimitedContent(existing: string, content: string): string {
+  return existing ? `${existing}\n${content}` : content;
 }
 
 function extractToolOutput(
@@ -772,6 +786,7 @@ const codex: TargetAdapter = {
       let pendingToolCalls: ParsedToolCall[] = [];
       let pendingAssistantContent = "";
       let pendingAssistantHasThinking = false;
+      let pendingAssistantThinkingContent = new Set<string>();
       const toolResultsByCallId = new Map<
         string,
         { contentLength: number; contentRaw: string; timestampMs?: number }
@@ -798,8 +813,23 @@ const codex: TargetAdapter = {
         const payload = asRecord(obj.payload);
 
         if (type === "session_meta" && payload) {
+          const parentThreadId =
+            typeof payload.parent_thread_id === "string" &&
+            payload.parent_thread_id.length > 0
+              ? payload.parent_thread_id
+              : undefined;
+          const threadSource =
+            typeof payload.thread_source === "string"
+              ? payload.thread_source
+              : undefined;
+          const relationshipType =
+            threadSource === "subagent" || hasCodexSubagentSource(payload)
+              ? "subagent"
+              : undefined;
           meta = {
             sessionId: payload.id as string,
+            parentSessionId: parentThreadId,
+            relationshipType,
             cwd: payload.cwd as string | undefined,
             cliVersion: payload.cli_version as string | undefined,
             startedAtMs: payload.timestamp
@@ -936,6 +966,7 @@ const codex: TargetAdapter = {
             pendingToolCalls = [];
             pendingAssistantContent = "";
             pendingAssistantHasThinking = false;
+            pendingAssistantThinkingContent = new Set<string>();
           }
 
           if (eventType === "agent_message") {
@@ -948,6 +979,37 @@ const codex: TargetAdapter = {
                   ? payload.message
                   : undefined,
               metadata: { phase: payload.phase },
+            });
+          }
+
+          if (
+            eventType === "agent_reasoning" ||
+            eventType === "agent_reasoning_raw_content"
+          ) {
+            const content =
+              typeof payload.text === "string" && payload.text.trim()
+                ? payload.text
+                : undefined;
+            if (content) {
+              pendingAssistantHasThinking = true;
+              const contentKey = content.trim();
+              if (!pendingAssistantThinkingContent.has(contentKey)) {
+                pendingAssistantThinkingContent.add(contentKey);
+                pendingAssistantContent = appendDelimitedContent(
+                  pendingAssistantContent,
+                  appendThinkingBlock(content),
+                );
+              }
+            }
+            events.push({
+              sessionId: sid,
+              eventType:
+                eventType === "agent_reasoning_raw_content"
+                  ? "reasoning_raw_content"
+                  : "reasoning",
+              timestampMs: tsMs,
+              content,
+              metadata: { source: "event_msg" },
             });
           }
 
@@ -1161,8 +1223,10 @@ const codex: TargetAdapter = {
                 ? undefined
                 : extractResponseItemText(p);
             if (text) {
-              pendingAssistantContent +=
-                (pendingAssistantContent ? "\n" : "") + text;
+              pendingAssistantContent = appendDelimitedContent(
+                pendingAssistantContent,
+                text,
+              );
             }
           }
 
@@ -1172,9 +1236,14 @@ const codex: TargetAdapter = {
               pendingAssistantHasThinking || reasoning.hasEncryptedContent;
             if (reasoning.content) {
               pendingAssistantHasThinking = true;
-              pendingAssistantContent +=
-                (pendingAssistantContent ? "\n" : "") +
-                `[Thinking]\n${reasoning.content}\n[/Thinking]`;
+              const contentKey = reasoning.content.trim();
+              if (!pendingAssistantThinkingContent.has(contentKey)) {
+                pendingAssistantThinkingContent.add(contentKey);
+                pendingAssistantContent = appendDelimitedContent(
+                  pendingAssistantContent,
+                  appendThinkingBlock(reasoning.content),
+                );
+              }
             }
             if (reasoning.content || reasoning.hasEncryptedContent) {
               events.push({
